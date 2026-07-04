@@ -151,8 +151,9 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     spaced along the track (not bunched on slow sections), ends flush —
     nothing pokes past the rails; lowering the value visibly densifies
     them; value survives save/load round-trip.
-17. Entering/exiting fly mode: NO field-of-view jump in either direction
-    (fly matches the orbit cam; the Options slider affects POV only).
+17. Entering/exiting fly mode: NO field-of-view jump in either direction.
+    The Options FOV slider changes orbit, fly AND POV together (watch the
+    orbit view widen live while dragging it).
 18. Coaster menu > Start x/y/z: track translates; speeds/forces unchanged
     (energy is relative to start height); grid stays where it was; values
     survive save/load.
@@ -175,7 +176,38 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
 23. Drag the divider between 3D view and graph: both resize live; the ▼
     button (bottom-right of the 3D view) collapses the whole bottom panel
     (stats + toolbar + graph) to full-screen the viewport, turns to ▲, and
-    restores to the previous size when clicked again.
+    restores to the previous size when clicked again. With the window
+    NON-maximized and resized smaller, the button and divider must remain
+    visible and functional (regression: SubScene min-size pushed them
+    off-screen).
+24. Coaster menu open: change Heart a few times, Ctrl+Z steps them back,
+    Ctrl+Shift+Z forward — all while the menu stays open. Close the menu,
+    make sure a single Ctrl+Z now undoes the last CURVE edit, not the menu
+    values. Same inside Edit > Options (FOV drag = one undo step) and the
+    rail-color dialog.
+25. Value axis: default ranges (Gv −1..4, Gl −1..1, roll ±150); drag a Gv
+    node to 5 g — the axis expands to a rounded bound; delete it — the
+    axis returns to default. Axis stays still while dragging.
+26. Hold a node PAST any plot edge without moving the mouse: that axis
+    grows continuously, faster the further past the edge (right edge =
+    ride extends; top/bottom = value scale expands); pull back inside and
+    growth stops instantly; view re-fits on release. No runaway.
+    Move a lane's last node left of the ride end: dotted flat line appears
+    to the ride end; hovering it shows the dot and clicking appends a node
+    on it. After any click-insert, immediately click-drag the new node:
+    it must MOVE (not grab one of its handles).
+27. Shift+click two more nodes (faint rings): dragging any moves all three
+    (clamped against unselected neighbors); Shift mid-drag constrains to
+    the dominant axis with the guide line, and the node RETURNS to its
+    original row/column (drift before the axis was chosen snaps back);
+    arrows nudge the group; Delete removes them all. Lane buttons show
+    their curve colors.
+28. Ground: dense 1 m lines near the track fade over bands; past ~120 m
+    only 10 m lines, past ~240 m a smooth solid translucent sheet; no
+    shimmer zoomed out, no z-fighting stripes between lines and sheet.
+29. Help > Controls & Features opens a non-modal scrollable reference
+    (usable while editing); spot-check that it mentions the newest
+    features — it is REQUIRED to stay current with every change.
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes

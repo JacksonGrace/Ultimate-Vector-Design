@@ -164,12 +164,34 @@ mirrored, it's a sign flip in `applyPovCamera`.
 
 ## Current UI feature set
 
-Single overlaid plot (each lane on its own value scale; inactive lanes 25%
-alpha — clicking a dimmed lane's node or curve switches editing to it, with
-the active lane keeping hit-test priority). 3D view floor: static transparent
+Single overlaid plot (each lane on its own value scale, AUTO-SCALED:
+defaults Gv −1..4 g, Gl −1..1 g, roll ±150 °/s, expanding 1-2-5-rounded
+when the visible curve exceeds them, frozen during drags; inactive lanes
+25% alpha — clicking a dimmed lane's node or curve switches editing to it,
+with the active lane keeping hit-test priority). Lanes ending early draw
+their hold-final-value continuation DOTTED — clickable to append a node.
+Shift+click = multi-select (group drag clamps against non-selected
+neighbors, ignores ripple; Delete removes all). Shift during a node drag =
+transient axis constraint from the dominant movement direction (same guide
+line as Z/X). Arrow keys nudge the selection by snap steps (Ctrl+arrow
+lands on the grid; key repeat glides; undo coalesces per burst). Menus and
+dialogs have LOCAL undo/redo (Ctrl+Z / Ctrl+Shift+Z while open; history
+discarded on close so the next Ctrl+Z hits the coaster). Lane buttons are
+tinted with the curve colors. The graph auto-fit time window FREEZES
+during drags (fixes runaway end-node dragging); dragging past ANY plot edge
+grows that axis at a RATE proportional to the overshoot (dragGrowTimer,
+an AnimationTimer — grows even with the mouse held still; view re-fits on
+release). Shift's axis constraint anchors to the node's GESTURE-START
+position (snaps back onto the original row/column) and picks its axis after
+~3 px. After click-inserting a node, the first press prioritizes the node
+body over its own knobs (freshInsertPriority). `subHolder.setMinSize(0,0)` is
+load-bearing: without it the SubScene's min size stops the window/divider
+from shrinking and the collapse controls go off-screen. 3D view floor: static transparent
 reference grid (1 m lines, heavier every 10 m), placed once below the initial
-track and never moved while editing; it fades out in concentric bands ending
-at 150 m because JavaFX 3D lacks mipmaps and distant sub-pixel lines shimmer.
+track and never moved while editing; it fades over SIX concentric bands
+(minor lines gone past 120 m, majors past 240 m) onto a solid translucent
+sheet (600 m, 3 cm below the lines to dodge z-fighting) because JavaFX 3D
+lacks mipmaps and distant sub-pixel lines shimmer.
 Default keys (ALL rebindable via Edit > Shortcuts,
 persisted per-user): `1/2/3` lane select · click node = select + show handles
 · drag handle = length-only, `Shift` = angle · `B` smooth/broken (circle vs
@@ -191,8 +213,8 @@ transition time, transition Δ, and handle fractions directly · right-click
 the 3D view = FLY mode (WASD + mouse look via Robot cursor-warp, Shift ×4,
 Ctrl ×0.2, scroll burst; right-click exits KEEPING the view — the orbit rig
 has a movable pivot `camPivot` set to the point `zoom` m ahead of the fly
-camera; mutually exclusive with POV; fly FOV = orbit FOV, NOT the POV FOV
-setting — sharing it made mode switches visibly zoom). Graph editor: scroll
+camera; mutually exclusive with POV; ONE FOV setting drives ALL cameras —
+orbit, fly, POV — so mode switches can never zoom-jump). Graph editor: scroll
 zooms the time axis around the cursor (view window in tToX/xToT, min 0.5 s,
 full zoom-out resumes auto-fit), right-drag pans, rotated lane-name y-axis
 label + "Time (s)" x-axis label, adaptive 1-2-5 grid lines (~60 px apart in
@@ -218,6 +240,11 @@ generated from live bindings). Stats bar shows ride time, track length,
 height range, top speed, Gv range. Window sizes itself to
 `Screen.getVisualBounds()` (capped 1400×880) — do not hardcode window sizes;
 that broke on the user's 1080p screen once already.
+
+**Help dialog is a USER REQUIREMENT to keep current:** Help > Controls &
+Features (`showHelpDialog` in FvdDesigner) must be updated with EVERY
+user-facing feature or control change, in its matching section, prioritizing
+non-obvious behavior. Do not ship a feature without touching it.
 
 ## Known quirks / accepted debts
 

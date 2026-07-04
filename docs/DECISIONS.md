@@ -339,3 +339,75 @@ absolute coordinates, so:
   a translucent ▼/▲ button overlaid bottom-right on the 3D VIEW (so it
   survives full collapse) minimizes/restores the whole bottom panel
   (stats + toolbar + editor) for a full-screen viewport.
+
+## D29. Selection/scale/undo round (v6.8)
+- **Graph-restore bug**: SubScene reports its current size as its minimum,
+  so `subHolder` refused to shrink — on non-maximized windows the divider
+  and collapse button were pushed OFF-SCREEN (looked like "can't restore").
+  Fix: `subHolder.setMinSize(0, 0)`. Keep this line.
+- **Menu-local undo/redo**: Ctrl+Z / Ctrl+Shift+Z inside the Coaster menu,
+  Options and rail-color dialogs act on a LOCAL history of {undo, redo}
+  setter pairs, alive only while that menu/dialog is open (sessions begin
+  on show, are discarded on hide — the changes lock in). Menu popups and
+  dialogs have their own Scenes, so the key filter is installed per scene
+  (`installMenuUndoKeys`, idempotent). Spinner listeners record via
+  `wireMenuSpinner`; FOV drags record ONE entry per gesture; re-applying a
+  recorded value is guarded by `menuApplying` so undo doesn't re-record.
+  Menu edits never touch the coaster's undo stack — after closing a menu,
+  one Ctrl+Z undoes the last COASTER edit, per user spec.
+- **Auto-scaling value axis** per lane: defaults Gv −1..4 g, Gl −1..1 g,
+  roll −150..150 °/s; when the curve within the visible time window pokes
+  out, the axis expands (5% pad, rounded outward to a 1-2-5 step). Frozen
+  during drags so the mapping can't shift under the cursor.
+- **End-node drag tamed**: the old feedback loop (node.t grows → auto-fit
+  domain grows → same mouse x maps further right → runaway) is gone — the
+  time window FREEZES for the duration of any drag gesture (dragWinT0/T1);
+  pulling past the right plot edge extends time at 3× the overshoot
+  (farther = faster), and the view re-fits on release.
+- **Dotted hold-value extension is real UI**: a lane ending before the ride
+  end draws its implied flat continuation DASHED, it is hover/insertable
+  (appends a real node at the same level, flat sine handles), and
+  `curveHitT` treats it as one more segment.
+- **Multi-select**: Shift+click adds nodes (primary keeps the solid ring,
+  members get faint rings). Dragging any member moves the group by common
+  deltas, clamped against non-selected neighbors; node 0 pins the group in
+  time; ripple toggles are IGNORED for group moves (the group is the
+  ripple). Delete removes all selected (first node and the ≥2-node floor
+  still hold). Undo prunes stale indices.
+- **SHIFT during a node drag** = transient axis constraint chosen from the
+  dominant direction of the first ~6 px of movement, with the same guide
+  line as Z/X. Z/X remain sticky per-selection; Shift wins while held.
+- **Arrow keys** nudge the selection by the snap steps (0.1 s / 0.1 G /
+  1 °/s); Ctrl+arrow lands ON the grid; OS key auto-repeat provides
+  hold-to-glide; undo entries coalesce per keypress burst (0.8 s window).
+- Lane toggle buttons tinted with their curve colors (`LANE_COLORS`
+  hoisted out of GraphEditor).
+
+## D30. Rate-based view growth, Help menu, unified FOV, ground v3 (v6.9)
+- **Edge-pull view growth is now RATE-based on both axes** (supersedes
+  D29's 3× positional overshoot): while a node drag sits past a plot edge,
+  `dragGrowTimer` (AnimationTimer) extends that axis every frame at a
+  speed proportional to the overshoot — smooth, controllable, and it grows
+  even with the mouse held still. The scale DOES shift under the cursor
+  mid-gesture now, by design (user reversed D29's freeze rationale after
+  feel-testing); the gesture window/value scale are still the mutable
+  copies, and everything re-fits on release.
+- **Ground v3**: six fade bands (minors to 120 m, majors to 240 m) over a
+  solid translucent 600 m sheet 3 cm below the lines (z-fighting offset).
+  Reads as a surface in the far field instead of lines dissolving into
+  void; still a handful of static meshes, no per-frame cost.
+- **Fresh-insert grab priority**: for ONE press after click-inserting a
+  node, the node body outranks its own knobs (freshInsertPriority) so
+  insert-then-move doesn't accidentally grab a handle.
+- **Help > Controls & Features** dialog (non-modal, sectioned, scrollable):
+  Getting started / Graph view / Nodes / Handles / Cameras / Menus &
+  settings. USER REQUIREMENT: must be updated with every user-facing
+  change — rule recorded in CLAUDE.md and above `showHelpDialog`.
+- **One FOV for every camera** (Options slider now drives orbit + fly +
+  POV; label renamed). Supersedes D27's fly=orbit-only pairing: the user
+  wants the slider to govern fly too, and syncing all three keeps the
+  no-zoom-jump invariant. Note the orbit camera now starts at the saved
+  FOV (65° default) instead of JavaFX's 30°.
+- **Shift axis-constraint anchors at the node's gesture-start position**
+  (drifted pixels snap back onto the original row/column) and decides its
+  axis after ~3 px instead of 6.
