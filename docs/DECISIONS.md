@@ -105,7 +105,7 @@ RAIL, not the heartline. Known accepted gap: no ties/spine yet (user spec
 was exactly two rails).
 
 ## D16. POV camera (v5)
-Toggle with R / toolbar button. `AnimationTimer` advances ride time
+Toggle with Space (originally R) / toolbar button. `AnimationTimer` advances ride time
 (looping), camera oriented by an `Affine` built from the sample frame
 (derivation + sign-flip debugging table in PHYSICS.md §6). POV camera node
 lives inside the `world` group so scene centering applies to it. Orbit
@@ -129,3 +129,213 @@ were run by concatenating (public-stripped, package-stripped) sources plus a
 test main into one file. See TESTING.md. In this repo, convert the four
 existing validations into JUnit and keep the harness description for
 historical context.
+
+## D20. Menu bar + settings split (v6)
+Toolbar Save/Load moved to a File menu; Heart/Gauge spinners moved to a
+Coaster menu (embedded as CustomMenuItems, live-updating). Two kinds of
+settings with different lifetimes:
+- **App-wide, persist across runs** (Edit menu): rebindable shortcuts and a
+  POV FOV slider (30–110°), stored by `AppSettings` (pure Java, no JavaFX)
+  in `~/.fvd-designer.properties`. Shortcut combos are strings ("Ctrl+Z",
+  "Space"); `FvdDesigner.matches()` parses and matches them, normalizing
+  numpad digits to top-row. Shortcuts dialog: click the key button, press
+  the new combo (Escape cancels); a ↺ button appears on non-default rows
+  and restores the default.
+- **Per-coaster, saved in the .fvd file** (Coaster menu): heart, gauge, and
+  rail color — solid (ColorPicker) or the original vertical-G gradient —
+  written as `railmode` / `railcolor` lines (old versions ignore them via
+  the unknown-line rule; roadmap: more color options). The ColorPicker must
+  live in its own dialog, not a CustomMenuItem: its "Custom Color" popup is
+  owned by the menu popup, which auto-hides on click, killing the owner and
+  crashing the app (found by the user at runtime). Picking a color
+  auto-selects solid mode.
+Shortcut reminders removed from button labels; the stats-bar hint is now
+generated from the live bindings so it survives rebinding.
+
+## D21. Fractional handles, snapping, lane click-switch, static grid (v6) — BREAKING format
+- **Handles are fractions (FVDD2).** `outDt/inDt` (absolute seconds) became
+  `outFrac/inFrac` (fraction 0..0.95 of the neighboring segment); dv offsets
+  stay absolute. User-requested semantics: a handle is a pure DISTANCE from
+  its node, relative to the neighbor — move two nodes twice as close and the
+  segment renders the same graph at half width ("squish", verified headlessly
+  to 0.002, which is bake-polyline sampling noise). Save format bumped to
+  `FVDD2`; loader auto-converts `FVDD1` files (dt/gap per segment). The
+  default-layout invariants were re-checked after the refactor: identical
+  (271 keyframes, 13.46 s, 406.8 m, end pitch 0.23°, U.y 1.000).
+- **Snapping (Ctrl = free).** Node drags snap to 0.1 s × 0.1 G (10 °/s for
+  roll). Handle-length drags snap to ease-preset fractions — cubic 1/3,
+  sine 1−2/π, quintic 7/15, circle 0.5523 — each derived by matching the
+  center slope of a flat-handle Bezier to the target ease; the preset name
+  shows in the drag readout. Shift+drag (angle) stays free.
+- **Click a dimmed lane to edit it.** Nodes checked first, then curve bodies
+  (vertical distance at the clicked time); the ACTIVE lane always wins
+  because its node/knob hit tests run first.
+- **Static transparent floor grid** (FVD++-style) replaced the solid ground
+  box that re-positioned under the lowest rail on every rebuild (it bobbed
+  around while editing). Built ONCE below the initial track: 1 m line quads
+  in two meshes (minor lines skip every 10th; major every 10 m, thicker),
+  alpha in the PhongMaterial diffuse, CullFace.NONE so it's visible from
+  below. Lives inside `world` so the one-time centering applies.
+- Heart/Gauge menu labels set to black — default fill washed out on the
+  light menu popup.
+
+## D22. Modifier inversion, mirrored smooth handles, banded grid (v6.1) — user feedback on D21
+- **CTRL now ENABLES snapping** (nodes to the 0.1 s/0.1 G/10 °/s grid,
+  handle fractions to the ease presets); default movement is free. Inverted
+  from D21 at user request after hands-on testing.
+- **Handle drags are free by default** (angle + length); **SHIFT locks the
+  handle on its current line** (the old default length-only behavior).
+  Shift never touches the partner handle.
+- **Smooth nodes mirror the partner on free drags, proportionally on BOTH
+  axes:** partner.frac *= newFrac/oldFrac and partner.dv *= newDv/oldDv of
+  the dragged handle (user's spec: equal handles behave as mirror images;
+  unequal handles scale in proportion — 30%→15% takes a 20% partner to 10%,
+  dv 1.0→1.5 takes −0.8 to −1.2 — staying collinear while growing/shrinking
+  together). When the dragged handle was flat (dv≈0, ratio undefined) the
+  partner falls back to slope-mirroring. Ratios compound per mouse event;
+  the telescoping product keeps the whole gesture proportional.
+- **Grid fades in concentric square bands** (full detail to 50 m, faint to
+  100 m, majors-only to 150 m, nothing beyond). Reason: JavaFX 3D has no
+  texture mipmapping, so the original uniform 700 m grid shimmered/moiréd
+  at distance (sub-pixel lines) — eye strain reported in testing. Band
+  meshes clip lines to square rings so nothing double-draws.
+
+## D23. Transition-centric editing (v6.2)
+The user thinks in TRANSITIONS (FVD style: "2 s pull-up to +2.5 G"), not in
+absolute coordinates, so:
+- **Node-drag readout** shows Δt and Δvalue from the PREVIOUS node, with the
+  true value in parentheses ("Δt=0.80s  Δ+1.50 (2.50)"). Node 0 still shows
+  absolutes (it has no previous node and its t is pinned to 0).
+- **Append (A) uses sinusoidal handles** (frac 1−2/π) for the new transition
+  instead of cubic 1/3 — matches the FVD community default for force ramps.
+  Double-click node INSERT still uses 1/3 flat (it lands on an existing
+  curve; see the de-Casteljau roadmap item).
+- **"Ripple edit" toolbar toggle:** dragging a node also shifts every LATER
+  node of the same lane by the same Δt/Δvalue. Horizontal drags therefore
+  preserve all later transition times (only the edited segment stretches —
+  fractional handles keep every shape); vertical drags translate the rest of
+  the graph. The upper time clamp is lifted while rippling (later nodes move
+  out of the way); values may ripple past the lane's display range — the
+  plot clamps drawing but the data is honored by the physics.
+
+## D24. Ripple per-axis, sine inserts, transition snapping (v6.3) — user feedback on D23
+- **Ripple split into two toolbar checks** ("Ripple: time / value") so each
+  axis toggles independently. Rendered as minimal filled-square checkboxes
+  (custom Region styling) — the user explicitly did not want the stock
+  CheckBox's checkmark glyph.
+- **Double-click insert now also defaults to sinusoidal handles** (matches
+  append). Only the shipped default layout and `applyDefaultHandles` keep
+  cubic 1/3 — changing those would alter the validated default geometry.
+- **Snap semantics (with CTRL): time snaps the TRANSITION length** (Δt from
+  the previous node in 0.1 s steps — the readout shows clean 0.30s/0.80s),
+  **value snaps to the GLOBAL absolute grid** (0.1 G steps; roll changed
+  from 10 °/s to whole 1 °/s steps per the user's "exactly 124 deg/s"
+  example). Deliberately NOT Δ-value snapping — user spec.
+
+## D25. Node editor dialog, fly camera, Delete key, unit readouts (v6.4)
+- **Node readout shows the global value with units** ("Δt=0.80s  2.50 g" /
+  "°/s"); the Δ-value display from D23 lasted one iteration — the user
+  wanted transition time but ABSOLUTE value.
+- **Double-click a node → small modal editor**: type transition time (s),
+  transition Δ (value units, relative to the previous node), and in/out
+  handle fractions, all %.3f `Locale.US`. Applies through the same
+  `moveNode` path as dragging, so the ripple toggles are honored. Node 0
+  edits its global value instead (no previous node). Bad input in a field
+  silently keeps the old value. Double-click on empty curve still inserts.
+- **Fly camera**: right-click the 3D view to enter/exit. WASD moves (strafe
+  stays level), mouse looks, SHIFT ×4, CTRL ×0.2, scroll is a fast burst
+  along the view direction. JavaFX cannot capture the pointer, so mouse
+  look uses the standard workaround: hide the cursor and Robot-warp it back
+  to the viewport centre every event (delta < 0.5 px = our own warp, skip).
+  Entering fly adopts the orbit camera's exact pose (seamless); exiting
+  returns to the orbit rig's unchanged pose (snap-back, accepted). Fly and
+  POV are mutually exclusive; while flying, WASD/Shift/Ctrl are consumed
+  before the shortcut matcher (A = strafe, not append). Fly cam shares the
+  POV FOV setting.
+- **Delete key** (rebindable action "delNode", shown in the Shortcuts
+  dialog) deletes the selected node. Interior deletion bridges the gap with
+  both neighbors keeping their global positions and handle settings — this
+  falls out of fractional handles for free (the neighbors' fractions just
+  span the merged segment). Deleting the LAST node now works (shortens the
+  ride) — right-click shares these rules; only the first node (t=0 anchor)
+  refuses, and lanes keep ≥ 2 nodes.
+
+## D26. Cross ties, orbit pivot, exact node insert (v6.5)
+- **Cross ties**: one thin box between the rails (extended past them by the
+  rail radius) every `tieSpacing` metres of ARC LENGTH (uniform spacing
+  regardless of speed; positions quantize to the nearest 0.01 s sample).
+  Per-coaster spinner in the Coaster menu (0.2–10 m, default 1.0), saved as
+  `tiespace` in the .fvd. Fixed dark-gray material regardless of rail color.
+  Spine box still missing — roadmap.
+- **Orbit rig gained a movable pivot** (`camPivot`, first transform in the
+  rig) so EXITING FLY MODE KEEPS THE VIEW: on exit the pivot is placed
+  `-camZoom.z` metres in front of the fly camera and yaw/pitch copied over —
+  the pose is preserved exactly, and subsequent orbit drags rotate around
+  the point you were looking at. Entering fly reads the pivot back so the
+  handoff stays seamless in both directions.
+- **Insert-on-curve replaced double-click insert**: hovering the active
+  curve (away from nodes/knobs) shows a translucent white dot riding the
+  line; LEFT CLICK inserts there. Flat segments insert a level node with
+  sine handles. Curved segments use `BezierBaker.splitSegment` — an EXACT
+  de Casteljau subdivision (no optimization needed; this was roadmap item
+  4): the u-parameter is found by bisection on x(u)=t (robust to folded
+  handles), neighbors' facing handles are rewritten, the new node's handles
+  are tangent and collinear (smooth). Headless-validated: max eval
+  difference 0.005 across shapes including near-folds — pure bake-sampling
+  noise. The same `curveHitT` predicate drives both the dot and the click,
+  so preview and action can't disagree.
+
+## D27. POV ride control, graph zoom/pan, start point, polish (v6.6)
+- **POV is now W/S-controlled**: W rides forward at the simulated speed,
+  S backward, SHIFT ×4, CTRL ×0.25, no key = hold position (still follows
+  live edits while holding). Replaces the auto-looping playback; wraps at
+  the ride ends. W/S/Shift/Ctrl are consumed while riding (so Ctrl+S can't
+  save mid-POV — exit first; same tradeoff as fly mode).
+- **Graph zoom/pan**: scroll zooms the TIME axis around the cursor (min
+  window 0.5 s); right-drag on empty graph pans (right-click on a node
+  still deletes). Zooming fully out snaps back to auto-fit, which is the
+  default state and follows ride-length changes. Implemented as a view
+  window [viewT0, viewT1] under tToX/xToT so every feature (hit tests,
+  hover insert, ticks) inherited it for free.
+- **Axis labels**: rotated lane name along the left edge (follows the edit
+  mode, lane-colored) and "Time (s)" centered under the ticks
+  (MARGIN_BOTTOM 20→32). The horizontal top-left lane name was removed.
+- **Track start point** (Coaster menu, per-coaster, `start x y z` line in
+  .fvd): three spinners ±500 m. Physics is unchanged by translation (speed
+  is relative to start height); the static grid/world-centering do NOT
+  follow — placed once at startup, by design.
+- **Fly FOV now matches the orbit camera** (the D25 choice of sharing the
+  POV FOV made entering/exiting fly visibly zoom); the Options slider
+  applies to the POV cam only.
+- **Ties end at the rail centerlines** (were gauge/2 + rail radius, poking
+  out); the tie cross-section hides inside the rail tubes.
+- **Steep-section insert fixed**: `curveHitT` measured only VERTICAL pixel
+  distance at the mouse's time — a near-vertical curve was unhittable. Now
+  it takes the nearest point over the baked polyline's segments in 2D pixel
+  space (`BezierBaker.polyline` exposed for this).
+
+## D28. Editing QoL round (v6.7) — committed
+- **Insert near nodes**: the real cause of the remaining "steep sections
+  won't insert" report was the MIN_GAP (0.1 s) guard, not steepness —
+  short/steep transitions put every click within 0.1 s of a node. Inserts
+  now use INSERT_GAP = 0.02 s, and the gap check moved INTO `curveHitT` so
+  the hover dot only appears where a click will actually succeed. (Node
+  DRAGS keep the 0.1 s spacing; two nodes placed < 0.1 s apart by insert
+  push apart if later dragged — accepted.)
+- **H** flattens the selected node's handles (dv = 0; while dragging a
+  handle on a BROKEN node, only that one). **Z/X** toggle per-selection
+  axis locks for node drags (vertical/horizontal), drawn as a translucent
+  guide line through the node; the lock clears when the selection changes.
+  All three are rebindable actions in the Shortcuts dialog.
+- **Adaptive graph grid**: 1-2-5 "nice" steps (0.1/0.2/0.5/1/2/5…) chosen
+  so lines sit ~60 px apart in time and ~30 px in value; density re-derives
+  on every zoom/resize. Time tick labels moved onto the same grid lines
+  (the fixed 8-tick row is gone).
+- **POV**: scroll = fast burst along the track (0.02 s per scroll px ≈
+  fly-mode's 20 m/notch); a translucent vertical line on the graph marks
+  the camera's track position, toggled in Edit > Options ("povMarker" in
+  AppSettings, default on), redrawn only when the position changes.
+- **Graph panel is a vertical SplitPane**: drag the divider to resize;
+  a translucent ▼/▲ button overlaid bottom-right on the 3D VIEW (so it
+  survives full collapse) minimizes/restores the whole bottom panel
+  (stats + toolbar + editor) for a full-screen viewport.

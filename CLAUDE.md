@@ -45,8 +45,14 @@ FVDIntegrator.java  PHYSICS. Pure Java, no JavaFX. Takes keyframes
                     (t, Gv, Gl, rollRateDeg), steps dt=0.01s, produces
                     Samples (t, s, pos, T/U/R frame, v, Gv, Gl).
 
+AppSettings.java    APP-WIDE PERSISTENT SETTINGS. Pure Java, no JavaFX.
+                    Shortcut bindings + FOV in ~/.fvd-designer.properties
+                    (combos are strings like "Ctrl+Z"; UI parses them).
+                    Per-coaster settings do NOT go here — they go in .fvd.
+
 FvdDesigner.java    ALL JavaFX. 3D view (two-rail mesh, orbit + POV cameras),
-                    graph editor canvas, toolbar, save/load, undo.
+                    graph editor canvas, menu bar (File/Edit/Coaster),
+                    toolbar, save/load, undo, shortcuts/options dialogs.
 ```
 
 Pipeline on every edit: `lanes → BezierBaker.bake → FVDIntegrator.integrateTrack
@@ -91,18 +97,39 @@ source tree — they won't compile against the current time-domain API.
 - **Per-lane independent nodes** (v5). One node used to carry all three
   values; now each lane has its own list. Ride duration = latest node across
   lanes; shorter lanes hold their final value.
-- **Handle semantics:** stored as offsets (dt seconds, dv value-units).
-  Defaults: flat tangents at 1/3 segment ⇒ smooth S-curve force transitions
-  (what coaster designers want). "Smooth" = matching slope dv/dt on both
-  sides (unit-correct C1, deliberately NOT pixel-angle matching). Default
-  drag changes handle LENGTH only (pixel-space projection onto current
-  direction); SHIFT unlocks angle. B toggles smooth/broken per node;
-  re-smoothing keeps the IN handle and re-angles the OUT handle (user spec).
+- **Handle semantics (v6):** stored as FRACTIONS of the neighboring segment
+  (`outFrac`/`inFrac`, 0..0.95) plus absolute dv value-offsets. Moving a
+  node in time therefore rescales attached handles automatically — the curve
+  squishes horizontally with its shape preserved (validated headlessly:
+  max deviation 0.002, polyline sampling noise). Defaults: flat tangents at
+  1/3 segment ⇒ smooth S-curve force transitions. "Smooth" = matching slope
+  dv/dt on both sides (unit-correct C1, deliberately NOT pixel-angle
+  matching). Handle drag is FREE by default (angle + length); SHIFT locks
+  the handle on its current line (length only) and never touches the
+  partner; CTRL snaps the length fraction to ease presets — cubic 1/3,
+  sine 1−2/π ≈ 0.363, quintic 7/15, circle 0.5523 (fractions whose
+  flat-handle Bezier matches each ease's center slope). On a SMOOTH node a
+  free drag mirrors the partner handle proportionally on BOTH axes
+  (partner frac and dv scale by the dragged handle's ratios — equal handles
+  act as mirror images, unequal ones stay proportional and collinear).
+  Node drags are free; CTRL snaps the TRANSITION length (Δt from the
+  previous node) to 0.1 s steps and the value to the GLOBAL absolute grid —
+  0.1 G, whole °/s for roll (deliberately not Δ-value snapping).
+  B toggles smooth/broken per node; re-smoothing keeps the IN handle and
+  re-angles the OUT handle (user spec).
 - **Undo:** deep snapshots of all lanes, one per completed gesture, cap 100,
   no redo yet. Heart/gauge settings are NOT in undo.
-- **Save format** `FVDD1`: human-readable text, `Locale.US` decimals
+- **Save format** `FVDD2`: human-readable text, `Locale.US` decimals
   (critical — default locale breaks parsing on comma-decimal systems),
   unknown lines ignored for forward compatibility. Round-trip tested.
+  Includes per-coaster `tiespace`, `railmode solid|gradient`, `railcolor
+  r g b` lines
+  (older versions ignore them via the unknown-line rule). v2 stores handle
+  time-offsets as segment FRACTIONS; `FVDD1` files (absolute seconds,
+  negative in-handle) are auto-converted on load.
+- **Settings split:** app-wide settings (shortcut bindings, FOV) persist
+  across runs via `AppSettings` → `~/.fvd-designer.properties`; per-coaster
+  settings (heart, gauge, rail color) live in the `.fvd` save file.
 - **JavaFX Y-flip:** JavaFX screen Y+ is down, world Y+ is up. ALL mesh
   vertices and camera math negate Y. Touch 3D code ⇒ re-check signs.
 
@@ -138,36 +165,78 @@ mirrored, it's a sign flip in `applyPovCamera`.
 ## Current UI feature set
 
 Single overlaid plot (each lane on its own value scale; inactive lanes 25%
-alpha, mouse-transparent). Keys: `1/2/3` lane select · click node = select +
-show handles · drag handle = length-only, `Shift` = angle · `B`
-smooth/broken (circle vs square knobs) · double-click add node · right-click
-delete · `A` append 1 s holding final values · `R` POV ride cam (loops,
-follows live edits) · `Ctrl+S/O` save/load · `Ctrl+Z` undo. Toolbar:
-lane toggles, Heart spinner (−3..3, default 1.0), Gauge spinner (0.3..2.5,
-default 1.0), POV/Append/Save/Load. Stats bar shows ride time, track length,
+alpha — clicking a dimmed lane's node or curve switches editing to it, with
+the active lane keeping hit-test priority). 3D view floor: static transparent
+reference grid (1 m lines, heavier every 10 m), placed once below the initial
+track and never moved while editing; it fades out in concentric bands ending
+at 150 m because JavaFX 3D lacks mipmaps and distant sub-pixel lines shimmer.
+Default keys (ALL rebindable via Edit > Shortcuts,
+persisted per-user): `1/2/3` lane select · click node = select + show handles
+· drag handle = length-only, `Shift` = angle · `B` smooth/broken (circle vs
+square knobs) · click the curve = insert node exactly ON it (hover shows a
+translucent dot riding the line; flat segments insert level with SINE
+handles, curved ones use an exact de Casteljau split — tangent handles,
+curve unchanged, headless-tested) · right-click delete · `A` append 1 s
+holding final values (appended transitions get SINE handles, not cubic —
+only the shipped default layout keeps 1/3) ·
+`Space` POV cam — W/S ride forward/back at simulated speed, Shift ×4,
+Ctrl ×0.25, no key holds position (follows live edits), scroll = fast burst,
+translucent graph line marks the camera (Options toggle, default on) ·
+`H` flatten selected node's handles · `Z`/`X` toggle vertical/horizontal
+node-drag lock (translucent guide line; per-selection) · `Ctrl+S/O` save/load ·
+`Ctrl+Z` undo · `Delete` deletes the selected node (interior deletes bridge
+the gap — neighbors keep positions/handles; last-node deletes shorten the
+ride; node 0 refuses) · double-click a NODE = modal editor to type
+transition time, transition Δ, and handle fractions directly · right-click
+the 3D view = FLY mode (WASD + mouse look via Robot cursor-warp, Shift ×4,
+Ctrl ×0.2, scroll burst; right-click exits KEEPING the view — the orbit rig
+has a movable pivot `camPivot` set to the point `zoom` m ahead of the fly
+camera; mutually exclusive with POV; fly FOV = orbit FOV, NOT the POV FOV
+setting — sharing it made mode switches visibly zoom). Graph editor: scroll
+zooms the time axis around the cursor (view window in tToX/xToT, min 0.5 s,
+full zoom-out resumes auto-fit), right-drag pans, rotated lane-name y-axis
+label + "Time (s)" x-axis label, adaptive 1-2-5 grid lines (~60 px apart in
+time, ~30 px in value, re-derived per zoom/resize). Insert allows 0.02 s
+from a node (INSERT_GAP; drags keep 0.1 s). The 3D view and graph panel sit
+in a vertical SplitPane — divider resizes, and a ▼/▲ button overlaid on the
+3D view collapses/restores the whole bottom panel.
+Node-drag readout shows Δt from the previous node and the GLOBAL value with
+units ("Δt=0.80s  2.50 g"). Toolbar "Ripple:" checks
+(minimal filled-square checkboxes, per-axis): "time" shifts every later node
+of the lane in t with the drag (preserves later transition times); "value"
+translates the rest of the graph vertically. Menu bar: File (Save/Load), Edit
+(Shortcuts dialog — rebind by clicking + pressing a key, ↺ resets an edited
+binding to default; Options dialog — POV FOV slider 30–110°), Coaster (Heart
+spinner −3..3 default 1.0, Gauge spinner 0.3..2.5 default 1.0, Tie-spacing
+spinner 0.2..10 m default 1.0 (cross ties placed by arc length, flush with
+the rails), Start x/y/z spinners ±500 m (saved as `start` line), rail color:
+G-force gradient or solid — the ColorPicker lives in its own dialog, NOT in
+the menu: embedded there, "Custom Color" crashed because its owner window
+was the auto-hiding menu popup). Toolbar: lane toggles, Ripple time/value
+checks, POV, Append (no shortcut hints on buttons — the stats bar hint is
+generated from live bindings). Stats bar shows ride time, track length,
 height range, top speed, Gv range. Window sizes itself to
 `Screen.getVisualBounds()` (capped 1400×880) — do not hardcode window sizes;
 that broke on the user's 1080p screen once already.
 
 ## Known quirks / accepted debts
 
-- Adding a node mid-segment slightly changes the local curve (no de Casteljau
-  split yet — that would preserve shape exactly).
 - Extreme handle angles can fold a curve; the baker's monotonic-t guard
   flattens it, so drawn curve and baked result can differ at pathological
   settings.
 - `interpAt` in the integrator is an O(n) scan per step — fine at current
   sizes, binary-search it if rides get long.
-- Two bare rails look skeletal (no ties/spine yet — intentional, per spec).
+- Rails + cross ties but no spine box yet; tie positions quantize to the
+  nearest integration sample (up to ~0.13 m jitter at speed — invisible at
+  normal tie spacing).
 - No redo; undo excludes heart/gauge.
 - Friction and v0 (26 m/s) are hardcoded, not in the UI.
 
 ## Roadmap (user-endorsed ideas, in rough priority)
 
-1. Cross-ties + spine box in the rail mesh (copy `buildRailMesh`'s pattern)
+1. Spine box in the rail mesh (ties exist — copy `buildTieMesh`'s pattern)
 2. Friction + starting-speed settings (copy the spinner pattern)
 3. Redo (Ctrl+Y / Ctrl+Shift+Z)
-4. De Casteljau split on node insert
-5. Geometric sections (target pitch/heading, like FVD++) — needs a solver
-6. Graph editor zoom/pan for long rides
-7. Track export (OBJ / NoLimits2)
+4. Geometric sections (target pitch/heading, like FVD++) — needs a solver
+5. Graph editor zoom/pan for long rides
+6. Track export (OBJ / NoLimits2)
