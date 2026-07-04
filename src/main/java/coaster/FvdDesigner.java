@@ -195,6 +195,8 @@ public class FvdDesigner extends Application {
     private final Translate camZoom = new Translate(0, 0, -260);
     private double lastMouseX, lastMouseY;
     private boolean worldCentered = false;
+    private Group gridGroup;                    // floor grid, recentered on the camera (LOD)
+    private double gridCamX0, gridCamZ0;        // scene->world offset for camera positions
 
     private SubScene sub;
     private PerspectiveCamera orbitCam, povCam;
@@ -206,7 +208,6 @@ public class FvdDesigner extends Application {
 
     // WASD/mouse fly camera (toggled with right-click in the 3D view)
     private static final double FLY_SPEED = 25;        // m/s base
-    private static final double FLY_LOOK_SENS = 0.12;  // deg per pixel
     private PerspectiveCamera flyCam;
     private final Translate flyPos = new Translate();
     private final Rotate flyYaw = new Rotate(0, Rotate.Y_AXIS);
@@ -262,9 +263,8 @@ public class FvdDesigner extends Application {
         flyCam = new PerspectiveCamera(true);
         flyCam.setNearClip(0.05);
         flyCam.setFarClip(5000);
-        // ONE field of view for all cameras (Options slider): fly hands off
-        // to/from orbit, so any FOV difference shows as a zoom jump
-        flyCam.setFieldOfView(settings.fov());
+        // fly has its OWN FOV setting; orbit + POV share the track-view one
+        flyCam.setFieldOfView(settings.flyFov());
         Group flyHolder = new Group(flyCam);
         flyHolder.getTransforms().addAll(flyPos, flyYaw, flyPitch);
 
@@ -302,6 +302,7 @@ public class FvdDesigner extends Application {
                 flyPos.setX(flyPos.getX() + fwd.getX() * d);
                 flyPos.setY(flyPos.getY() + fwd.getY() * d);
                 flyPos.setZ(flyPos.getZ() + fwd.getZ() * d);
+                updateGridLOD(flyPos.getX() + gridCamX0, flyPos.getZ() + gridCamZ0);
             } else if (povActive) {
                 // burst move along the TRACK (fast, like fly-mode scroll)
                 if (lastSamples == null || lastSamples.isEmpty()) return;
@@ -337,6 +338,7 @@ public class FvdDesigner extends Application {
                 }
                 int idx = (int) clamp(povTime / INTEGRATE_DT, 0, lastSamples.size() - 1);
                 applyPovCamera(lastSamples.get(idx));
+                updateGridLOD(lastSamples.get(idx).pos().x(), lastSamples.get(idx).pos().z());
             }
         };
 
@@ -356,6 +358,7 @@ public class FvdDesigner extends Application {
                 flyPos.setX(flyPos.getX() + (fwd.getX() * f + right.getX() * r) * speed);
                 flyPos.setY(flyPos.getY() + (fwd.getY() * f + right.getY() * r) * speed);
                 flyPos.setZ(flyPos.getZ() + (fwd.getZ() * f + right.getZ() * r) * speed);
+                updateGridLOD(flyPos.getX() + gridCamX0, flyPos.getZ() + gridCamZ0);
             }
         };
 
@@ -412,7 +415,11 @@ public class FvdDesigner extends Application {
         Button appendBtn = new Button("Append +1s");
         appendBtn.setFocusTraversable(false);
         appendBtn.setStyle(btnStyle);
-        appendBtn.setOnAction(e -> editor.appendSecond());
+        appendBtn.setOnAction(e -> editor.appendAction());
+        Tooltip.install(appendBtn, new Tooltip(
+            "No selection: extend the ride 1 s.\n"
+            + "Node selected: insert a 1 s flat hold after it\n"
+            + "(everything later shifts 1 s)."));
 
         toolbar.setAlignment(Pos.CENTER_LEFT);
         toolbar.getChildren().addAll(rippleLbl, rippleTCheck, rippleVCheck,
@@ -489,7 +496,7 @@ public class FvdDesigner extends Application {
         else if (matches("lockv", e))   editor.toggleAxisLock(true);
         else if (matches("lockh", e))   editor.toggleAxisLock(false);
         else if (matches("delNode", e)) editor.deleteSelected();
-        else if (matches("append", e))  editor.appendSecond();
+        else if (matches("append", e))  editor.appendAction();
         else if (matches("pov", e))     togglePov();
         else if (matches("lane1", e))   editor.setActiveLane(0);
         else if (matches("lane2", e))   editor.setActiveLane(1);
@@ -761,79 +768,100 @@ public class FvdDesigner extends Application {
      * matching section, when it ships. Prioritize the non-obvious.
      */
     private void showHelpDialog() {
+        // each section: title, then bullet lines
         String[][] sections = {
             { "Getting started",
-              "You design FORCES, not shapes: the three curves are vertical G, "
-            + "lateral G and roll rate over ride time, and the 3D track is "
-            + "integrated from them. Pick a lane (colored buttons, keys 1/2/3, "
-            + "or click a dimmed curve), drag nodes and handles, and the track "
-            + "updates live. Key names below are the defaults — everything is "
-            + "rebindable in Edit > Shortcuts, and the stats bar shows your "
-            + "current bindings. File > Save/Load stores designs (.fvd)." },
+              "You design FORCES, not shapes: the three curves (vertical G, lateral G, roll rate) over ride time are integrated into the 3D track.",
+              "Pick a lane with the colored buttons, keys 1/2/3, or by clicking a dimmed curve; edits rebuild the track live.",
+              "Key names here are defaults — rebind anything in Edit > Shortcuts; the stats bar shows your current bindings.",
+              "File > Save/Load stores designs (.fvd), including the Coaster-menu settings." },
             { "Graph view",
-              "Scroll = zoom time around the cursor · right-drag = pan · fully "
-            + "zoomed out = auto-fit that follows the ride length. Value axes "
-            + "auto-scale when a curve exceeds the defaults. Grid lines pick "
-            + "round intervals and re-density as you zoom. A dotted flat line "
-            + "after a lane's last node is its held final value — click it to "
-            + "add a real node there. Drag the divider above the graph to "
-            + "resize it; the corner button on the 3D view collapses/restores "
-            + "the whole panel. Dragging a node past a plot edge grows the "
-            + "view — farther past = faster." },
+              "Scroll = zoom time around the cursor · right-drag = pan · fully zoomed out = auto-fit.",
+              "Value axes auto-scale when a curve exceeds the defaults; grid lines and labels re-density as you zoom.",
+              "Dotted flat line after a lane's last node = held final value; click it to add a real node there.",
+              "Dragging a node or handle past a plot edge grows that axis — the farther past, the faster.",
+              "Resize the graph with the divider; the corner button on the 3D view collapses/restores the whole panel." },
             { "Nodes",
-              "Click the curve = insert a node exactly ON it (white dot "
-            + "preview; the shape does not change). Drag = move freely · "
-            + "Ctrl = snap (0.1 s transitions; 0.1 G / whole deg-s values) · "
-            + "Shift = constrain to one axis, chosen from your drag direction, "
-            + "anchored at the node's start · Z / X = sticky vertical/"
-            + "horizontal lock. Arrow keys nudge by snap steps (Ctrl+arrow "
-            + "lands on the grid; hold to glide). Shift+click = add to "
-            + "selection; dragging any member moves the group; Delete removes "
-            + "selected nodes (interior deletions bridge the gap). "
-            + "Double-click a node = type exact values. B = smooth/broken · "
-            + "H = level handles · A = append 1 s. Ripple checks (toolbar): "
-            + "drags also shift every later node in time and/or value. The "
-            + "drag readout shows the transition from the previous node." },
+              "Click the curve = insert a node exactly ON it (white dot preview; the curve shape is unchanged).",
+              "Drag = move freely · Ctrl = snap (steps adjustable in Edit > Options) · Shift = one axis, anchored at the start point.",
+              "Z / X = sticky vertical/horizontal lock · arrow keys nudge by snap steps (Ctrl+arrow lands ON the grid; hold to glide).",
+              "Shift+click OR drag a box on empty plot = multi-select; drag any member to move the group; Delete removes them.",
+              "Double-click a node = type the transition time, global value and handle sizes exactly.",
+              "B = smooth/broken · H = level handles · A/Append = +1 s at the ride end, or a 1 s flat hold after the selected node.",
+              "Ripple checks (toolbar): drags also shift every later node in time and/or value.",
+              "Transitions can be as short as 0.01 s." },
             { "Handles",
-              "Drag = free (angle + length) · Shift = length only, along the "
-            + "current line · Ctrl = snap length to ease presets (cubic, "
-            + "sine, quintic, circle). Round knob = smooth: the partner "
-            + "handle mirrors proportionally; square knob = broken (B "
-            + "toggles). Handle lengths are stored as a fraction of the gap "
-            + "to the neighbor, so re-timing nodes keeps curve shapes." },
+              "Drag = free (angle + length) · Shift = length only along the current line · Ctrl = snap to ease presets (cubic, sine, quintic, circle, plus 5%/10% steps).",
+              "Round knob = smooth (partner mirrors proportionally); square = broken; B toggles.",
+              "Lengths are a fraction of the gap to the neighbor, so re-timing nodes keeps curve shapes.",
+              "A handle beyond the visible scale draws as a dashed stub with a hollow marker at the edge — click the marker to expand the view; clicking elsewhere restores it." },
             { "Cameras",
-              "Orbit (default): drag = rotate, scroll = zoom. Fly: right-"
-            + "click the 3D view, then WASD + mouse look, Shift = fast, "
-            + "Ctrl = slow, scroll = burst; right-click again exits and "
-            + "keeps the view. POV (Space): W/S ride forward/back at the "
-            + "simulated speed, Shift/Ctrl faster/slower, scroll jumps along "
-            + "the track; the translucent line on the graph is the camera "
-            + "position (toggle in Edit > Options). Edit > Options also sets "
-            + "the field of view for all cameras." },
+              "Orbit (default): drag = rotate, scroll = zoom.",
+              "Fly: right-click the 3D view; WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits and keeps the view.",
+              "POV (Space): W/S ride at simulated speed, Shift/Ctrl faster/slower, scroll jumps; the line on the graph is the camera (Options toggle).",
+              "Edit > Options: separate FOV for the track view (orbit + POV) and the fly camera, plus fly mouse sensitivity." },
             { "Menus & settings",
-              "Edit > Shortcuts: click a key button, press a new combo "
-            + "(Esc cancels); the little arrow resets one binding. Coaster "
-            + "menu: heart offset, gauge, tie spacing, start point and rail "
-            + "color — per-coaster, saved inside the .fvd file. App-wide "
-            + "settings (shortcuts, FOV) persist per-user. While a menu or "
-            + "dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits "
-            + "made IN it; closing locks them in, and Ctrl+Z goes back to "
-            + "acting on the coaster (curve editing has no redo yet)." },
+              "Edit > Shortcuts: click a key button, press a new combo (Esc cancels); ↺ resets one binding.",
+              "Coaster menu: heart, gauge, tie spacing, start point, rail color — per-coaster, saved in the .fvd.",
+              "Edit > Options: FOVs, fly sensitivity, snap steps, POV marker — per-user, persist across runs.",
+              "While a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it; closing locks them in (curve editing has no redo yet)." },
         };
 
-        VBox box = new VBox(10);
+        VBox box = new VBox(6);
         box.setPadding(new Insets(16));
+
+        // small diagram: a transition with node, handles and the insert dot
+        Canvas diagram = new Canvas(560, 110);
+        GraphicsContext g = diagram.getGraphicsContext2D();
+        g.setFill(Color.rgb(28, 31, 40));
+        g.fillRoundRect(0, 0, 560, 110, 8, 8);
+        g.setStroke(LANE_COLORS[0]);
+        g.setLineWidth(2);
+        g.beginPath();
+        g.moveTo(30, 85);
+        g.bezierCurveTo(120, 85, 180, 30, 270, 30);
+        g.stroke();
+        g.setLineDashes(3, 7);
+        g.strokeLine(270, 30, 420, 30);
+        g.setLineDashes((double[]) null);
+        g.setStroke(Color.WHITE);
+        g.setLineWidth(1);
+        g.strokeLine(270, 30, 320, 30);   // out handle
+        g.strokeLine(270, 30, 215, 30);   // in handle
+        g.setFill(Color.WHITE);
+        g.fillOval(316, 26, 8, 8);
+        g.fillOval(211, 26, 8, 8);
+        g.setFill(LANE_COLORS[0]);
+        g.fillOval(264, 24, 12, 12);
+        g.fillOval(24, 79, 12, 12);
+        g.setFill(Color.rgb(255, 255, 255, 0.5));
+        g.fillOval(146, 54, 8, 8);        // insert dot on the curve
+        g.setFill(Color.rgb(200, 205, 215));
+        g.setFont(Font.font(11));
+        g.fillText("node", 258, 18);
+        g.fillText("handles (drag · Shift · Ctrl)", 330, 55);
+        g.fillText("click curve = insert", 100, 78);
+        g.fillText("dotted = held value", 380, 22);
+
+        box.getChildren().add(diagram);
+        VBox.setMargin(diagram, new Insets(0, 0, 8, 0));
+
         for (String[] s : sections) {
             Label head = new Label(s[0]);
             head.setStyle("-fx-font-weight: bold; -fx-font-size: 13;");
-            Label body = new Label(s[1]);
-            body.setWrapText(true);
-            body.setMaxWidth(560);
-            box.getChildren().addAll(head, body);
+            VBox.setMargin(head, new Insets(8, 0, 0, 0));
+            box.getChildren().add(head);
+            for (int i = 1; i < s.length; i++) {
+                Label bullet = new Label("•  " + s[i]);
+                bullet.setWrapText(true);
+                bullet.setMaxWidth(548);
+                bullet.setPadding(new Insets(0, 0, 0, 8));
+                box.getChildren().add(bullet);
+            }
         }
         ScrollPane scroll = new ScrollPane(box);
         scroll.setFitToWidth(true);
-        scroll.setPrefSize(620, 640);
+        scroll.setPrefSize(640, 660);
 
         Stage dlg = new Stage();
         dlg.initOwner(stage);   // non-modal: usable as a reference while editing
@@ -936,45 +964,89 @@ public class FvdDesigner extends Application {
         dlg.show();
     }
 
-    /** Visual-space options (app-wide, persisted). Just FOV for now; colors,
-     *  font sizes etc. slot in as more rows here. */
+    /** Slider with live apply + persisted commit + menu-local undo (drags
+     *  record one entry per gesture; clicks/keys one per change). */
+    private void wireOptionSlider(Slider s, Label valLbl, String fmt,
+                                  java.util.function.DoubleConsumer apply,
+                                  java.util.function.DoubleConsumer persist) {
+        double[] dragStart = { s.getValue() };
+        s.valueProperty().addListener((obs, o, v) -> {
+            apply.accept(v.doubleValue());
+            valLbl.setText(String.format(fmt, v.doubleValue()));
+            if (!s.isValueChanging()) {
+                persist.accept(v.doubleValue());
+                pushMenuEdit(() -> s.setValue(o.doubleValue()),
+                             () -> s.setValue(v.doubleValue()));
+            }
+        });
+        s.valueChangingProperty().addListener((obs, was, is) -> {
+            if (is) {
+                dragStart[0] = s.getValue();
+            } else {
+                double from = dragStart[0], to = s.getValue();
+                persist.accept(to);
+                if (from != to) pushMenuEdit(() -> s.setValue(from), () -> s.setValue(to));
+            }
+        });
+    }
+
+    /** Settings spinner with persisted apply + menu-local undo. */
+    private void wireOptionSpinner(Spinner<Double> sp, java.util.function.DoubleConsumer persist) {
+        sp.valueProperty().addListener((obs, o, v) -> {
+            pushMenuEdit(() -> sp.getValueFactory().setValue(o),
+                         () -> sp.getValueFactory().setValue(v));
+            persist.accept(v);
+        });
+    }
+
+    private static Slider optionSlider(double min, double max, double value, double tick) {
+        Slider s = new Slider(min, max, value);
+        s.setPrefWidth(240);
+        s.setShowTickMarks(true);
+        s.setShowTickLabels(true);
+        s.setMajorTickUnit(tick);
+        return s;
+    }
+
+    /** Visual/interaction options (app-wide, persisted). */
     private void showOptionsDialog() {
         Stage dlg = new Stage();
         dlg.initOwner(stage);
         dlg.initModality(Modality.WINDOW_MODAL);
         dlg.setTitle("Options");
 
-        Slider fov = new Slider(30, 110, settings.fov());
-        fov.setPrefWidth(240);
-        fov.setShowTickMarks(true);
-        fov.setShowTickLabels(true);
-        fov.setMajorTickUnit(20);
-        Label fovVal = new Label(String.format("%.0f°", settings.fov()));
-        double[] fovDragStart = { settings.fov() };
-        fov.valueProperty().addListener((obs, o, v) -> {
-            povCam.setFieldOfView(v.doubleValue());
-            flyCam.setFieldOfView(v.doubleValue());
-            orbitCam.setFieldOfView(v.doubleValue());
-            fovVal.setText(String.format("%.0f°", v.doubleValue()));
-            if (!fov.isValueChanging()) {
-                settings.setFov(v.doubleValue());
-                // discrete change (click/keys): one local-undo entry
-                pushMenuEdit(() -> fov.setValue(o.doubleValue()),
-                             () -> fov.setValue(v.doubleValue()));
-            }
-        });
-        // drags: save + record ONE entry for the whole gesture
-        fov.valueChangingProperty().addListener((obs, was, is) -> {
-            if (is) {
-                fovDragStart[0] = fov.getValue();
-            } else {
-                double from = fovDragStart[0], to = fov.getValue();
-                settings.setFov(to);
-                if (from != to) {
-                    pushMenuEdit(() -> fov.setValue(from), () -> fov.setValue(to));
-                }
-            }
-        });
+        Slider fovTrack = optionSlider(30, 110, settings.fov(), 20);
+        Label fovTrackVal = new Label(String.format("%.0f°", settings.fov()));
+        wireOptionSlider(fovTrack, fovTrackVal, "%.0f°",
+            v -> { orbitCam.setFieldOfView(v); povCam.setFieldOfView(v); },
+            settings::setFov);
+
+        Slider fovFly = optionSlider(30, 110, settings.flyFov(), 20);
+        Label fovFlyVal = new Label(String.format("%.0f°", settings.flyFov()));
+        wireOptionSlider(fovFly, fovFlyVal, "%.0f°",
+            v -> flyCam.setFieldOfView(v),
+            settings::setFlyFov);
+
+        Slider sens = optionSlider(0.03, 0.40, settings.flySens(), 0.1);
+        Label sensVal = new Label(String.format("%.2f", settings.flySens()));
+        wireOptionSlider(sens, sensVal, "%.2f",
+            v -> { }, settings::setFlySens);   // flyLook reads it live
+
+        Spinner<Double> snapTSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(0.01, 2.0, settings.snapT(), 0.05));
+        snapTSp.setPrefWidth(80);
+        snapTSp.setEditable(true);
+        wireOptionSpinner(snapTSp, settings::setSnapT);
+        Spinner<Double> snapGSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(0.01, 2.0, settings.snapG(), 0.05));
+        snapGSp.setPrefWidth(80);
+        snapGSp.setEditable(true);
+        wireOptionSpinner(snapGSp, settings::setSnapG);
+        Spinner<Double> snapRollSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(0.5, 45, settings.snapRoll(), 0.5));
+        snapRollSp.setPrefWidth(80);
+        snapRollSp.setEditable(true);
+        wireOptionSpinner(snapRollSp, settings::setSnapRoll);
 
         CheckBox povMark = new CheckBox("POV position marker on the graph");
         povMark.setSelected(settings.povMarker());
@@ -990,8 +1062,14 @@ public class FvdDesigner extends Application {
         grid.setHgap(12);
         grid.setVgap(8);
         grid.setPadding(new Insets(14));
-        grid.addRow(0, new Label("Field of view (all cameras)"), fov, fovVal);
-        grid.add(povMark, 0, 1, 3, 1);
+        int r = 0;
+        grid.addRow(r++, new Label("Track view FOV (orbit + POV)"), fovTrack, fovTrackVal);
+        grid.addRow(r++, new Label("Fly camera FOV"), fovFly, fovFlyVal);
+        grid.addRow(r++, new Label("Fly mouse sensitivity (°/px)"), sens, sensVal);
+        grid.addRow(r++, new Label("Snap: transition time (s)"), snapTSp);
+        grid.addRow(r++, new Label("Snap: G value (g)"), snapGSp);
+        grid.addRow(r++, new Label("Snap: roll rate (°/s)"), snapRollSp);
+        grid.add(povMark, 0, r, 3, 1);
 
         Scene sc = new Scene(grid);
         installMenuUndoKeys(sc);
@@ -1066,6 +1144,7 @@ public class FvdDesigner extends Application {
             camYaw.setAngle(flyYaw.getAngle());
             camPitch.setAngle(flyPitch.getAngle());
             sub.setCamera(orbitCam);
+            updateGridLOD(camPivot.getX() + gridCamX0, camPivot.getZ() + gridCamZ0);
         }
     }
 
@@ -1076,10 +1155,15 @@ public class FvdDesigner extends Application {
         if (!flyActive) return;
         Point2D c = sub.localToScreen(sub.getWidth() / 2, sub.getHeight() / 2);
         if (c == null) return;
-        double dx = e.getScreenX() - c.getX(), dy = e.getScreenY() - c.getY();
+        // per-event delta capped: OS pointer acceleration makes fast flicks
+        // arrive as huge single deltas, which felt twitchy — the cap evens
+        // out slow-vs-fast response; base sensitivity is an Options slider
+        double sens = settings.flySens();
+        double dx = clamp(e.getScreenX() - c.getX(), -35, 35);
+        double dy = clamp(e.getScreenY() - c.getY(), -35, 35);
         if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;  // our own warp event
-        flyYaw.setAngle(flyYaw.getAngle() + dx * FLY_LOOK_SENS);
-        flyPitch.setAngle(clamp(flyPitch.getAngle() - dy * FLY_LOOK_SENS, -89, 89));
+        flyYaw.setAngle(flyYaw.getAngle() + dx * sens);
+        flyPitch.setAngle(clamp(flyPitch.getAngle() - dy * sens, -89, 89));
         flyRobot.mouseMove(c.getX(), c.getY());
     }
 
@@ -1141,14 +1225,19 @@ public class FvdDesigner extends Application {
         if (!worldCentered) {
             FVDIntegrator.Sample mid = samples.get(samples.size() / 2);
             world.getTransforms().add(new Translate(-mid.pos().x(), 0, -mid.pos().z()));
-            // static transparent reference grid (FVD++-style): placed ONCE
-            // just below the initial track and never moved while editing
+            gridCamX0 = mid.pos().x();   // scene coords + this = world coords
+            gridCamZ0 = mid.pos().z();
+            // transparent reference grid at a FIXED height (placed once below
+            // the initial track); its XZ position follows the camera in 10 m
+            // steps so full line density is always around the viewer (LOD)
             double lowest = 1e9;
             for (FVDIntegrator.Sample sm : samples) {
                 double railY = sm.pos().y() - sm.U().y() * heartOffset;
                 lowest = Math.min(lowest, railY);
             }
-            world.getChildren().add(buildGrid(Math.floor(lowest - 1)));
+            gridGroup = buildGrid(Math.floor(lowest - 1));
+            world.getChildren().add(gridGroup);
+            updateGridLOD(mid.pos().x(), mid.pos().z());
             worldCentered = true;
         }
 
@@ -1257,6 +1346,14 @@ public class FvdDesigner extends Application {
         mv.setMaterial(mat);
         mv.setCullFace(CullFace.NONE);
         return mv;
+    }
+
+    /** Recenter the floor grid under the camera, quantized to 10 m steps so
+     *  the 1 m / 10 m line pattern stays aligned with the world grid. */
+    private void updateGridLOD(double worldX, double worldZ) {
+        if (gridGroup == null) return;
+        gridGroup.setTranslateX(Math.round(worldX / 10) * 10);
+        gridGroup.setTranslateZ(Math.round(worldZ / 10) * 10);
     }
 
     /** Floor: grid lines that fade smoothly with distance over several
@@ -1505,23 +1602,29 @@ public class FvdDesigner extends Application {
         private static final double KNOB_RADIUS = 4.5, KNOB_HIT = 9;
         private static final double HANDLE_ALPHA = 0.45;
         private static final double INACTIVE_ALPHA = 0.25;
-        private static final double MIN_GAP = 0.1;    // node-drag spacing
-        private static final double INSERT_GAP = 0.02; // insert may get much closer
+        private static final double MIN_GAP = 0.01;   // minimum transition length
+        private static final double INSERT_GAP = 0.02; // insert may get almost as close
         private static final double MIN_FRAC = 0.02;
 
-        // node-drag snap (with Ctrl): TRANSITION length to 0.1 s steps,
-        // value to a GLOBAL absolute grid (0.1 G; whole deg/s for roll)
-        private static final double SNAP_T = 0.1;
-        private static final double[] SNAP_VAL = { 0.1, 0.1, 1 };
+        // node-drag snap (with Ctrl): TRANSITION length in time, value on a
+        // GLOBAL absolute grid — the steps are adjustable in Edit > Options
+        private double snapT() { return settings.snapT(); }
+        private double snapVal(int lane) {
+            return lane == 2 ? settings.snapRoll() : settings.snapG();
+        }
 
-        // handle-length snap points (with Ctrl): fraction of the segment
-        // that, with level handles on both ends, approximates each ease
-        // (derived by matching the curve's centre slope: f = 1 - 1/slope)
+        // handle-length snap points (with Ctrl): the named ease fractions
+        // (flat-handle Bezier matching each ease's centre slope) padded
+        // with 5% steps below cubic and 10% steps beyond circle
         private static final double SINE_FRAC = 1 - 2 / Math.PI;
-        private static final double[] HANDLE_PRESETS =
-            { 1.0 / 3, SINE_FRAC, 7.0 / 15, 0.5523 };
-        private static final String[] HANDLE_PRESET_NAMES =
-            { "cubic", "sine", "quintic", "circle" };
+        private static final double[] HANDLE_PRESETS = {
+            0.05, 0.10, 0.15, 0.20, 0.25, 0.30,
+            1.0 / 3, SINE_FRAC, 7.0 / 15, 0.5523,
+            0.65, 0.75, 0.85, 0.95 };
+        private static final String[] HANDLE_PRESET_NAMES = {
+            null, null, null, null, null, null,
+            "cubic", "sine", "quintic", "circle",
+            null, null, null, null };
         private String dragPresetName = null;
 
         private final Canvas canvas = new Canvas();
@@ -1562,7 +1665,7 @@ public class FvdDesigner extends Application {
                 if (dragTimerLast == 0) { dragTimerLast = now; return; }
                 double dt = Math.min((now - dragTimerLast) / 1e9, 0.05);
                 dragTimerLast = now;
-                if (dragNodeIdx < 0) return;
+                if (dragNodeIdx < 0 && dragHandleIdx < 0) return;
                 double plotRight = MARGIN_LEFT + plotWidth();
                 double plotBottom = MARGIN_TOP + plotHeight();
                 double winW = dragWinT1 - dragWinT0;
@@ -1585,13 +1688,24 @@ public class FvdDesigner extends Application {
                 }
                 if (grew) {
                     commitGestureSnapshot();
-                    dragNodeTo(lastDragX, lastDragY, lastDragSnap, lastDragShift);
+                    if (dragNodeIdx >= 0) {
+                        dragNodeTo(lastDragX, lastDragY, lastDragSnap, lastDragShift);
+                    } else {
+                        dragHandleTo(lastDragX, lastDragY, lastDragShift, lastDragSnap);
+                    }
                 }
             }
         };
 
-        // one press after inserting, the node body outranks its own knobs
-        private boolean freshInsertPriority = false;
+        // box select (rubber band on empty plot; shift adds to selection)
+        private double boxX0 = Double.NaN, boxY0, boxX1, boxY1;
+        private boolean boxAdd;
+
+        // an off-screen handle draws as a dashed stub with a hollow marker
+        // at the plot edge; clicking the marker expands the value scale to
+        // bring the whole handle into view (cleared when selection changes)
+        private boolean handleViewExpand = false;
+        private double[] outEdgeMarker, inEdgeMarker;   // set during drawHandles
 
         // multi-selection (shift+click adds); selIdx stays the primary node
         private final java.util.Set<Integer> selSet = new HashSet<>();
@@ -1612,19 +1726,30 @@ public class FvdDesigner extends Application {
                 hoverT = Double.NaN;   // no insert preview while interacting
                 if (e.getButton() == MouseButton.PRIMARY) {
                     int hit = hitNode(e.getX(), e.getY());
-                    // a just-inserted node outranks its own knobs for one
-                    // press, so click-insert-then-move flows naturally
-                    if (selIdx >= 0 && !(freshInsertPriority && hit == selIdx)) {
+                    // the node body ALWAYS outranks its own knobs, so a node
+                    // overlapping its handles stays grabbable
+                    if (selIdx >= 0 && hit != selIdx) {
+                        // an off-screen handle's edge marker: expand the view
+                        // to bring the whole handle in reach
+                        if (hitEdgeMarker(e.getX(), e.getY())) {
+                            handleViewExpand = true;
+                            redraw();
+                            return;
+                        }
                         int knob = hitKnob(e.getX(), e.getY());
                         if (knob != 0) {
-                            freshInsertPriority = false;
                             beginGesture();
                             dragHandleIdx = selIdx;
                             dragHandleIsOut = knob > 0;
+                            lastDragX = e.getX();
+                            lastDragY = e.getY();
+                            lastDragSnap = e.isControlDown();
+                            lastDragShift = e.isShiftDown();
+                            dragTimerLast = 0;
+                            dragGrowTimer.start();
                             return;
                         }
                     }
-                    freshInsertPriority = false;
                     if (hit >= 0) {
                         beginGesture();
                         gestureStartX = e.getX();
@@ -1637,7 +1762,10 @@ public class FvdDesigner extends Application {
                             selSet.clear();                // plain click on a
                             selSet.add(hit);               // non-member: single
                         }
-                        if (hit != selIdx) axisLock = 0;   // lock is per selection
+                        if (hit != selIdx) {   // lock/expand are per selection
+                            axisLock = 0;
+                            handleViewExpand = false;
+                        }
                         dragNodeIdx = hit;
                         selIdx = hit;
                         lastDragX = e.getX();
@@ -1662,11 +1790,12 @@ public class FvdDesigner extends Application {
                             setActiveLane(other[0]);
                             if (other[1] >= 0) selIdx = other[1];
                             redraw();
-                        } else if (selIdx >= 0) {
-                            selIdx = -1;
-                            selSet.clear();
-                            axisLock = 0;
-                            redraw();
+                        } else {
+                            // empty plot: begin a box select (deselection
+                            // happens on release if the box stays tiny)
+                            boxX0 = e.getX(); boxY0 = e.getY();
+                            boxX1 = boxX0;    boxY1 = boxY0;
+                            boxAdd = e.isShiftDown();
                         }
                     }
                 } else if (e.getButton() == MouseButton.SECONDARY) {
@@ -1687,7 +1816,7 @@ public class FvdDesigner extends Application {
                     redraw();
                     return;
                 }
-                newW = Math.max(0.5, newW);
+                newW = Math.max(0.1, newW);
                 double tm = xToT(e.getX());
                 double n0 = clamp(tm - (tm - t0) / width * newW, 0, domain() - newW);
                 viewT0 = n0;
@@ -1708,6 +1837,12 @@ public class FvdDesigner extends Application {
             });
 
             canvas.setOnMouseDragged(e -> {
+                if (!Double.isNaN(boxX0) && e.isPrimaryButtonDown()) {
+                    boxX1 = e.getX();
+                    boxY1 = e.getY();
+                    redraw();
+                    return;
+                }
                 if (!Double.isNaN(panLastX) && e.isSecondaryButtonDown()) {
                     double t0 = viewStart(), t1 = viewEnd();
                     if (t1 - t0 < domain()) {   // full view has nowhere to pan
@@ -1722,6 +1857,10 @@ public class FvdDesigner extends Application {
                 }
                 if (dragHandleIdx >= 0) {
                     commitGestureSnapshot();
+                    lastDragX = e.getX();
+                    lastDragY = e.getY();
+                    lastDragSnap = e.isControlDown();
+                    lastDragShift = e.isShiftDown();
                     // free by default; SHIFT locks in-line, CTRL snaps
                     dragHandleTo(e.getX(), e.getY(), e.isShiftDown(), e.isControlDown());
                 } else if (dragNodeIdx >= 0) {
@@ -1736,6 +1875,33 @@ public class FvdDesigner extends Application {
 
             canvas.setOnMouseReleased(e -> {
                 dragGrowTimer.stop();
+                if (!Double.isNaN(boxX0)) {
+                    double x0 = Math.min(boxX0, boxX1), x1 = Math.max(boxX0, boxX1);
+                    double y0 = Math.min(boxY0, boxY1), y1 = Math.max(boxY0, boxY1);
+                    if (x1 - x0 < 3 && y1 - y0 < 3) {
+                        // a plain click on empty plot: deselect
+                        if (selIdx >= 0 && !boxAdd) {
+                            selIdx = -1;
+                            selSet.clear();
+                            axisLock = 0;
+                            handleViewExpand = false;
+                        }
+                    } else {
+                        if (!boxAdd) selSet.clear();
+                        List<BezierBaker.Node> lane = active();
+                        for (int i = 0; i < lane.size(); i++) {
+                            double px = tToX(lane.get(i).t);
+                            double py = valToY(activeLane, lane.get(i).val);
+                            if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
+                                selSet.add(i);
+                                selIdx = i;
+                            }
+                        }
+                        if (selSet.isEmpty()) selIdx = -1;
+                        axisLock = 0;
+                    }
+                    boxX0 = Double.NaN;
+                }
                 dragNodeIdx = -1;
                 dragHandleIdx = -1;
                 dragPresetName = null;
@@ -1765,7 +1931,12 @@ public class FvdDesigner extends Application {
         private List<BezierBaker.Node> active() { return lanes.get(activeLane); }
 
         void refresh() { redraw(); }
-        void clearSelection() { selIdx = -1; selSet.clear(); axisLock = 0; }
+        void clearSelection() {
+            selIdx = -1;
+            selSet.clear();
+            axisLock = 0;
+            handleViewExpand = false;
+        }
 
         // ---------- toolbar actions ----------
 
@@ -1775,8 +1946,45 @@ public class FvdDesigner extends Application {
             selIdx = -1;
             selSet.clear();
             axisLock = 0;
+            handleViewExpand = false;
             laneButtons[lane].setSelected(true);
             redraw();
+        }
+
+        /** Append action: with a node selected, insert a 1 s flat hold right
+         *  after it (everything later shifts 1 s, regardless of the ripple
+         *  toggles); otherwise extend the ride end by 1 s. */
+        void appendAction() {
+            if (selIdx >= 0) insertHoldAfterSelected();
+            else appendSecond();
+        }
+
+        private void insertHoldAfterSelected() {
+            pushUndoSnapshot();
+            List<BezierBaker.Node> lane = active();
+            BezierBaker.Node sel = lane.get(selIdx);
+            double tc = sel.t;
+            // every lane's later nodes move 1 s (fractional handles keep all
+            // shapes; a foreign segment spanning tc stretches by 1 s)
+            for (List<BezierBaker.Node> ln : lanes) {
+                for (BezierBaker.Node m : ln) {
+                    if (m.t > tc + 1e-9) m.t += 1.0;
+                }
+            }
+            // the selected node's outgoing transition moves to the new node;
+            // selected -> new is a flat 1 s hold
+            BezierBaker.Node hold = new BezierBaker.Node(tc + 1.0, sel.val);
+            hold.outFrac = sel.outFrac;
+            hold.outDv = sel.outDv;
+            hold.inFrac = SINE_FRAC;
+            hold.inDv = 0;
+            sel.outFrac = SINE_FRAC;
+            sel.outDv = 0;
+            lane.add(selIdx + 1, hold);
+            selSet.clear();
+            selSet.add(selIdx);
+            redraw();
+            rebuildTrack();
         }
 
         void appendSecond() {
@@ -1880,8 +2088,11 @@ public class FvdDesigner extends Application {
                 + clamp((x - MARGIN_LEFT) / plotWidth(), 0, 1) * (viewEnd() - viewStart());
         }
         private double valToY(int lane, double val) {
+            // NO clamping: out-of-view geometry keeps its true position
+            // (drawing is clipped to the plot; clamping here bent the
+            // apparent angle of off-screen handles)
             double t = (val - curMin[lane]) / (curMax[lane] - curMin[lane]);
-            return MARGIN_TOP + plotHeight() * (1 - clamp(t, -0.05, 1.05));
+            return MARGIN_TOP + plotHeight() * (1 - t);
         }
         private double yToVal(int lane, double y) {
             double t = 1 - (y - MARGIN_TOP) / plotHeight();
@@ -1906,6 +2117,14 @@ public class FvdDesigner extends Application {
             double[] in = knobPos(selIdx, false);
             if (in != null && Math.hypot(x - in[0], y - in[1]) <= KNOB_HIT) return -1;
             return 0;
+        }
+
+        /** The hollow marker where an off-screen handle exits the plot. */
+        private boolean hitEdgeMarker(double x, double y) {
+            return (outEdgeMarker != null
+                        && Math.hypot(x - outEdgeMarker[0], y - outEdgeMarker[1]) <= KNOB_HIT)
+                || (inEdgeMarker != null
+                        && Math.hypot(x - inEdgeMarker[0], y - inEdgeMarker[1]) <= KNOB_HIT);
         }
 
         /** Hit test the INACTIVE lanes: nodes first, then curve bodies.
@@ -1967,10 +2186,10 @@ public class FvdDesigner extends Application {
                 if (dragNodeIdx > 0) {
                     double prevT = lane.get(dragNodeIdx - 1).t;
                     newT = prevT + Math.max(MIN_GAP,
-                        Math.round((newT - prevT) / SNAP_T) * SNAP_T);
+                        Math.round((newT - prevT) / snapT()) * snapT());
                 }
                 // value: global absolute grid (0.0 G, 3.6 G, 124 deg/s ...)
-                newVal = Math.round(newVal / SNAP_VAL[activeLane]) * SNAP_VAL[activeLane];
+                newVal = Math.round(newVal / snapVal(activeLane)) * snapVal(activeLane);
             }
 
             // SHIFT constrains to the dominant axis of the initial movement,
@@ -2029,15 +2248,15 @@ public class FvdDesigner extends Application {
             if (selIdx < 0) return false;
             List<BezierBaker.Node> lane = active();
             BezierBaker.Node n = lane.get(selIdx);
-            double newT = n.t + dtDir * SNAP_T;
-            double newVal = n.val + dvDir * SNAP_VAL[activeLane];
+            double newT = n.t + dtDir * snapT();
+            double newVal = n.val + dvDir * snapVal(activeLane);
             if (grid) {
                 if (selIdx > 0) {
                     double prevT = lane.get(selIdx - 1).t;
                     newT = prevT + Math.max(MIN_GAP,
-                        Math.round((newT - prevT) / SNAP_T) * SNAP_T);
+                        Math.round((newT - prevT) / snapT()) * snapT());
                 }
-                newVal = Math.round(newVal / SNAP_VAL[activeLane]) * SNAP_VAL[activeLane];
+                newVal = Math.round(newVal / snapVal(activeLane)) * snapVal(activeLane);
             }
             // one undo step per burst of keypresses, not per press
             long now = System.nanoTime();
@@ -2329,19 +2548,19 @@ public class FvdDesigner extends Application {
             grid.setVgap(8);
             grid.setPadding(new Insets(14));
 
-            TextField dtField = null, dvField = null, valField = null;
+            TextField dtField = null, valField;
             TextField inField = null, outField = null;
             int row = 0;
             if (prev != null) {
                 dtField = new TextField(String.format(Locale.US, "%.3f", n.t - prev.t));
                 grid.addRow(row++, new Label("Transition time (s)"), dtField);
-                dvField = new TextField(String.format(Locale.US, "%.3f", n.val - prev.val));
-                grid.addRow(row++, new Label("Transition Δ (" + LANE_UNITS[activeLane].trim() + ")"), dvField);
+            }
+            // vertical axis is the GLOBAL value, not a delta
+            valField = new TextField(String.format(Locale.US, "%.3f", n.val));
+            grid.addRow(row++, new Label("Value (" + LANE_UNITS[activeLane].trim() + ")"), valField);
+            if (prev != null) {
                 inField = new TextField(String.format(Locale.US, "%.3f", n.inFrac));
                 grid.addRow(row++, new Label("In handle (fraction)"), inField);
-            } else {
-                valField = new TextField(String.format(Locale.US, "%.3f", n.val));
-                grid.addRow(row++, new Label("Value (" + LANE_UNITS[activeLane].trim() + ")"), valField);
             }
             if (hasOut) {
                 outField = new TextField(String.format(Locale.US, "%.3f", n.outFrac));
@@ -2359,18 +2578,18 @@ public class FvdDesigner extends Application {
             buttons.setAlignment(Pos.CENTER_RIGHT);
             grid.add(buttons, 0, row, 2, 1);
 
-            final TextField fDt = dtField, fDv = dvField, fVal = valField;
+            final TextField fDt = dtField, fVal = valField;
             final TextField fIn = inField, fOut = outField;
             ok.setOnAction(ev -> {
                 pushUndoSnapshot();
                 if (fIn != null)  n.inFrac = clamp(parseOr(fIn, n.inFrac), MIN_FRAC, BezierBaker.MAX_FRAC);
                 if (fOut != null) n.outFrac = clamp(parseOr(fOut, n.outFrac), MIN_FRAC, BezierBaker.MAX_FRAC);
+                double val = parseOr(fVal, n.val);
                 if (prev != null) {
                     double dt = Math.max(MIN_GAP, parseOr(fDt, n.t - prev.t));
-                    double dv = parseOr(fDv, n.val - prev.val);
-                    moveNode(idx, prev.t + dt, prev.val + dv);   // honors ripple toggles
+                    moveNode(idx, prev.t + dt, val);   // honors ripple toggles
                 } else {
-                    moveNode(idx, n.t, parseOr(fVal, n.val));
+                    moveNode(idx, n.t, val);
                 }
                 dlg.close();
             });
@@ -2398,6 +2617,13 @@ public class FvdDesigner extends Application {
                 double eB = BezierBaker.evalAt(lanes.get(L), t1);
                 lo = Math.min(lo, Math.min(eA, eB));
                 hi = Math.max(hi, Math.max(eA, eB));
+                // expanded-handle view: include the selected node's knobs
+                if (handleViewExpand && L == activeLane
+                        && selIdx >= 0 && selIdx < lanes.get(L).size()) {
+                    BezierBaker.Node sn = lanes.get(L).get(selIdx);
+                    lo = Math.min(lo, Math.min(sn.val + sn.outDv, sn.val + sn.inDv));
+                    hi = Math.max(hi, Math.max(sn.val + sn.outDv, sn.val + sn.inDv));
+                }
                 if (lo < DEF_MIN[L] || hi > DEF_MAX[L]) {
                     double pad = (hi - lo) * 0.05;   // "slightly beyond"
                     double step = niceStep((hi - lo) / 6);
@@ -2448,7 +2674,7 @@ public class FvdDesigner extends Application {
 
             // adaptive grid: nice 1-2-5 steps, density follows zoom/size
             double vt0 = viewStart(), vt1 = viewEnd();
-            double gridTStep = niceStep((vt1 - vt0) * 60 / plotWidth());
+            double gridTStep = Math.max(0.01, niceStep((vt1 - vt0) * 60 / plotWidth()));
             gc.setStroke(Color.rgb(42, 47, 60));
             gc.setLineWidth(1);
             for (double t = Math.ceil(vt0 / gridTStep) * gridTStep; t <= vt1 + 1e-9; t += gridTStep) {
@@ -2462,6 +2688,24 @@ public class FvdDesigner extends Application {
                 double gy = valToY(activeLane, v);
                 gc.strokeLine(MARGIN_LEFT, gy, w - MARGIN_RIGHT, gy);
             }
+            // small faded value labels on every horizontal grid line
+            gc.setFill(Color.rgb(118, 124, 140));
+            gc.setFont(Font.font(9));
+            gc.setTextAlign(TextAlignment.RIGHT);
+            gc.setTextBaseline(VPos.CENTER);
+            for (double v = Math.ceil(curMin[activeLane] / gridVStep) * gridVStep;
+                    v <= curMax[activeLane] + 1e-9; v += gridVStep) {
+                gc.fillText(fmtVal(v), MARGIN_LEFT - 4, valToY(activeLane, v));
+            }
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.TOP);
+
+            // clip everything geometric to the plot rect: off-view curves and
+            // handles keep their TRUE positions (valToY no longer clamps)
+            gc.save();
+            gc.beginPath();
+            gc.rect(MARGIN_LEFT, MARGIN_TOP, w - MARGIN_LEFT - MARGIN_RIGHT, plotHeight());
+            gc.clip();
 
             double zy = valToY(activeLane, 0);
             gc.setStroke(Color.rgb(70, 75, 90));
@@ -2550,6 +2794,19 @@ public class FvdDesigner extends Application {
 
             if (selIdx >= 0) drawHandles(gc, selIdx);
 
+            // box-select rubber band
+            if (!Double.isNaN(boxX0)) {
+                double bx = Math.min(boxX0, boxX1), by = Math.min(boxY0, boxY1);
+                double bw = Math.abs(boxX1 - boxX0), bh = Math.abs(boxY1 - boxY0);
+                gc.setFill(Color.rgb(255, 255, 255, 0.07));
+                gc.fillRect(bx, by, bw, bh);
+                gc.setStroke(Color.rgb(255, 255, 255, 0.55));
+                gc.setLineWidth(1);
+                gc.strokeRect(bx, by, bw, bh);
+            }
+
+            gc.restore();   // end plot clip
+
             gc.setGlobalAlpha(1.0);
             gc.setFont(Font.font(11));
             gc.setTextAlign(TextAlignment.LEFT);
@@ -2572,7 +2829,7 @@ public class FvdDesigner extends Application {
             gc.setFont(Font.font(10));
             gc.setTextAlign(TextAlignment.CENTER);
             gc.setTextBaseline(VPos.BOTTOM);
-            String tickFmt = gridTStep < 1 ? "%.1f" : "%.0f";
+            String tickFmt = gridTStep < 0.1 ? "%.2f" : gridTStep < 1 ? "%.1f" : "%.0f";
             for (double t = Math.ceil(vt0 / gridTStep) * gridTStep; t <= vt1 + 1e-9; t += gridTStep) {
                 gc.fillText(String.format(tickFmt, t), tToX(t), h - 16);
             }
@@ -2616,23 +2873,40 @@ public class FvdDesigner extends Application {
             BezierBaker.Node n = lane.get(idx);
             double nx = tToX(n.t);
             double ny = valToY(activeLane, n.val);
+            outEdgeMarker = null;
+            inEdgeMarker = null;
 
             for (boolean out : new boolean[]{ true, false }) {
                 double[] k = knobPos(idx, out);
                 if (k == null) continue;
                 boolean dragging = (idx == dragHandleIdx && out == dragHandleIsOut);
+                boolean offscreen = k[0] < MARGIN_LEFT || k[0] > canvas.getWidth() - MARGIN_RIGHT
+                                 || k[1] < MARGIN_TOP || k[1] > MARGIN_TOP + plotHeight();
 
                 gc.setGlobalAlpha(dragging ? 1.0 : HANDLE_ALPHA);
                 gc.setStroke(Color.WHITE);
                 gc.setLineWidth(1);
-                gc.strokeLine(nx, ny, k[0], k[1]);
-                gc.setFill(Color.WHITE);
-                if (n.smooth) {
-                    gc.fillOval(k[0] - KNOB_RADIUS, k[1] - KNOB_RADIUS, KNOB_RADIUS * 2, KNOB_RADIUS * 2);
+                if (offscreen) {
+                    // dashed stub to the plot edge + hollow marker: the true
+                    // handle continues beyond; click the marker to expand
+                    double[] edge = clipToPlot(nx, ny, k[0], k[1]);
+                    gc.setLineDashes(3, 5);
+                    gc.strokeLine(nx, ny, edge[0], edge[1]);
+                    gc.setLineDashes((double[]) null);
+                    gc.strokeOval(edge[0] - KNOB_RADIUS, edge[1] - KNOB_RADIUS,
+                                  KNOB_RADIUS * 2, KNOB_RADIUS * 2);
+                    if (out) outEdgeMarker = edge; else inEdgeMarker = edge;
                 } else {
-                    gc.fillRect(k[0] - KNOB_RADIUS, k[1] - KNOB_RADIUS, KNOB_RADIUS * 2, KNOB_RADIUS * 2);
+                    gc.strokeLine(nx, ny, k[0], k[1]);
+                    gc.setFill(Color.WHITE);
+                    if (n.smooth) {
+                        gc.fillOval(k[0] - KNOB_RADIUS, k[1] - KNOB_RADIUS, KNOB_RADIUS * 2, KNOB_RADIUS * 2);
+                    } else {
+                        gc.fillRect(k[0] - KNOB_RADIUS, k[1] - KNOB_RADIUS, KNOB_RADIUS * 2, KNOB_RADIUS * 2);
+                    }
                 }
                 if (dragging) {
+                    gc.setFill(Color.WHITE);
                     gc.setFont(Font.font(10));
                     gc.setTextAlign(TextAlignment.LEFT);
                     gc.setTextBaseline(VPos.TOP);
@@ -2641,10 +2915,23 @@ public class FvdDesigner extends Application {
                         (out ? n.outFrac : n.inFrac) * 100,
                         dragPresetName != null ? " " + dragPresetName : "",
                         out ? n.outDv : n.inDv),
-                        k[0] + 8, k[1] - 16);
+                        clamp(k[0] + 8, MARGIN_LEFT, canvas.getWidth() - 140),
+                        clamp(k[1] - 16, MARGIN_TOP, MARGIN_TOP + plotHeight() - 14));
                 }
             }
             gc.setGlobalAlpha(1.0);
+        }
+
+        /** Where the segment (x0,y0)->(x1,y1) exits the plot rectangle. */
+        private double[] clipToPlot(double x0, double y0, double x1, double y1) {
+            double t = 1;
+            double L = MARGIN_LEFT, R = canvas.getWidth() - MARGIN_RIGHT;
+            double T = MARGIN_TOP, B = MARGIN_TOP + plotHeight();
+            if (x1 < L) t = Math.min(t, (L - x0) / (x1 - x0));
+            if (x1 > R) t = Math.min(t, (R - x0) / (x1 - x0));
+            if (y1 < T) t = Math.min(t, (T - y0) / (y1 - y0));
+            if (y1 > B) t = Math.min(t, (B - y0) / (y1 - y0));
+            return new double[]{ x0 + (x1 - x0) * t, y0 + (y1 - y0) * t };
         }
     }
 

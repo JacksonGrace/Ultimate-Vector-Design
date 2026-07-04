@@ -411,3 +411,49 @@ absolute coordinates, so:
 - **Shift axis-constraint anchors at the node's gesture-start position**
   (drifted pixels snap back onto the original row/column) and decides its
   axis after ~3 px instead of 6.
+
+## D31. Off-screen handles, box select, split FOVs, options round (v7.0)
+- **Off-screen handles draw honestly**: `valToY` no longer clamps (the
+  clamp bent the apparent angle of out-of-view handles — the reported
+  "sharp spot"); all plot geometry is clipped to the plot rect instead.
+  An off-screen knob renders as a dashed stub ending in a hollow marker at
+  the plot edge; CLICKING the marker sets `handleViewExpand`, which makes
+  updateScale include the selected node's knobs (view grows to fit);
+  clicking elsewhere clears it and the view returns. Handle drags also
+  drive the edge-growth timer now, so knobs can be pulled past the edge
+  smoothly like nodes.
+- **Node body ALWAYS outranks its own knobs** on press (generalizes the
+  v6.9 fresh-insert rule, which is removed): overlapping handles can never
+  steal the node grab. Handles of the selected node are still grabbable
+  anywhere they don't overlap the node itself.
+- **Append with a node selected inserts a 1 s flat hold after it**: all
+  lanes' later nodes shift +1 s (regardless of ripple toggles); the
+  selected node's outgoing transition shape transfers to the new hold node
+  so the ride after the pause is untouched. No selection = old ride-end
+  append.
+- **MIN_GAP 0.1 → 0.01 s** (minimum transition length). INSERT_GAP stays
+  0.02 s.
+- **Node dialog edits the GLOBAL value** (the Δ-from-previous field from
+  D25 lasted two iterations; transition time stays relative).
+- **Handle presets padded**: 5% steps (0.05–0.30) below cubic, 10% steps
+  (0.65–0.95) beyond circle; unnamed presets show only the % readout.
+- **Options dialog**: split FOVs — "Track view" (orbit+POV) and "Fly" (the
+  all-cameras experiment from D30 lasted one iteration); fly mouse
+  sensitivity slider (default 0.15 °/px; per-event delta also capped ±35 px
+  because OS pointer acceleration delivered huge single deltas = the
+  slow-too-slow/fast-too-fast complaint); adjustable snap steps (time/G/
+  roll) consumed live by the editor via settings.
+- **Grid LOD**: the floor grid group follows the active camera (orbit
+  pivot, fly position, POV sample) in 10 m quantized steps so full line
+  density is always around the viewer; band pattern stays world-aligned.
+- **Graph axes**: faded small value labels on every horizontal grid line;
+  time zoom now reaches 0.1 s windows with 0.01 s minimum grid step and
+  two-decimal tick labels (the 1-2-5 ladder no longer stalls at 0.1).
+- **Box select** on empty plot (rubber band; Shift adds); plain-click
+  deselection moved from press to release so the two don't fight.
+- **Help dialog v2**: bullet lists per section + a canvas diagram of a
+  transition (node/handles/insert dot/dotted hold); content updated for
+  everything above.
+- WARNING (process): PowerShell text rewriting corrupted the file's UTF-8
+  (mojibake + BOM) once — repaired. Do not pipe these sources through
+  PS 5.1 Get-Content/Set-Content.

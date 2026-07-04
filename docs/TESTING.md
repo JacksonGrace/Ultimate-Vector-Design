@@ -206,8 +206,27 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     only 10 m lines, past ~240 m a smooth solid translucent sheet; no
     shimmer zoomed out, no z-fighting stripes between lines and sheet.
 29. Help > Controls & Features opens a non-modal scrollable reference
-    (usable while editing); spot-check that it mentions the newest
-    features — it is REQUIRED to stay current with every change.
+    (usable while editing) with bulleted sections and the node/handle
+    diagram; spot-check that it mentions the newest features — it is
+    REQUIRED to stay current with every change.
+30. Drag one handle of a smooth node until the partner leaves the view:
+    NO fake kink at the node — the partner draws as a dashed stub with a
+    hollow marker at the plot edge; clicking the marker expands the value
+    scale to show the whole handle (editable); clicking empty plot
+    restores the scale. Pulling a knob past the plot edge grows the view
+    like nodes do.
+31. Select a node whose handles overlap it: pressing on the node body
+    always drags the NODE, never a knob. Append with it selected inserts
+    a 1 s flat hold (later track identical, 1 s later, in all lanes);
+    without a selection Append still extends the ride end.
+32. Options: two FOV sliders (track view vs fly — changing one leaves the
+    other camera alone), fly sensitivity slider takes effect immediately,
+    snap-step spinners change Ctrl-snap/arrow-nudge granularity live.
+    Box select: drag a rectangle on empty plot — nodes inside get rings
+    (Shift adds to the existing selection); a plain click still deselects.
+    Zoom to a 0.2 s window: grid/ticks show 0.02/0.05 s steps with two
+    decimals, no repeated labels. Fly/orbit/POV: the floor grid's dense
+    region follows the camera (fly far from the track and look down).
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes

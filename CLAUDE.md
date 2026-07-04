@@ -187,11 +187,13 @@ position (snaps back onto the original row/column) and picks its axis after
 body over its own knobs (freshInsertPriority). `subHolder.setMinSize(0,0)` is
 load-bearing: without it the SubScene's min size stops the window/divider
 from shrinking and the collapse controls go off-screen. 3D view floor: static transparent
-reference grid (1 m lines, heavier every 10 m), placed once below the initial
-track and never moved while editing; it fades over SIX concentric bands
-(minor lines gone past 120 m, majors past 240 m) onto a solid translucent
-sheet (600 m, 3 cm below the lines to dodge z-fighting) because JavaFX 3D
-lacks mipmaps and distant sub-pixel lines shimmer.
+reference grid (1 m lines, heavier every 10 m) at a fixed height; it fades
+over SIX concentric bands (minor lines gone past 120 m, majors past 240 m)
+onto a solid translucent sheet (600 m, 3 cm below the lines to dodge
+z-fighting) because JavaFX 3D lacks mipmaps and distant sub-pixel lines
+shimmer. LOD: the grid group follows the active camera (orbit pivot / fly
+pos / POV sample) in 10 m quantized steps, keeping full density around the
+viewer and the pattern world-aligned.
 Default keys (ALL rebindable via Edit > Shortcuts,
 persisted per-user): `1/2/3` lane select · click node = select + show handles
 · drag handle = length-only, `Shift` = angle · `B` smooth/broken (circle vs
@@ -213,13 +215,23 @@ transition time, transition Δ, and handle fractions directly · right-click
 the 3D view = FLY mode (WASD + mouse look via Robot cursor-warp, Shift ×4,
 Ctrl ×0.2, scroll burst; right-click exits KEEPING the view — the orbit rig
 has a movable pivot `camPivot` set to the point `zoom` m ahead of the fly
-camera; mutually exclusive with POV; ONE FOV setting drives ALL cameras —
-orbit, fly, POV — so mode switches can never zoom-jump). Graph editor: scroll
-zooms the time axis around the cursor (view window in tToX/xToT, min 0.5 s,
-full zoom-out resumes auto-fit), right-drag pans, rotated lane-name y-axis
-label + "Time (s)" x-axis label, adaptive 1-2-5 grid lines (~60 px apart in
-time, ~30 px in value, re-derived per zoom/resize). Insert allows 0.02 s
-from a node (INSERT_GAP; drags keep 0.1 s). The 3D view and graph panel sit
+camera; mutually exclusive with POV; TWO FOV settings — "track view"
+(orbit + POV) and "fly" — plus a fly mouse-sensitivity slider, all in
+Edit > Options; fly look deltas are capped ±35 px/event to tame OS pointer
+acceleration). Graph editor: scroll
+zooms the time axis around the cursor (view window in tToX/xToT, min 0.1 s,
+full zoom-out resumes auto-fit; grid step floors at 0.01 s with 2-decimal
+ticks), right-drag pans, box select on empty plot (Shift adds; plain-click
+deselect happens on RELEASE), rotated lane-name y-axis label + "Time (s)"
+x-axis label + faded per-gridline value labels, adaptive 1-2-5 grid lines.
+Insert allows 0.02 s from a node (INSERT_GAP); MIN transition length 0.01 s.
+Ctrl-snap steps are Options settings (settings.snapT/snapG/snapRoll). The
+node body always outranks its own knobs on press. valToY does NOT clamp —
+plot drawing is clipped instead; off-screen handles show a dashed stub +
+hollow edge marker (click = handleViewExpand grows the scale; click off
+restores). Append with a selection = 1 s flat hold inserted after it (all
+lanes shift; transition shape transfers to the hold node); node dialog
+edits transition time + GLOBAL value. The 3D view and graph panel sit
 in a vertical SplitPane — divider resizes, and a ▼/▲ button overlaid on the
 3D view collapses/restores the whole bottom panel.
 Node-drag readout shows Δt from the previous node and the GLOBAL value with

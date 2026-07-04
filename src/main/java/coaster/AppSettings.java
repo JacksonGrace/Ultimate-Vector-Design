@@ -80,18 +80,38 @@ public class AppSettings {
         save();
     }
 
-    public double fov() {
+    private double getD(String key, double def) {
         try {
-            return Double.parseDouble(props.getProperty("fov", ""));
+            return Double.parseDouble(props.getProperty(key, ""));
         } catch (NumberFormatException e) {
-            return FOV_DEFAULT;
+            return def;
         }
     }
 
-    public void setFov(double fov) {
-        props.setProperty("fov", String.format(Locale.US, "%.1f", fov));
+    private void setD(String key, double v) {
+        props.setProperty(key, String.format(Locale.US, "%.4f", v));
         save();
     }
+
+    /** Track-view field of view: orbit + POV cameras. */
+    public double fov() { return getD("fov", FOV_DEFAULT); }
+    public void setFov(double v) { setD("fov", v); }
+
+    /** Fly-camera field of view (independent of the track view). */
+    public double flyFov() { return getD("flyFov", FOV_DEFAULT); }
+    public void setFlyFov(double v) { setD("flyFov", v); }
+
+    /** Fly-camera mouse-look sensitivity, degrees per pixel. */
+    public double flySens() { return getD("flySens", 0.15); }
+    public void setFlySens(double v) { setD("flySens", v); }
+
+    /** Node-drag snap intervals (Ctrl): transition seconds, G, deg/s. */
+    public double snapT() { return getD("snapT", 0.1); }
+    public void setSnapT(double v) { setD("snapT", v); }
+    public double snapG() { return getD("snapG", 0.1); }
+    public void setSnapG(double v) { setD("snapG", v); }
+    public double snapRoll() { return getD("snapRoll", 1); }
+    public void setSnapRoll(double v) { setD("snapRoll", v); }
 
     /** Show the POV camera's track position as a line on the graph. */
     public boolean povMarker() {
