@@ -41,7 +41,7 @@ public class AppSettings {
     public static final double SENS_DEFAULT = 0.15;      // mouse look, deg/px
     public static final double SNAP_T_DEFAULT = 0.1;     // s
     public static final double SNAP_G_DEFAULT = 0.1;     // g
-    public static final double SNAP_ROLL_DEFAULT = 1;    // deg/s
+    public static final double SNAP_ROLL_DEFAULT = 5;    // deg/s
 
     private final File file;
     private final Properties props = new Properties();
@@ -126,6 +126,16 @@ public class AppSettings {
 
     public void setPovMarker(boolean on) {
         props.setProperty("povMarker", String.valueOf(on));
+        save();
+    }
+
+    /** Render the integrated heartline as a thin tube in the 3D view. */
+    public boolean showHeartline() {
+        return Boolean.parseBoolean(props.getProperty("showHeartline", "false"));
+    }
+
+    public void setShowHeartline(boolean on) {
+        props.setProperty("showHeartline", String.valueOf(on));
         save();
     }
 

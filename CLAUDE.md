@@ -114,8 +114,9 @@ source tree — they won't compile against the current time-domain API.
   (partner frac and dv scale by the dragged handle's ratios — equal handles
   act as mirror images, unequal ones stay proportional and collinear).
   Node drags are free; CTRL snaps the TRANSITION length (Δt from the
-  previous node) to 0.1 s steps and the value to the GLOBAL absolute grid —
-  0.1 G, whole °/s for roll (deliberately not Δ-value snapping).
+  previous node) and the value to the GLOBAL absolute grid — defaults
+  0.1 s, 0.1 G, 5 °/s roll, all adjustable in Options (deliberately not
+  Δ-value snapping).
   B toggles smooth/broken per node; re-smoothing keeps the IN handle and
   re-angles the OUT handle (user spec).
 - **Undo:** deep snapshots of all lanes, one per completed gesture, cap 100,
@@ -205,9 +206,13 @@ handles, curved ones use an exact de Casteljau split — tangent handles,
 curve unchanged, headless-tested) · right-click delete · `A` append 1 s
 holding final values (appended transitions get SINE handles, not cubic —
 only the shipped default layout keeps 1/3) ·
-`Space` POV cam — W/S ride forward/back at simulated speed, Shift ×4,
-Ctrl ×0.25, no key holds position (follows live edits), scroll = fast burst,
-translucent graph line marks the camera (Options toggle, default on) ·
+`Space` POV cam — starts HANDS-OFF (W/S and the S slide key stay with the
+graph, so you can edit while watching); right-click the view CAPTURES the
+ride controls (mouse hidden, no mouse look): W/S ride at simulated speed,
+Shift ×4, Ctrl ×0.25; right-click releases; while captured, Space flips
+between fly (WASD) and POV (W/S) without releasing (`povCaptured`);
+scroll = fast burst either way, translucent graph line marks the camera
+(Options toggle, default on) ·
 `H` flatten selected node's handles · `Z`/`X` toggle vertical/horizontal
 node-drag lock (translucent guide line; per-selection) · `Ctrl+S/O` save/load ·
 `Ctrl+Z` undo · `Delete` deletes the selected node (interior deletes bridge
@@ -235,8 +240,15 @@ instantly, re-picks from total |dx| vs |dy| each event (can switch mid-
 drag), and is OVERRIDDEN by explicit Z/X; guide lines are colored by what
 the drag CHANGES — lane color = value changing (vertical guide), YELLOW =
 time changing (horizontal guide); yellow stays the time color everywhere
-else too (`TIME_COLOR`: "Time (s)" label, POV marker). Hovering the curve
-shows the insert dot plus the lane's value. Mouse sensitivity (Options)
+else too (`TIME_COLOR`: "Time (s)" label, POV marker). Guides draw at
+alpha 0.5; S-dragging a handle shows its dashed slide rail. Hovering the curve
+shows the insert dot plus the lane's value (Shift REPLACES it with the
+ANALYTIC slope from `BezierBaker.slopeAt` — differencing the baked
+polyline stair-stepped; tracked via key filters so it updates without
+moving the mouse). The node-drag readout clamps into the plot bounds. Orbit drags
+respond ONLY to the primary button — the right-drag that exits fly used to
+fall into the orbit handler with a stale anchor and jump the view.
+Mouse sensitivity (Options)
 drives fly look AND orbit (orbit = 2× the setting); Shift+wheel arrives as
 HORIZONTAL scroll on Windows — every scroll handler falls back to deltaX. Handles reach MAX_FRAC = 1.5
 (150% of the segment; baker's monotonic guard sanitizes folds). The
@@ -254,13 +266,27 @@ units ("Δt=0.80s  2.50 g"). Toolbar "Ripple:" checks
 of the lane in t with the drag (preserves later transition times); "value"
 translates the rest of the graph vertically. Menu bar: File (Save/Load), Edit
 (Shortcuts dialog — rebind by clicking + pressing a key, ↺ resets an edited
-binding to default; Options dialog — POV FOV slider 30–110°), Coaster (Heart
+binding to default; Options dialog — the TWO FOV sliders 30–110°, mouse
+sensitivity, snap steps, "Show heartline (neon)" check — hairline
+self-illuminated yellow tube on the integrated path, app-wide default off,
+setVisible(false) while POV rides (the camera sits ON it) — and the POV
+marker), Help
+(clicking the menu TITLE opens the Help dialog directly — it's a Label
+graphic on an empty Menu; there is deliberately NO View menu, tried and
+merged back into Options in v7.5). Shift+click
+the track in orbit mode re-centers the pivot on it (screen-space nearest
+sample within 25 px, BEHIND-CAMERA samples filtered — localToScreen
+projects them mirrored, which made sky clicks teleport the pivot; a miss
+moves nothing and the drag orbits normally). Coaster (Heart
 spinner −3..3 default 1.0, Gauge spinner 0.3..2.5 default 1.0, Tie-spacing
 spinner 0.2..10 m default 1.0 (cross ties placed by arc length, flush with
 the rails), Start x/y/z spinners ±500 m (saved as `start` line), rail color:
 G-force gradient or solid — the ColorPicker lives in its own dialog, NOT in
 the menu: embedded there, "Custom Color" crashed because its owner window
-was the auto-hiding menu popup). Toolbar: lane toggles, Ripple time/value
+was the auto-hiding menu popup; the same dialog customizes the FOUR
+G-force gradient stops — each a COLOR and a G VALUE spinner, defaults
+0/1/3/5 g, flat outside the ends and lerped between stops, saved as
+`gradcolors` + `gradstops` lines). Toolbar: lane toggles, Ripple time/value
 checks, POV, Append (no shortcut hints on buttons — the stats bar hint is
 generated from live bindings). Stats bar shows ride time, track length,
 height range, top speed, Gv range. Window sizes itself to

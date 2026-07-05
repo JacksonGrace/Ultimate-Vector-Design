@@ -110,7 +110,23 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
    line; click inserts a node there with NO visible change to the curve
    (tangent handles on slopes, level sine handles on flat runs); the new
    node comes up selected. Must also work on NEAR-VERTICAL sections (the
-   hit test is nearest-point in 2D, not vertical distance). Double-click ON a node opens the editor dialog:
+   hit test is nearest-point in 2D, not vertical distance). Holding Shift
+   while hovering REPLACES the value readout with the slope (no prefix) —
+   it swaps even if the mouse is stationary when Shift goes down. Dragging
+   a node past the plot edges keeps its Δt/value readout visible, clamped
+   inside the plot.
+5b. Edit > Options: "Show heartline (neon)" draws a hairline glowing
+   yellow strand along the heart path (between/above the rails per the
+   Heart setting), unaffected by lighting; toggling off removes it; state
+   survives restart. The two FOV sliders live in Options too (no View
+   menu). Clicking "Help" in the menu bar opens the Help window
+   immediately (no dropdown). Shift+click a track piece in orbit mode:
+   the camera re-centers its orbit on that spot (within ~25 px of the
+   rails); orientation/zoom unchanged. Shift+click on EMPTY SKY moves
+   nothing — the drag that follows orbits exactly like a plain drag (no
+   pivot teleports to off-screen/behind-camera track). Shift-hover slope
+   readout changes CONTINUOUSLY as the mouse slides along a curved
+   segment (no stair-stepping). Double-click ON a node opens the editor dialog:
    typed transition time/Δ and handle fractions apply on Apply/Enter,
    Cancel/Esc discards, garbage input keeps old values, ripple toggles are
    honored. Right-click or Delete key removes the selected node: neighbors
@@ -118,10 +134,15 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
    gap; deleting the last node shortens the ride; node 0 refuses.
 6. A appends 1 s; ride time in stats bar grows by 1.0; the appended
    transition's handles sit at the SINE fraction (readout ~36%, not 33%).
-7. Space: POV cam starts at t=0 holding position; hold W — rides forward at
-   believable speed, banking through the turn; S reverses; Shift/Ctrl
-   speed/slow it; wraps at both ends; Space exits; orbit drag disabled
-   while riding.
+7. Space: POV cam starts at t=0 HANDS-OFF — W/S do nothing to the camera
+   and the S slide key still works on the graph (drag a node with S held
+   while the POV view shows). Right-click the view: mouse vanishes, W
+   rides forward at believable speed, S reverses, Shift/Ctrl speed/slow,
+   wraps at both ends; moving the mouse does NOT look around. Right-click
+   releases (cursor back, W/S return to the graph). While captured, Space
+   flips to fly (WASD, mouse look) and Space again back to POV, mouse
+   staying hidden throughout. Uncaptured Space exits to orbit. Scroll
+   bursts along the track captured or not.
 8. Coaster menu > Heart spinner to −1.0: rails jump above the heartline
    (inverted); POV now hangs below track. Gauge visibly widens/narrows rail
    spacing. Menu stays open while spinning (CustomMenuItem hideOnClick off).
@@ -131,10 +152,17 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
    shapes (handles auto-convert from absolute seconds to fractions).
 10. Undo spam: Ctrl+Z ×20 walks history without exceptions; one drag = one
     undo step.
-11. Coaster menu > "Choose solid color…" opens the color dialog; picking a
+11. Coaster menu > "Rail colors…" opens the color dialog; picking a solid
     color switches to solid mode and repaints the rails. "Custom Color…"
     inside the picker must NOT crash (regression: it did when the picker was
-    embedded in the menu). Switch back to gradient: G-force coloring returns.
+    embedded in the menu). Switch back to gradient: G-force coloring
+    returns. Change the four gradient stops — both a COLOR (e.g. 1 g to
+    white) and a G VALUE (e.g. move stop 3 from 3 g to 2 g): rails recolor
+    live; colors AND stop values survive a save/load round-trip; Ctrl+Z
+    inside the dialog steps both kinds of edits back. With "Show
+    heartline" on, entering POV hides the neon strand (no flicker across
+    the lens) and exiting POV — or flipping to fly with Space — brings it
+    back.
 12. Edit > Shortcuts: rebind POV to another key (click button, press key) —
     new key rides, old key does nothing, ↺ appears; restart the app and the
     binding survives (~/.fvd-designer.properties); ↺ restores Space and
@@ -145,8 +173,11 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     exact orbit pose; mouse looks around smoothly (no cursor escaping the
     window), WASD flies (A strafes, does NOT append track), Shift is fast,
     Ctrl slow, scroll lunges forward. Right-click exits: cursor back and the
-    VIEW STAYS WHERE YOU FLEW (no snap-back); orbit drags now circle the
-    point you were looking at. Space during fly exits fly and starts POV.
+    VIEW STAYS WHERE YOU FLEW (no snap-back) — even when the mouse is
+    MOVING during the right-click (regression: stale orbit anchor jumped
+    the view); orbit drags now circle the
+    point you were looking at. Space during fly switches to captured POV.
+    Roll lane Ctrl-snap defaults to 10 °/s steps (adjustable in Options).
 16. Coaster menu > "Tie every (m)": ties appear between the rails, evenly
     spaced along the track (not bunched on slow sections), ends flush —
     nothing pokes past the rails; lowering the value visibly densifies

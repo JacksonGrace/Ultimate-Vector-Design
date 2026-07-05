@@ -193,6 +193,35 @@ public class BezierBaker {
         return n;
     }
 
+    /** Analytic slope dval/dt of the drawn curve at time t. The baked
+     *  polyline's slope is piecewise-constant (stair-steps between bake
+     *  samples), so readouts differentiate the actual cubic instead. */
+    public static double slopeAt(List<Node> lane, double t) {
+        int i = 0;
+        while (i < lane.size() && lane.get(i).t < t) i++;
+        if (i == 0 || i >= lane.size()) return 0;   // before start / hold region
+        Node a = lane.get(i - 1), b = lane.get(i);
+        double x0 = a.t,                  y0 = a.val;
+        double x1 = a.t + effOutDt(a, b), y1 = a.val + a.outDv;
+        double x2 = b.t + effInDt(a, b),  y2 = b.val + b.inDv;
+        double x3 = b.t,                  y3 = b.val;
+        double lo = 0, hi = 1;
+        for (int k = 0; k < 50; k++) {
+            double mid = (lo + hi) / 2;
+            if (cubic(x0, x1, x2, x3, mid) < t) lo = mid; else hi = mid;
+        }
+        double u = (lo + hi) / 2;
+        double dx = cubicDeriv(x0, x1, x2, x3, u);
+        double dy = cubicDeriv(y0, y1, y2, y3, u);
+        if (Math.abs(dx) < 1e-6) dx = dx < 0 ? -1e-6 : 1e-6;  // near-vertical
+        return dy / dx;
+    }
+
+    private static double cubicDeriv(double p0, double p1, double p2, double p3, double u) {
+        double w = 1 - u;
+        return 3 * w * w * (p1 - p0) + 6 * w * u * (p2 - p1) + 3 * u * u * (p3 - p2);
+    }
+
     private static double lerp(double a, double b, double u) {
         return a + (b - a) * u;
     }

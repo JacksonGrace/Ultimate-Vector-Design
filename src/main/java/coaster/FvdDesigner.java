@@ -175,6 +175,15 @@ public class FvdDesigner extends Application {
     private double startX = 0, startY = 0, startZ = 0;  // track starting point (m)
     private boolean railSolid = false; // false = vertical-G gradient, true = solid color
     private Color railColor = Color.rgb(220, 60, 50);
+    // G-force gradient stops (per-coaster, saved in .fvd): each stop is a
+    // COLOR at a G VALUE; flat outside the ends, lerped between stops
+    private final Color[] gradColors = {
+        Color.color(0.2, 0.4, 1.0),
+        Color.color(0.2, 0.9, 0.3),
+        Color.color(1.0, 0.9, 0.1),
+        Color.color(1.0, 0.15, 0.1),
+    };
+    private final double[] gradStops = { 0, 1, 3, 5 };
     private static final double RAIL_RADIUS = 0.07; // 140 mm diameter
     private static final int RAIL_SIDES = 8;
     private static final int SAMPLE_STRIDE = 3;
@@ -202,8 +211,12 @@ public class FvdDesigner extends Application {
     private double gridCamX0, gridCamZ0;        // scene->world offset for camera positions
 
     private SubScene sub;
+    private MeshView heartMesh;   // neon heartline; hidden while riding POV
     private PerspectiveCamera orbitCam, povCam;
     private boolean povActive = false;
+    private boolean povCaptured = false;   // right-click: hide mouse, W/S ride;
+                                           // uncaptured POV leaves W/S (and the
+                                           // S slide key) to the graph editor
     private double povTime;        // current ride position (s); W/S move it
     private long povLastNanos;
     private AnimationTimer povTimer;
@@ -289,11 +302,34 @@ public class FvdDesigner extends Application {
         sub.setCamera(orbitCam);
 
         sub.setOnMousePressed(e -> {
-            if (e.getButton() == MouseButton.SECONDARY) { toggleFly(); return; }
+            if (e.getButton() == MouseButton.SECONDARY) {
+                if (povActive) {
+                    // capture/release the POV ride controls (no mouse look —
+                    // orientation follows the track)
+                    povCaptured = !povCaptured;
+                    moveKeys.clear();
+                    sub.setCursor(povCaptured ? Cursor.NONE : Cursor.DEFAULT);
+                } else {
+                    toggleFly();
+                }
+                // refresh the drag anchor: right-drag events that follow the
+                // fly exit must not orbit from a stale position (view jumped)
+                lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
+                return;
+            }
+            // Shift+click in orbit mode: re-center the orbit on the track
+            // piece under the cursor
+            if (e.getButton() == MouseButton.PRIMARY && e.isShiftDown()
+                    && !povActive && !flyActive) {
+                snapPivotToTrack(e.getScreenX(), e.getScreenY());
+            }
             lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
         });
         sub.setOnMouseDragged(e -> {
             if (povActive || flyActive) return;
+            // ONLY primary-button drags orbit — the right-drag that exits fly
+            // otherwise fell through here with a huge stale delta (jump bug)
+            if (!e.isPrimaryButtonDown()) return;
             // orbit shares the mouse-sensitivity setting (fly's 0.15 default
             // maps to the original 0.3 orbit feel via the 2x factor)
             double s = settings.flySens() * 2;
@@ -481,6 +517,7 @@ public class FvdDesigner extends Application {
         scene.addEventFilter(KeyEvent.KEY_RELEASED, e -> {
             if (flyActive || povActive) moveKeys.remove(e.getCode());
             if (e.getCode() == KeyCode.S) slideKey = false;
+            if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(false);
         });
         stage.setTitle("FVD Coaster Designer");
         stage.setScene(scene);
@@ -490,12 +527,13 @@ public class FvdDesigner extends Application {
 
     private void handleKey(KeyEvent e) {
         // S (held, unmodified) = slide constraint for node/handle drags;
-        // never while a camera mode owns WASD
-        if (e.getCode() == KeyCode.S && !flyActive && !povActive
+        // never while a camera mode owns WASD (uncaptured POV does not)
+        if (e.getCode() == KeyCode.S && !flyActive && !(povActive && povCaptured)
                 && !e.isShortcutDown()) {
             slideKey = true;   // not consumed: bound actions still fire
         }
-        if (flyActive || povActive) {   // movement keys belong to the camera
+        if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(true);
+        if (flyActive || (povActive && povCaptured)) {   // camera owns movement keys
             KeyCode c = e.getCode();
             boolean movement = c == KeyCode.W || c == KeyCode.S
                     || c == KeyCode.SHIFT || c == KeyCode.CONTROL
@@ -577,6 +615,39 @@ public class FvdDesigner extends Application {
         if (e.isShiftDown())   sb.append("Shift+");
         if (e.isMetaDown())    sb.append("Meta+");
         return sb.append(normalizeNumpad(e.getCode()).getName()).toString();
+    }
+
+    /** Shift+click in orbit mode: move the orbit pivot onto the nearest
+     *  track point within ~25 px of the cursor (a screen-space "tube"
+     *  around the heartline — cheap and forgiving, no mesh picking). */
+    private void snapPivotToTrack(double screenX, double screenY) {
+        if (lastSamples == null || lastSamples.isEmpty()) return;
+        // camera pose in scene coords, to reject samples BEHIND the camera —
+        // localToScreen happily projects those mirrored, which made clicks on
+        // empty sky snap the pivot to invisible track
+        double yaw = camYaw.getAngle(), pitch = camPitch.getAngle();
+        Point3D fwd = new Rotate(yaw, Rotate.Y_AXIS).transform(
+                      new Rotate(pitch, Rotate.X_AXIS).transform(new Point3D(0, 0, 1)));
+        Point3D camPos = new Point3D(camPivot.getX(), camPivot.getY(), camPivot.getZ())
+                .subtract(fwd.multiply(-camZoom.getZ()));
+        double best = 25 * 25;
+        Vec3 bestPos = null;
+        for (int i = 0; i < lastSamples.size(); i += 5) {
+            Vec3 p = lastSamples.get(i).pos();
+            Point3D sceneP = world.localToScene(p.x(), -p.y(), p.z());
+            if (sceneP.subtract(camPos).dotProduct(fwd) <= 0) continue;  // behind
+            Point2D s = world.localToScreen(p.x(), -p.y(), p.z());
+            if (s == null) continue;
+            double dx = s.getX() - screenX, dy = s.getY() - screenY;
+            double d2 = dx * dx + dy * dy;
+            if (d2 < best) { best = d2; bestPos = p; }
+        }
+        if (bestPos == null) return;   // miss: camera stays, drag orbits normally
+        Point3D sceneP = world.localToScene(bestPos.x(), -bestPos.y(), bestPos.z());
+        camPivot.setX(sceneP.getX());
+        camPivot.setY(sceneP.getY());
+        camPivot.setZ(sceneP.getZ());
+        updateGridLOD(bestPos.x(), bestPos.z());
     }
 
     /** Collapse the graph panel to full-screen the 3D view, or restore it
@@ -754,7 +825,7 @@ public class FvdDesigner extends Application {
         solidModeItem.setOnAction(e -> changeRailMode(true));
         (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
 
-        MenuItem colorItem = new MenuItem("Choose solid color…");
+        MenuItem colorItem = new MenuItem("Rail colors (solid & gradient)…");
         colorItem.setOnAction(e -> showRailColorDialog());
 
         coasterMenu = new Menu("Coaster", null,
@@ -774,63 +845,26 @@ public class FvdDesigner extends Application {
         });
         coasterMenu.setOnHidden(e -> endMenuSession());
 
-        MenuItem helpItem = new MenuItem("Controls & Features…");
-        helpItem.setOnAction(e -> showHelpDialog());
-        Menu helpMenu = new Menu("Help", null, helpItem);
+        // --- Help: clicking the menu itself opens the dialog directly
+        // (a Label graphic takes the click; the empty menu never opens) ---
+        Menu helpMenu = new Menu();
+        Label helpLbl = new Label("Help");
+        helpLbl.setOnMouseClicked(e -> showHelpDialog());
+        helpMenu.setGraphic(helpLbl);
 
         return new MenuBar(fileMenu, editMenu, coasterMenu, helpMenu);
     }
 
     /**
-     * Help > Controls & Features. MAINTENANCE RULE (user requirement):
-     * every new user-facing feature or control MUST be added here, in the
-     * matching section, when it ships. Prioritize the non-obvious.
+     * The Help window (click "Help" in the menu bar). MAINTENANCE RULE
+     * (user requirement): every new user-facing feature or control MUST be
+     * added here, in the matching section, when it ships. Prioritize the
+     * non-obvious. Layout: helpHead = section, helpKey = aligned
+     * key/gesture row, helpText = prose for non-key behavior.
      */
     private void showHelpDialog() {
-        // each section: title, then bullet lines
-        String[][] sections = {
-            { "Getting started",
-              "You design FORCES, not shapes: the three curves (vertical G, lateral G, roll rate) over ride time are integrated into the 3D track.",
-              "Pick a lane with the colored buttons, keys 1/2/3, or by clicking a dimmed curve; edits rebuild the track live.",
-              "Key names here are defaults — rebind anything in Edit > Shortcuts; the stats bar shows your current bindings.",
-              "File > Save/Load stores designs (.fvd), including the Coaster-menu settings." },
-            { "Graph view",
-              "Scroll = zoom time around the cursor · right-drag = pan · fully zoomed out = auto-fit.",
-              "Value axes auto-scale when a curve exceeds the defaults; grid lines and labels re-density as you zoom.",
-              "Dotted flat line after a lane's last node = held final value; click it to add a real node there.",
-              "Dragging a node or handle past a plot edge grows that axis — the farther past, the faster.",
-              "Resize the graph with the divider; the corner button on the 3D view collapses/restores the whole panel." },
-            { "Nodes",
-              "Click the curve = insert a node exactly ON it (white dot preview; the curve shape is unchanged).",
-              "Drag = move freely · Ctrl = snap (steps adjustable in Edit > Options) · hold S = slide along one axis, anchored at the start point — picked instantly from the dominant direction and it SWITCHES if you pull further the other way.",
-              "Z / X = sticky vertical/horizontal lock (overrides S; same key returns it) · guide lines are color-coded by what the drag changes: lane color = value changing (vertical), yellow = time changing (horizontal) · arrow keys nudge by snap steps (Ctrl+arrow lands ON the grid; hold to glide).",
-              "Hovering the curve shows the insert dot AND the lane's value at that point.",
-              "Select two ADJACENT nodes (Shift+click) and press F: their facing handles align onto the chord — the segment becomes a straight line.",
-              "Shift+click OR drag a box on empty plot = multi-select; drag any member to move the group; Delete removes them.",
-              "Double-click a node = type the transition time, global value and handle sizes exactly.",
-              "B = smooth/broken · H = level handles · A/Append = +1 s at the ride end, or a 1 s flat hold after the selected node.",
-              "Ripple checks (toolbar): drags also shift every later node in time and/or value.",
-              "Transitions can be as short as 0.01 s." },
-            { "Handles",
-              "Drag = free (angle + length) · hold S = slide: length only along the current line · Ctrl = snap to ease presets (cubic, sine, quintic, circle, plus 5% steps below and 10% steps above).",
-              "Handles reach up to 150% of the segment for aggressive shapes (folds are sanitized when baked).",
-              "Round knob = smooth (partner mirrors proportionally); square = broken; B toggles.",
-              "Lengths are a fraction of the gap to the neighbor, so re-timing nodes keeps curve shapes.",
-              "A handle beyond the visible scale draws as a dashed stub with a hollow marker at the edge — click the marker to expand the view; clicking elsewhere restores it." },
-            { "Cameras",
-              "Orbit (default): drag = rotate, scroll = zoom.",
-              "Fly: right-click the 3D view; WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits and keeps the view.",
-              "POV (Space): W/S ride at simulated speed, Shift/Ctrl faster/slower, scroll jumps; the line on the graph is the camera (Options toggle).",
-              "Edit > Options: one FOV for fly + orbit (they hand off to each other), a separate POV FOV, and mouse sensitivity (fly look + orbit). Every row has a ↺ reset-to-default." },
-            { "Menus & settings",
-              "Edit > Shortcuts: click a key button, press a new combo (Esc cancels); ↺ resets one binding.",
-              "Coaster menu: heart, gauge, tie spacing, start point, rail color — per-coaster, saved in the .fvd.",
-              "Edit > Options: FOVs, fly sensitivity, snap steps (arrow buttons walk the 1-2-5 series), POV marker — per-user, persist across runs.",
-              "While a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it; closing locks them in (curve editing has no redo yet)." },
-        };
-
-        VBox box = new VBox(6);
-        box.setPadding(new Insets(16));
+        VBox box = new VBox(5);
+        box.setPadding(new Insets(18));
 
         // small diagram: a transition with node, handles and the insert dot
         Canvas diagram = new Canvas(560, 110);
@@ -868,28 +902,102 @@ public class FvdDesigner extends Application {
         box.getChildren().add(diagram);
         VBox.setMargin(diagram, new Insets(0, 0, 8, 0));
 
-        for (String[] s : sections) {
-            Label head = new Label(s[0]);
-            head.setStyle("-fx-font-weight: bold; -fx-font-size: 13;");
-            VBox.setMargin(head, new Insets(8, 0, 0, 0));
-            box.getChildren().add(head);
-            for (int i = 1; i < s.length; i++) {
-                Label bullet = new Label("•  " + s[i]);
-                bullet.setWrapText(true);
-                bullet.setMaxWidth(548);
-                bullet.setPadding(new Insets(0, 0, 0, 8));
-                box.getChildren().add(bullet);
-            }
-        }
+        helpHead(box, "Getting started");
+        helpText(box, "You design FORCES, not shapes: the three curves (vertical G, "
+            + "lateral G, roll rate) over ride time are integrated into the 3D track. "
+            + "Pick a lane with the colored buttons, keys 1/2/3, or by clicking a "
+            + "dimmed curve — every edit rebuilds the track live.");
+        helpText(box, "Ctrl+Z undoes coaster edits (no redo yet). File > Save/Load "
+            + "stores designs (.fvd) including the Coaster-menu settings. Keys shown "
+            + "here are defaults — rebind anything in Edit > Shortcuts; the stats bar "
+            + "always shows your current bindings.");
+
+        helpHead(box, "Graph view");
+        helpKey(box, "Scroll", "zoom the time axis around the cursor; fully zoomed out = auto-fit.");
+        helpKey(box, "Right-drag", "pan while zoomed in.");
+        helpKey(box, "Hover curve", "white dot + the value there; hold Shift for the slope instead.");
+        helpText(box, "Value axes auto-scale to the curves. The dotted line after a "
+            + "lane's last node is its held final value — click it to add a real node. "
+            + "Dragging past a plot edge grows that axis, faster the farther past. The "
+            + "divider resizes the graph; the corner button on the 3D view collapses it.");
+
+        helpHead(box, "Nodes");
+        helpKey(box, "Click curve", "insert a node exactly ON it — the shape does not change.");
+        helpKey(box, "Drag", "move freely; the readout shows Δt from the previous node + value.");
+        helpKey(box, "Ctrl", "snap transition time and absolute value (steps set in Options; transitions can be as short as 0.01 s).");
+        helpKey(box, "S (hold)", "slide along one axis from the start point — picked instantly from the dominant direction, switches if you pull the other way.");
+        helpKey(box, "Z / X", "sticky vertical/horizontal lock; overrides S, same key releases. Guides: lane color = value changing, yellow = time changing.");
+        helpKey(box, "Arrows", "nudge by snap steps; Ctrl+arrow lands ON the grid; hold to glide.");
+        helpKey(box, "Shift+click / box", "multi-select (drag a box on empty plot); dragging any member moves the group.");
+        helpKey(box, "Delete / rt-click", "remove node(s): interior deletes bridge the gap, deleting the last node shortens the ride; node 0 stays.");
+        helpKey(box, "Double-click", "type the transition time, value and handle sizes exactly.");
+        helpKey(box, "B · H · F", "smooth/broken · level the handles · straighten between two adjacent selected nodes.");
+        helpKey(box, "A / Append", "+1 s at the ride end — or a 1 s flat hold after the selected node.");
+        helpKey(box, "Ripple checks", "drags also shift every later node in time and/or value (toolbar).");
+
+        helpHead(box, "Handles");
+        helpKey(box, "Drag", "free (angle + length).");
+        helpKey(box, "S (hold)", "slide: length only, along the current line (dashed rail).");
+        helpKey(box, "Ctrl", "snap length to ease presets — cubic, sine, quintic, circle, plus 5%/10% steps up to 150% of the segment.");
+        helpText(box, "Round knob = smooth (the partner handle mirrors proportionally); "
+            + "square = broken (B toggles). Lengths are a FRACTION of the gap to the "
+            + "neighbor, so re-timing nodes keeps curve shapes. A handle beyond the "
+            + "visible scale draws as a dashed stub with a hollow edge marker — click "
+            + "the marker to expand the view; click elsewhere to restore.");
+
+        helpHead(box, "Cameras");
+        helpKey(box, "Orbit", "drag = rotate · scroll = zoom · Shift+click the track = orbit around that spot.");
+        helpKey(box, "Fly", "right-click the 3D view: WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits keeping the view.");
+        helpKey(box, "POV", "Space. Starts hands-off: the camera sits on the track (following edits) while W/S and the S key stay with the graph. Right-click CAPTURES: mouse hides, W/S ride at simulated speed (Shift/Ctrl faster/slower), no mouse look; right-click releases. Scroll jumps along the track either way.");
+        helpKey(box, "Space (captured)", "flips between fly (WASD) and POV (W/S) with the mouse still hidden.");
+        helpText(box, "The yellow line on the graph marks the POV camera (Options "
+            + "toggle). The neon heartline hides itself while riding POV.");
+
+        helpHead(box, "Menus & settings");
+        helpKey(box, "Edit > Shortcuts", "click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
+        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps (arrows walk the 1-2-5 series) · neon heartline · POV marker. Every row has a ↺ reset. Per-user.");
+        helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start point, rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-coaster, saved in the .fvd.");
+        helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it; closing locks them in.");
+
         ScrollPane scroll = new ScrollPane(box);
         scroll.setFitToWidth(true);
         scroll.setPrefSize(640, 660);
 
         Stage dlg = new Stage();
         dlg.initOwner(stage);   // non-modal: usable as a reference while editing
-        dlg.setTitle("Controls & Features");
+        dlg.setTitle("Help");
         dlg.setScene(new Scene(scroll));
         dlg.show();
+    }
+
+    private static void helpHead(VBox box, String text) {
+        Label l = new Label(text);
+        l.setStyle("-fx-font-weight: bold; -fx-font-size: 13;");
+        VBox.setMargin(l, new Insets(10, 0, 2, 0));
+        box.getChildren().add(l);
+    }
+
+    private static void helpText(VBox box, String text) {
+        Label l = new Label(text);
+        l.setWrapText(true);
+        l.setMaxWidth(566);
+        l.setPadding(new Insets(1, 0, 1, 10));
+        box.getChildren().add(l);
+    }
+
+    /** One aligned "key/gesture -> what it does" row. */
+    private static void helpKey(VBox box, String term, String desc) {
+        Label t = new Label(term);
+        t.setStyle("-fx-font-weight: bold;");
+        t.setMinWidth(122);
+        t.setMaxWidth(122);
+        t.setWrapText(true);
+        Label d = new Label(desc);
+        d.setWrapText(true);
+        d.setMaxWidth(434);
+        HBox row = new HBox(10, t, d);
+        row.setPadding(new Insets(1, 0, 1, 10));
+        box.getChildren().add(row);
     }
 
     /** All shortcuts, rebindable: click a key button, press the new combo.
@@ -975,10 +1083,43 @@ public class FvdDesigner extends Application {
             rebuildTrack();
         });
 
-        HBox row = new HBox(10, new Label("Solid rail color"), picker);
-        row.setAlignment(Pos.CENTER_LEFT);
-        row.setPadding(new Insets(14));
-        Scene sc = new Scene(row);
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        grid.addRow(0, new Label("Solid rail color"), picker);
+
+        // customizable G-force gradient: each stop is a G value + a color
+        // (flat below the first and above the last, lerped between)
+        Label gradHead = new Label("G-force gradient stops (g value + color)");
+        gradHead.setStyle("-fx-font-weight: bold;");
+        grid.add(gradHead, 0, 1, 3, 1);
+        for (int i = 0; i < 4; i++) {
+            final int gi = i;
+            Spinner<Double> vs = new Spinner<>(
+                new SpinnerValueFactory.DoubleSpinnerValueFactory(G_MIN, G_MAX, gradStops[gi], 0.1));
+            vs.setPrefWidth(75);
+            vs.setEditable(true);
+            vs.valueProperty().addListener((obs, o, v) -> {
+                pushMenuEdit(() -> vs.getValueFactory().setValue(o),
+                             () -> vs.getValueFactory().setValue(v));
+                gradStops[gi] = v;
+                rebuildTrack();
+            });
+            ColorPicker gp = new ColorPicker(gradColors[gi]);
+            gp.setOnAction(ev -> {
+                Color nc = gp.getValue();
+                Color oc = gradColors[gi];
+                if (!nc.equals(oc)) {
+                    pushMenuEdit(() -> gp.setValue(oc), () -> gp.setValue(nc));
+                }
+                gradColors[gi] = nc;
+                rebuildTrack();
+            });
+            grid.addRow(2 + i, new Label("Stop " + (i + 1)), vs, gp);
+        }
+
+        Scene sc = new Scene(grid);
         installMenuUndoKeys(sc);
         dlg.setScene(sc);
         beginMenuSession();
@@ -1098,6 +1239,17 @@ public class FvdDesigner extends Application {
         wireOptionSlider(sens, sensVal, "%.2f",
             v -> { }, settings::setFlySens);   // fly + orbit read it live
 
+        CheckBox heartCheck = new CheckBox("Show heartline (neon)");
+        heartCheck.setSelected(settings.showHeartline());
+        heartCheck.setOnAction(ev -> {
+            boolean on = heartCheck.isSelected();
+            pushMenuEdit(
+                () -> { heartCheck.setSelected(!on); settings.setShowHeartline(!on); rebuildTrack(); },
+                () -> { heartCheck.setSelected(on); settings.setShowHeartline(on); rebuildTrack(); });
+            settings.setShowHeartline(on);
+            rebuildTrack();
+        });
+
         Spinner<Double> snapTSp = snap125Spinner(0.01, 2.0, settings.snapT());
         wireOptionSpinner(snapTSp, settings::setSnapT);
         Spinner<Double> snapGSp = snap125Spinner(0.01, 2.0, settings.snapG());
@@ -1135,6 +1287,7 @@ public class FvdDesigner extends Application {
         grid.add(new Label("Snap: roll rate (°/s)"), 0, r);
         grid.add(snapRollSp, 1, r);
         grid.add(optionReset(() -> snapRollSp.getValueFactory().setValue(AppSettings.SNAP_ROLL_DEFAULT)), 3, r++);
+        grid.add(heartCheck, 0, r++, 3, 1);
         grid.add(povMark, 0, r, 3, 1);
 
         Scene sc = new Scene(grid);
@@ -1149,21 +1302,41 @@ public class FvdDesigner extends Application {
     // POV ride camera
     // =====================================================================
 
+    /** Space. From orbit: enter POV (uncaptured — right-click to take the
+     *  W/S ride controls). From captured fly: switch to CAPTURED POV, mouse
+     *  stays hidden. From captured POV: switch back to fly, still captured.
+     *  From uncaptured POV: back to orbit. Right-click always releases. */
     private void togglePov() {
         if (!povActive) {
             if (lastSamples == null || lastSamples.isEmpty()) return;
-            if (flyActive) toggleFly();   // hand the camera over cleanly
+            boolean keepCapture = flyActive;   // Space mid-flight keeps capture
+            if (flyActive) toggleFly();        // hand the camera over cleanly
             povActive = true;
             povTime = 0;
             povLastNanos = 0;
             moveKeys.clear();
+            povCaptured = keepCapture;
+            if (povCaptured) sub.setCursor(Cursor.NONE);
+            if (heartMesh != null) heartMesh.setVisible(false);
             sub.setCamera(povCam);
             povTimer.start();
             editor.refresh();   // show the POV marker line
+        } else if (povCaptured) {
+            // captured POV -> captured fly (capture survives until right-click)
+            povActive = false;
+            povCaptured = false;
+            povTimer.stop();
+            moveKeys.clear();
+            sub.setCursor(Cursor.DEFAULT);
+            if (heartMesh != null) heartMesh.setVisible(true);
+            sub.setCamera(orbitCam);
+            editor.refresh();
+            toggleFly();
         } else {
             povActive = false;
             povTimer.stop();
             moveKeys.clear();
+            if (heartMesh != null) heartMesh.setVisible(true);
             sub.setCamera(orbitCam);
             editor.refresh();   // hide the POV marker line
         }
@@ -1286,7 +1459,13 @@ public class FvdDesigner extends Application {
         MeshView rightRail = buildRailMesh(samples, railGauge / 2);
         MeshView ties = buildTieMesh(samples);
 
-        trackGroup.getChildren().setAll(leftRail, rightRail, ties);
+        List<javafx.scene.Node> parts = new ArrayList<>(List.of(leftRail, rightRail, ties));
+        heartMesh = settings.showHeartline() ? buildHeartlineMesh(samples) : null;
+        if (heartMesh != null) {
+            heartMesh.setVisible(!povActive);   // the camera rides ON it
+            parts.add(heartMesh);
+        }
+        trackGroup.getChildren().setAll(parts);
 
         if (!worldCentered) {
             FVDIntegrator.Sample mid = samples.get(samples.size() / 2);
@@ -1366,6 +1545,46 @@ public class FvdDesigner extends Application {
         view.setMaterial(mat);
         view.setCullFace(CullFace.NONE);
         return view;
+    }
+
+    /** The integrated heartline — the curve the physics actually lives on —
+     *  as a hairline neon-yellow strand (Options toggle). JavaFX 3D has no
+     *  polylines, so it's a minimal 4-sided tube; the self-illumination map
+     *  makes it glow unlit at any distance. */
+    private MeshView buildHeartlineMesh(List<FVDIntegrator.Sample> samples) {
+        final double R = 0.015;
+        final int SIDES = 4;
+        TriangleMesh mesh = new TriangleMesh();
+        mesh.getTexCoords().addAll(0, 0);
+        int nRings = 0;
+        for (int i = 0; i < samples.size(); i += SAMPLE_STRIDE) {
+            FVDIntegrator.Sample sm = samples.get(i);
+            for (int j = 0; j < SIDES; j++) {
+                double th = 2 * Math.PI * j / SIDES;
+                Vec3 off = sm.R().scale(Math.cos(th) * R)
+                        .add(sm.U().scale(Math.sin(th) * R));
+                Vec3 p = sm.pos().add(off);
+                mesh.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
+            }
+            nRings++;
+        }
+        for (int ring = 0; ring < nRings - 1; ring++) {
+            int r0 = ring * SIDES, r1 = (ring + 1) * SIDES;
+            for (int j = 0; j < SIDES; j++) {
+                int jn = (j + 1) % SIDES;
+                int a = r0 + j, b = r0 + jn, c = r1 + j, d = r1 + jn;
+                mesh.getFaces().addAll(a, 0, c, 0, b, 0);
+                mesh.getFaces().addAll(b, 0, c, 0, d, 0);
+            }
+        }
+        MeshView mv = new MeshView(mesh);
+        WritableImage glow = new WritableImage(1, 1);
+        glow.getPixelWriter().setColor(0, 0, Color.rgb(255, 255, 60));
+        PhongMaterial mat = new PhongMaterial(Color.BLACK);
+        mat.setSelfIlluminationMap(glow);   // unlit neon yellow
+        mv.setMaterial(mat);
+        mv.setCullFace(CullFace.NONE);
+        return mv;
     }
 
     /** Cross ties: one thin box between the rails every `tieSpacing` metres
@@ -1504,10 +1723,17 @@ public class FvdDesigner extends Application {
         for (int i = 0; i < w; i++) {
             double g = G_MIN + (G_MAX - G_MIN) * i / (w - 1.0);
             Color c;
-            if (g < 0)        c = Color.color(0.2, 0.4, 1.0);
-            else if (g < 1.5) c = Color.color(0.2, 0.9, 0.3);
-            else if (g < 3.0) c = lerpColor(Color.color(0.2, 0.9, 0.3), Color.color(1.0, 0.9, 0.1), (g - 1.5) / 1.5);
-            else              c = lerpColor(Color.color(1.0, 0.9, 0.1), Color.color(1.0, 0.15, 0.1), Math.min((g - 3.0) / 2.0, 1.0));
+            if (g <= gradStops[0]) {
+                c = gradColors[0];
+            } else if (g >= gradStops[3]) {
+                c = gradColors[3];
+            } else {
+                int k = 0;
+                while (k < 2 && g > gradStops[k + 1]) k++;
+                double span = gradStops[k + 1] - gradStops[k];
+                c = span < 1e-9 ? gradColors[k + 1]
+                    : lerpColor(gradColors[k], gradColors[k + 1], (g - gradStops[k]) / span);
+            }
             pw.setColor(i, 0, c);
         }
         return img;
@@ -1534,6 +1760,14 @@ public class FvdDesigner extends Application {
             out.printf(Locale.US, "railmode %s%n", railSolid ? "solid" : "gradient");
             out.printf(Locale.US, "railcolor %.4f %.4f %.4f%n",
                 railColor.getRed(), railColor.getGreen(), railColor.getBlue());
+            StringBuilder gcLine = new StringBuilder("gradcolors");
+            for (Color c : gradColors) {
+                gcLine.append(String.format(Locale.US, " %.4f %.4f %.4f",
+                    c.getRed(), c.getGreen(), c.getBlue()));
+            }
+            out.println(gcLine);
+            out.printf(Locale.US, "gradstops %.4f %.4f %.4f %.4f%n",
+                gradStops[0], gradStops[1], gradStops[2], gradStops[3]);
             for (int lane = 0; lane < 3; lane++) {
                 out.println("lane " + lane);
                 for (BezierBaker.Node n : lanes.get(lane)) {
@@ -1564,6 +1798,8 @@ public class FvdDesigner extends Application {
             double[] newStart = { startX, startY, startZ };
             boolean newSolid = railSolid;
             Color newColor = railColor;
+            Color[] newGrad = gradColors.clone();
+            double[] newStops = gradStops.clone();
             List<List<BezierBaker.Node>> newLanes = new ArrayList<>();
             for (int i = 0; i < 3; i++) newLanes.add(new ArrayList<>());
             int curLane = -1;
@@ -1586,6 +1822,19 @@ public class FvdDesigner extends Application {
                         clamp(Double.parseDouble(parts[1]), 0, 1),
                         clamp(Double.parseDouble(parts[2]), 0, 1),
                         clamp(Double.parseDouble(parts[3]), 0, 1));
+                    case "gradcolors" -> {
+                        for (int k = 0; k < 4; k++) {
+                            newGrad[k] = Color.color(
+                                clamp(Double.parseDouble(parts[1 + k * 3]), 0, 1),
+                                clamp(Double.parseDouble(parts[2 + k * 3]), 0, 1),
+                                clamp(Double.parseDouble(parts[3 + k * 3]), 0, 1));
+                        }
+                    }
+                    case "gradstops" -> {
+                        for (int k = 0; k < 4; k++) {
+                            newStops[k] = clamp(Double.parseDouble(parts[1 + k]), G_MIN, G_MAX);
+                        }
+                    }
                     case "lane"  -> curLane = Integer.parseInt(parts[1]);
                     case "n" -> {
                         if (curLane < 0 || curLane > 2) throw new Exception("node outside lane section");
@@ -1630,6 +1879,8 @@ public class FvdDesigner extends Application {
             startX = newStart[0]; startY = newStart[1]; startZ = newStart[2];
             railSolid = newSolid;
             railColor = newColor;
+            System.arraycopy(newGrad, 0, gradColors, 0, 4);
+            System.arraycopy(newStops, 0, gradStops, 0, 4);
             heartSpinner.getValueFactory().setValue(newHeart);
             gaugeSpinner.getValueFactory().setValue(newGauge);
             tieSpinner.getValueFactory().setValue(newTie);
@@ -1702,6 +1953,7 @@ public class FvdDesigner extends Application {
         private int dragHandleIdx = -1;
         private boolean dragHandleIsOut = false;
         private double hoverT = Double.NaN;   // insert preview position on the curve
+        private boolean hoverSlope = false;   // Shift while hovering: show the slope
 
         // time-axis view window; viewT1 < 0 = auto (whole ride, follows edits)
         private double viewT0 = 0, viewT1 = -1;
@@ -1892,6 +2144,7 @@ public class FvdDesigner extends Application {
             });
 
             canvas.setOnMouseMoved(e -> {
+                hoverSlope = e.isShiftDown();
                 double t = (hitNode(e.getX(), e.getY()) < 0
                         && (selIdx < 0 || hitKnob(e.getX(), e.getY()) == 0))
                         ? curveHitT(e.getX(), e.getY()) : Double.NaN;
@@ -1998,6 +2251,15 @@ public class FvdDesigner extends Application {
         private List<BezierBaker.Node> active() { return lanes.get(activeLane); }
 
         void refresh() { redraw(); }
+
+        /** Shift pressed/released while hovering: toggle the slope readout
+         *  without waiting for the next mouse move. */
+        void shiftHover(boolean on) {
+            if (hoverSlope == on) return;
+            hoverSlope = on;
+            if (!Double.isNaN(hoverT)) redraw();
+        }
+
         void clearSelection() {
             selIdx = -1;
             selSet.clear();
@@ -2839,13 +3101,18 @@ public class FvdDesigner extends Application {
                     gc.setFont(Font.font(11));
                     gc.setTextAlign(TextAlignment.LEFT);
                     gc.setTextBaseline(VPos.TOP);
-                    // transition time from the previous node; global value + unit
+                    // transition time from the previous node; global value +
+                    // unit. Position clamped INTO the plot so the readout
+                    // stays readable while dragging past the bounds.
                     BezierBaker.Node nd = lane.get(i);
                     String txt = i == 0
                         ? String.format("t=%.2fs  %.2f%s", nd.t, nd.val, LANE_UNITS[activeLane])
                         : String.format("Δt=%.2fs  %.2f%s",
                             nd.t - lane.get(i - 1).t, nd.val, LANE_UNITS[activeLane]);
-                    gc.fillText(txt, px + 8, py - 20);
+                    double tw = txt.length() * 6.5;   // approx width at 11 px
+                    double tx = clamp(px + 8, MARGIN_LEFT + 4, w - MARGIN_RIGHT - tw - 4);
+                    double ty = clamp(py - 20, MARGIN_TOP + 4, MARGIN_TOP + plotHeight() - 16);
+                    gc.fillText(txt, tx, ty);
                 }
             }
 
@@ -2862,8 +3129,16 @@ public class FvdDesigner extends Application {
                 gc.setFont(Font.font(10));
                 gc.setTextAlign(TextAlignment.LEFT);
                 gc.setTextBaseline(VPos.BOTTOM);
-                gc.fillText(String.format("%.2f%s", hv, LANE_UNITS[activeLane]),
-                    hx + 8, hy - 6);
+                String hoverTxt;
+                if (hoverSlope) {
+                    // Shift: the ANALYTIC slope here replaces the value
+                    // (differencing the baked polyline stair-stepped)
+                    double slope = BezierBaker.slopeAt(lane, hoverT);
+                    hoverTxt = String.format("%.2f %s/s", slope, LANE_UNITS[activeLane].trim());
+                } else {
+                    hoverTxt = String.format("%.2f%s", hv, LANE_UNITS[activeLane]);
+                }
+                gc.fillText(hoverTxt, hx + 8, hy - 6);
                 gc.setGlobalAlpha(1.0);
             }
 
@@ -2876,7 +3151,7 @@ public class FvdDesigner extends Application {
             if (selIdx >= 0 && lock != 0) {
                 double lx = tToX(lane.get(selIdx).t);
                 double ly = valToY(activeLane, lane.get(selIdx).val);
-                gc.setGlobalAlpha(0.35);
+                gc.setGlobalAlpha(0.5);
                 gc.setLineWidth(1.5);
                 if (lock == 1) {
                     gc.setStroke(LANE_COLORS[activeLane]);
@@ -2989,6 +3264,23 @@ public class FvdDesigner extends Application {
                 double[] k = knobPos(idx, out);
                 if (k == null) continue;
                 boolean dragging = (idx == dragHandleIdx && out == dragHandleIsOut);
+
+                // S-slide rail: the line the knob is locked to (dashed,
+                // extended across the plot — the clip trims it)
+                if (dragging && slideKey) {
+                    double ddx = k[0] - nx, ddy = k[1] - ny;
+                    double len = Math.hypot(ddx, ddy);
+                    if (len > 1e-6) {
+                        ddx /= len; ddy /= len;
+                        gc.setGlobalAlpha(0.5);
+                        gc.setStroke(Color.WHITE);
+                        gc.setLineWidth(1);
+                        gc.setLineDashes(4, 6);
+                        gc.strokeLine(nx - ddx * 4000, ny - ddy * 4000,
+                                      nx + ddx * 4000, ny + ddy * 4000);
+                        gc.setLineDashes((double[]) null);
+                    }
+                }
                 boolean offscreen = k[0] < MARGIN_LEFT || k[0] > canvas.getWidth() - MARGIN_RIGHT
                                  || k[1] < MARGIN_TOP || k[1] > MARGIN_TOP + plotHeight();
 

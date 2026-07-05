@@ -501,3 +501,90 @@ absolute coordinates, so:
 - **Shift+wheel fix**: Windows delivers Shift+wheel as HORIZONTAL scroll
   (deltaY = 0) — every scroll handler (fly, POV, orbit zoom, graph zoom)
   falls back to deltaX, so scrolling keeps working with Shift held.
+
+## D34. POV capture, gradient colors, slide-rail guides (v7.3)
+- **POV ride controls are now CAPTURED with right-click** (mirrors fly's
+  hidden-mouse model): a fresh Space enters POV hands-off — W/S and the S
+  slide key stay with the graph editor, so you can edit while watching the
+  ride cam. Right-click hides the mouse and takes W/S for riding (no mouse
+  look; orientation is track-driven); right-click again releases. While
+  captured, SPACE FLIPS between fly (WASD) and POV (W/S) without releasing
+  — `povCaptured` field; movement-key consumption and the slideKey guard
+  test `flyActive || (povActive && povCaptured)`. Scroll-burst works in
+  POV captured or not (it's mouse-based).
+- **G-force gradient is customizable**: four per-coaster anchor colors
+  (below 0 g / 1 g / 3 g / 5 g+) in the renamed "Rail colors" dialog,
+  saved as a `gradcolors` line (12 floats) in the .fvd; segment structure
+  of the gradient (thresholds 0 / 1.5 / 3 / 5) is unchanged.
+- **S-slide rail for handles**: dragging a knob with S held draws the
+  dashed line the knob is locked to, plot-clipped; both this and the node
+  axis guides brightened (alpha 0.35 → 0.5).
+
+## D35. Roll snap default, hover slope, fly-exit jump fix (v7.4)
+- **Roll snap default back to 10 °/s** (D24 had set 1 °/s from the user's
+  "124 deg/s" example; now that the step is user-adjustable the coarse
+  default wins — typed values still allow any number).
+- **Shift while hovering the curve shows the SLOPE** at the cursor
+  (central difference over ±0.01 s, drawn under the value readout);
+  Shift press/release retriggers the redraw via key filters so it appears
+  without wiggling the mouse.
+- **Fly-exit view jump fixed**: exiting fly by right-click while MOVING
+  the mouse jumped the view. Cause: the right-drag events that follow the
+  exit fell into the ORBIT drag handler, which rotated using a stale
+  lastMouse anchor (huge phantom delta). Orbit drags now respond only to
+  the primary button, and the secondary-press handler refreshes the
+  anchor.
+
+## D36. View menu, heartline, pivot picking, readout polish (v7.5)
+- **New View menu** (File · Edit · View · Coaster · Help): "Viewport
+  settings…" dialog now owns the two FOV sliders (moved out of Options,
+  which keeps sensitivity/snaps/POV marker) + a "Show heartline"
+  CheckMenuItem — thin pale tube on the integrated path (the curve the
+  physics lives on), app-wide setting, default off. In POV the tube sits
+  at the camera and is mostly hidden by the near clip.
+- **Help opens directly**: the menu's text is a Label graphic whose click
+  shows the dialog (an empty Menu never pops), title renamed "Help".
+- **Shift+click the track in orbit = re-center the pivot there**:
+  nearest-sample search in SCREEN space (world.localToScreen over every
+  5th sample, 25 px radius) — a forgiving "tube hitbox" without JavaFX
+  mesh picking. View translates (orientation and zoom kept).
+- **Node drag readout clamps into the plot** (it vanished when dragging
+  past the bounds; handle readout already clamped since v7.0).
+- **Shift-hover now REPLACES the value with the slope** (no label prefix).
+- Roll snap default 10 → **5 °/s** (third pick: 10 → 1 → 10 → 5; it's
+  user-adjustable, this is just the out-of-box step).
+
+## D37. View menu retired, neon heartline, analytic slope, pivot fix (v7.6)
+- **View menu removed after one iteration**: FOV sliders and the heartline
+  toggle merged into Edit > Options (user preference: one settings
+  window). Menu bar is File · Edit · Coaster · Help again.
+- **Heartline is a hairline neon strand**: radius 45 mm → 15 mm, 4 sides,
+  and a 1×1 self-illumination map (diffuse black) so it renders as pure
+  unlit yellow at any distance/lighting — reads as a line, not a tube.
+- **Hover slope is ANALYTIC** (`BezierBaker.slopeAt`: bisect x(u)=t on the
+  segment's cubic, then dy/du / dx/du): differencing the baked polyline
+  gave a stair-stepped readout because a polyline's slope is piecewise
+  constant between bake samples.
+- **Shift+click pivot snapping rejects behind-camera samples**:
+  localToScreen projects points behind the camera MIRRORED onto the
+  screen, so clicking empty sky could snap the pivot to invisible track.
+  Samples with (p − camPos)·forward ≤ 0 are skipped; a genuine miss moves
+  nothing and the drag proceeds as a normal orbit.
+
+## D38. POV-hidden heartline, gradient stop values (v7.7)
+- **Heartline hides during POV** (`heartMesh.setVisible(false)` on ride
+  start, back on exit/flip-to-fly; rebuilds mid-ride respect it): the
+  camera sits exactly ON the strand, so it flickered across the lens.
+- **Gradient stops carry adjustable G VALUES** alongside their colors:
+  the rail-colors dialog shows a spinner + picker per stop (defaults
+  0/1/3/5 g; range G_MIN..G_MAX; flat outside the ends, lerped between).
+  Saved as a `gradstops` line next to `gradcolors`. NOTE: this replaced
+  the old hard-coded shape (flat green 0–1.5 g, step at 0) with a
+  continuous 4-stop ramp — the default look shifts slightly (blue→green
+  now blends over 0..1 g instead of stepping at 0).
+- **Help v3** (audit pass): control entries are aligned bold key →
+  description rows (helpKey), prose only for non-key behavior (helpText).
+  Audit added the missing pieces: node deletion semantics (Delete/
+  right-click, gap-bridging), coaster Ctrl+Z in Getting started, the drag
+  readout, heartline-hides-in-POV, and de-duplicated the Options list
+  that appeared in two sections.
