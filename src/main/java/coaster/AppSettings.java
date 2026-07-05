@@ -26,6 +26,7 @@ public class AppSettings {
         { "lane3",  "Select lane 3 (Roll)",       "3" },
         { "smooth", "Toggle smooth/broken node",  "B" },
         { "flath",  "Flatten handles (level)",    "H" },
+        { "align",  "Straighten between selected pair", "F" },
         { "lockv",  "Lock node drag: vertical",   "Z" },
         { "lockh",  "Lock node drag: horizontal", "X" },
         { "delNode", "Delete selected node",      "Delete" },
@@ -37,6 +38,10 @@ public class AppSettings {
     };
 
     public static final double FOV_DEFAULT = 65;
+    public static final double SENS_DEFAULT = 0.15;      // mouse look, deg/px
+    public static final double SNAP_T_DEFAULT = 0.1;     // s
+    public static final double SNAP_G_DEFAULT = 0.1;     // g
+    public static final double SNAP_ROLL_DEFAULT = 1;    // deg/s
 
     private final File file;
     private final Properties props = new Properties();
@@ -101,16 +106,17 @@ public class AppSettings {
     public double flyFov() { return getD("flyFov", FOV_DEFAULT); }
     public void setFlyFov(double v) { setD("flyFov", v); }
 
-    /** Fly-camera mouse-look sensitivity, degrees per pixel. */
-    public double flySens() { return getD("flySens", 0.15); }
+    /** Mouse-look/orbit sensitivity, degrees per pixel (key kept as
+     *  "flySens" for settings-file compatibility). */
+    public double flySens() { return getD("flySens", SENS_DEFAULT); }
     public void setFlySens(double v) { setD("flySens", v); }
 
     /** Node-drag snap intervals (Ctrl): transition seconds, G, deg/s. */
-    public double snapT() { return getD("snapT", 0.1); }
+    public double snapT() { return getD("snapT", SNAP_T_DEFAULT); }
     public void setSnapT(double v) { setD("snapT", v); }
-    public double snapG() { return getD("snapG", 0.1); }
+    public double snapG() { return getD("snapG", SNAP_G_DEFAULT); }
     public void setSnapG(double v) { setD("snapG", v); }
-    public double snapRoll() { return getD("snapRoll", 1); }
+    public double snapRoll() { return getD("snapRoll", SNAP_ROLL_DEFAULT); }
     public void setSnapRoll(double v) { setD("snapRoll", v); }
 
     /** Show the POV camera's track position as a line on the graph. */

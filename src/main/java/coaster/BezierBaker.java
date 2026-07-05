@@ -10,7 +10,7 @@ import java.util.List;
  * 2 = roll rate deg/s) has its OWN independent list of nodes over ride
  * time. A node holds one value plus cubic Bezier handles, stored RELATIVE
  * to the neighboring segment:
- *   out handle: outFrac (fraction 0..0.95 of the time gap to the NEXT
+ *   out handle: outFrac (fraction 0..MAX_FRAC of the time gap to the NEXT
  *               node) + outDv (absolute value offset at the handle end);
  *   in handle:  inFrac (fraction of the gap to the PREVIOUS node) + inDv.
  * Because handle lengths are fractions, moving a node in time rescales the
@@ -28,7 +28,10 @@ public class BezierBaker {
 
     public static final int LANES = 3;
     public static final double DEFAULT_FRAC = 1.0 / 3.0;
-    public static final double MAX_FRAC = 0.95;
+    // handles may reach 150% of the segment (past the neighbor in time);
+    // the resulting folded time-axis is sanitized by bakeLane's monotonic
+    // guard, so extreme shapes stay finite (fuzz-tested)
+    public static final double MAX_FRAC = 1.5;
 
     public static class Node {
         public double t;

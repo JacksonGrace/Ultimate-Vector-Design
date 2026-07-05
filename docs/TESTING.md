@@ -151,9 +151,16 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     spaced along the track (not bunched on slow sections), ends flush —
     nothing pokes past the rails; lowering the value visibly densifies
     them; value survives save/load round-trip.
-17. Entering/exiting fly mode: NO field-of-view jump in either direction.
-    The Options FOV slider changes orbit, fly AND POV together (watch the
-    orbit view widen live while dragging it).
+17. Entering/exiting fly mode: NO field-of-view jump in either direction
+    (fly & orbit share one FOV setting). The "Fly & orbit FOV" slider
+    widens both live; "POV camera FOV" affects only the ride cam. The
+    snap-step spinners' arrows walk the 1-2-5 series both ways
+    (0.05 → 0.1 → 0.2 → 0.5 …); typed values are kept as-is. Every Options
+    row has a ↺ that restores its default. "Mouse sensitivity" affects
+    orbit dragging AND fly look. Scrolling in fly/POV/orbit/graph works
+    IDENTICALLY with Shift held (Windows turns Shift+wheel into horizontal
+    scroll — must not go dead). Hovering the curve shows the insert dot
+    plus the value at that point.
 18. Coaster menu > Start x/y/z: track translates; speeds/forces unchanged
     (energy is relative to start height); grid stays where it was; values
     survive save/load.
@@ -197,10 +204,17 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     on it. After any click-insert, immediately click-drag the new node:
     it must MOVE (not grab one of its handles).
 27. Shift+click two more nodes (faint rings): dragging any moves all three
-    (clamped against unselected neighbors); Shift mid-drag constrains to
-    the dominant axis with the guide line, and the node RETURNS to its
-    original row/column (drift before the axis was chosen snaps back);
-    arrows nudge the group; Delete removes them all. Lane buttons show
+    (clamped against unselected neighbors); HOLDING S mid-drag constrains
+    IMMEDIATELY to the dominant axis and SWITCHES axes if you pull further
+    the other way (total dx vs dy); the node returns to its original
+    row/column; Shift while dragging does nothing axis-wise. Guide colors:
+    vertical guide = lane color (value changing), horizontal = yellow
+    (time changing); "Time (s)" label is yellow. Z/X override S's choice
+    (press again to return it). With exactly two ADJACENT nodes selected,
+    F straightens the segment between them into a line (smooth neighbors
+    stay C1). Ctrl-drag a handle far out: snaps at 10% steps up
+    to 150% of the segment (curve may fold; must stay finite).
+    Arrows nudge the group; Delete removes them all. Lane buttons show
     their curve colors.
 28. Ground: dense 1 m lines near the track fade over bands; past ~120 m
     only 10 m lines, past ~240 m a smooth solid translucent sheet; no

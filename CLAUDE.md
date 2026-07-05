@@ -104,8 +104,9 @@ source tree — they won't compile against the current time-domain API.
   max deviation 0.002, polyline sampling noise). Defaults: flat tangents at
   1/3 segment ⇒ smooth S-curve force transitions. "Smooth" = matching slope
   dv/dt on both sides (unit-correct C1, deliberately NOT pixel-angle
-  matching). Handle drag is FREE by default (angle + length); SHIFT locks
-  the handle on its current line (length only) and never touches the
+  matching). Handle drag is FREE by default (angle + length); holding S
+  ("slide", moved off Shift in v7.1) locks the handle on its current line
+  (length only) and never touches the
   partner; CTRL snaps the length fraction to ease presets — cubic 1/3,
   sine 1−2/π ≈ 0.363, quintic 7/15, circle 0.5523 (fractions whose
   flat-handle Bezier matches each ease's center slope). On a SMOOTH node a
@@ -171,9 +172,11 @@ when the visible curve exceeds them, frozen during drags; inactive lanes
 with the active lane keeping hit-test priority). Lanes ending early draw
 their hold-final-value continuation DOTTED — clickable to append a node.
 Shift+click = multi-select (group drag clamps against non-selected
-neighbors, ignores ripple; Delete removes all). Shift during a node drag =
-transient axis constraint from the dominant movement direction (same guide
-line as Z/X). Arrow keys nudge the selection by snap steps (Ctrl+arrow
+neighbors, ignores ripple; Delete removes all; F with an adjacent PAIR
+selected straightens the segment between them onto the chord). Holding S
+during a node drag = transient axis constraint from the dominant movement
+direction (same guide line as Z/X; slideKey tracked via key filters since
+S is not a modifier). Arrow keys nudge the selection by snap steps (Ctrl+arrow
 lands on the grid; key repeat glides; undo coalesces per burst). Menus and
 dialogs have LOCAL undo/redo (Ctrl+Z / Ctrl+Shift+Z while open; history
 discarded on close so the next Ctrl+Z hits the coaster). Lane buttons are
@@ -181,9 +184,8 @@ tinted with the curve colors. The graph auto-fit time window FREEZES
 during drags (fixes runaway end-node dragging); dragging past ANY plot edge
 grows that axis at a RATE proportional to the overshoot (dragGrowTimer,
 an AnimationTimer — grows even with the mouse held still; view re-fits on
-release). Shift's axis constraint anchors to the node's GESTURE-START
-position (snaps back onto the original row/column) and picks its axis after
-~3 px. After click-inserting a node, the first press prioritizes the node
+release). The S-slide axis constraint anchors to the node's GESTURE-START
+position (snaps back onto the original row/column). After click-inserting a node, the first press prioritizes the node
 body over its own knobs (freshInsertPriority). `subHolder.setMinSize(0,0)` is
 load-bearing: without it the SubScene's min size stops the window/divider
 from shrinking and the collapse controls go off-screen. 3D view floor: static transparent
@@ -215,8 +217,9 @@ transition time, transition Δ, and handle fractions directly · right-click
 the 3D view = FLY mode (WASD + mouse look via Robot cursor-warp, Shift ×4,
 Ctrl ×0.2, scroll burst; right-click exits KEEPING the view — the orbit rig
 has a movable pivot `camPivot` set to the point `zoom` m ahead of the fly
-camera; mutually exclusive with POV; TWO FOV settings — "track view"
-(orbit + POV) and "fly" — plus a fly mouse-sensitivity slider, all in
+camera; mutually exclusive with POV; TWO FOV settings — "POV" and
+"fly & orbit" (the handoff pair must share a lens or mode switches zoom-
+jump) — plus a fly mouse-sensitivity slider, all in
 Edit > Options; fly look deltas are capped ±35 px/event to tame OS pointer
 acceleration). Graph editor: scroll
 zooms the time axis around the cursor (view window in tToX/xToT, min 0.1 s,
@@ -225,7 +228,18 @@ ticks), right-drag pans, box select on empty plot (Shift adds; plain-click
 deselect happens on RELEASE), rotated lane-name y-axis label + "Time (s)"
 x-axis label + faded per-gridline value labels, adaptive 1-2-5 grid lines.
 Insert allows 0.02 s from a node (INSERT_GAP); MIN transition length 0.01 s.
-Ctrl-snap steps are Options settings (settings.snapT/snapG/snapRoll). The
+Ctrl-snap steps are Options settings (settings.snapT/snapG/snapRoll;
+spinner arrows walk the 1-2-5 series; every Options row has a ↺ reset).
+The S-slide axis constraint engages
+instantly, re-picks from total |dx| vs |dy| each event (can switch mid-
+drag), and is OVERRIDDEN by explicit Z/X; guide lines are colored by what
+the drag CHANGES — lane color = value changing (vertical guide), YELLOW =
+time changing (horizontal guide); yellow stays the time color everywhere
+else too (`TIME_COLOR`: "Time (s)" label, POV marker). Hovering the curve
+shows the insert dot plus the lane's value. Mouse sensitivity (Options)
+drives fly look AND orbit (orbit = 2× the setting); Shift+wheel arrives as
+HORIZONTAL scroll on Windows — every scroll handler falls back to deltaX. Handles reach MAX_FRAC = 1.5
+(150% of the segment; baker's monotonic guard sanitizes folds). The
 node body always outranks its own knobs on press. valToY does NOT clamp —
 plot drawing is clipped instead; off-screen handles show a dashed stub +
 hollow edge marker (click = handleViewExpand grows the scale; click off

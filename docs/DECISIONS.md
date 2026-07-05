@@ -457,3 +457,47 @@ absolute coordinates, so:
 - WARNING (process): PowerShell text rewriting corrupted the file's UTF-8
   (mojibake + BOM) once — repaired. Do not pipe these sources through
   PS 5.1 Get-Content/Set-Content.
+
+## D32. FOV pairing flip, live shift axis, colored guides, 150% handles (v7.1)
+- **Orbit now shares the FLY FOV** (third FOV arrangement, user-driven:
+  D30 unified all → D31 paired orbit with POV → now orbit pairs with fly).
+  Rationale: fly and orbit hand off to each other on right-click, so THEY
+  are the pair that must not zoom-jump; POV keeps its own lens. Options
+  labels: "POV camera FOV" / "Fly & orbit FOV".
+- **Shift axis constraint is instant and reversible**: re-evaluated every
+  drag event from the TOTAL |dx| vs |dy| since the press (1 px deadzone),
+  so it engages immediately and flips if you pull further the other way.
+  Explicit Z/X now takes PRECEDENCE over the shift-auto axis (pressing
+  again returns to auto) — inverted from D29 where shift won.
+- **Yellow = time, project-wide UI rule** (`TIME_COLOR`): the "Time (s)"
+  axis label, the vertical time-pinning guide (Z), and the POV marker are
+  all yellow; the horizontal value-pinning guide (X) is the lane color
+  faded. Future time-related chrome should follow it.
+- **Snap spinners walk the 1-2-5 series** on their arrows (both ways:
+  … 0.05 0.1 0.2 0.5 1 2 5 …, `nice125Next/Prev`); typing still accepts
+  arbitrary values.
+- **Handle cap raised to 150% of the segment** (MAX_FRAC 0.95 → 1.5) for
+  aggressive overshoot shapes; the baker's monotonic-t guard sanitizes the
+  folded time axis (headless ExtremeFracCheck: 0 violations at the cap).
+  Presets gained 0.40 and 0.60, and 10% steps run 0.60 → 1.50.
+
+## D33. S-slide, F-straighten, hover value, options polish (v7.2)
+- **The slide constraint moved from SHIFT to a held S key** (nodes: axis
+  lock; handles: in-line length-only). Shift was overloaded — it also
+  multi-selects — and the user wanted them separate. S is not a modifier,
+  so `slideKey` is tracked by scene key filters (set on press when no
+  camera mode owns WASD, cleared on release); Ctrl+S still saves.
+- **F with two ADJACENT selected nodes straightens the segment**: both
+  facing handles land on the chord (slope · effDt); smooth endpoints
+  re-angle their far handles to keep C1. Rebindable action "align".
+- **Guide colors swapped** (D32 lasted one iteration): colors now mean
+  what the drag CHANGES — vertical movement changes value = lane color,
+  horizontal changes time = yellow. TIME_COLOR still owns the "Time (s)"
+  label and POV marker.
+- **Hover readout**: the insert dot shows the lane's value at the cursor.
+- **Options**: ↺ reset-to-default on every row (routes through the
+  control, so persists + menu-undoable); "Mouse sensitivity" now drives
+  orbit too (orbit = 2× the setting, preserving both old defaults).
+- **Shift+wheel fix**: Windows delivers Shift+wheel as HORIZONTAL scroll
+  (deltaY = 0) — every scroll handler (fly, POV, orbit zoom, graph zoom)
+  falls back to deltaX, so scrolling keeps working with Shift held.
