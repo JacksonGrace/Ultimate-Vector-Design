@@ -311,11 +311,42 @@ non-obvious behavior. Do not ship a feature without touching it.
 - No redo; undo excludes heart/gauge.
 - Friction and v0 (26 m/s) are hardcoded, not in the UI.
 
-## Roadmap (user-endorsed ideas, in rough priority)
+## Roadmap (user-endorsed, phased — see docs/SECTIONS-DESIGN.md for Phase 1+)
 
-1. Spine box in the rail mesh (ties exist — copy `buildTieMesh`'s pattern)
-2. Friction + starting-speed settings (copy the spinner pattern)
-3. Redo (Ctrl+Y / Ctrl+Shift+Z)
-4. Geometric sections (target pitch/heading, like FVD++) — needs a solver
-5. Graph editor zoom/pan for long rides
-6. Track export (OBJ / NoLimits2)
+The long-term goal is a multi-section designer (force / geometric / bridge /
+straight-curve sections, splittable track pieces, speed control, NL2
+interop). That requires ONE deep overhaul: splitting the single integrator
+pass into geometry generation (per section, at a per-section DESIGN speed)
+and a global dynamics pass (true speed from energy/friction/speed sections)
+plus an analysis pass (true forces from geometry + true speed). Rationale
+and contracts live in docs/SECTIONS-DESIGN.md. Order:
+
+**Phase 0 — independent wins (do first, none is wasted by the overhaul):**
+1. NoLimits 2 CSV export (heartline-vs-rail-center setting, segment length)
+2. RK4 integrator upgrade (validate against the headless suite first)
+3. Read-only "resulting" graphs (geo rates derived from samples)
+4. Ortho top/side views · C+click orbit recenter · middle-drag orbit
+5. Smoothing tool (select nodes + strength setting)
+6. Viewport editing part 1: read-only node markers on the track,
+   click-track-to-insert
+
+**Phase 1 — the overhaul (feature-neutral):** section/piece model,
+geometry–dynamics–analysis split, per-section design speed, time/distance
+domain toggle, quaternion internal orientation, save format FVDD3,
+section-aware graph, document-level undo, split FvdDesigner into files.
+Existing headless invariants must pass unchanged.
+
+**Phase 2 — section types (easiest first):** geo sections (direct
+pitch/yaw/roll rates — NO solver needed) + reversal → straight/curve mode →
+split/reconnect + piece placement gizmos → bridge sections + influence
+curves + "become real".
+
+**Phase 3 — dynamics:** speed-controlled sections (constant-v /
+constant-longitudinal-G / curve), air + rolling friction.
+
+**Phase 4 — interop & full interactivity:** NL2 CSV import (external-
+geometry sections), viewport editing part 2 (drag values/times/handles in
+3D), Euler display toggle.
+
+**Small items, anytime:** spine box in the rail mesh (copy
+`buildTieMesh`), redo (Ctrl+Y), friction/v0 spinners (subsumed by Phase 3).

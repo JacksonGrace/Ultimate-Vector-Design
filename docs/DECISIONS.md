@@ -588,3 +588,18 @@ absolute coordinates, so:
   right-click, gap-bridging), coaster Ctrl+Z in Getting started, the drag
   readout, heartline-hides-in-POV, and de-duplicated the Options list
   that appeared in two sections.
+
+## D39. Multi-section architecture adopted (planning only)
+The user's large feature list (sections, bridges, speed control, NL2
+interop, viewport editing) was analyzed and phased. Core insight: a force
+section's SHAPE depends on the speed it is integrated at, so "connecting
+track must never change shape" forces splitting the single integrator pass
+into geometry (per section, at a per-section DESIGN speed) / dynamics
+(global true speed) / analysis (true forces) passes. Full contracts,
+data model, per-mode geometry functions, bridge freeze rule, influence
+curves, "become real", speed regions, FVDD3, and testing gates are in
+**docs/SECTIONS-DESIGN.md** (the Phase 1+ spec). CLAUDE.md's roadmap now
+carries the phase order; Phase 0 items are deliberately independent of
+the overhaul. The old "geometric sections need a solver" note is
+superseded — geo sections specify body rates directly; solvers return
+later as tools on top.
