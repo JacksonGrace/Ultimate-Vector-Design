@@ -83,11 +83,18 @@ DesignIO.java       save/load: writes FVDD3, reads FVDD3/FVDD2/FVDD1
                     (legacy = one piece/one section). Headlessly
                     round-trip tested at last.
 
-FvdDesigner.java    ALL JavaFX. 3D view (two-rail mesh, orbit + POV cameras),
-                    graph editor canvas, menu bar (File/Edit/Coaster),
-                    toolbar, export, undo, shortcuts/options dialogs.
-                    Holds the Coaster document; milestone B splits this
-                    file into GraphEditor/Viewport3D/Dialogs/shell.
+GraphEditor.java    JavaFX GRAPH EDITOR (split out in v9.2, D52): the
+                    force-curve canvas — lanes, selection, node/handle
+                    drags, document undo stacks, node dialog. Reaches
+                    the shell through a `final FvdDesigner app` backref
+                    (app.rebuildTrack(), app.settings, …).
+
+FvdDesigner.java    ALL remaining JavaFX (the SHELL): 3D view (two-rail
+                    mesh, orbit/fly/POV cameras, ortho views, markers),
+                    menu bar (File/Edit/Coaster), toolbar, export, file
+                    lifecycle, shortcuts/options dialogs. Holds the
+                    Coaster document. Still to split (milestone B):
+                    Viewport3D.java and Dialogs.java.
 ```
 
 Pipeline on every edit: `lanes → TrackCompiler.compile (passG: bake +
@@ -465,8 +472,10 @@ Existing headless invariants must pass unchanged.
   pipeline (bit-identical output gated), DesignIO with FVDD3.
 - Milestone B: ~~document-level undo~~ DONE v9.1 (D51, incl. heart/gauge/
   start/v0 per user rule) + ~~file lifecycle~~ (New/Save/Save As/dirty
-  title — a user feature request folded in). Remaining: split FvdDesigner
-  into files, section-aware graph strips, section-insertion UI.
+  title — a user feature request folded in); FvdDesigner split part 1
+  DONE v9.2 (D52: GraphEditor.java out, shell 4.2k → 2.4k lines).
+  Remaining: Viewport3D.java + Dialogs.java split, section-aware graph
+  strips, section-insertion UI.
 
 **Phase 2 — section types (easiest first):** geo sections (direct
 pitch/yaw/roll rates — NO solver needed) + reversal → straight/curve mode →

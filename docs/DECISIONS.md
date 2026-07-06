@@ -982,3 +982,33 @@ User call on the milestone-A question, plus a workflow feature round:
   file (no chooser) once one exists; Save As… always asks. The old
   always-ask Save behavior is gone — that's what "the file that is
   open" in the title implies.
+
+## D52. FvdDesigner split part 1: GraphEditor.java (v9.2)
+First slice of the milestone-B mechanical split (§8): the ~1,760-line
+graph editor moved from an inner class to its own top-level
+package-private class. FvdDesigner drops 4,167 → 2,403 lines.
+- **Method: scripted verbatim move, not a rewrite.** A Python pass
+  extracted the class by brace-walking, de-indented it, and made every
+  outer reference explicit through a `final FvdDesigner app` backref —
+  instance members/methods as `app.x`, outer statics as
+  `FvdDesigner.X` — using a curated symbol list with a
+  no-prefix-after-dot guard (`.sub(` and comment prose were the traps;
+  `editor`/`sub` matches turned out to be false positives and were
+  excluded). Pure-comment lines were left untouched.
+- **Verification for a change the compiler half-checks:** compile-clean
+  proves no UNDER-prefixing (a missed outer ref cannot resolve), but
+  not over-prefixing onto a shadowing local — a post-pass grep asserted
+  zero bare occurrences of the curated names and zero shadowing
+  declarations inside the new file. All headless suites re-passed
+  (they don't execute JavaFX, but they catch collateral core damage).
+  The REAL test is the full manual pass: any graph-editing behavior
+  drift from v9.1 is a split bug, not a feature.
+- Outer members the editor reaches went private → package-private
+  (lanes, settings, coaster, stage, ripple/slide/pov state,
+  heartOffset, spinners it writes, lastSamples/resultRates,
+  rebuildTrack, markDirty, snapshot/apply, refreshTrackMarkers,
+  INTEGRATE_DT, clamp). DocState was already package-visible.
+- **Remaining split (next batch): Viewport3D.java and Dialogs.java.**
+  Deliberately NOT bundled here — the 3D input/camera code is the
+  least-verified area in the app (POV affine, capture handoffs); it
+  gets its own isolated diff so a regression bisects to one commit.

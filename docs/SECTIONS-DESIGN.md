@@ -174,10 +174,10 @@ Phase 0, D44) and Pass D's speed ODE. v floor 0.5 m/s stays
   sections greyed (like inactive lanes today); click a greyed section to
   activate; section boundaries drawn; insertion = toolbar/menu "insert
   section" at end or between two (splits the strip).
-- **FvdDesigner split** (mechanical, during Phase 1): GraphEditor.java,
-  Viewport3D.java (cameras/meshes/grid), Dialogs.java, DesignIO.java
-  (save/load — TESTING.md already wants this for round-trip tests),
-  FvdDesigner.java as shell. Pure core grows: Section types, passes.
+- **FvdDesigner split** (mechanical, during Phase 1): GraphEditor.java
+  (DONE v9.2, D52), Viewport3D.java (cameras/meshes/grid), Dialogs.java,
+  DesignIO.java (DONE v9.0, D50 — round-trip tested at last),
+  FvdDesigner.java as shell. Pure core grew: Section types, passes.
 
 ## 9. Testing gates (each phase blocks on these, headless as always)
 
