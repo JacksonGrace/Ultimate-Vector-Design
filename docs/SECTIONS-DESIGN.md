@@ -1,9 +1,10 @@
 # SECTIONS-DESIGN.md — Phase 1+ architecture: sections, pieces, and the geometry/dynamics split
 
-Status: PHASE 1 MILESTONE A IMPLEMENTED (v9.0, D50) — document model,
-three-pass TrackCompiler and FVDD3/DesignIO are live and gated
-(TESTING #11); the UI split, section-aware graph and document undo are
-milestone B. One AMENDMENT to §2 below: quaternions are the model-level
+Status: PHASE 1 NEARLY COMPLETE — milestone A (v9.0, D50: document
+model, three-pass TrackCompiler, FVDD3/DesignIO, all gated in TESTING
+#11) and most of milestone B (v9.1 D51 document undo + file lifecycle;
+v9.2/v9.4 D52/D54 the full FvdDesigner split) are live. Remaining:
+section-aware graph strips + section-insertion UI (§8). One AMENDMENT to §2 below: quaternions are the model-level
 orientation (poses, placements, exit poses) but the FORCE-section
 integrator keeps stepping T/U as vectors — §1's bit-for-bit gate
 outranks §2's "Pass G integrates orientation as a quaternion" (they
