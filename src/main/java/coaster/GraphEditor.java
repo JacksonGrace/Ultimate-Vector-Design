@@ -304,12 +304,22 @@ class GraphEditor extends Region {
         gc.setLineDashes(4, 6);
         gc.strokeLine(x, MARGIN_TOP, x, MARGIN_TOP + plotHeight());
         gc.setLineDashes((double[]) null);
-        // the ride's last node sits exactly on this line — if one lands
-        // under the button, drop the button to mid-plot (user request)
+        // the ride's END nodes sit exactly on this line — and the OTHER
+        // lanes' value-0 end nodes map to mid-plot on their scales (Gl 0
+        // on ±1, roll 0 on ±150), so a single top-vs-mid comparison never
+        // dodged (D57). Walk a ladder of spots downward and take the
+        // first CLEAR one; if none is clear, the clearest.
         double cy = MARGIN_TOP + 16;
-        double mid = MARGIN_TOP + plotHeight() / 2;
-        if (nearestNodePx(x, cy) < 24 && nearestNodePx(x, mid) > nearestNodePx(x, cy)) {
-            cy = mid;
+        double[] ladder = { MARGIN_TOP + 16,
+                            MARGIN_TOP + plotHeight() * 0.30,
+                            MARGIN_TOP + plotHeight() * 0.50,
+                            MARGIN_TOP + plotHeight() * 0.70,
+                            MARGIN_TOP + plotHeight() - 16 };
+        double bestD = -1;
+        for (double cand : ladder) {
+            double d = nearestNodePx(x, cand);
+            if (d >= 26) { cy = cand; bestD = Double.MAX_VALUE; break; }
+            if (d > bestD) { bestD = d; cy = cand; }
         }
         gc.setGlobalAlpha(0.9);
         gc.setFill(Color.rgb(45, 50, 62));
@@ -467,11 +477,6 @@ class GraphEditor extends Region {
         canvas.setOnMousePressed(e -> {
             hoverT = Double.NaN;   // no insert preview while interacting
             if (e.getButton() == MouseButton.PRIMARY) {
-                // the '+' add-section affordance past the ride end
-                if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
-                    showAddSectionMenu(e.getScreenX(), e.getScreenY());
-                    return;
-                }
                 int hit = hitNode(e.getX(), e.getY());
                 // the node body ALWAYS outranks its own knobs, so a node
                 // overlapping its handles stays grabbable
@@ -523,6 +528,14 @@ class GraphEditor extends Region {
                     dragGrowTimer.start();
                     redraw();
                 } else {
+                    // the '+' add-section affordance — tested AFTER the
+                    // node/knob hits so an overlapping node stays
+                    // grabbable (D57); the button's exposed edge still
+                    // opens the menu
+                    if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
+                        showAddSectionMenu(e.getScreenX(), e.getScreenY());
+                        return;
+                    }
                     // a click ON the active curve inserts a node there
                     double t = curveHitT(e.getX(), e.getY());
                     if (!Double.isNaN(t)) {

@@ -467,8 +467,11 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     Save → load: both sections and the active-strip behavior survive
     (FVDD3). POV rides across the boundary seamlessly. With ONE section
     everything must look exactly as before (feature-neutral baseline).
-    v9.6 polish: drag a node onto the '+' line near the top — the ⊕
-    drops to mid-plot and the node stays selectable (and vice versa);
+    v9.6/9.7 polish: drag the last node up the '+' line — the ⊕ hops
+    down the ladder (30%/50%/70%/bottom) to a clear spot, skipping
+    heights where the OTHER lanes' zero-value end nodes sit; wherever
+    the ⊕ ends up, a node dragged onto it still SELECTS on click (nodes
+    outrank the button — the menu opens only from its exposed edge);
     inactive strips are clearly legible (alpha 0.20). Select section
     2's FIRST node, press B (or use "Match slope across boundary" in
     its dialog): its out-handle angles so the curve continues the

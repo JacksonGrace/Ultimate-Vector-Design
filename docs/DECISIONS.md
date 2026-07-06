@@ -1135,3 +1135,19 @@ User hand-test feedback on v9.5, all three items:
   edit freely afterwards (and a straight-locked segment's enforcement
   wins over it). Interior nodes keep the classic smooth/broken B;
   edge nodes with no adjacent section (ride start/end) no-op.
+
+## D57. '+' dodge troubleshoot: the mid-plot spot is never empty (v9.7)
+The D56 dodge compared the top spot against mid-plot and moved only if
+mid was CLEARER — but mid-plot is essentially always occupied at the
+ride-end x: the other lanes' value-0 end nodes map exactly there
+(Gl 0 on its ±1 scale and roll 0 on ±150 both hit plot centre). So the
+comparison failed and the button never moved. Two fixes:
+- **Ladder dodge**: candidate heights top → 30% → 50% → 70% → bottom;
+  the first spot with ≥26 px clearance from every active-section node
+  wins, else the clearest of the five.
+- **Nodes outrank the '+' in the press order** (the real editability
+  guarantee): the button's hit test moved from before hitNode to the
+  nothing-else-hit branch, so a node overlapping the button is always
+  grabbable; the button's exposed edge still opens the menu.
+Lesson recorded because it generalizes: "move it to the centre" style
+dodges must account for value-0 curves resting at scale centres.
