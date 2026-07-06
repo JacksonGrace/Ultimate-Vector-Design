@@ -13,19 +13,23 @@
 
 ## Existing validations (convert these to JUnit in this repo)
 
-1. **Circle closure (integrator ground truth).** Flat unbanked turn,
-   v0=20 m/s, Gl=1.5 ⇒ analytic radius v²/(g·Gl)=27.192 m. Assert: after one
-   circumference the position error < 5 cm and end·start heading dot > 0.999.
-   (Historical result: 1.5 cm over 170.9 m.) Note: originally written for the
-   distance-domain integrator; re-express in time domain (duration =
-   circumference / v).
+1. **Circle accuracy (integrator ground truth).** Flat unbanked turn,
+   v0=20 m/s, Gl=1.5 ⇒ analytic radius v²/(g·Gl)=27.192 m, center =
+   pos0 + R0·r. Assert: worst |distance-from-center − r| over the whole
+   path < 1e-6 m and the path stays in the y=0 plane. RK4 (v8.0)
+   measures < 1e-9 m; the old Euler stepper measured 10.0 cm. Do NOT use
+   "closure error at the last sample" as the metric — the last sample
+   lands up to dt before exact closure time, which alone contributes
+   ~6 cm and made Euler look 4× better than it was (see D44).
 
 2. **Default layout invariants (bake + integrate pipeline).** Build the
    shipped three-lane default (node tables live in `FvdDesigner`; consider
    extracting to a shared `DefaultLayout` class so tests and app share one
    source of truth). Assert: baked keyframes strictly increasing in t, all
-   finite; end |pitch| < 3°; end U.y > 0.99. (Historical: pitch 0.2°,
-   U.y 1.000, 13.46 s, ~407 m.)
+   finite; end |pitch| < 3°; end U.y > 0.99. RK4 baseline (v8.0,
+   start (0,21,0), v0 26): 271 keyframes, 1347 samples, 13.46 s,
+   406.878 m, end pitch 0.2284°, U.y 0.999971, top speed 32.10 m/s,
+   rail y 2.95–24.78. (Euler-era historical: 406.809 m, pitch 0.2300°.)
 
 3. **Baker fuzz.** 200 seeded-random layouts (4–13 nodes, random values in
    ~2× the UI ranges), then scramble ALL handles with out-of-range values
@@ -59,6 +63,35 @@
    the 2-node original vs the 3-node split lane must agree everywhere.
    Historical: max diff 0.005 (bake-polyline sampling noise); assert < 0.01.
 
+8. **NL2 CSV export (v7.8).** `Nl2CsvExporter` validated headlessly under
+   `Locale.GERMANY` (comma-decimal trap — output must stay `Locale.US`):
+   (a) straight 5 s line ⇒ 131 points over 130 m, spacing uniform to 1e-6,
+   front=+X, up=+Y, left=−Z (the Z-mirror); (b) every row orthonormal and
+   `up = front × left` (NL2's right-handed identity) to 5e-6 — the
+   tolerance is %.6f text round-trip noise, do NOT tighten it; (c) +Gl
+   integrates as a rider-right turn AND exports clockwise-from-above
+   (`f_k × f_k+1` has y<0), +roll tips exported `up` toward `left` — the
+   chirality pair that catches a wrong/missing mirror; (d) a violent
+   hills+roll layout (67 m/s, 198 m drop): heartline export length matches
+   the integrator's `s`, spine export is resampled by the OFFSET curve's
+   own arc length (337.4 vs 343.2 m — they must differ), and every spine
+   point sits on the offset POLYLINE within 1e-5 (measure distance to
+   SEGMENTS, not to sample points — dense samples are ~0.7 m apart at that
+   speed and nearest-point distance ~0.33 m is expected, not a bug);
+   (e) count = round(total/segLen)+1 at 0.1 m and 10 m requests. All
+   passed 2026-07-05 (scratch main; convert to JUnit with the rest);
+   re-passed unchanged on the RK4 integrator (path lengths shifted
+   ~1 m on the violent test layout, as expected).
+
+9. **Resulting body rates (v8.0).** `FVDIntegrator.bodyRates`: straight
+   line ⇒ all rates 0 (measured 0.0); flat circle (v0=20, Gl=1.5) ⇒ yaw
+   = deg(g·Gl/v) = 42.141 °/s within 4e-4, pitch 0; constant 50 °/s roll
+   ⇒ extracted roll within 1e-3; default layout ⇒ extracted roll tracks
+   the baked roll lane within 0.09 °/s (skip ±5 edge samples — central
+   differences degrade to one-sided there).
+
+10. ~~Smoothing tool~~ removed in v8.1 (D47) — validation retired with it.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.
@@ -83,8 +116,9 @@ preserve it.
 
 After any `FvdDesigner` change, run `mvn javafx:run` and walk:
 1. Window fits screen incl. title bar (test target: 1920×1080). Floor is a
-   transparent grid (1 m lines, heavier every 10 m) that does NOT move while
-   dragging nodes — the track may dip below it; that's fine. The grid fades
+   transparent grid (1 m lines, heavier every 10 m) at ABSOLUTE y=0 — the
+   default layout floats ~2 m above it (start y 21) and a track edited to
+   dive below 0 goes under the grid; that's fine. The grid fades
    out with distance (minors gone past 100 m, everything ends at 150 m):
    zoomed way out there must be NO shimmering/moiré. Heart/Gauge labels in
    the Coaster menu are black (readable on the light popup).
@@ -97,7 +131,8 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
    proportion (drag one 30%→15% and a 20% partner lands at 10%; dv 1.0→1.5
    takes a −0.8 partner to −1.2) — always collinear. Shift-drag: knob rides
    its current line, length only, partner does NOT move. Ctrl-drag: length
-   snaps between ease presets (readout shows e.g. "out 33% cubic").
+   snaps between ease presets (readout shows e.g. "out 0.33 cubic" —
+   fractions of the segment, no % anywhere).
    Drag node: free; Ctrl snaps the TRANSITION to 0.1 s steps (readout Δt
    lands on 0.30s/0.80s even when the previous node sits off-grid) and the
    value to the absolute grid (0.1 G; whole °/s in the roll lane); readout
@@ -129,11 +164,19 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
    segment (no stair-stepping). Double-click ON a node opens the editor dialog:
    typed transition time/Δ and handle fractions apply on Apply/Enter,
    Cancel/Esc discards, garbage input keeps old values, ripple toggles are
-   honored. Right-click or Delete key removes the selected node: neighbors
+   honored. Typing a HANDLE fraction slides the knob along its current
+   angle (curve steepens/relaxes but the tangent direction at the node
+   is unchanged — like an S-drag); on node 0 the dialog shows "Start
+   speed (m/s)" instead of a transition time and applying it updates the
+   Coaster-menu spinner and the stats top speed. Right-click or Delete
+   key removes the selected node: neighbors
    stay put (positions AND handle settings) with the curve bridging the
    gap; deleting the last node shortens the ride; node 0 refuses.
 6. A appends 1 s; ride time in stats bar grows by 1.0; the appended
    transition's handles sit at the SINE fraction (readout ~36%, not 33%).
+   ONLY the active lane gets the new node — switch lanes: the other two
+   still end at their old last node with a dotted hold to the new ride
+   end (clicking the dotted line still inserts).
 7. Space: POV cam starts at t=0 HANDS-OFF — W/S do nothing to the camera
    and the S slide key still works on the graph (drag a node with S held
    while the POV view shows). Right-click the view: mouse vanishes, W
@@ -151,7 +194,7 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
    the pre-load design. Loading a pre-v6 FVDD1 file must reproduce its curve
    shapes (handles auto-convert from absolute seconds to fractions).
 10. Undo spam: Ctrl+Z ×20 walks history without exceptions; one drag = one
-    undo step.
+    undo step; Ctrl+Shift+Z ×20 walks it all forward again (see step 36).
 11. Coaster menu > "Rail colors…" opens the color dialog; picking a solid
     color switches to solid mode and repaints the rails. "Custom Color…"
     inside the picker must NOT crash (regression: it did when the picker was
@@ -193,8 +236,12 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     scroll — must not go dead). Hovering the curve shows the insert dot
     plus the value at that point.
 18. Coaster menu > Start x/y/z: track translates; speeds/forces unchanged
-    (energy is relative to start height); grid stays where it was; values
-    survive save/load.
+    (energy is relative to start height); grid stays at y=0; values
+    survive save/load. Start speed spinner: raising it visibly speeds the
+    POV ride and raises the stats top speed; the same value appears in
+    node 0's double-click dialog and edits made there show in the menu;
+    survives save/load (v0 line); Ctrl+Z inside the open menu steps
+    spinner changes back, but coaster undo does NOT include it.
 19. Graph: scroll zooms the time axis around the cursor; ticks and the
     "Time (s)" / rotated lane-name axis labels stay correct; right-drag
     pans when zoomed; node editing works identically while zoomed; zooming
@@ -207,7 +254,13 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
 21. Select a node, press Z: translucent vertical guide appears, drags only
     change value; Z again unlocks. X: horizontal guide, drags only change
     time. Selecting another node clears the lock. H levels the selected
-    node's handles (both dv 0); all three keys rebindable in Shortcuts.
+    node's handles (both dv 0) — with a multi-selection EVERY selected
+    node's handles go flat (values untouched). Shift+H with 2+ selected:
+    every selected node jumps to the PRIMARY node's value with flat
+    handles — the run becomes one horizontal line; segments to unselected
+    neighbors still transition. Primary = last clicked, or the EARLIEST
+    node of a box selection (check its ring). All keys rebindable in
+    Shortcuts.
 22. POV: scrolling in the 3D view lunges along the track (both directions,
     wraps); a translucent vertical line on the graph tracks the camera and
     moves with W/S/scroll; Edit > Options unchecks it away live.
@@ -234,6 +287,13 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     to the ride end; hovering it shows the dot and clicking appends a node
     on it. After any click-insert, immediately click-drag the new node:
     it must MOVE (not grab one of its handles).
+26b. Mid-drag combo guard: start dragging a node, hold Ctrl (snap engages),
+    then press and hold S — the drag starts SLIDING (axis constraint) and
+    NO save dialog appears; release the mouse with Ctrl+S still held —
+    still no save dialog (key auto-repeat must not fire it); release
+    everything, plain Ctrl+S saves normally. Same drill with Z instead of
+    S: mid-drag Ctrl+Z does NOT undo (the axis lock simply doesn't engage
+    while Ctrl is down; nothing else fires either).
 27. Shift+click two more nodes (faint rings): dragging any moves all three
     (clamped against unselected neighbors); HOLDING S mid-drag constrains
     IMMEDIATELY to the dominant axis and SWITCHES axes if you pull further
@@ -243,8 +303,8 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     (time changing); "Time (s)" label is yellow. Z/X override S's choice
     (press again to return it). With exactly two ADJACENT nodes selected,
     F straightens the segment between them into a line (smooth neighbors
-    stay C1). Ctrl-drag a handle far out: snaps at 10% steps up
-    to 150% of the segment (curve may fold; must stay finite).
+    stay C1). Ctrl-drag a handle far out: snaps at 0.1 steps up
+    to 1.5× the segment (curve may fold; must stay finite).
     Arrows nudge the group; Delete removes them all. Lane buttons show
     their curve colors.
 28. Ground: dense 1 m lines near the track fade over bands; past ~120 m
@@ -272,6 +332,68 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     Zoom to a 0.2 s window: grid/ticks show 0.02/0.05 s steps with two
     decimals, no repeated labels. Fly/orbit/POV: the floor grid's dense
     region follows the camera (fly far from the track and look down).
+33. File > Export NL2 CSV (or Ctrl+E): dialog offers rail center /
+    heartline radios + segment length spinner (↺ resets 1.0 m); Export…
+    prompts for a .csv and the stats bar reports points/spacing/length.
+    Heartline is the default (fresh settings file). Both settings survive
+    an app restart (they're per-user, not in the
+    .fvd). Ctrl+Z inside the dialog undoes setting changes. In NoLimits 2:
+    import the file as an external/CSV track — the layout must match the
+    designer INCLUDING turn direction and banking side (if turns come out
+    mirrored, the Z-negation in `Nl2CsvExporter` is wrong — see D40) and
+    segment spacing should look even. Rail-center export should put NL2's
+    rails where the designer draws them; heartline export sits one Heart
+    setting above.
+34. Straight lock: select two adjacent nodes, Shift+F — the segment snaps
+    straight and draws as TWIN thin lines (single 2 px stroke gone). Drag
+    either endpoint anywhere: the segment stays a perfect line. Drag one
+    of the segment's facing knobs: it slides ALONG the line (length
+    changes, line doesn't bend); an S-drag feels identical. Double-click
+    an endpoint and type a handle value — still straight after Apply.
+    Click-insert ON the locked segment: both halves stay locked (four
+    thin lines); delete the inserted node: merged segment still locked.
+    Select just ONE endpoint, Shift+F: unlocks (normal single stroke
+    returns, handles stay where the lock left them). Lock survives a
+    save/load round-trip (n-line 8th field) and Ctrl+Z restores the
+    pre-lock handle shape. In the node dialog the handle rows read just
+    "In handle"/"Out handle" (no "(fraction)").
+35. Toolbar "Resulting" dropdown: check "Pitch rate" — a thin dashed
+    green curve appears (°/s on the roll lane's scale); check "Yaw rate"
+    — dashed blue joins it. On the default layout the pitch-rate curve
+    swings through the hills while yaw stays ~0 (it's a no-lateral
+    layout). There is NO roll entry (the resulting roll rate is the
+    roll lane itself). The roll lane's value axis expands if an enabled
+    curve pokes past it; unchecking both restores the default axis.
+    Picks survive an app restart. Editing nodes updates the curves live.
+36. Redo: drag a node, Ctrl+Z — it snaps back; Ctrl+Shift+Z — the drag
+    returns. Undo ×5 then redo ×5 walks forward through the same states.
+    After an undo, make ANY new edit: Ctrl+Shift+Z now does nothing (the
+    redo branch cleared). Works for deletes, inserts, appends, dialog
+    edits and loads. Inside menus/dialogs Ctrl+Shift+Z still redoes the
+    MENU-local edits only (unchanged).
+37. Ortho views & orbit gestures: press T — the view snaps straight down
+    with NO perspective (rails don't converge) and the grid runs SQUARE
+    to the screen (yaw snapped to the nearest 90°); the picture is the
+    same SIZE as before the snap. Select a node, Shift+T — side
+    elevation centered on that node, whose track marker is white and
+    larger than the rest; with nothing selected the side view keeps the
+    current center. RIGHT-drag in either view pans (world follows the
+    mouse, view stays snapped, grid dense region follows); right-click
+    does NOT enter fly while a snapped view is active. Scroll zooms in
+    both (smooth, no sudden clamp). The same key returns to the exact
+    perspective view you left; orbit-DRAGGING (primary or middle)
+    instead keeps the direction you're facing and restores perspective
+    without a size jump. MIDDLE-drag rotates the orbit exactly like
+    primary-drag. Hold C and click the track: the pivot re-centers
+    there (same as Shift+click); C+click on sky does nothing.
+38. Track markers & insert: small spheres sit between the rails at each
+    ACTIVE lane node (lane color; selected nodes white — click nodes in
+    the graph and watch the spheres follow; switch lanes and they move
+    to that lane's nodes). Options unchecks them away live. Ctrl+click
+    ON the track: a node appears in the active lane at that point of
+    the ride (graph shows it selected; one Ctrl+Z removes it);
+    Ctrl+click on sky does nothing. Markers must NOT flicker or lag
+    while dragging graph nodes (signature-guarded rebuild).
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes

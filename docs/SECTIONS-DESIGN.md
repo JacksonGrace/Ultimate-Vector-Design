@@ -151,8 +151,9 @@ Pass D applies them in order; overlaps are invalid (reject on placement).
 `dv/ds` from: gravity component along T, minus rolling friction
 (dimensionless coefficient c_rr, deceleration ≈ c_rr·g·|N|/m ≈ c_rr·g for
 a first cut), minus air drag (k_air·v², k_air in 1/m). NL2 calls these
-"friction" and "air resistance". RK4 for Pass G's frame ODE (Phase 0) and
-Pass D's speed ODE. v floor 0.5 m/s stays (garbage-but-finite on stalls).
+"friction" and "air resistance". RK4 for Pass G's frame ODE (DONE in
+Phase 0, D44) and Pass D's speed ODE. v floor 0.5 m/s stays
+(garbage-but-finite on stalls).
 
 ## 8. Persistence, undo, UI
 
@@ -173,9 +174,10 @@ Pass D's speed ODE. v floor 0.5 m/s stays (garbage-but-finite on stalls).
 
 ## 9. Testing gates (each phase blocks on these, headless as always)
 
-- Phase 1: default layout reproduces EXACTLY (271 keyframes, 13.46 s,
-  406.8 m, pitch 0.23°, U.y 1.000); circle + banked-turn + squish + split
-  suites pass; FVDD2 round-trip loads identical.
+- Phase 1: default layout reproduces EXACTLY against the RK4 baseline
+  (re-baselined in Phase 0, D44: 271 keyframes, 1347 samples, 13.46 s,
+  406.878 m, pitch 0.2284°, U.y 0.999971); circle + banked-turn + squish
+  + split suites pass; FVDD2 round-trip loads identical.
 - Connect-invariance test: assemble A→bridge→B, then change v0, add speed
   regions, edit A — assert B's centerline is bitwise unchanged.
 - Geo section: constant pitch rate over Δt ⇒ exact pitch change; roll

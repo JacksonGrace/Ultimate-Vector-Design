@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * FVDIntegrator.java  (v2: TIME-domain)
+ * FVDIntegrator.java  (v3: TIME-domain, RK4)
  *
  * Force-Vector-Design style coaster centerline integrator, driven by
  * functions of TIME rather than arc length (matching FVD++'s model).
@@ -23,8 +23,18 @@ import java.util.List;
  *   omegaR = g*(Gl - R.y) / v     (yawing toward the car's right axis)
  * and the roll rate rotates the frame about T directly.
  *
- * Each step: rotate the frame by Omega*dt, advance pos by T*v*dt, update
- * v from energy conservation (minus a simple friction bleed).
+ * Integration (Phase 0 upgrade, see DECISIONS.md D44): classic RK4 on the
+ * state (pos, T, U) with T' = Omega x T, U' = Omega x U, pos' = T*v; the
+ * frame is re-orthonormalized after every step and R = U x T is derived.
+ * Speed is ALGEBRAIC, not part of the ODE state: energy conservation vs
+ * the start height, v = sqrt(v0^2 + 2g(y0 - y)), evaluated wherever a
+ * stage needs it. Each stage re-normalizes its local frame copy so the
+ * physics never sees the slightly non-unit vectors RK4 stages produce.
+ *
+ * (The old integrator applied one exact Rodrigues rotation per step from
+ * the step-START Omega — first-order in the rate of change of Omega.
+ * RK4 shrank the analytic-circle closure error from centimeters to
+ * micrometers at the same dt; see docs/TESTING.md #1.)
  */
 public class FVDIntegrator {
 
@@ -44,16 +54,25 @@ public class FVDIntegrator {
         public double friction = 0;   // crude per-second speed bleed factor
     }
 
+    /** RK4 state: position + two frame vectors (R is derived). */
+    private record State(Vec3 pos, Vec3 T, Vec3 U) {}
+
+    private record Deriv(Vec3 dPos, Vec3 dT, Vec3 dU) {}
+
+    /** Keyframe lerp at t. Binary search — RK4 calls this 4x per step. */
     private static Keyframe interpAt(List<Keyframe> kfs, double t) {
         Keyframe first = kfs.get(0);
         if (t <= first.t()) return first;
         Keyframe last = kfs.get(kfs.size() - 1);
         if (t >= last.t()) return last;
 
-        int i = 0;
-        while (kfs.get(i + 1).t() < t) i++;
-        Keyframe a = kfs.get(i);
-        Keyframe b = kfs.get(i + 1);
+        int lo = 0, hi = kfs.size() - 1;      // kfs[lo].t <= t < kfs[hi].t
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (kfs.get(mid).t() <= t) lo = mid; else hi = mid;
+        }
+        Keyframe a = kfs.get(lo);
+        Keyframe b = kfs.get(hi);
         double u = (t - a.t()) / (b.t() - a.t());
 
         return new Keyframe(
@@ -64,6 +83,39 @@ public class FVDIntegrator {
         );
     }
 
+    /** Speed from energy conservation vs the start height (algebraic). */
+    private static double speedAt(Vec3 pos, double v0, double y0) {
+        return Math.sqrt(Math.max(v0 * v0 + 2 * G0 * (y0 - pos.y()), 0));
+    }
+
+    /** State derivative. The stage frame is re-orthonormalized locally so
+     *  omega and the advance direction come from unit vectors even when
+     *  RK4 hands us a mid-stage (slightly denormalized) state. */
+    private static Deriv deriv(State st, double t, List<Keyframe> kfs,
+                               double v0, double y0) {
+        Vec3 T = st.T().normalize();
+        Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
+        Vec3 R = U.cross(T); // frame convention: T x R = U, R x U = T, U x T = R
+
+        Keyframe kf = interpAt(kfs, t);
+        double v = speedAt(st.pos(), v0, y0);
+        double vSafe = Math.max(v, 0.5);
+
+        double omegaU = (G0 * (kf.Gv() - U.y())) / vSafe;
+        double omegaR = (G0 * (kf.Gl() - R.y())) / vSafe;
+        Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU))
+                      .add(T.scale(Math.toRadians(kf.rollRateDeg())));
+
+        return new Deriv(T.scale(v), omega.cross(T), omega.cross(U));
+    }
+
+    private static State advance(State y, Deriv k, double h) {
+        return new State(
+            y.pos().add(k.dPos().scale(h)),
+            y.T().add(k.dT().scale(h)),
+            y.U().add(k.dU().scale(h)));
+    }
+
     public static List<Sample> integrateTrack(List<Keyframe> keyframes, Options opts) {
         double dt = opts.dt;
         double totalTime = keyframes.get(keyframes.size() - 1).t();
@@ -72,7 +124,7 @@ public class FVDIntegrator {
         double v = opts.v0;
         Vec3 T = opts.startHeading.normalize();
         Vec3 U = new Vec3(0, 1, 0);
-        Vec3 R = U.cross(T); // frame convention: T x R = U, R x U = T, U x T = R
+        Vec3 R = U.cross(T);
 
         double y0 = pos.y();
         double s = 0;
@@ -81,38 +133,66 @@ public class FVDIntegrator {
         double t = 0;
         while (t <= totalTime) {
             Keyframe kf = interpAt(keyframes, t);
-            double rollRate = Math.toRadians(kf.rollRateDeg()); // rad/s
-
             samples.add(new Sample(t, s, pos, T, U, R, v, kf.Gv(), kf.Gl()));
 
-            double vSafe = Math.max(v, 0.5);
+            State y = new State(pos, T, U);
+            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0);
+            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, opts.v0, y0);
+            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, opts.v0, y0);
+            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, opts.v0, y0);
 
-            // angular velocities (rad/s) needed for the requested forces
-            double omegaU = (G0 * (kf.Gv() - U.y())) / vSafe;
-            double omegaR = (G0 * (kf.Gl() - R.y())) / vSafe;
+            Vec3 newPos = pos.add(
+                k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
+                    .scale(dt / 6));
+            T = T.add(
+                k1.dT().add(k2.dT().scale(2)).add(k3.dT().scale(2)).add(k4.dT())
+                    .scale(dt / 6)).normalize();
+            U = U.add(
+                k1.dU().add(k2.dU().scale(2)).add(k3.dU().scale(2)).add(k4.dU())
+                    .scale(dt / 6));
+            U = U.sub(T.scale(U.dot(T))).normalize();   // re-orthonormalize
+            R = U.cross(T);
 
-            Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU)).add(T.scale(rollRate));
-            double omegaMag = omega.length();
+            s += newPos.sub(pos).length();
+            pos = newPos;
 
-            if (omegaMag > 1e-9) {
-                Vec3 axis = omega.scale(1.0 / omegaMag);
-                double angle = omegaMag * dt;
-                T = T.rotate(axis, angle).normalize();
-                U = U.rotate(axis, angle).normalize();
-                R = R.rotate(axis, angle).normalize();
-            }
-
-            double step = v * dt;
-            pos = pos.add(T.scale(step));
-            s += step;
-
-            // energy conservation relative to start height, then friction bleed
-            double vFromHeight = Math.sqrt(Math.max(opts.v0 * opts.v0 + 2 * G0 * (y0 - pos.y()), 0));
+            // recorded speed: energy conservation, then the (inert while
+            // friction = 0) one-step bleed the old integrator applied
+            double vFromHeight = speedAt(pos, opts.v0, y0);
             v = Math.max(0.1, vFromHeight - opts.friction * vFromHeight * dt);
 
             t += dt;
         }
 
         return samples;
+    }
+
+    /**
+     * RESULTING body rotation rates from integrated samples, for the
+     * read-only "rates" graph overlay (Phase 0 item 3). Display sign
+     * conventions match the editor lanes: pull-up = +pitch, right turn =
+     * +yaw, and +roll matches the roll-rate lane. Central differences on
+     * the frame vectors; with T' = Omega x T and U' = Omega x U the body
+     * components are pitch = T'.U, yaw = T'.R, roll = -U'.R.
+     *
+     * @return one row per sample: { t, pitchDeg, yawDeg, rollDeg } (deg/s)
+     */
+    public static double[][] bodyRates(List<Sample> samples) {
+        int n = samples.size();
+        double[][] out = new double[n][4];
+        for (int i = 0; i < n; i++) {
+            Sample c = samples.get(i);
+            Sample a = samples.get(Math.max(0, i - 1));
+            Sample b = samples.get(Math.min(n - 1, i + 1));
+            double dt = b.t() - a.t();
+            out[i][0] = c.t();
+            if (dt < 1e-9) continue;   // degenerate: leave zeros
+            Vec3 dT = b.T().sub(a.T()).scale(1 / dt);
+            Vec3 dU = b.U().sub(a.U()).scale(1 / dt);
+            out[i][1] = Math.toDegrees(dT.dot(c.U()));
+            out[i][2] = Math.toDegrees(dT.dot(c.R()));
+            out[i][3] = Math.toDegrees(-dU.dot(c.R()));
+        }
+        return out;
     }
 }

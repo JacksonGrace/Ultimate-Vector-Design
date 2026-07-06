@@ -39,6 +39,10 @@ public class BezierBaker {
         public double outFrac = DEFAULT_FRAC, outDv;
         public double inFrac = DEFAULT_FRAC, inDv;
         public boolean smooth = true;
+        // straight-lock (Shift+F): the segment leaving this node is held
+        // straight — the editor re-chords its facing handles after every
+        // edit. Pure data here; enforcement lives in the UI layer.
+        public boolean straightOut = false;
 
         public Node(double t, double val) {
             this.t = t;
@@ -50,6 +54,7 @@ public class BezierBaker {
             n.outFrac = outFrac; n.outDv = outDv;
             n.inFrac = inFrac;   n.inDv = inDv;
             n.smooth = smooth;
+            n.straightOut = straightOut;
             return n;
         }
     }

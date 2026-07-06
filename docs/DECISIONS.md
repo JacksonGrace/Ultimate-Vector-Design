@@ -603,3 +603,288 @@ carries the phase order; Phase 0 items are deliberately independent of
 the overhaul. The old "geometric sections need a solver" note is
 superseded — geo sections specify body rates directly; solvers return
 later as tools on top.
+
+## D40. NoLimits 2 CSV export (v7.8, Phase 0 item 1)
+- **New pure-Java `Nl2CsvExporter`** (no JavaFX, headless-tested like the
+  rest of the core): resamples the integrated track onto NL2's external
+  CSV format — tab-separated header `"No." "PosX" … "UpZ"`, rows numbered
+  from 1, one position + orthonormal front/left/up frame per vertex,
+  `Locale.US` decimals at %.6f.
+- **Z is negated on export.** NL2's world is right-handed Y-up; ours as
+  rendered (X right, Y up, Z into the screen — the JavaFX Y-flip) is
+  LEFT-handed. Without the mirror every turn and roll imports reversed.
+  `left` is then computed as `up × front` IN EXPORTED COORDINATES rather
+  than by hand-mirroring −R — algebraically identical, immune to sign
+  slips, and it makes NL2's `up = front × left` identity hold exactly.
+  Chirality was proven headlessly (+Gl turn exports clockwise-from-above;
+  +roll tips exported up toward left) but the one thing the tests CANNOT
+  see is JavaFX's own camera handedness — the first real NL2 import
+  should eyeball a turn (fix would be dropping the negation, one line).
+- **Rail center is the default exported line** (heartline is the option):
+  NL2 treats imported vertices as the track spline between the rails, so
+  our spine (`heart − U·heartOffset`) is the honest mapping; heartline
+  export exists for feeding NL2's own heartlining tools.
+- **The exported line is resampled by ITS OWN arc length** (an offset
+  curve is shorter/longer than the heartline through hills — 337 vs 343 m
+  on the test layout), lerping position and frame between the dense
+  dt=0.01 s samples and re-orthonormalizing.
+- **Segment length is a target, not a promise:** the requested spacing is
+  rounded to the nearest whole number of equal segments (step =
+  total/round(total/req)), so both endpoints land exactly and there is no
+  runt final segment. The actual step is reported in the stats bar.
+- **Settings live in AppSettings** (`nl2Heartline`, `nl2SegLen`, default
+  rail-center / 1.0 m): export preferences are per-user workflow, not
+  per-coaster design data, so they do NOT touch the .fvd format.
+- **UI:** File > Export NL2 CSV… (new rebindable action "export",
+  default Ctrl+E) opens a small modal — radios, spinner with ↺, note —
+  wired into the menu-local Ctrl+Z session like Options; Export… runs the
+  FileChooser and reports "points, actual spacing, length".
+
+## D41. Feel batch: v0 setting, ground at 0, lane-local append, selection leveling (v7.9)
+User-driven refinement list after hand-testing v7.8:
+- **Export default flipped to HEARTLINE** (D40 shipped rail-center default;
+  user preference after one day). Radios reordered heartline-first.
+- **Start speed (v0) is a per-coaster setting** — was hardcoded 26 m/s
+  since v1. Coaster menu spinner (1–100 m/s) + `v0` line in the .fvd
+  (unknown-line rule keeps old readers safe), AND a "Start speed (m/s)"
+  field in the double-click dialog of node 0 of ANY lane (user spec:
+  reachable from both places). The dialog writes THROUGH the spinner so
+  the menu stays in sync and the track rebuilds once. Like heart/gauge
+  it is not in coaster undo (menu-local Ctrl+Z only).
+- **Ground plane is ABSOLUTE y=0** — the grid used to sit at
+  floor(lowestRail−1), i.e. wherever the track dipped. Now Start y IS
+  height above ground. Default startY 0 → 21 keeps the shipped layout's
+  old ~1.95 m clearance exactly (its lowest rail dips 19.045 m below the
+  start; old ground sat at −21 — GroundCalc scratch, 2026-07-05). Old
+  .fvd files with small start y may now sit at/below the grid: accepted,
+  that's what the start-y spinner is for.
+- **Default orbit distance 260 → 60 m** (`ORBIT_DIST0`): "much closer";
+  260 framed the whole 400 m default ride, 60 starts near the station.
+- **A/Append (no selection) extends only the ACTIVE lane** — the other
+  two keep their dotted hold-final-value line with no nodes added
+  (they used to each get a node at the new end). Ride end still grows
+  because ride duration = latest node across lanes. The WITH-selection
+  hold-insert still shifts all lanes (it splices time into the middle).
+- **Typed handle fractions slide the knob** (node dialog): dv scales
+  with the fraction so the handle keeps its angle — S-drag semantics;
+  previously typing a length changed the handle's slope. Partner handles
+  are untouched (also matching S).
+- **Box-select primary = EARLIEST node in the box** (was: last, an
+  iteration-order accident). Shift+click keeps last-clicked-is-primary.
+  This feeds the next item:
+- **H flattens EVERY selected node's handles; NEW Shift+H ("levelSel",
+  rebindable) levels the selection ONTO the primary node** — all selected
+  nodes take its value with flat handles, so the run becomes one
+  horizontal line. <2 selected falls back to plain H. Ripple toggles are
+  deliberately ignored (it's an explicit align, not a drag).
+
+## D42. Straight-lock segments, fraction readouts (v7.9 cont.)
+- **Shift+F ("alignLock", rebindable) = PERSISTENT straightness** between
+  two adjacent selected nodes (F remains the one-shot). Model: a
+  `straightOut` boolean on the segment's LEFT node (BezierBaker.Node) —
+  a node property survives index shifts from inserts/deletes, rides
+  along in undo snapshots via Node.copy(), and costs nothing in the
+  core (bake doesn't know about it).
+- **Enforcement is a single choke point**: `enforceStraightLocks()` at
+  the top of GraphEditor.redraw() re-chords the facing handles of every
+  locked segment (same math as F). Every lane mutation is followed by a
+  redraw, so the lock holds under node drags, group drags, nudges,
+  ripple shifts, dialog edits and loads; it's idempotent and O(nodes).
+  Consequences that fall out for free: dragging an endpoint keeps the
+  line straight (handles re-chord), and dragging a FACING knob only
+  changes its fraction — enforcement pins dv to the chord, so the knob
+  slides along the line like an S-drag.
+- **Smooth endpoints keep C1** (far handle re-angled to the chord slope)
+  UNLESS that far segment is itself locked — each lock owns exactly its
+  own facing handles, so chained locks with a kink don't fight
+  (last-writer problem avoided by construction).
+- **Unlock = Shift+F with EITHER endpoint selected** (user spec:
+  "selecting at least one of them removes"); if the selection touches
+  any locked segment, Shift+F unlocks those instead of locking new ones.
+- **Visual: twin 1 px lines** along the chord normal replace the 2 px
+  curve stroke on locked segments (user suggestion).
+- **Insert on a locked segment locks BOTH halves** (the run was straight;
+  splitting shouldn't quietly free half of it). Deleting the interior
+  node of two locked halves leaves the merged segment locked.
+- **Handle lengths now read as FRACTIONS everywhere** — the drag readout
+  says "out 0.33 cubic" (was "out 33%"), matching the node dialog, whose
+  labels dropped "(fraction)". Deliberately NO explanation in menus or
+  readouts; the Help window's Handles section carries the semantics
+  (user: keep the UI clean, Help is the reference).
+
+## D43. Drag modifiers no longer complete shortcut combos (v7.9 cont.)
+User report: holding Ctrl mid-drag (snap) and then pressing S (slide)
+fired Ctrl+S SAVE — a file dialog popping mid-gesture. Same class:
+Ctrl+Z fired UNDO (restoring lanes under a live drag!) when Z was
+pressed for the axis lock with Ctrl held. Fix, two halves:
+- **S now becomes the slide key mid-drag even with Ctrl down** (the
+  `!isShortcutDown()` guard is waived while `editor.isDragging()`), so
+  snap+slide compose. At rest the guard stays — pressing S while Ctrl is
+  held is still a deliberate Ctrl+S save.
+- **While a drag gesture is live, OR S is held as the slide key, key
+  events carrying ANY modifier fire no bound action** (handleKey returns
+  before the dispatch chain, unconsumed, so the raw key still reaches
+  the slideKey/shift-hover filters). The `slideKey` half also covers
+  keys still held right after the mouse releases — S auto-repeat with
+  Ctrl down must not save a moment after the drag ends. Bare keys keep
+  their mid-drag roles (B, H, Z/X). Known acceptable losses while S is
+  held at rest: Ctrl+arrow grid-nudge and modifier combos generally are
+  ignored until S comes back up.
+
+## D44. RK4 integrator (v8.0, Phase 0 item 2)
+- **FVDIntegrator v3: classic RK4** on state (pos, T, U) with
+  `T' = Ω×T`, `U' = Ω×U`, `pos' = T·v`; frame re-orthonormalized after
+  each step (normalize T; U ⊥ T; R = U×T). Each STAGE re-normalizes its
+  local frame copy so the physics never sees the slightly non-unit
+  vectors RK4 stages produce. Speed stays ALGEBRAIC (energy vs start
+  height, evaluated per stage) — it is not ODE state, so there is
+  nothing to integrate wrong. Same public API, same dt=0.01, same
+  sample cadence; the old one-Rodrigues-rotation-per-step loop is gone.
+- **Why**: measured on the analytic flat circle (v0=20, Gl=1.5,
+  r=27.192 m), worst radial deviation fell from **10.0 cm (Euler) to
+  < 1e-9 m** at identical dt. The historical "1.5 cm closure" figure
+  was dominated by end-time quantization (last sample lands up to dt
+  before exact closure ≈ 6 cm of arc), NOT integrator accuracy — radial
+  deviation is the honest metric and TESTING.md #1 now says so.
+- **Shipped-layout invariants re-baselined** (the layout was tuned under
+  Euler): length 406.809 → 406.878 m, end pitch 0.2300° → 0.2284°,
+  ride time/keyframes/sample count unchanged (13.46 s / 271 / 1347),
+  U.y 0.999971 unchanged, top speed 32.1 m/s unchanged. The banked-turn
+  drift tightened 2.75 → 2.15 m. No re-tuning needed. SECTIONS-DESIGN
+  §9's Phase-1 bit-for-bit gate now references the RK4 numbers.
+- **interpAt is binary search now** (RK4 quadrupled the lookups; the old
+  "O(n) scan, fix if rides get long" debt is paid).
+- **Friction placeholder demoted**: the old per-step bleed never
+  accumulated (v was recomputed fresh from energy each step) — an inert
+  placeholder. RK4's dynamics use pure energy speed; the bleed survives
+  only on the RECORDED v (identical behavior at friction=0, the only
+  shipped value). Real friction is Phase 3's job.
+- **Stall behavior changed (noticed post-hoc)**: the old loop advanced
+  position with the RECORDED v, which carried a `max(0.1, …)` floor — so
+  a layout that climbed above its energy ceiling CREPT through the crest
+  at 0.1 m/s, quietly creating energy. RK4 advances with the raw energy
+  speed, so a genuine stall now wedges asymptotically just below the
+  crest (frame still rotating at vSafe-floored rates → local knot)
+  instead of cheating through. Both are garbage-by-design on stalled
+  layouts (v floor 0.5 in the ω denominators is the "finite garbage"
+  guard); the new failure mode is at least visible. If push-through
+  feels better in practice, floor the advance speed in deriv() at
+  0.1 m/s — one line. Honest stall handling is Phase 3.
+
+## D45. Resulting-rates overlay (v8.0, Phase 0 item 3)
+- **FVDIntegrator.bodyRates(samples)** (pure, testable): central
+  differences on the frame vectors give body rates via `pitch = T'·U`,
+  `yaw = T'·R`, `roll = −U'·R` (from T' = Ω×T, U' = Ω×U). DISPLAY sign
+  conventions match the editor: pull-up = +pitch, right turn = +yaw,
+  +roll = the roll lane's sign. Validated headlessly: straight ⇒ 0;
+  flat circle yaw = g·Gl/v to 4e-4 °/s; constant-roll extraction to
+  1e-3 °/s; default layout's extracted roll tracks the baked lane
+  within 0.09 °/s.
+- **UI: toolbar "Rates" toggle** (persisted per-user in AppSettings) —
+  thin DASHED read-only curves over the plot, on the ROLL lane's value
+  scale (all three rates are °/s), each colored like the lane it
+  answers to (pitch~Gv green, yaw~Gl blue, roll~roll orange). The
+  auto-scale includes them when visible so nothing clips (rates spike
+  legitimately where vSafe floors near stalls). No hit-testing, no
+  legend on the plot — semantics live in Help (D42's cleanliness rule).
+
+## D46. Smoothing tool (v8.0, Phase 0 item 5)
+- **M ("smoothSel", rebindable) = one smoothing pass** over the selected
+  nodes: each selected INTERIOR node's value relaxes toward the
+  TIME-WEIGHTED line between its two lane neighbors by the strength
+  setting (Options, 0.05–1, default 0.5, ↺). Strength 1 lands exactly
+  on the chord; repeated passes converge the selection onto the line
+  through its fixed boundary — same "toward the chord" philosophy as F.
+- **Values only**: node times, handles and lane endpoints never move
+  (time-smoothing would silently re-time the ride; handles keep their
+  authored shapes and straight-locks re-enforce anyway). New values are
+  computed from the PRE-pass state so results don't depend on node
+  order. Pure math in BezierBaker.smoothValues — headless-tested
+  (exact chord at strength 1, order independence, endpoint immunity,
+  convergence, t/handle immutability).
+- One undo snapshot per press (each pass separately undoable).
+
+## D47. Resulting dropdown, coaster redo, smoothing tool removed (v8.1)
+User feedback round on the v8.0 batch:
+- **Roll dropped from the resulting overlay**: force-mode roll geometry
+  follows the authored roll lane's shape, so the derived curve added
+  nothing (validated to 0.09 °/s in v8.0 — it literally retraced the
+  lane). It returns naturally when geo/analysis passes make resulting
+  roll differ from authored roll. `bodyRates` still computes all three
+  (cheap; the tests use roll as a correctness probe).
+- **"Rates" button → "Resulting" MenuButton dropdown** with per-curve
+  CheckMenuItems (pitch rate, yaw rate), each persisted per-user
+  (`resPitch`/`resYaw`; the old `showRates` key is abandoned in place —
+  stale properties are harmless). Room for the Phase-1 analysis curves
+  (true Gv/Gl, longitudinal G) to join the list.
+- **Coaster editor has REDO: Ctrl+Shift+Z** ("redo", rebindable),
+  mirroring the menu-local sessions ("redo everywhere Ctrl+Z undoes").
+  Implementation: second snapshot stack; undo pushes the CURRENT state
+  onto it, redo pushes current back onto undo (directly — not via
+  pushUndo); every fresh edit clears the redo branch inside pushUndo(),
+  the single choke point all edits already funnel through. The old
+  "redo (Ctrl+Y)" roadmap note is superseded (Ctrl+Shift+Z matches the
+  menu-local convention; rebind if Ctrl+Y is preferred).
+- **Smoothing tool REMOVED entirely** (was D46, shipped v8.0): user
+  verdict — the design method shouldn't need it, and relying on it
+  would be bad practice (forces should be authored deliberately, not
+  noise-reduced). BezierBaker.smoothValues, the M binding, the Options
+  strength row and the settings keys are all gone; TESTING #10 and
+  manual step 36 retired. D46 stays in this log as history.
+
+## D48. Ortho views, orbit gestures, track markers + insert — Phase 0 complete (v8.2)
+- **"Resulting ▾" is a plain Button + ContextMenu**, not a MenuButton:
+  MenuButton renders a separate .arrow-button region that broke the flat
+  toolbar-button styling — a Button with the ▾ glyph in its own label
+  keeps the dropdown affordance "in the same space" as the other
+  buttons (user request). Same CheckMenuItems inside.
+- **Ortho top/side views are PSEUDO-orthographic** (Phase 0 item 4):
+  JavaFX's ParallelCamera is unusable for 3D content (pixel-unit view
+  volume, no depth control), so ortho = the same PerspectiveCamera at a
+  1° FOV moved ~72x farther out, preserving apparent size
+  (2·d·tan(fov/2) held constant). Far clip 5000 → 200000 while ortho.
+  UX: `T` = top view (KEEPS current yaw — a rotated plan is
+  legitimate), `Shift+T` = side elevation (yaw 0, pitch 0: the world
+  X–Y plane; rides start along +X), both rebindable. Same key again
+  restores the saved perspective pose; ORBITING away instead keeps the
+  current angles and just restores the lens (distance scaled back, so
+  no size jump). Scroll in ortho zooms MULTIPLICATIVELY (the additive
+  step + its −1500 m clamp would wreck a camera sitting 4 km out).
+  Guards: entering fly/POV exits ortho first (sane pose handoff); the
+  Options FOV slider skips orbitCam while the 1° lens is active.
+- **C+click = orbit recenter** (item 4), aliasing Shift+click (which
+  stays): C tracked like the S slide key via scene filters. FVD++
+  muscle memory.
+- **Middle-drag orbits** (item 4) alongside primary-drag — CAD muscle
+  memory now, and it frees primary-drag for viewport editing part 2
+  later. Secondary stays excluded (the fly-exit stale-anchor jump).
+- **On-track node markers** (item 6, READ-ONLY): one 0.22 m sphere per
+  ACTIVE-lane node, on the spine like the ties, lane-colored with the
+  selection in white; Options toggle, default on. Rebuilt from a
+  signature check on every graph redraw (lane/selection/samples/times)
+  so the scene graph only churns when something relevant changed —
+  redraw fires per mouse-move and naive rebuilding would thrash.
+- **Ctrl+click the track = insert a node at that ride time** (item 6):
+  the screen-space nearest-sample search was extracted from the pivot
+  snapping (pickTrackSample, same 25 px tube + behind-camera filter)
+  and feeds insertNodeOnCurve — the 3D twin of clicking the graph
+  curve, identical split/gap/selection semantics, one undo step.
+- **Phase 0 is complete** (item 5 shipped then removed by D47).
+
+## D49. Ortho view polish before Phase 1 (v8.2 cont.)
+User feel-pass on the fresh ortho views:
+- **Top view is always grid-aligned**: yaw snaps to the nearest 90° on
+  entry (D48 kept the current yaw; a skewed plan view read as broken
+  against the square grid). Nearest-90 rather than always-0 so the
+  rough orientation you approached with survives.
+- **Side view centers on the selected node** (its spine point) when one
+  is selected; otherwise the pivot stays. To make the centered node
+  findable, SELECTED track markers are now larger as well as white
+  (0.32 vs 0.22 m radius).
+- **Right-drag PANS inside ortho views** without exiting them: grab
+  style (world follows the mouse), scaled from the ortho lens's
+  world-units-per-pixel, moving the orbit pivot in the view plane; the
+  grid's LOD dense region follows. While a snapped view is active,
+  right-click therefore does NOT hand off to fly (the press is eaten as
+  the pan anchor) — exit ortho first (T / orbit away), then right-click
+  flies as usual. Primary/middle drags still rotate-and-exit by design.

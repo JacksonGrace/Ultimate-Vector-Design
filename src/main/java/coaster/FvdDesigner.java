@@ -8,6 +8,7 @@ import javafx.geometry.Point2D;
 import javafx.geometry.Point3D;
 import javafx.geometry.Pos;
 import javafx.geometry.Rectangle2D;
+import javafx.geometry.Side;
 import javafx.geometry.VPos;
 import javafx.scene.AmbientLight;
 import javafx.scene.Cursor;
@@ -21,12 +22,15 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.CheckMenuItem;
 import javafx.scene.control.ColorPicker;
+import javafx.scene.control.ContextMenu;
 import javafx.scene.control.CustomMenuItem;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
+import javafx.scene.control.RadioButton;
 import javafx.scene.control.RadioMenuItem;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SeparatorMenuItem;
@@ -56,6 +60,7 @@ import javafx.scene.paint.PhongMaterial;
 import javafx.scene.robot.Robot;
 import javafx.scene.shape.CullFace;
 import javafx.scene.shape.MeshView;
+import javafx.scene.shape.Sphere;
 import javafx.scene.shape.TriangleMesh;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
@@ -129,7 +134,8 @@ import java.util.Set;
  *   right-click / Delete     delete node (interior deletes bridge the gap,
  *                            neighbors unchanged; last node shortens the
  *                            ride; the first node is undeletable)
- *   A                        append 1 s of track holding final values
+ *   A                        append 1 s to the ACTIVE lane holding its final
+ *                            value (other lanes keep their dotted hold)
  *   Space (or POV button)    POV cam; W/S ride forward/backward along the
  *                            track at simulated speed (SHIFT x4, CTRL x0.25,
  *                            no key = hold position); scroll = fast burst
@@ -172,7 +178,11 @@ public class FvdDesigner extends Application {
     private double heartOffset = 1.0;  // m from heartline down to track (negative = inverted)
     private double railGauge = 1.0;    // m between rail centers
     private double tieSpacing = 1.0;   // m of track between cross ties
-    private double startX = 0, startY = 0, startZ = 0;  // track starting point (m)
+    // start point: y default keeps the shipped layout's old clearance above
+    // the ground plane now that the grid sits at ABSOLUTE y=0 (the default
+    // layout's lowest rail dips 19.05 m below the start — see D41)
+    private double startX = 0, startY = 21, startZ = 0;  // track starting point (m)
+    private double startSpeed = 26;   // v0, m/s at the first node (per-coaster)
     private boolean railSolid = false; // false = vertical-G gradient, true = solid color
     private Color railColor = Color.rgb(220, 60, 50);
     // G-force gradient stops (per-coaster, saved in .fvd): each stop is a
@@ -204,7 +214,19 @@ public class FvdDesigner extends Application {
     private final Translate camPivot = new Translate();  // orbit centre (moves after flying)
     private final Rotate camYaw = new Rotate(-30, Rotate.Y_AXIS);
     private final Rotate camPitch = new Rotate(-20, Rotate.X_AXIS);
-    private final Translate camZoom = new Translate(0, 0, -260);
+    // initial orbit camera distance, metres (user-tuned: was 260, "much
+    // closer" requested — scroll zooms out to the whole ride quickly)
+    private static final double ORBIT_DIST0 = 60;
+    private final Translate camZoom = new Translate(0, 0, -ORBIT_DIST0);
+    // ortho top/side views: PSEUDO-orthographic — JavaFX ParallelCamera is
+    // unusable for 3D scenes (pixel-unit view volume, no depth control), so
+    // ortho = the same PerspectiveCamera at 1° FOV moved ~72x farther out,
+    // keeping the apparent size (visible height = 2·d·tan(fov/2))
+    private static final double ORTHO_FOV = 1.0;
+    private static final double ORTHO_FAR_CLIP = 200000, PERSP_FAR_CLIP = 5000;
+    private boolean orthoView = false;
+    private boolean orthoTop = false;              // which preset is active
+    private double savedYaw, savedPitch, savedZoom; // perspective pose to restore
     private double lastMouseX, lastMouseY;
     private boolean worldCentered = false;
     private Group gridGroup;                    // floor grid, recentered on the camera (LOD)
@@ -221,6 +243,9 @@ public class FvdDesigner extends Application {
     private long povLastNanos;
     private AnimationTimer povTimer;
     private List<FVDIntegrator.Sample> lastSamples;
+    private double[][] resultRates;   // {t, pitch, yaw, roll} deg/s per sample
+    private final Group markerGroup = new Group();   // on-track node markers
+    private String markerSig = "";                   // skip no-op rebuilds
 
     // WASD/mouse fly camera (toggled with right-click in the 3D view)
     private static final double FLY_SPEED = 25;        // m/s base
@@ -240,8 +265,10 @@ public class FvdDesigner extends Application {
     private final ToggleButton[] laneButtons = new ToggleButton[3];
     private boolean rippleT, rippleV;   // ripple-edit toggles (time / value)
     private boolean slideKey;           // S held: slide nodes/handles along a line
+    private boolean cKey;               // C held: click the track = recenter orbit
     private Spinner<Double> heartSpinner, gaugeSpinner, tieSpinner;
     private Spinner<Double> startXSpinner, startYSpinner, startZSpinner;
+    private Spinner<Double> startSpeedSpinner;
     private SplitPane mainSplit;           // 3D view over graph panel
     private double lastDividerPos = 0.6;   // restore point for the collapse toggle
     private RadioMenuItem gradientModeItem, solidModeItem;
@@ -266,7 +293,7 @@ public class FvdDesigner extends Application {
         // ----- 3D subscene -----
         orbitCam = new PerspectiveCamera(true);
         orbitCam.setNearClip(0.1);
-        orbitCam.setFarClip(5000);
+        orbitCam.setFarClip(PERSP_FAR_CLIP);
         // orbit pairs with FLY (they hand off to each other); POV has its own
         orbitCam.setFieldOfView(settings.flyFov());
         Group cameraRig = new Group(orbitCam);
@@ -303,6 +330,12 @@ public class FvdDesigner extends Application {
 
         sub.setOnMousePressed(e -> {
             if (e.getButton() == MouseButton.SECONDARY) {
+                if (orthoView) {
+                    // in a snapped ortho view, right-DRAG pans (handled in
+                    // the drag handler) — no fly handoff, the view stays
+                    lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
+                    return;
+                }
                 if (povActive) {
                     // capture/release the POV ride controls (no mouse look —
                     // orientation follows the track)
@@ -317,19 +350,46 @@ public class FvdDesigner extends Application {
                 lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
                 return;
             }
-            // Shift+click in orbit mode: re-center the orbit on the track
-            // piece under the cursor
-            if (e.getButton() == MouseButton.PRIMARY && e.isShiftDown()
-                    && !povActive && !flyActive) {
-                snapPivotToTrack(e.getScreenX(), e.getScreenY());
+            if (e.getButton() == MouseButton.PRIMARY && !povActive && !flyActive) {
+                if (e.isControlDown()) {
+                    // Ctrl+click the track = insert a node at that ride time
+                    insertNodeAtTrack(e.getScreenX(), e.getScreenY());
+                } else if (e.isShiftDown() || cKey) {
+                    // Shift+click or C+click = re-center the orbit on the
+                    // track piece under the cursor
+                    snapPivotToTrack(e.getScreenX(), e.getScreenY());
+                }
             }
             lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
         });
         sub.setOnMouseDragged(e -> {
             if (povActive || flyActive) return;
-            // ONLY primary-button drags orbit — the right-drag that exits fly
-            // otherwise fell through here with a huge stale delta (jump bug)
-            if (!e.isPrimaryButtonDown()) return;
+            if (orthoView && e.isSecondaryButtonDown()) {
+                // right-drag in a snapped view = grab-pan in the view plane
+                // (the world follows the mouse); the ortho view survives
+                double d = -camZoom.getZ();
+                double upp = 2 * d * Math.tan(Math.toRadians(ORTHO_FOV / 2))
+                           / Math.max(1, sub.getHeight());   // world m per px
+                double dx = e.getSceneX() - lastMouseX, dy = e.getSceneY() - lastMouseY;
+                Rotate ry = new Rotate(camYaw.getAngle(), Rotate.Y_AXIS);
+                Rotate rx = new Rotate(camPitch.getAngle(), Rotate.X_AXIS);
+                Point3D right = ry.transform(rx.transform(new Point3D(1, 0, 0)));
+                Point3D down = ry.transform(rx.transform(new Point3D(0, 1, 0)));
+                camPivot.setX(camPivot.getX() - (right.getX() * dx + down.getX() * dy) * upp);
+                camPivot.setY(camPivot.getY() - (right.getY() * dx + down.getY() * dy) * upp);
+                camPivot.setZ(camPivot.getZ() - (right.getZ() * dx + down.getZ() * dy) * upp);
+                updateGridLOD(camPivot.getX() + gridCamX0, camPivot.getZ() + gridCamZ0);
+                lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
+                return;
+            }
+            // primary OR middle drags orbit (middle: CAD muscle memory, and
+            // frees primary for future viewport editing) — never secondary:
+            // the right-drag that exits fly otherwise fell through here with
+            // a huge stale delta (jump bug)
+            if (!e.isPrimaryButtonDown() && !e.isMiddleButtonDown()) return;
+            // rotating away from a snapped ortho view returns to the
+            // perspective lens but keeps the current angles
+            if (orthoView) exitOrthoKeepView();
             // orbit shares the mouse-sensitivity setting (fly's 0.15 default
             // maps to the original 0.3 orbit feel via the 2x factor)
             double s = settings.flySens() * 2;
@@ -357,6 +417,11 @@ public class FvdDesigner extends Application {
                 if (rideTime <= 0) return;
                 povTime = ((povTime + wheel * 0.02) % rideTime + rideTime) % rideTime;
                 if (settings.povMarker()) editor.refresh();
+            } else if (orthoView) {
+                // ortho zoom is multiplicative (the camera sits ~72x out;
+                // the additive step and its -1500 clamp would wreck it)
+                double f = Math.pow(1.0015, -wheel);
+                camZoom.setZ(clamp(camZoom.getZ() * f, -ORTHO_FAR_CLIP * 0.5, -200));
             } else {
                 camZoom.setZ(clamp(camZoom.getZ() + wheel * 0.5, -1500, -10));
             }
@@ -451,6 +516,37 @@ public class FvdDesigner extends Application {
             "Dragging a node vertically also shifts every later node's value —\n"
             + "the rest of the graph translates up/down."));
 
+        // "Resulting" dropdown: pick which read-only derived curves overlay
+        // the plot (roll is absent on purpose — the resulting roll rate IS
+        // the authored roll lane; more picks arrive with the section work).
+        // A plain Button + ContextMenu instead of a MenuButton: MenuButton's
+        // separate arrow region broke the flat toolbar-button look — this
+        // keeps "Resulting ▾" in one clean button-sized space.
+        Button resBtn = new Button("Resulting ▾");
+        resBtn.setFocusTraversable(false);
+        resBtn.setStyle(btnStyle);
+        CheckMenuItem resPitchItem = new CheckMenuItem("Pitch rate (°/s)");
+        resPitchItem.setSelected(settings.resPitch());
+        resPitchItem.setOnAction(e -> {
+            settings.setResPitch(resPitchItem.isSelected());
+            editor.refresh();
+        });
+        CheckMenuItem resYawItem = new CheckMenuItem("Yaw rate (°/s)");
+        resYawItem.setSelected(settings.resYaw());
+        resYawItem.setOnAction(e -> {
+            settings.setResYaw(resYawItem.isSelected());
+            editor.refresh();
+        });
+        ContextMenu resMenu = new ContextMenu(resPitchItem, resYawItem);
+        resBtn.setOnAction(e -> {
+            if (resMenu.isShowing()) resMenu.hide();
+            else resMenu.show(resBtn, Side.BOTTOM, 0, 2);
+        });
+        Tooltip.install(resBtn, new Tooltip(
+            "Overlay read-only RESULTING curves derived from the\n"
+            + "integrated track (°/s, thin dashed, on the roll lane's\n"
+            + "scale). Picks persist per-user."));
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
@@ -470,7 +566,7 @@ public class FvdDesigner extends Application {
 
         toolbar.setAlignment(Pos.CENTER_LEFT);
         toolbar.getChildren().addAll(rippleLbl, rippleTCheck, rippleVCheck,
-                                     spacer, povBtn, appendBtn);
+                                     resBtn, spacer, povBtn, appendBtn);
 
         MenuBar menuBar = buildMenuBar();
 
@@ -517,6 +613,7 @@ public class FvdDesigner extends Application {
         scene.addEventFilter(KeyEvent.KEY_RELEASED, e -> {
             if (flyActive || povActive) moveKeys.remove(e.getCode());
             if (e.getCode() == KeyCode.S) slideKey = false;
+            if (e.getCode() == KeyCode.C) cKey = false;
             if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(false);
         });
         stage.setTitle("FVD Coaster Designer");
@@ -527,10 +624,18 @@ public class FvdDesigner extends Application {
 
     private void handleKey(KeyEvent e) {
         // S (held, unmodified) = slide constraint for node/handle drags;
-        // never while a camera mode owns WASD (uncaptured POV does not)
+        // never while a camera mode owns WASD (uncaptured POV does not).
+        // MID-DRAG the modifier check is waived: Ctrl is already held for
+        // snapping, and pressing S then means snap+slide, not Ctrl+S.
         if (e.getCode() == KeyCode.S && !flyActive && !(povActive && povCaptured)
-                && !e.isShortcutDown()) {
+                && (!e.isShortcutDown() || editor.isDragging())) {
             slideKey = true;   // not consumed: bound actions still fire
+        }
+        // C held = click-the-track-recenters (FVD++ muscle memory; the
+        // Shift+click gesture stays too). Tracked like the S slide key.
+        if (e.getCode() == KeyCode.C && !flyActive && !(povActive && povCaptured)
+                && !e.isShortcutDown()) {
+            cKey = true;
         }
         if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(true);
         if (flyActive || (povActive && povCaptured)) {   // camera owns movement keys
@@ -544,17 +649,35 @@ public class FvdDesigner extends Application {
                 return;
             }
         }
+        // Held drag modifiers must not complete unrelated combos: Ctrl held
+        // for SNAPPING while S is pressed for SLIDING is not Ctrl+S save;
+        // Ctrl+Z while pressing Z for the axis lock is not undo. While a
+        // drag gesture is live — or S is already held as the slide key
+        // (covers keys still down right after the mouse releases) — events
+        // carrying any modifier fire NO actions. Bare keys (B/H/Z/X) keep
+        // their mid-drag roles, and a deliberate Ctrl+S outside a drag
+        // still saves (S with Ctrl never becomes the slide key at rest).
+        if ((editor.isDragging() || slideKey)
+                && (e.isControlDown() || e.isShiftDown() || e.isAltDown() || e.isMetaDown())) {
+            return;
+        }
         if      (matches("undo", e))    editor.undo();
+        else if (matches("redo", e))    editor.redo();
         else if (matches("save", e))    saveDesign();
         else if (matches("load", e))    loadDesign();
+        else if (matches("export", e))  exportNl2Csv();
         else if (matches("smooth", e))  editor.toggleSmooth();
         else if (matches("flath", e))   editor.flattenHandles();
+        else if (matches("levelSel", e)) editor.levelSelected();
         else if (matches("align", e))   editor.straightenSelected();
+        else if (matches("alignLock", e)) editor.toggleStraightLock();
         else if (matches("lockv", e))   editor.toggleAxisLock(true);
         else if (matches("lockh", e))   editor.toggleAxisLock(false);
         else if (matches("delNode", e)) editor.deleteSelected();
         else if (matches("append", e))  editor.appendAction();
         else if (matches("pov", e))     togglePov();
+        else if (matches("viewTop", e))  toggleOrthoView(true);
+        else if (matches("viewSide", e)) toggleOrthoView(false);
         else if (matches("lane1", e))   editor.setActiveLane(0);
         else if (matches("lane2", e))   editor.setActiveLane(1);
         else if (matches("lane3", e))   editor.setActiveLane(2);
@@ -617,21 +740,53 @@ public class FvdDesigner extends Application {
         return sb.append(normalizeNumpad(e.getCode()).getName()).toString();
     }
 
-    /** Shift+click in orbit mode: move the orbit pivot onto the nearest
-     *  track point within ~25 px of the cursor (a screen-space "tube"
-     *  around the heartline — cheap and forgiving, no mesh picking). */
-    private void snapPivotToTrack(double screenX, double screenY) {
-        if (lastSamples == null || lastSamples.isEmpty()) return;
-        // camera pose in scene coords, to reject samples BEHIND the camera —
-        // localToScreen happily projects those mirrored, which made clicks on
-        // empty sky snap the pivot to invisible track
+    /** Rebuild the on-track node markers (viewport editing part 1 —
+     *  READ-ONLY). One small sphere per ACTIVE-lane node at its ride
+     *  time, sitting on the spine like the ties; selected nodes are
+     *  white. Signature-guarded: the graph calls this on every redraw,
+     *  but the scene graph only churns when something relevant changed. */
+    private void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx) {
+        List<BezierBaker.Node> laneNodes = lanes.get(lane);
+        StringBuilder sb = new StringBuilder();
+        sb.append(lane).append('|').append(selIdx).append('|').append(sel)
+          .append('|').append(System.identityHashCode(lastSamples))
+          .append('|').append(settings.trackMarkers());
+        for (BezierBaker.Node n : laneNodes) sb.append(';').append(n.t);
+        String sig = sb.toString();
+        if (sig.equals(markerSig)) return;
+        markerSig = sig;
+        markerGroup.getChildren().clear();
+        if (!settings.trackMarkers() || lastSamples == null || lastSamples.isEmpty()) return;
+        for (int i = 0; i < laneNodes.size(); i++) {
+            int idx = (int) clamp(Math.round(laneNodes.get(i).t / INTEGRATE_DT),
+                                  0, lastSamples.size() - 1);
+            FVDIntegrator.Sample sm = lastSamples.get(idx);
+            Vec3 p = sm.pos().sub(sm.U().scale(heartOffset));   // spine, like ties
+            boolean isSel = i == selIdx || sel.contains(i);
+            // selection reads from any distance: white AND bigger
+            Sphere ball = new Sphere(isSel ? 0.32 : 0.22, 12);
+            ball.setMaterial(new PhongMaterial(isSel ? Color.WHITE : LANE_COLORS[lane]));
+            ball.setTranslateX(p.x());
+            ball.setTranslateY(-p.y());   // Y-flip discipline
+            ball.setTranslateZ(p.z());
+            markerGroup.getChildren().add(ball);
+        }
+    }
+
+    /** Nearest track sample within ~25 px of a screen point (a cheap
+     *  screen-space "tube" around the heartline — no mesh picking), or
+     *  null on a miss. Samples BEHIND the camera are rejected:
+     *  localToScreen happily projects those mirrored, which made clicks
+     *  on empty sky hit invisible track. */
+    private FVDIntegrator.Sample pickTrackSample(double screenX, double screenY) {
+        if (lastSamples == null || lastSamples.isEmpty()) return null;
         double yaw = camYaw.getAngle(), pitch = camPitch.getAngle();
         Point3D fwd = new Rotate(yaw, Rotate.Y_AXIS).transform(
                       new Rotate(pitch, Rotate.X_AXIS).transform(new Point3D(0, 0, 1)));
         Point3D camPos = new Point3D(camPivot.getX(), camPivot.getY(), camPivot.getZ())
                 .subtract(fwd.multiply(-camZoom.getZ()));
         double best = 25 * 25;
-        Vec3 bestPos = null;
+        FVDIntegrator.Sample bestSample = null;
         for (int i = 0; i < lastSamples.size(); i += 5) {
             Vec3 p = lastSamples.get(i).pos();
             Point3D sceneP = world.localToScene(p.x(), -p.y(), p.z());
@@ -640,14 +795,99 @@ public class FvdDesigner extends Application {
             if (s == null) continue;
             double dx = s.getX() - screenX, dy = s.getY() - screenY;
             double d2 = dx * dx + dy * dy;
-            if (d2 < best) { best = d2; bestPos = p; }
+            if (d2 < best) { best = d2; bestSample = lastSamples.get(i); }
         }
-        if (bestPos == null) return;   // miss: camera stays, drag orbits normally
-        Point3D sceneP = world.localToScene(bestPos.x(), -bestPos.y(), bestPos.z());
+        return bestSample;
+    }
+
+    /** Shift+click (or C+click) in orbit mode: re-center the orbit pivot
+     *  on the track point under the cursor. A miss moves nothing. */
+    private void snapPivotToTrack(double screenX, double screenY) {
+        FVDIntegrator.Sample hit = pickTrackSample(screenX, screenY);
+        if (hit == null) return;   // miss: camera stays, drag orbits normally
+        Vec3 p = hit.pos();
+        Point3D sceneP = world.localToScene(p.x(), -p.y(), p.z());
         camPivot.setX(sceneP.getX());
         camPivot.setY(sceneP.getY());
         camPivot.setZ(sceneP.getZ());
-        updateGridLOD(bestPos.x(), bestPos.z());
+        updateGridLOD(p.x(), p.z());
+    }
+
+    /** Ctrl+click the track: insert a node in the ACTIVE lane at that
+     *  point's ride time — the 3D twin of clicking the graph curve
+     *  (same insert rules: exact split, gap guards, selects the node). */
+    private void insertNodeAtTrack(double screenX, double screenY) {
+        FVDIntegrator.Sample hit = pickTrackSample(screenX, screenY);
+        if (hit == null) return;
+        editor.insertAtTime(hit.t());
+    }
+
+    /** T / Shift+T: snap to a top or side view with a pseudo-orthographic
+     *  lens. Same key again restores the saved perspective pose; orbiting
+     *  away instead keeps the current angles and just restores the lens.
+     *  Top keeps the current yaw (a rotated plan view is legitimate);
+     *  side is the world X–Y elevation (the ride starts along +X). */
+    private void toggleOrthoView(boolean top) {
+        if (flyActive || povActive) return;
+        if (orthoView && top == orthoTop) {   // same key: back to perspective
+            camYaw.setAngle(savedYaw);
+            camPitch.setAngle(savedPitch);
+            camZoom.setZ(savedZoom);
+            exitOrthoLens();
+            return;
+        }
+        if (!orthoView) {
+            savedYaw = camYaw.getAngle();
+            savedPitch = camPitch.getAngle();
+            savedZoom = camZoom.getZ();
+            // same apparent size: visible height = 2·d·tan(fov/2)
+            double scale = Math.tan(Math.toRadians(settings.flyFov() / 2))
+                         / Math.tan(Math.toRadians(ORTHO_FOV / 2));
+            camZoom.setZ(Math.max(-ORTHO_FAR_CLIP * 0.5, camZoom.getZ() * scale));
+            orbitCam.setFieldOfView(ORTHO_FOV);
+            orbitCam.setFarClip(ORTHO_FAR_CLIP);
+            orthoView = true;
+        }
+        orthoTop = top;
+        if (top) {
+            // plan view LOCKS to the grid: yaw snaps to the nearest 90°
+            camPitch.setAngle(-90);
+            camYaw.setAngle(Math.round(camYaw.getAngle() / 90.0) * 90);
+        } else {
+            camYaw.setAngle(0);
+            camPitch.setAngle(0);
+            centerOrthoOnSelection();
+        }
+    }
+
+    /** Entering the side view: center on the SELECTED node's track point
+     *  (its marker shows white and larger); no selection = pivot stays. */
+    private void centerOrthoOnSelection() {
+        if (editor == null) return;
+        Vec3 p = editor.selectedTrackPoint();
+        if (p == null) return;
+        Point3D sceneP = world.localToScene(p.x(), -p.y(), p.z());
+        camPivot.setX(sceneP.getX());
+        camPivot.setY(sceneP.getY());
+        camPivot.setZ(sceneP.getZ());
+        updateGridLOD(p.x(), p.z());
+    }
+
+    /** Leave the ortho lens but KEEP the current view direction (used when
+     *  the user orbits away from a snapped view, or hands off to fly/POV):
+     *  the distance scales back so the picture size doesn't jump. */
+    private void exitOrthoKeepView() {
+        if (!orthoView) return;
+        double scale = Math.tan(Math.toRadians(ORTHO_FOV / 2))
+                     / Math.tan(Math.toRadians(settings.flyFov() / 2));
+        camZoom.setZ(clamp(camZoom.getZ() * scale, -1500, -10));
+        exitOrthoLens();
+    }
+
+    private void exitOrthoLens() {
+        orbitCam.setFieldOfView(settings.flyFov());
+        orbitCam.setFarClip(PERSP_FAR_CLIP);
+        orthoView = false;
     }
 
     /** Collapse the graph panel to full-screen the 3D view, or restore it
@@ -770,7 +1010,10 @@ public class FvdDesigner extends Application {
         saveItem.setOnAction(e -> saveDesign());
         MenuItem loadItem = new MenuItem("Load…");
         loadItem.setOnAction(e -> loadDesign());
-        Menu fileMenu = new Menu("File", null, saveItem, loadItem);
+        MenuItem exportItem = new MenuItem("Export NL2 CSV…");
+        exportItem.setOnAction(e -> exportNl2Csv());
+        Menu fileMenu = new Menu("File", null, saveItem, loadItem,
+            new SeparatorMenuItem(), exportItem);
 
         // --- Edit: app-wide settings, persisted across runs ---
         MenuItem shortcutsItem = new MenuItem("Shortcuts…");
@@ -798,6 +1041,9 @@ public class FvdDesigner extends Application {
         startZSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, startZ, 1));
         startZSpinner.setPrefWidth(70);
         wireMenuSpinner(startZSpinner, v -> startZ = v);
+        startSpeedSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 100, startSpeed, 1));
+        startSpeedSpinner.setPrefWidth(70);
+        wireMenuSpinner(startSpeedSpinner, v -> startSpeed = v);
 
         Label heartLbl = new Label("Heart (m)");
         heartLbl.setTextFill(Color.BLACK);   // menu popup is light; default fill washed out
@@ -807,6 +1053,8 @@ public class FvdDesigner extends Application {
         tieLbl.setTextFill(Color.BLACK);
         Label startLbl = new Label("Start x/y/z (m)");
         startLbl.setTextFill(Color.BLACK);
+        Label speedLbl = new Label("Start speed (m/s)");
+        speedLbl.setTextFill(Color.BLACK);
         HBox heartRow = new HBox(8, heartLbl, heartSpinner);
         heartRow.setAlignment(Pos.CENTER_LEFT);
         HBox gaugeRow = new HBox(8, gaugeLbl, gaugeSpinner);
@@ -815,6 +1063,8 @@ public class FvdDesigner extends Application {
         tieRow.setAlignment(Pos.CENTER_LEFT);
         HBox startRow = new HBox(8, startLbl, startXSpinner, startYSpinner, startZSpinner);
         startRow.setAlignment(Pos.CENTER_LEFT);
+        HBox speedRow = new HBox(8, speedLbl, startSpeedSpinner);
+        speedRow.setAlignment(Pos.CENTER_LEFT);
 
         ToggleGroup colorMode = new ToggleGroup();
         gradientModeItem = new RadioMenuItem("Rail color: G-force gradient");
@@ -833,6 +1083,7 @@ public class FvdDesigner extends Application {
             new CustomMenuItem(gaugeRow, false),
             new CustomMenuItem(tieRow, false),
             new CustomMenuItem(startRow, false),
+            new CustomMenuItem(speedRow, false),
             new SeparatorMenuItem(),
             gradientModeItem,
             solidModeItem,
@@ -907,8 +1158,10 @@ public class FvdDesigner extends Application {
             + "lateral G, roll rate) over ride time are integrated into the 3D track. "
             + "Pick a lane with the colored buttons, keys 1/2/3, or by clicking a "
             + "dimmed curve — every edit rebuilds the track live.");
-        helpText(box, "Ctrl+Z undoes coaster edits (no redo yet). File > Save/Load "
-            + "stores designs (.fvd) including the Coaster-menu settings. Keys shown "
+        helpText(box, "Ctrl+Z / Ctrl+Shift+Z undo and redo coaster edits (any new "
+            + "edit clears the redo branch). File > Save/Load "
+            + "stores designs (.fvd) including the Coaster-menu settings; File > "
+            + "Export NL2 CSV hands the track to NoLimits 2. Keys shown "
             + "here are defaults — rebind anything in Edit > Shortcuts; the stats bar "
             + "always shows your current bindings.");
 
@@ -916,6 +1169,7 @@ public class FvdDesigner extends Application {
         helpKey(box, "Scroll", "zoom the time axis around the cursor; fully zoomed out = auto-fit.");
         helpKey(box, "Right-drag", "pan while zoomed in.");
         helpKey(box, "Hover curve", "white dot + the value there; hold Shift for the slope instead.");
+        helpKey(box, "Resulting (toolbar)", "dropdown of read-only derived curves: pitch rate and yaw rate (°/s, thin dashed, on the roll lane's scale, colored like the lane each answers to — pitch~vert G, yaw~lat G). No roll entry: the resulting roll rate IS the roll lane.");
         helpText(box, "Value axes auto-scale to the curves. The dotted line after a "
             + "lane's last node is its held final value — click it to add a real node. "
             + "Dragging past a plot edge grows that axis, faster the farther past. The "
@@ -925,28 +1179,35 @@ public class FvdDesigner extends Application {
         helpKey(box, "Click curve", "insert a node exactly ON it — the shape does not change.");
         helpKey(box, "Drag", "move freely; the readout shows Δt from the previous node + value.");
         helpKey(box, "Ctrl", "snap transition time and absolute value (steps set in Options; transitions can be as short as 0.01 s).");
-        helpKey(box, "S (hold)", "slide along one axis from the start point — picked instantly from the dominant direction, switches if you pull the other way.");
+        helpKey(box, "S (hold)", "slide along one axis from the start point — picked instantly from the dominant direction, switches if you pull the other way. Combines with Ctrl snapping: pressing S mid-drag with Ctrl held slides — it never triggers Ctrl+S save (no modifier combo fires during a drag).");
         helpKey(box, "Z / X", "sticky vertical/horizontal lock; overrides S, same key releases. Guides: lane color = value changing, yellow = time changing.");
         helpKey(box, "Arrows", "nudge by snap steps; Ctrl+arrow lands ON the grid; hold to glide.");
-        helpKey(box, "Shift+click / box", "multi-select (drag a box on empty plot); dragging any member moves the group.");
+        helpKey(box, "Shift+click / box", "multi-select (drag a box on empty plot); dragging any member moves the group. The MAIN node (full ring) is the last one clicked — or the earliest in a box.");
         helpKey(box, "Delete / rt-click", "remove node(s): interior deletes bridge the gap, deleting the last node shortens the ride; node 0 stays.");
-        helpKey(box, "Double-click", "type the transition time, value and handle sizes exactly.");
-        helpKey(box, "B · H · F", "smooth/broken · level the handles · straighten between two adjacent selected nodes.");
-        helpKey(box, "A / Append", "+1 s at the ride end — or a 1 s flat hold after the selected node.");
+        helpKey(box, "Double-click", "type the transition time, value and handle sizes exactly — typed handle sizes slide the knob along its current angle (like S). On the first node the ride's start speed is edited here too.");
+        helpKey(box, "B · H · F", "smooth/broken · level the handles (every selected node) · straighten between two adjacent selected nodes.");
+        helpKey(box, "Shift+H", "level the selection ONTO the main node: all selected nodes take its value with flat handles — one horizontal line.");
+        helpKey(box, "Shift+F", "straight-LOCK the segment between two adjacent selected nodes: it is drawn as twin thin lines and STAYS a line — move an endpoint and the line follows; its knobs only slide along it. Shift+F with either endpoint selected unlocks. Inserting on a locked segment keeps both halves locked.");
+        helpKey(box, "A / Append", "+1 s at the ride end (active lane only; the others keep holding) — or a 1 s flat hold after the selected node (all lanes shift).");
         helpKey(box, "Ripple checks", "drags also shift every later node in time and/or value (toolbar).");
 
         helpHead(box, "Handles");
         helpKey(box, "Drag", "free (angle + length).");
         helpKey(box, "S (hold)", "slide: length only, along the current line (dashed rail).");
-        helpKey(box, "Ctrl", "snap length to ease presets — cubic, sine, quintic, circle, plus 5%/10% steps up to 150% of the segment.");
+        helpKey(box, "Ctrl", "snap length to ease presets — cubic 0.33, sine 0.36, quintic 0.47, circle 0.55 — plus 0.05/0.1 steps up to 1.5.");
         helpText(box, "Round knob = smooth (the partner handle mirrors proportionally); "
-            + "square = broken (B toggles). Lengths are a FRACTION of the gap to the "
-            + "neighbor, so re-timing nodes keeps curve shapes. A handle beyond the "
+            + "square = broken (B toggles). Handle lengths — the number in the drag "
+            + "readout and the node dialog — are FRACTIONS of the gap to the "
+            + "neighbor (0.33 = a third of the segment), so re-timing nodes keeps "
+            + "curve shapes. \"dv\" is the handle's value offset from its node. "
+            + "A handle beyond the "
             + "visible scale draws as a dashed stub with a hollow edge marker — click "
             + "the marker to expand the view; click elsewhere to restore.");
 
         helpHead(box, "Cameras");
-        helpKey(box, "Orbit", "drag = rotate · scroll = zoom · Shift+click the track = orbit around that spot.");
+        helpKey(box, "Orbit", "drag or MIDDLE-drag = rotate · scroll = zoom · Shift+click (or hold C and click) the track = orbit around that spot · Ctrl+click the track = insert a node there.");
+        helpKey(box, "T / Shift+T", "snap to a TOP or SIDE view with a near-orthographic lens (no perspective — for judging alignments). Top locks square to the grid; side centers on the selected node (its marker shows white + larger). Right-drag PANS without leaving the view; scroll zooms. Same key again returns to the previous view; orbiting away keeps the angle and brings perspective back.");
+        helpKey(box, "Track markers", "small spheres on the track mark the active lane's nodes (selection shows white; Options toggle). Read-only for now — dragging them comes later.");
         helpKey(box, "Fly", "right-click the 3D view: WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits keeping the view.");
         helpKey(box, "POV", "Space. Starts hands-off: the camera sits on the track (following edits) while W/S and the S key stay with the graph. Right-click CAPTURES: mouse hides, W/S ride at simulated speed (Shift/Ctrl faster/slower), no mouse look; right-click releases. Scroll jumps along the track either way.");
         helpKey(box, "Space (captured)", "flips between fly (WASD) and POV (W/S) with the mouse still hidden.");
@@ -954,9 +1215,10 @@ public class FvdDesigner extends Application {
             + "toggle). The neon heartline hides itself while riding POV.");
 
         helpHead(box, "Menus & settings");
+        helpKey(box, "File > Export NL2 CSV", "(Ctrl+E) writes the track for NoLimits 2's CSV import. Choose heartline (default) or rail center (the spline NL2 builds its track around), plus the point spacing; both remembered per-user.");
         helpKey(box, "Edit > Shortcuts", "click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
-        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps (arrows walk the 1-2-5 series) · neon heartline · POV marker. Every row has a ↺ reset. Per-user.");
-        helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start point, rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-coaster, saved in the .fvd.");
+        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps (arrows walk the 1-2-5 series) · neon heartline · 3D node markers · POV marker. Every row has a ↺ reset. Per-user.");
+        helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start point (y = height above the ground plane), start speed (also on the first node's double-click dialog), rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-coaster, saved in the .fvd.");
         helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it; closing locks them in.");
 
         ScrollPane scroll = new ScrollPane(box);
@@ -1231,7 +1493,11 @@ public class FvdDesigner extends Application {
         Slider fovFly = optionSlider(30, 110, settings.flyFov(), 20);
         Label fovFlyVal = new Label(String.format("%.0f°", settings.flyFov()));
         wireOptionSlider(fovFly, fovFlyVal, "%.0f°",
-            v -> { flyCam.setFieldOfView(v); orbitCam.setFieldOfView(v); },
+            v -> {
+                flyCam.setFieldOfView(v);
+                // never stomp the 1° ortho lens; it re-reads the setting on exit
+                if (!orthoView) orbitCam.setFieldOfView(v);
+            },
             settings::setFlyFov);
 
         Slider sens = optionSlider(0.03, 0.40, settings.flySens(), 0.1);
@@ -1248,6 +1514,17 @@ public class FvdDesigner extends Application {
                 () -> { heartCheck.setSelected(on); settings.setShowHeartline(on); rebuildTrack(); });
             settings.setShowHeartline(on);
             rebuildTrack();
+        });
+
+        CheckBox markCheck = new CheckBox("Node markers on the 3D track");
+        markCheck.setSelected(settings.trackMarkers());
+        markCheck.setOnAction(ev -> {
+            boolean on = markCheck.isSelected();
+            pushMenuEdit(
+                () -> { markCheck.setSelected(!on); settings.setTrackMarkers(!on); editor.refreshMarkers(); },
+                () -> { markCheck.setSelected(on); settings.setTrackMarkers(on); editor.refreshMarkers(); });
+            settings.setTrackMarkers(on);
+            editor.refreshMarkers();
         });
 
         Spinner<Double> snapTSp = snap125Spinner(0.01, 2.0, settings.snapT());
@@ -1288,6 +1565,7 @@ public class FvdDesigner extends Application {
         grid.add(snapRollSp, 1, r);
         grid.add(optionReset(() -> snapRollSp.getValueFactory().setValue(AppSettings.SNAP_ROLL_DEFAULT)), 3, r++);
         grid.add(heartCheck, 0, r++, 3, 1);
+        grid.add(markCheck, 0, r++, 3, 1);
         grid.add(povMark, 0, r, 3, 1);
 
         Scene sc = new Scene(grid);
@@ -1309,6 +1587,7 @@ public class FvdDesigner extends Application {
     private void togglePov() {
         if (!povActive) {
             if (lastSamples == null || lastSamples.isEmpty()) return;
+            if (orthoView) exitOrthoKeepView();   // orbit must be sane on exit
             boolean keepCapture = flyActive;   // Space mid-flight keeps capture
             if (flyActive) toggleFly();        // hand the camera over cleanly
             povActive = true;
@@ -1350,6 +1629,7 @@ public class FvdDesigner extends Application {
     private void toggleFly() {
         if (povActive) return;
         if (!flyActive) {
+            if (orthoView) exitOrthoKeepView();   // hand off a sane pose
             flyActive = true;
             // seamless handoff: adopt the orbit camera's current pose
             double yaw = camYaw.getAngle(), pitch = camPitch.getAngle();
@@ -1446,13 +1726,14 @@ public class FvdDesigner extends Application {
 
         FVDIntegrator.Options opts = new FVDIntegrator.Options();
         opts.dt = INTEGRATE_DT;
-        opts.v0 = 26;
+        opts.v0 = startSpeed;
         opts.pos0 = new Vec3(startX, startY, startZ);
         opts.startHeading = new Vec3(1, 0, 0);
 
         List<FVDIntegrator.Sample> samples = FVDIntegrator.integrateTrack(kfs, opts);
         if (samples.size() < 2) return;
         lastSamples = samples;
+        resultRates = FVDIntegrator.bodyRates(samples);
 
         // two rails + cross ties, offset from the heartline
         MeshView leftRail = buildRailMesh(samples, -railGauge / 2);
@@ -1465,22 +1746,22 @@ public class FvdDesigner extends Application {
             heartMesh.setVisible(!povActive);   // the camera rides ON it
             parts.add(heartMesh);
         }
+        parts.add(markerGroup);
         trackGroup.getChildren().setAll(parts);
+        markerSig = null;                          // geometry moved: force
+        if (editor != null) editor.refreshMarkers();
 
         if (!worldCentered) {
             FVDIntegrator.Sample mid = samples.get(samples.size() / 2);
             world.getTransforms().add(new Translate(-mid.pos().x(), 0, -mid.pos().z()));
             gridCamX0 = mid.pos().x();   // scene coords + this = world coords
             gridCamZ0 = mid.pos().z();
-            // transparent reference grid at a FIXED height (placed once below
-            // the initial track); its XZ position follows the camera in 10 m
-            // steps so full line density is always around the viewer (LOD)
-            double lowest = 1e9;
-            for (FVDIntegrator.Sample sm : samples) {
-                double railY = sm.pos().y() - sm.U().y() * heartOffset;
-                lowest = Math.min(lowest, railY);
-            }
-            gridGroup = buildGrid(Math.floor(lowest - 1));
+            // transparent reference grid at ABSOLUTE GROUND LEVEL y=0 (it
+            // used to sit just under the track's lowest point — now Start y
+            // IS height above ground; tracks may dig below it); its XZ
+            // position follows the camera in 10 m steps so full line density
+            // is always around the viewer (LOD)
+            gridGroup = buildGrid(0);
             world.getChildren().add(gridGroup);
             updateGridLOD(mid.pos().x(), mid.pos().z());
             worldCentered = true;
@@ -1756,6 +2037,7 @@ public class FvdDesigner extends Application {
             out.printf(Locale.US, "gauge %.4f%n", railGauge);
             out.printf(Locale.US, "tiespace %.4f%n", tieSpacing);
             out.printf(Locale.US, "start %.4f %.4f %.4f%n", startX, startY, startZ);
+            out.printf(Locale.US, "v0 %.4f%n", startSpeed);
             // rail color lines are ignored by older versions (unknown-line rule)
             out.printf(Locale.US, "railmode %s%n", railSolid ? "solid" : "gradient");
             out.printf(Locale.US, "railcolor %.4f %.4f %.4f%n",
@@ -1771,8 +2053,11 @@ public class FvdDesigner extends Application {
             for (int lane = 0; lane < 3; lane++) {
                 out.println("lane " + lane);
                 for (BezierBaker.Node n : lanes.get(lane)) {
-                    out.printf(Locale.US, "n %.4f %.4f %.4f %.4f %.4f %.4f %d%n",
-                        n.t, n.val, n.outFrac, n.outDv, n.inFrac, n.inDv, n.smooth ? 1 : 0);
+                    // 8th field = straight-lock; older readers only take the
+                    // first 7 and ignore extras (field-level forward compat)
+                    out.printf(Locale.US, "n %.4f %.4f %.4f %.4f %.4f %.4f %d %d%n",
+                        n.t, n.val, n.outFrac, n.outDv, n.inFrac, n.inDv,
+                        n.smooth ? 1 : 0, n.straightOut ? 1 : 0);
                 }
             }
             statsLabel.setText("Saved: " + f.getName());
@@ -1796,6 +2081,7 @@ public class FvdDesigner extends Application {
 
             double newHeart = heartOffset, newGauge = railGauge, newTie = tieSpacing;
             double[] newStart = { startX, startY, startZ };
+            double newV0 = startSpeed;
             boolean newSolid = railSolid;
             Color newColor = railColor;
             Color[] newGrad = gradColors.clone();
@@ -1817,6 +2103,7 @@ public class FvdDesigner extends Application {
                             newStart[k] = clamp(Double.parseDouble(parts[k + 1]), -500, 500);
                         }
                     }
+                    case "v0" -> newV0 = clamp(Double.parseDouble(parts[1]), 1, 100);
                     case "railmode" -> newSolid = parts[1].equals("solid");
                     case "railcolor" -> newColor = Color.color(
                         clamp(Double.parseDouble(parts[1]), 0, 1),
@@ -1845,6 +2132,7 @@ public class FvdDesigner extends Application {
                         n.inFrac  = Double.parseDouble(parts[5]);
                         n.inDv    = Double.parseDouble(parts[6]);
                         n.smooth = !parts[7].equals("0");
+                        n.straightOut = parts.length > 8 && parts[8].equals("1");
                         newLanes.get(curLane).add(n);
                     }
                     default -> { /* ignore unknown lines: forward compatibility */ }
@@ -1877,6 +2165,7 @@ public class FvdDesigner extends Application {
             railGauge = newGauge;
             tieSpacing = newTie;
             startX = newStart[0]; startY = newStart[1]; startZ = newStart[2];
+            startSpeed = newV0;
             railSolid = newSolid;
             railColor = newColor;
             System.arraycopy(newGrad, 0, gradColors, 0, 4);
@@ -1887,6 +2176,7 @@ public class FvdDesigner extends Application {
             startXSpinner.getValueFactory().setValue(startX);
             startYSpinner.getValueFactory().setValue(startY);
             startZSpinner.getValueFactory().setValue(startZ);
+            startSpeedSpinner.getValueFactory().setValue(startSpeed);
             (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
             editor.clearSelection();
             editor.refresh();
@@ -1895,6 +2185,87 @@ public class FvdDesigner extends Application {
         } catch (Exception ex) {
             statsLabel.setText("Load failed: " + ex.getMessage());
         }
+    }
+
+    /** File > Export NL2 CSV (or Ctrl+E): resample the current track for
+     *  NoLimits 2's CSV import. The two settings (which line, spacing) are
+     *  app-wide and persist across runs; the math lives in Nl2CsvExporter. */
+    private void exportNl2Csv() {
+        if (lastSamples == null || lastSamples.size() < 2) return;
+
+        Stage dlg = new Stage();
+        dlg.initOwner(stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Export NL2 CSV");
+
+        ToggleGroup lineGroup = new ToggleGroup();
+        RadioButton heartBtn = new RadioButton("Heartline (rider path)");
+        heartBtn.setToggleGroup(lineGroup);
+        RadioButton spineBtn = new RadioButton("Rail center (NL2 track spline)");
+        spineBtn.setToggleGroup(lineGroup);
+        (settings.nl2Heartline() ? heartBtn : spineBtn).setSelected(true);
+        lineGroup.selectedToggleProperty().addListener((obs, o, sel) -> {
+            boolean heart = sel == heartBtn;
+            pushMenuEdit(() -> { (heart ? spineBtn : heartBtn).setSelected(true); settings.setNl2Heartline(!heart); },
+                         () -> { (heart ? heartBtn : spineBtn).setSelected(true); settings.setNl2Heartline(heart); });
+            settings.setNl2Heartline(heart);
+        });
+
+        Spinner<Double> segSp = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(
+            0.1, 10.0, settings.nl2SegLen(), 0.1));
+        segSp.setEditable(true);
+        segSp.setPrefWidth(80);
+        wireOptionSpinner(segSp, settings::setNl2SegLen);
+
+        Label note = new Label("Heartline exports the integrated force path (for "
+            + "NL2 heartlining workflows); rail center exports the spline NL2 "
+            + "builds its track around, matching the rails drawn here. Spacing is "
+            + "rounded so the ride divides into equal segments.");
+        note.setWrapText(true);
+        note.setMaxWidth(340);
+        note.setStyle("-fx-text-fill: #666;");
+
+        Button exportBtn = new Button("Export…");
+        exportBtn.setDefaultButton(true);
+        exportBtn.setOnAction(e -> {
+            FileChooser fc = new FileChooser();
+            fc.setTitle("Export NL2 CSV");
+            fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("NL2 track (*.csv)", "*.csv"));
+            fc.setInitialFileName("coaster.csv");
+            File f = fc.showSaveDialog(dlg);
+            if (f == null) return;
+            try (PrintWriter out = new PrintWriter(f, "UTF-8")) {
+                Nl2CsvExporter.Result r = Nl2CsvExporter.export(
+                    lastSamples, heartBtn.isSelected(), heartOffset, segSp.getValue());
+                out.print(r.csv());
+                statsLabel.setText(String.format(Locale.US,
+                    "Exported: %s (%d points, %.2f m spacing, %.0f m)",
+                    f.getName(), r.points(), r.step(), r.length()));
+                dlg.close();
+            } catch (Exception ex) {
+                statsLabel.setText("Export failed: " + ex.getMessage());
+            }
+        });
+        Button cancelBtn = new Button("Cancel");
+        cancelBtn.setCancelButton(true);
+        cancelBtn.setOnAction(e -> dlg.close());
+        HBox buttons = new HBox(8, exportBtn, cancelBtn);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+
+        HBox segRow = new HBox(8, new Label("Segment length (m)"), segSp,
+            optionReset(() -> segSp.getValueFactory().setValue(AppSettings.NL2_SEGLEN_DEFAULT)));
+        segRow.setAlignment(Pos.CENTER_LEFT);
+
+        VBox box = new VBox(8, new Label("Track points:"), heartBtn, spineBtn,
+            segRow, note, buttons);
+        box.setPadding(new Insets(14));
+
+        Scene sc = new Scene(box);
+        installMenuUndoKeys(sc);
+        dlg.setScene(sc);
+        beginMenuSession();
+        dlg.setOnHidden(e -> endMenuSession());
+        dlg.show();
     }
 
     // =====================================================================
@@ -2031,6 +2402,7 @@ public class FvdDesigner extends Application {
         private long lastNudgeNanos = 0;   // coalesces arrow-key undo snapshots
 
         private final Deque<List<List<BezierBaker.Node>>> undoStack = new ArrayDeque<>();
+        private final Deque<List<List<BezierBaker.Node>>> redoStack = new ArrayDeque<>();
         private List<List<BezierBaker.Node>> pendingSnapshot = null;
         private boolean gestureMoved = false;
         private static final int UNDO_LIMIT = 100;
@@ -2209,15 +2581,17 @@ public class FvdDesigner extends Application {
                     } else {
                         if (!boxAdd) selSet.clear();
                         List<BezierBaker.Node> lane = active();
+                        int first = -1;   // primary = EARLIEST node in the box
                         for (int i = 0; i < lane.size(); i++) {
                             double px = tToX(lane.get(i).t);
                             double py = valToY(activeLane, lane.get(i).val);
                             if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
                                 selSet.add(i);
-                                selIdx = i;
+                                if (first < 0) first = i;
                             }
                         }
-                        if (selSet.isEmpty()) selIdx = -1;
+                        if (first >= 0) selIdx = first;
+                        else if (selSet.isEmpty()) selIdx = -1;
                         axisLock = 0;
                     }
                     boxX0 = Double.NaN;
@@ -2252,6 +2626,29 @@ public class FvdDesigner extends Application {
 
         void refresh() { redraw(); }
 
+        /** A node or handle drag gesture is in progress (keyboard combos
+         *  formed by held drag modifiers are suppressed while true). */
+        boolean isDragging() { return dragNodeIdx >= 0 || dragHandleIdx >= 0; }
+
+        /** Sync the 3D node markers with this editor's lane/selection. */
+        void refreshMarkers() { refreshTrackMarkers(activeLane, selSet, selIdx); }
+
+        /** Spine-level track position of the primary selected node, or
+         *  null when nothing is selected (side-view centering). */
+        Vec3 selectedTrackPoint() {
+            if (selIdx < 0 || selIdx >= active().size()) return null;
+            if (lastSamples == null || lastSamples.isEmpty()) return null;
+            int idx = (int) clamp(Math.round(active().get(selIdx).t / INTEGRATE_DT),
+                                  0, lastSamples.size() - 1);
+            FVDIntegrator.Sample sm = lastSamples.get(idx);
+            return sm.pos().sub(sm.U().scale(heartOffset));
+        }
+
+        /** Ctrl+click on the 3D track: insert at that ride time — same
+         *  rules as clicking the graph curve (exact split, gap guards,
+         *  selects the new node). */
+        void insertAtTime(double t) { insertNodeOnCurve(t); }
+
         /** Shift pressed/released while hovering: toggle the slope readout
          *  without waiting for the next mouse move. */
         void shiftHover(boolean on) {
@@ -2282,7 +2679,8 @@ public class FvdDesigner extends Application {
 
         /** Append action: with a node selected, insert a 1 s flat hold right
          *  after it (everything later shifts 1 s, regardless of the ripple
-         *  toggles); otherwise extend the ride end by 1 s. */
+         *  toggles); otherwise extend the ride end by 1 s — ACTIVE lane only
+         *  (the others keep their dotted hold, no nodes added). */
         void appendAction() {
             if (selIdx >= 0) insertHoldAfterSelected();
             else appendSecond();
@@ -2318,15 +2716,16 @@ public class FvdDesigner extends Application {
 
         void appendSecond() {
             pushUndoSnapshot();
+            // only the ACTIVE lane gets a real node; the other lanes keep
+            // holding their final value (dotted line) without extra nodes
             double newEnd = BezierBaker.rideEnd(lanes) + 1.0;
-            for (List<BezierBaker.Node> lane : lanes) {
-                BezierBaker.Node last = lane.get(lane.size() - 1);
-                BezierBaker.Node np = new BezierBaker.Node(newEnd, last.val);
-                // appended transitions default to the sinusoidal ease
-                last.outFrac = SINE_FRAC; last.outDv = 0;
-                np.inFrac = SINE_FRAC;    np.inDv = 0;
-                lane.add(np);
-            }
+            List<BezierBaker.Node> lane = active();
+            BezierBaker.Node last = lane.get(lane.size() - 1);
+            BezierBaker.Node np = new BezierBaker.Node(newEnd, last.val);
+            // appended transitions default to the sinusoidal ease
+            last.outFrac = SINE_FRAC; last.outDv = 0;
+            np.inFrac = SINE_FRAC;    np.inDv = 0;
+            lane.add(np);
             redraw();
             rebuildTrack();
         }
@@ -2363,11 +2762,25 @@ public class FvdDesigner extends Application {
         private void pushUndo(List<List<BezierBaker.Node>> snap) {
             undoStack.push(snap);
             while (undoStack.size() > UNDO_LIMIT) undoStack.removeLast();
+            redoStack.clear();   // a fresh edit invalidates the redo branch
         }
 
         void undo() {
             if (undoStack.isEmpty()) return;
-            List<List<BezierBaker.Node>> snap = undoStack.pop();
+            redoStack.push(snapshot());        // current state becomes redoable
+            applySnapshot(undoStack.pop());
+        }
+
+        /** Ctrl+Shift+Z, mirroring the menu-local sessions. Any new edit
+         *  (pushUndo) clears the redo branch. */
+        void redo() {
+            if (redoStack.isEmpty()) return;
+            undoStack.push(snapshot());        // direct: must NOT clear redo
+            while (undoStack.size() > UNDO_LIMIT) undoStack.removeLast();
+            applySnapshot(redoStack.pop());
+        }
+
+        private void applySnapshot(List<List<BezierBaker.Node>> snap) {
             for (int i = 0; i < 3; i++) {
                 lanes.get(i).clear();
                 lanes.get(i).addAll(snap.get(i));
@@ -2789,7 +3202,8 @@ public class FvdDesigner extends Application {
             } else {
                 n = BezierBaker.splitSegment(a, b, t);
             }
-            lane.add(i, n);
+            n.straightOut = a.straightOut;   // a locked segment stays locked
+            lane.add(i, n);                  // through a split (both halves)
             selIdx = i;
             selSet.clear();
             selSet.add(i);
@@ -2834,15 +3248,51 @@ public class FvdDesigner extends Application {
             rebuildTrack();
         }
 
-        /** H: make the selected node's handles horizontal (dv = 0). While a
-         *  handle is being dragged on a BROKEN node, only that handle. */
+        /** H: make the selected node's handles horizontal (dv = 0) — EVERY
+         *  selected node when multi-selected. While a handle is being
+         *  dragged on a BROKEN node, only that handle. */
         void flattenHandles() {
             if (selIdx < 0) return;
-            BezierBaker.Node n = active().get(selIdx);
+            List<BezierBaker.Node> lane = active();
             pushUndoSnapshot();
-            if (dragHandleIdx >= 0 && !n.smooth) {
-                if (dragHandleIsOut) n.outDv = 0; else n.inDv = 0;
+            if (selSet.size() > 1) {
+                for (int i : selSet) {
+                    BezierBaker.Node n = lane.get(i);
+                    n.outDv = 0;
+                    n.inDv = 0;
+                }
             } else {
+                BezierBaker.Node n = lane.get(selIdx);
+                if (dragHandleIdx >= 0 && !n.smooth) {
+                    if (dragHandleIsOut) n.outDv = 0; else n.inDv = 0;
+                } else {
+                    n.outDv = 0;
+                    n.inDv = 0;
+                }
+            }
+            redraw();
+            rebuildTrack();
+        }
+
+        /** Shift+H: level the whole selection ONTO the main highlighted
+         *  node — every selected node takes selIdx's value with flat
+         *  handles, so the selected run becomes one horizontal line
+         *  (segments between selected nodes go exactly flat; transitions
+         *  to unselected neighbors keep their handles). The main node is
+         *  the last one clicked, or the earliest in a box selection.
+         *  With fewer than two selected this is plain H. */
+        void levelSelected() {
+            if (selIdx < 0) return;
+            if (selSet.size() < 2) {
+                flattenHandles();
+                return;
+            }
+            List<BezierBaker.Node> lane = active();
+            double ref = lane.get(selIdx).val;
+            pushUndoSnapshot();
+            for (int i : selSet) {
+                BezierBaker.Node n = lane.get(i);
+                n.val = ref;
                 n.outDv = 0;
                 n.inDv = 0;
             }
@@ -2884,6 +3334,63 @@ public class FvdDesigner extends Application {
             rebuildTrack();
         }
 
+        /** Shift+F: PERSISTENT straightness. If the selection touches any
+         *  straight-locked segment, unlock those (selecting either endpoint
+         *  is enough); otherwise, with exactly two ADJACENT nodes selected,
+         *  lock their segment — enforceStraightLocks() then re-chords it
+         *  after every edit, so dragging an endpoint keeps the line
+         *  straight and dragging a facing knob only slides along it. */
+        void toggleStraightLock() {
+            List<BezierBaker.Node> lane = active();
+            Set<Integer> sel = selSet.isEmpty() && selIdx >= 0
+                ? java.util.Set.of(selIdx) : selSet;
+            Set<Integer> locked = new HashSet<>();
+            for (int i : sel) {
+                if (i < lane.size() - 1 && lane.get(i).straightOut) locked.add(i);
+                if (i > 0 && lane.get(i - 1).straightOut) locked.add(i - 1);
+            }
+            if (!locked.isEmpty()) {
+                pushUndoSnapshot();
+                for (int i : locked) lane.get(i).straightOut = false;
+                redraw();
+                rebuildTrack();
+                return;
+            }
+            if (sel.size() != 2) return;
+            List<Integer> idx = new ArrayList<>(sel);
+            java.util.Collections.sort(idx);
+            if (idx.get(1) != idx.get(0) + 1) return;
+            pushUndoSnapshot();
+            lane.get(idx.get(0)).straightOut = true;
+            redraw();          // enforcement straightens it right here
+            rebuildTrack();
+        }
+
+        /** Re-chord every straight-locked segment: facing handles onto the
+         *  line between the endpoints (smooth endpoints keep C1 by
+         *  re-angling their far handle — unless that side is itself locked,
+         *  which owns its own handles). Runs at the top of every redraw,
+         *  which follows every lane mutation; idempotent and cheap. */
+        private void enforceStraightLocks() {
+            for (List<BezierBaker.Node> ln : lanes) {
+                for (int i = 0; i < ln.size() - 1; i++) {
+                    BezierBaker.Node a = ln.get(i);
+                    if (!a.straightOut) continue;
+                    BezierBaker.Node b = ln.get(i + 1);
+                    if (b.t - a.t < 1e-9) continue;   // malformed file guard
+                    double slope = (b.val - a.val) / (b.t - a.t);
+                    a.outDv = slope * BezierBaker.effOutDt(a, b);
+                    b.inDv  = slope * BezierBaker.effInDt(a, b);
+                    if (a.smooth && i > 0 && !ln.get(i - 1).straightOut) {
+                        a.inDv = slope * BezierBaker.effInDt(ln.get(i - 1), a);
+                    }
+                    if (b.smooth && i + 1 < ln.size() - 1 && !b.straightOut) {
+                        b.outDv = slope * BezierBaker.effOutDt(b, ln.get(i + 2));
+                    }
+                }
+            }
+        }
+
         /** Double-click on a node: type its settings directly. Transition
          *  time/magnitude are relative to the PREVIOUS node (node 0 edits
          *  its global value); handles are segment fractions. 3 decimals. */
@@ -2903,23 +3410,28 @@ public class FvdDesigner extends Application {
             grid.setVgap(8);
             grid.setPadding(new Insets(14));
 
-            TextField dtField = null, valField;
+            TextField dtField = null, valField, v0Field = null;
             TextField inField = null, outField = null;
             int row = 0;
             if (prev != null) {
                 dtField = new TextField(String.format(Locale.US, "%.3f", n.t - prev.t));
                 grid.addRow(row++, new Label("Transition time (s)"), dtField);
+            } else {
+                // node 0: the ride's start speed lives here too (same value
+                // as the Coaster-menu spinner, whichever lane you opened)
+                v0Field = new TextField(String.format(Locale.US, "%.3f", startSpeed));
+                grid.addRow(row++, new Label("Start speed (m/s)"), v0Field);
             }
             // vertical axis is the GLOBAL value, not a delta
             valField = new TextField(String.format(Locale.US, "%.3f", n.val));
             grid.addRow(row++, new Label("Value (" + LANE_UNITS[activeLane].trim() + ")"), valField);
             if (prev != null) {
                 inField = new TextField(String.format(Locale.US, "%.3f", n.inFrac));
-                grid.addRow(row++, new Label("In handle (fraction)"), inField);
+                grid.addRow(row++, new Label("In handle"), inField);
             }
             if (hasOut) {
                 outField = new TextField(String.format(Locale.US, "%.3f", n.outFrac));
-                grid.addRow(row++, new Label("Out handle (fraction)"), outField);
+                grid.addRow(row++, new Label("Out handle"), outField);
             }
             for (javafx.scene.Node c : grid.getChildren()) {
                 if (c instanceof TextField tf) tf.setPrefColumnCount(7);
@@ -2933,12 +3445,28 @@ public class FvdDesigner extends Application {
             buttons.setAlignment(Pos.CENTER_RIGHT);
             grid.add(buttons, 0, row, 2, 1);
 
-            final TextField fDt = dtField, fVal = valField;
+            final TextField fDt = dtField, fVal = valField, fV0 = v0Field;
             final TextField fIn = inField, fOut = outField;
             ok.setOnAction(ev -> {
                 pushUndoSnapshot();
-                if (fIn != null)  n.inFrac = clamp(parseOr(fIn, n.inFrac), MIN_FRAC, BezierBaker.MAX_FRAC);
-                if (fOut != null) n.outFrac = clamp(parseOr(fOut, n.outFrac), MIN_FRAC, BezierBaker.MAX_FRAC);
+                // typed fractions SLIDE the knob along its current line (S
+                // semantics): dv scales with the length, angle preserved
+                if (fIn != null) {
+                    double nf = clamp(parseOr(fIn, n.inFrac), MIN_FRAC, BezierBaker.MAX_FRAC);
+                    if (n.inFrac > 1e-9) n.inDv *= nf / n.inFrac;
+                    n.inFrac = nf;
+                }
+                if (fOut != null) {
+                    double nf = clamp(parseOr(fOut, n.outFrac), MIN_FRAC, BezierBaker.MAX_FRAC);
+                    if (n.outFrac > 1e-9) n.outDv *= nf / n.outFrac;
+                    n.outFrac = nf;
+                }
+                if (fV0 != null) {
+                    // through the spinner so the menu shows it and the track
+                    // rebuilds (start speed is per-coaster, not in lane undo)
+                    startSpeedSpinner.getValueFactory().setValue(
+                        clamp(parseOr(fV0, startSpeed), 1, 100));
+                }
                 double val = parseOr(fVal, n.val);
                 if (prev != null) {
                     double dt = Math.max(MIN_GAP, parseOr(fDt, n.t - prev.t));
@@ -2979,6 +3507,21 @@ public class FvdDesigner extends Application {
                     lo = Math.min(lo, Math.min(sn.val + sn.outDv, sn.val + sn.inDv));
                     hi = Math.max(hi, Math.max(sn.val + sn.outDv, sn.val + sn.inDv));
                 }
+                // resulting overlay rides the roll scale — keep it in view
+                if (L == 2 && resultRates != null
+                        && (settings.resPitch() || settings.resYaw())) {
+                    for (double[] row : resultRates) {
+                        if (row[0] < t0 || row[0] > t1) continue;
+                        if (settings.resPitch()) {
+                            lo = Math.min(lo, row[1]);
+                            hi = Math.max(hi, row[1]);
+                        }
+                        if (settings.resYaw()) {
+                            lo = Math.min(lo, row[2]);
+                            hi = Math.max(hi, row[2]);
+                        }
+                    }
+                }
                 if (lo < DEF_MIN[L] || hi > DEF_MAX[L]) {
                     double pad = (hi - lo) * 0.05;   // "slightly beyond"
                     double step = niceStep((hi - lo) / 6);
@@ -3018,7 +3561,9 @@ public class FvdDesigner extends Application {
             GraphicsContext gc = canvas.getGraphicsContext2D();
             double w = canvas.getWidth(), h = canvas.getHeight();
             if (w <= 0 || h <= 0 || plotWidth() <= 0 || plotHeight() <= 0) return;
+            enforceStraightLocks();   // before updateScale sees the handles
             updateScale();
+            refreshMarkers();         // 3D markers follow lane + selection
             gc.setGlobalAlpha(1.0);
             gc.clearRect(0, 0, w, h);
             gc.setFill(Color.rgb(20, 22, 28));
@@ -3079,6 +3624,33 @@ public class FvdDesigner extends Application {
             }
             gc.setGlobalAlpha(1.0);
             strokeLaneCurve(gc, activeLane);
+
+            // read-only RESULTING curves (toolbar "Resulting" dropdown):
+            // what the geometry actually does, derived from the integrated
+            // samples — dashed thin curves on the ROLL lane's value scale,
+            // colored like the lane each answers to (pitch~Gv, yaw~Gl).
+            // Roll is not offered: resulting roll = the authored roll lane.
+            if (resultRates != null && (settings.resPitch() || settings.resYaw())) {
+                gc.setLineWidth(1);
+                gc.setLineDashes(4, 4);
+                gc.setGlobalAlpha(0.7);
+                for (int comp = 1; comp <= 2; comp++) {
+                    if (comp == 1 ? !settings.resPitch() : !settings.resYaw()) continue;
+                    gc.setStroke(LANE_COLORS[comp - 1]);
+                    gc.beginPath();
+                    boolean started = false;
+                    for (double[] row : resultRates) {
+                        double rx = tToX(row[0]);
+                        double ry = valToY(2, row[comp]);
+                        if (!started) { gc.moveTo(rx, ry); started = true; }
+                        else gc.lineTo(rx, ry);
+                    }
+                    gc.stroke();
+                }
+                gc.setLineDashes((double[]) null);
+                gc.setGlobalAlpha(1.0);
+                gc.setLineWidth(2);
+            }
 
             List<BezierBaker.Node> lane = active();
             for (int i = 0; i < lane.size(); i++) {
@@ -3231,6 +3803,10 @@ public class FvdDesigner extends Application {
             gc.moveTo(tToX(lane.get(0).t), valToY(laneIdx, lane.get(0).val));
             for (int i = 0; i < lane.size() - 1; i++) {
                 BezierBaker.Node a = lane.get(i), b = lane.get(i + 1);
+                if (a.straightOut) {   // drawn separately as twin lines
+                    gc.moveTo(tToX(b.t), valToY(laneIdx, b.val));
+                    continue;
+                }
                 double c1x = tToX(a.t + BezierBaker.effOutDt(a, b));
                 double c1y = valToY(laneIdx, a.val + a.outDv);
                 double c2x = tToX(b.t + BezierBaker.effInDt(a, b));
@@ -3238,6 +3814,23 @@ public class FvdDesigner extends Application {
                 gc.bezierCurveTo(c1x, c1y, c2x, c2y, tToX(b.t), valToY(laneIdx, b.val));
             }
             gc.stroke();
+
+            // straight-locked segments: TWO skinny parallel lines offset
+            // along the chord normal — the "this is pinned" look
+            gc.setLineWidth(1);
+            for (int i = 0; i < lane.size() - 1; i++) {
+                if (!lane.get(i).straightOut) continue;
+                BezierBaker.Node a = lane.get(i), b = lane.get(i + 1);
+                double ax = tToX(a.t), ay = valToY(laneIdx, a.val);
+                double bx = tToX(b.t), by = valToY(laneIdx, b.val);
+                double dx = bx - ax, dy = by - ay;
+                double len = Math.hypot(dx, dy);
+                if (len < 1e-6) continue;
+                double ox = -dy / len * 1.6, oy = dx / len * 1.6;
+                gc.strokeLine(ax + ox, ay + oy, bx + ox, by + oy);
+                gc.strokeLine(ax - ox, ay - oy, bx - ox, by - oy);
+            }
+            gc.setLineWidth(2);
 
             // a lane that ends early holds its final value to the ride end:
             // drawn DOTTED to show it's implied, not authored (clickable to
@@ -3311,9 +3904,12 @@ public class FvdDesigner extends Application {
                     gc.setFont(Font.font(10));
                     gc.setTextAlign(TextAlignment.LEFT);
                     gc.setTextBaseline(VPos.TOP);
-                    gc.fillText(String.format("%s %.0f%%%s  dv %.2f",
+                    // lengths read as FRACTIONS of the segment, matching the
+                    // node dialog (was percentages; what they mean lives in
+                    // the Help window, not here)
+                    gc.fillText(String.format("%s %.2f%s  dv %.2f",
                         out ? "out" : "in",
-                        (out ? n.outFrac : n.inFrac) * 100,
+                        out ? n.outFrac : n.inFrac,
                         dragPresetName != null ? " " + dragPresetName : "",
                         out ? n.outDv : n.inDv),
                         clamp(k[0] + 8, MARGIN_LEFT, canvas.getWidth() - 140),

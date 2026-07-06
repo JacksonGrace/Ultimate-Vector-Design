@@ -26,15 +26,21 @@ public class AppSettings {
         { "lane3",  "Select lane 3 (Roll)",       "3" },
         { "smooth", "Toggle smooth/broken node",  "B" },
         { "flath",  "Flatten handles (level)",    "H" },
+        { "levelSel", "Level selection to main node", "Shift+H" },
         { "align",  "Straighten between selected pair", "F" },
+        { "alignLock", "Straight-lock between selected pair", "Shift+F" },
         { "lockv",  "Lock node drag: vertical",   "Z" },
         { "lockh",  "Lock node drag: horizontal", "X" },
         { "delNode", "Delete selected node",      "Delete" },
         { "append", "Append 1 s of track",        "A" },
         { "pov",    "POV ride",                   "Space" },
+        { "viewTop",  "Top view (ortho)",         "T" },
+        { "viewSide", "Side view (ortho)",        "Shift+T" },
         { "save",   "Save design",                "Ctrl+S" },
         { "load",   "Load design",                "Ctrl+O" },
+        { "export", "Export NL2 CSV",             "Ctrl+E" },
         { "undo",   "Undo",                       "Ctrl+Z" },
+        { "redo",   "Redo",                       "Ctrl+Shift+Z" },
     };
 
     public static final double FOV_DEFAULT = 65;
@@ -42,6 +48,7 @@ public class AppSettings {
     public static final double SNAP_T_DEFAULT = 0.1;     // s
     public static final double SNAP_G_DEFAULT = 0.1;     // g
     public static final double SNAP_ROLL_DEFAULT = 5;    // deg/s
+    public static final double NL2_SEGLEN_DEFAULT = 1.0; // m between CSV vertices
 
     private final File file;
     private final Properties props = new Properties();
@@ -126,6 +133,52 @@ public class AppSettings {
 
     public void setPovMarker(boolean on) {
         props.setProperty("povMarker", String.valueOf(on));
+        save();
+    }
+
+    /** NL2 CSV export: true = heartline points (the default, user
+     *  preference — see D41), false = rail-center spine. */
+    public boolean nl2Heartline() {
+        return Boolean.parseBoolean(props.getProperty("nl2Heartline", "true"));
+    }
+
+    public void setNl2Heartline(boolean on) {
+        props.setProperty("nl2Heartline", String.valueOf(on));
+        save();
+    }
+
+    /** NL2 CSV export: requested vertex spacing in meters. */
+    public double nl2SegLen() { return getD("nl2SegLen", NL2_SEGLEN_DEFAULT); }
+    public void setNl2SegLen(double v) { setD("nl2SegLen", v); }
+
+    /** Resulting-graph overlay picks (toolbar "Resulting" dropdown).
+     *  Roll rate is deliberately absent: the resulting roll IS the
+     *  authored roll lane (D47). */
+    public boolean resPitch() {
+        return Boolean.parseBoolean(props.getProperty("resPitch", "false"));
+    }
+
+    public void setResPitch(boolean on) {
+        props.setProperty("resPitch", String.valueOf(on));
+        save();
+    }
+
+    public boolean resYaw() {
+        return Boolean.parseBoolean(props.getProperty("resYaw", "false"));
+    }
+
+    public void setResYaw(boolean on) {
+        props.setProperty("resYaw", String.valueOf(on));
+        save();
+    }
+
+    /** Show the active lane's nodes as small spheres on the track. */
+    public boolean trackMarkers() {
+        return Boolean.parseBoolean(props.getProperty("trackMarkers", "true"));
+    }
+
+    public void setTrackMarkers(boolean on) {
+        props.setProperty("trackMarkers", String.valueOf(on));
         save();
     }
 
