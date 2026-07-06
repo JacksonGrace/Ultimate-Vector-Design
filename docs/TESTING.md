@@ -408,10 +408,16 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
 37. Ortho views & orbit gestures: press T — the view snaps straight down
     with NO perspective (rails don't converge) and the grid runs SQUARE
     to the screen (yaw snapped to the nearest 90°); the picture is the
-    same SIZE as before the snap. Select a node, Shift+T — side
-    elevation centered on that node, whose track marker is white and
-    larger than the rest; with nothing selected the side view keeps the
-    current center. RIGHT-drag in either view pans (world follows the
+    same SIZE as before the snap. Select a node mid-turn (somewhere the
+    track no longer heads east), Shift+T — the view centers on that
+    node AND the track runs HORIZONTALLY across the screen there (lens
+    tangent to the local heading, v9.3); approach from the other side
+    of the track first and the view opens from THAT side (no 180°
+    flip). The node's marker is white and larger than the rest. With
+    nothing selected the side view is the world X–Y elevation and keeps
+    the current center. While IN the side view, select a different node
+    and press Shift+T again: the view re-centers and re-tangents WITHOUT
+    exiting; the side view has no same-key exit — orbit away or T, T. RIGHT-drag in either view pans (world follows the
     mouse, view stays snapped, grid dense region follows); right-click
     does NOT enter fly while a snapped view is active. Scroll zooms in
     both (smooth, no sudden clamp). The same key returns to the exact

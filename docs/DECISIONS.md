@@ -1012,3 +1012,26 @@ package-private class. FvdDesigner drops 4,167 → 2,403 lines.
   Deliberately NOT bundled here — the 3D input/camera code is the
   least-verified area in the app (POV affine, capture handoffs); it
   gets its own isolated diff so a regression bisects to one commit.
+
+## D53. Side view is tangent to the track at the selected node (v9.3)
+User report read as a regression but was not one: Shift+T's side view
+was ALWAYS the fixed world X–Y elevation (yaw 0, D48) — it merely
+LOOKED track-aligned at the start node because rides launch along +X,
+and the top view's D49 grid snap was unrelated. What the user expects
+(and FVD++-style elevation editing wants) is a side view TANGENT to
+the track where you are working:
+- With a node selected, Shift+T now yaws the lens PERPENDICULAR to the
+  track's horizontal heading at that node (atan2 on the sample's T),
+  so the track runs across the screen at the centered point — a true
+  local elevation. Of the two perpendicular sides, the one nearer the
+  current camera yaw wins (no surprise 180° flips).
+- No selection, or a locally vertical tangent (|T.xz| ~ 0): the old
+  world X–Y elevation stands.
+- Top view stays grid-snapped (D49) — that lock was the user's own
+  request and was never the culprit.
+- **A second Shift+T RE-TANGENTS to the current selection** instead of
+  exiting (follow-up user spec): select another node — or pan away —
+  and Shift+T re-aims without leaving ortho. Consequence: the side view
+  has no same-key exit; leave it by orbiting away (keeps angles,
+  restores the lens) or via T, T. T-in-top still restores the saved
+  perspective pose.

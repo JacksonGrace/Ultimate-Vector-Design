@@ -384,7 +384,10 @@ active-lane node, selection in white, signature-guarded rebuild on graph
 redraws. `T`/`Shift+T` = TOP/SIDE views with a pseudo-ortho lens (1° FOV
 at ~72× the distance, apparent size preserved; ParallelCamera can't do
 3D) — top snaps yaw to the nearest 90° (always grid-aligned), side
-centers the pivot on the SELECTED node's track point (selected markers
+centers the pivot on the SELECTED node's track point AND yaws the lens
+TANGENT to the track's heading there (perpendicular look direction,
+nearer of the two sides kept; no selection or vertical tangent = world
+X–Y elevation; D53) (selected markers
 draw white AND larger, 0.32 vs 0.22 m); RIGHT-drag pans in the view
 plane without exiting ortho (grab-style, world-units-per-pixel from the
 lens; right-click does NOT hand off to fly while ortho); same key

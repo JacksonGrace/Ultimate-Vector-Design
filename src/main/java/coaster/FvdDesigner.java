@@ -896,13 +896,14 @@ public class FvdDesigner extends Application {
     }
 
     /** T / Shift+T: snap to a top or side view with a pseudo-orthographic
-     *  lens. Same key again restores the saved perspective pose; orbiting
-     *  away instead keeps the current angles and just restores the lens.
-     *  Top keeps the current yaw (a rotated plan view is legitimate);
-     *  side is the world X–Y elevation (the ride starts along +X). */
+     *  lens. T again in the top view restores the saved perspective pose;
+     *  Shift+T in the SIDE view RE-TANGENTS to the current selection
+     *  instead of exiting (user spec, D53) — leave the side view by
+     *  orbiting away (keeps angles, restores the lens) or via T, T.
+     *  Top snaps to the grid; side aligns tangent to the track. */
     private void toggleOrthoView(boolean top) {
         if (flyActive || povActive) return;
-        if (orthoView && top == orthoTop) {   // same key: back to perspective
+        if (orthoView && top && orthoTop) {   // T again in top view: exit
             camYaw.setAngle(savedYaw);
             camPitch.setAngle(savedPitch);
             camZoom.setZ(savedZoom);
@@ -927,10 +928,30 @@ public class FvdDesigner extends Application {
             camPitch.setAngle(-90);
             camYaw.setAngle(Math.round(camYaw.getAngle() / 90.0) * 90);
         } else {
-            camYaw.setAngle(0);
+            // side elevation TANGENT to the track at the selected node
+            // (D53): look perpendicular to its horizontal heading so the
+            // track runs across the screen there. Of the two sides, keep
+            // the one nearer the current camera. No selection (or a
+            // vertical tangent): world X–Y elevation as before.
+            double yaw = 0;
+            Vec3 tan = editor != null ? editor.selectedTrackTangent() : null;
+            if (tan != null && Math.hypot(tan.x(), tan.z()) > 1e-6) {
+                double y1 = Math.toDegrees(Math.atan2(-tan.z(), tan.x()));
+                yaw = angleDist(camYaw.getAngle(), y1) <= angleDist(camYaw.getAngle(), y1 + 180)
+                    ? y1 : y1 + 180;
+            }
+            camYaw.setAngle(yaw);
             camPitch.setAngle(0);
             centerOrthoOnSelection();
         }
+    }
+
+    /** Smallest absolute difference between two angles in degrees. */
+    private static double angleDist(double a, double b) {
+        double d = (a - b) % 360;
+        if (d < -180) d += 360;
+        if (d > 180) d -= 360;
+        return Math.abs(d);
     }
 
     /** Entering the side view: center on the SELECTED node's track point
@@ -1315,7 +1336,7 @@ public class FvdDesigner extends Application {
 
         helpHead(box, "Cameras");
         helpKey(box, "Orbit", "drag or MIDDLE-drag = rotate · scroll = zoom · Shift+click (or hold C and click) the track = orbit around that spot · Ctrl+click the track = insert a node there.");
-        helpKey(box, "T / Shift+T", "snap to a TOP or SIDE view with a near-orthographic lens (no perspective — for judging alignments). Top locks square to the grid; side centers on the selected node (its marker shows white + larger). Right-drag PANS without leaving the view; scroll zooms. Same key again returns to the previous view; orbiting away keeps the angle and brings perspective back.");
+        helpKey(box, "T / Shift+T", "snap to a TOP or SIDE view with a near-orthographic lens (no perspective — for judging alignments). Top locks square to the grid; side centers on the selected node and aligns TANGENT to the track there (the track runs across the screen; nearest side kept — no selection = world-axis elevation). Shift+T AGAIN re-tangents to the current selection; T again in the top view returns to the previous perspective. Right-drag PANS without leaving the view; scroll zooms; orbiting away keeps the angle and brings perspective back.");
         helpKey(box, "Track markers", "small spheres on the track mark the active lane's nodes (selection shows white; Options toggle). Read-only for now — dragging them comes later.");
         helpKey(box, "Fly", "right-click the 3D view: WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits keeping the view.");
         helpKey(box, "POV", "Space. Starts hands-off: the camera sits on the track (following edits) while W/S and the S key stay with the graph. Right-click CAPTURES: mouse hides, W/S ride at simulated speed (Shift/Ctrl faster/slower), no mouse look; right-click releases. Scroll jumps along the track either way.");

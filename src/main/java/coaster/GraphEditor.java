@@ -463,12 +463,23 @@ class GraphEditor extends Region {
     /** Spine-level track position of the primary selected node, or
      *  null when nothing is selected (side-view centering). */
     Vec3 selectedTrackPoint() {
+        FVDIntegrator.Sample sm = selectedSample();
+        return sm == null ? null : sm.pos().sub(sm.U().scale(app.heartOffset));
+    }
+
+    /** Track direction at the primary selected node, or null (the side
+     *  view aligns its lens tangent to this — D53). */
+    Vec3 selectedTrackTangent() {
+        FVDIntegrator.Sample sm = selectedSample();
+        return sm == null ? null : sm.T();
+    }
+
+    private FVDIntegrator.Sample selectedSample() {
         if (selIdx < 0 || selIdx >= active().size()) return null;
         if (app.lastSamples == null || app.lastSamples.isEmpty()) return null;
         int idx = (int) FvdDesigner.clamp(Math.round(active().get(selIdx).t / FvdDesigner.INTEGRATE_DT),
                               0, app.lastSamples.size() - 1);
-        FVDIntegrator.Sample sm = app.lastSamples.get(idx);
-        return sm.pos().sub(sm.U().scale(app.heartOffset));
+        return app.lastSamples.get(idx);
     }
 
     /** Ctrl+click on the 3D track: insert at that ride time — same
