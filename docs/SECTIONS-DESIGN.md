@@ -1,9 +1,16 @@
 # SECTIONS-DESIGN.md — Phase 1+ architecture: sections, pieces, and the geometry/dynamics split
 
-Status: PRE-IMPLEMENTATION SPEC (agreed 2026-07-04). Phase 0 items in the
-CLAUDE.md roadmap do not depend on this. Read PHYSICS.md first; this doc
-builds on its conventions (T/U/R frame, time-domain force equations,
-Y-flip is rendering-only and irrelevant here).
+Status: PHASE 1 MILESTONE A IMPLEMENTED (v9.0, D50) — document model,
+three-pass TrackCompiler and FVDD3/DesignIO are live and gated
+(TESTING #11); the UI split, section-aware graph and document undo are
+milestone B. One AMENDMENT to §2 below: quaternions are the model-level
+orientation (poses, placements, exit poses) but the FORCE-section
+integrator keeps stepping T/U as vectors — §1's bit-for-bit gate
+outranks §2's "Pass G integrates orientation as a quaternion" (they
+conflict; re-discretizing would shift every float). Geo sections
+integrate quaternions natively when they land. Read PHYSICS.md first;
+this doc builds on its conventions (T/U/R frame, time-domain force
+equations, Y-flip is rendering-only and irrelevant here).
 
 ## 0. The one invariant that shapes everything
 

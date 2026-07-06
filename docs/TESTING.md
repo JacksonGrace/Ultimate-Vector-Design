@@ -37,13 +37,11 @@
    strictly monotonic in t, all values finite, zero exceptions. (Historical:
    0 violations.)
 
-4. **Save round-trip.** Serialize lanes (include ≥1 broken-smooth node and
-   non-default handles) + heart/gauge through the same writer/parser logic as
-   `FvdDesigner`, re-parse, compare field-by-field at 1e-3 tolerance.
-   (Historical: 0 mismatches.) Recommend extracting save/load into a
-   `DesignIO` class so the test exercises the REAL production code instead of
-   a copy — the historical test used duplicated logic, which is a known
-   weakness.
+4. **Save round-trip.** DONE PROPERLY as of v9.0: save/load lives in
+   `DesignIO` (D50), so tests exercise the real production code — the
+   old duplicated-logic weakness is gone. The round-trip is asserted
+   CANONICALLY in #11: save → load → save must be byte-identical, which
+   subsumes field-by-field comparison at format precision.
 
 5. **Banked-turn physics identity (recommended addition).** Bisect Gv for
    "turn ends level" at a 40° bank through the full pipeline and assert the
@@ -91,6 +89,31 @@
    differences degrade to one-sided there).
 
 10. ~~Smoothing tool~~ removed in v8.1 (D47) — validation retired with it.
+
+11. **Phase-1 gates (v9.0, D50 — scratch Phase1Gate; these BLOCK any
+    further Phase-1/2 work if they break).**
+    (a) BIT-FOR-BIT: TrackCompiler.compile on the default document (one
+    piece at (0,21,0) yaw 0, one force section, vDesign = v0 = 26) must
+    equal the old direct `integrateTrack(bake(lanes), opts)` on RAW
+    DOUBLE BITS for every field of every sample (t, s, pos, T, U, R, v,
+    Gv, Gl — all 1347). Any new arithmetic on that path (an extra
+    normalize, a quaternion round-trip, reordered adds) fails this.
+    (b) Pass D pass-through: `trueV[i]` bitwise equals `Sample.v` while
+    single-section (same formula, same evaluation order — deliberate).
+    (c) FVDD3 canonical round-trip: save → load → save byte-identical,
+    on a document with yaw, broken node, straight-lock, speed region and
+    non-default cosmetics.
+    (d) FVDD2 fixture loads as 1 piece/1 section (start → placement,
+    v0 → v0 + vDesign, 7- and 8-field n lines, cosmetics); missing
+    start/v0 default to (0,21,0)/26. FVDD1 fixture: absolute-second
+    handles convert to fractions (0.5 s over a 2 s segment → 0.25).
+    (e) Piece independence (§0 connect invariance): in a two-piece
+    document, editing piece A's lanes leaves piece B's WORLD geometry
+    bitwise unchanged (t/s rebase aside), and the edit demonstrably
+    changed A. (f) Changing global v0 leaves ALL geometry bitwise
+    unchanged — shape depends on vDesign only. (g) Quat exactness:
+    IDENTITY.rotate returns its argument bitwise; aboutY(0) == IDENTITY;
+    fromFrame→T()/U() round-trips < 1e-12. All passed 2026-07-05.
 
 ## The historical headless harness (context, not a prescription)
 
@@ -189,10 +212,17 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
 8. Coaster menu > Heart spinner to −1.0: rails jump above the heartline
    (inverted); POV now hangs below track. Gauge visibly widens/narrows rail
    spacing. Menu stays open while spinning (CustomMenuItem hideOnClick off).
-9. Ctrl+S (or File > Save) → .fvd file; edit something; Ctrl+O the file back:
-   design, heart, gauge, rail color all restored; Ctrl+Z after load returns
-   the pre-load design. Loading a pre-v6 FVDD1 file must reproduce its curve
-   shapes (handles auto-convert from absolute seconds to fractions).
+9. Ctrl+S (or File > Save) → .fvd file (FVDD3 as of v9.0 — old app
+   versions can NOT read new saves; new versions read all three
+   formats). As of v9.1 Save writes STRAIGHT to the open file once one
+   exists (no chooser; title loses its *) — use Save As… to re-target;
+   a never-saved "Untitled" still opens the chooser. Edit something;
+   Ctrl+O the file back:
+   design, heart, gauge, rail color, start point/speed all restored;
+   Ctrl+Z after load returns the pre-load design. Loading a pre-v6
+   FVDD1 file must reproduce its curve shapes (handles auto-convert
+   from absolute seconds to fractions); loading a v7/v8 FVDD2 file must
+   reproduce it exactly (start line → piece placement).
 10. Undo spam: Ctrl+Z ×20 walks history without exceptions; one drag = one
     undo step; Ctrl+Shift+Z ×20 walks it all forward again (see step 36).
 11. Coaster menu > "Rail colors…" opens the color dialog; picking a solid
@@ -241,7 +271,8 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     POV ride and raises the stats top speed; the same value appears in
     node 0's double-click dialog and edits made there show in the menu;
     survives save/load (v0 line); Ctrl+Z inside the open menu steps
-    spinner changes back, but coaster undo does NOT include it.
+    spinner changes back, AND after closing the menu plain Ctrl+Z steps
+    them back too (v9.1: heart/gauge/start/speed are document undo).
 19. Graph: scroll zooms the time axis around the cursor; ticks and the
     "Time (s)" / rotated lane-name axis labels stay correct; right-drag
     pans when zoomed; node editing works identically while zoomed; zooming
@@ -272,10 +303,13 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     visible and functional (regression: SubScene min-size pushed them
     off-screen).
 24. Coaster menu open: change Heart a few times, Ctrl+Z steps them back,
-    Ctrl+Shift+Z forward — all while the menu stays open. Close the menu,
-    make sure a single Ctrl+Z now undoes the last CURVE edit, not the menu
-    values. Same inside Edit > Options (FOV drag = one undo step) and the
-    rail-color dialog.
+    Ctrl+Shift+Z forward — all while the menu stays open. Close the menu:
+    plain Ctrl+Z now steps the heart changes back TOO (v9.1 — path values
+    are document undo; each spinner click = one step), then continues
+    into curve edits. Tie spacing does NOT document-undo (cosmetic).
+    Same menu-local behavior inside Edit > Options (FOV drag = one undo
+    step; app settings never document-undo) and the rail-color dialog
+    (colors dirty the file but don't document-undo).
 25. Value axis: default ranges (Gv −1..4, Gl −1..1, roll ±150); drag a Gv
     node to 5 g — the axis expands to a rounded bound; delete it — the
     axis returns to default. Axis stays still while dragging.
@@ -394,6 +428,17 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     the ride (graph shows it selected; one Ctrl+Z removes it);
     Ctrl+click on sky does nothing. Markers must NOT flicker or lag
     while dragging graph nodes (signature-guarded rebuild).
+39. File lifecycle (v9.1): fresh launch shows "Untitled — FVD Coaster
+    Designer"; drag any node → "Untitled*". File > New with changes:
+    Save/Don't Save/Cancel dialog — Cancel keeps everything; Don't Save
+    gives a flat 1 s track (Gv 1 g, straight line, all defaults, title
+    "Untitled", empty undo — Ctrl+Z does nothing); Save on a never-saved
+    doc opens the chooser first (cancelling THAT aborts the New). Save
+    to a file: title shows "name.fvd"; edit → "name.fvd*"; Ctrl+S
+    silently rewrites the same file and the * clears; Save As… asks for
+    a new name. Load with unsaved changes shows the same gate. Undo of
+    heart/gauge/start/speed changes also works after New (fresh
+    history). Ctrl+N is rebindable ("New design").
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes

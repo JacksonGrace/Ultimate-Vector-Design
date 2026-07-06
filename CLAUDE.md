@@ -58,14 +58,42 @@ Nl2CsvExporter.java NL2 EXPORT. Pure Java, no JavaFX. Resamples samples
                     (our rendered world is left-handed, NL2 right-handed
                     Y-up) — change signs only with DECISIONS.md D40 open.
 
+--- Phase 1 document model (D50) — all pure Java, no JavaFX ---
+
+Quat.java           unit quaternion (mul/rotate/fromFrame/aboutY). The
+                    MODEL's orientation type; identity paths are
+                    float-exact (the bit-for-bit gate rides on that).
+TrackPose.java      pos + orient (+ running global s/t offsets): section
+                    entry/exit contract.
+Section.java        sealed interface (domain TIME|DISTANCE, vDesign,
+                    reversed) — Phase 2 modes join the permits list.
+ForceSection.java   today's only mode: the three lanes + vDesign.
+TrackPiece.java     placement (origin + heading yaw about Y) + section
+                    chain; editing one piece can never move another.
+Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
+                    slots (Phase 3). Section-0 lanes are shared BY
+                    REFERENCE with the editor. Cosmetics stay UI-side
+                    until milestone B (travel via DesignIO.Cosmetics).
+TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
+                    section at vDesign (force = unchanged bake+RK4),
+                    passD global true speed, passA resulting rates.
+                    Single-force-section output is BIT-IDENTICAL to the
+                    old direct call (gated headlessly).
+DesignIO.java       save/load: writes FVDD3, reads FVDD3/FVDD2/FVDD1
+                    (legacy = one piece/one section). Headlessly
+                    round-trip tested at last.
+
 FvdDesigner.java    ALL JavaFX. 3D view (two-rail mesh, orbit + POV cameras),
                     graph editor canvas, menu bar (File/Edit/Coaster),
-                    toolbar, save/load/export, undo, shortcuts/options dialogs.
+                    toolbar, export, undo, shortcuts/options dialogs.
+                    Holds the Coaster document; milestone B splits this
+                    file into GraphEditor/Viewport3D/Dialogs/shell.
 ```
 
-Pipeline on every edit: `lanes → BezierBaker.bake → FVDIntegrator.integrateTrack
-→ rail meshes + stats`. This runs live on every mouse-drag event; it is fast
-enough (a ~14s ride is ~270 keyframes and ~1350 integration steps).
+Pipeline on every edit: `lanes → TrackCompiler.compile (passG: bake +
+integrate per section → passD: true speed → passA: rates) → rail meshes +
+stats`. This runs live on every mouse-drag event; it is fast enough (a
+~14s ride is ~270 keyframes and ~1350 integration steps).
 
 **Deleted files:** `FvdViewer.java` and `TestCircle.java` were earlier
 iterations using a distance-based integrator API. They must NOT be in the
@@ -132,19 +160,28 @@ source tree — they won't compile against the current time-domain API.
   Δ-value snapping).
   B toggles smooth/broken per node; re-smoothing keeps the IN handle and
   re-angles the OUT handle (user spec).
-- **Undo/redo:** deep snapshots of all lanes, one per completed gesture,
-  cap 100; Ctrl+Shift+Z redoes (any new edit clears the redo branch — one
-  choke point, pushUndo). Heart/gauge/start-speed settings are NOT in undo.
-- **Save format** `FVDD2`: human-readable text, `Locale.US` decimals
-  (critical — default locale breaks parsing on comma-decimal systems),
-  unknown lines ignored for forward compatibility. Round-trip tested.
-  Includes per-coaster `tiespace`, `railmode solid|gradient`, `railcolor
-  r g b`, `v0` (start speed) lines
-  (older versions ignore them via the unknown-line rule); `n` node lines
-  carry an OPTIONAL 8th field (straight-lock flag) — readers ignore extra
-  fields on known lines, so this is compatible both ways. v2 stores handle
-  time-offsets as segment FRACTIONS; `FVDD1` files (absolute seconds,
-  negative in-handle) are auto-converted on load.
+- **Undo/redo (DOCUMENT level, D51):** deep DocState snapshots — all lanes
+  PLUS heart, gauge, start x/y/z and start speed ("everything that changes
+  the track path"; tie spacing/colors are cosmetic and stay menu-local) —
+  one per completed gesture or path-spinner click, cap 100; Ctrl+Shift+Z
+  redoes (any new edit clears the redo branch — one choke point, pushUndo).
+  Path spinners wire through wireDocSpinner (snapshot pre-apply;
+  menuApplying guard stops double-recording, docApplying suppresses
+  listeners during undo application). Known granularity: node-0 dialog
+  editing speed + values = two undo steps.
+- **Save format** `FVDD3` (D50, written by DesignIO): human-readable
+  text, `Locale.US` decimals (critical — default locale breaks parsing
+  on comma-decimal systems), unknown lines ignored for forward
+  compatibility, extra fields on known lines ignored (the straight-lock
+  8th `n` field rides on this). Global lines (v0, heart, gauge,
+  tiespace, railmode/railcolor/gradcolors/gradstops, speedregion), then
+  `piece x y z yaw` blocks holding `section force vDesign domain
+  reversed` blocks holding `lane`/`n` lines. READS FVDD3, FVDD2 and
+  FVDD1: legacy flat files load as one piece at their `start` (default
+  (0,21,0)) with one force section (vDesign = their v0, default 26);
+  FVDD1 handle time-offsets (absolute seconds, negative in-handle)
+  auto-convert to segment fractions. Canonical round-trip
+  (save→load→save byte-identical) is headlessly gated.
 - **Settings split:** app-wide settings (shortcut bindings, FOV) persist
   across runs via `AppSettings` → `~/.fvd-designer.properties`; per-coaster
   settings (heart, gauge, rail color) live in the `.fvd` save file.
@@ -307,7 +344,11 @@ Node-drag readout shows Δt from the previous node and the GLOBAL value with
 units ("Δt=0.80s  2.50 g"). Toolbar "Ripple:" checks
 (minimal filled-square checkboxes, per-axis): "time" shifts every later node
 of the lane in t with the drag (preserves later transition times); "value"
-translates the rest of the graph vertically. Menu bar: File (Save/Load +
+translates the rest of the graph vertically. Menu bar: File (New… Ctrl+N —
+unsaved-changes gate (Save / Don't Save / Cancel, also guarding Load),
+fresh 1 s force/time doc, empty history, "Untitled"; Save Ctrl+S writes
+straight to the OPEN file, Save As… re-targets; the WINDOW TITLE is the
+open file name with * while dirty; +
 Export NL2 CSV — rebindable "export" action Ctrl+E; modal dialog with
 rail-center-vs-heartline radios and a segment-length spinner, both persisted
 per-user in AppSettings; spacing rounds to a whole number of equal segments;
@@ -381,7 +422,8 @@ non-obvious behavior. Do not ship a feature without touching it.
 - Rails + cross ties but no spine box yet; tie positions quantize to the
   nearest integration sample (up to ~0.13 m jitter at speed — invisible at
   normal tie spacing).
-- Undo/redo exclude heart/gauge/start-speed (menu-local Ctrl+Z only).
+- Undo/redo exclude tie spacing and rail colors (cosmetics; menu-local
+  Ctrl+Z only — but they do mark the file dirty).
 - Friction is hardcoded (0), not in the UI. (v0 became the per-coaster
   Start speed setting in v7.9; like heart/gauge it is NOT in undo.)
 
@@ -418,6 +460,13 @@ geometry–dynamics–analysis split, per-section design speed, time/distance
 domain toggle, quaternion internal orientation, save format FVDD3,
 section-aware graph, document-level undo, split FvdDesigner into files.
 Existing headless invariants must pass unchanged.
+- ~~Milestone A~~ DONE v9.0 (D50): document model (Coaster/TrackPiece/
+  Section/ForceSection/TrackPose/Quat), TrackCompiler three-pass
+  pipeline (bit-identical output gated), DesignIO with FVDD3.
+- Milestone B: ~~document-level undo~~ DONE v9.1 (D51, incl. heart/gauge/
+  start/v0 per user rule) + ~~file lifecycle~~ (New/Save/Save As/dirty
+  title — a user feature request folded in). Remaining: split FvdDesigner
+  into files, section-aware graph strips, section-insertion UI.
 
 **Phase 2 — section types (easiest first):** geo sections (direct
 pitch/yaw/roll rates — NO solver needed) + reversal → straight/curve mode →

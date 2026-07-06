@@ -20,7 +20,10 @@ import javafx.scene.SceneAntialiasing;
 import javafx.scene.SubScene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonBar;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.CheckMenuItem;
 import javafx.scene.control.ColorPicker;
@@ -174,15 +177,84 @@ public class FvdDesigner extends Application {
         return l;
     }
 
-    // ---------- track appearance / geometry settings (per-coaster, saved in .fvd) ----------
+    // ---------- the DOCUMENT (Phase 1, D50) ----------
+    // physics-relevant state lives in the Coaster: pieces (placement +
+    // sections whose lane lists are the very lists the editor mutates),
+    // dynamics v0. Start y default 21 keeps the shipped layout's old
+    // clearance above the y=0 ground plane (D41). Cosmetics below stay
+    // UI-side until the milestone-B split and travel via
+    // DesignIO.Cosmetics at save/load.
+    private final Coaster coaster = Coaster.singleForce(lanes, 26, 0, 21, 0);
+
+    // ---------- track appearance settings (per-coaster, saved in .fvd) ----------
     private double heartOffset = 1.0;  // m from heartline down to track (negative = inverted)
     private double railGauge = 1.0;    // m between rail centers
     private double tieSpacing = 1.0;   // m of track between cross ties
-    // start point: y default keeps the shipped layout's old clearance above
-    // the ground plane now that the grid sits at ABSOLUTE y=0 (the default
-    // layout's lowest rail dips 19.05 m below the start — see D41)
-    private double startX = 0, startY = 21, startZ = 0;  // track starting point (m)
-    private double startSpeed = 26;   // v0, m/s at the first node (per-coaster)
+
+    // ---------- document-level undo state (Phase 1 milestone B, D51) ----------
+    // one snapshot = everything that shapes the RIDDEN TRACK: the lanes plus
+    // heart, gauge, start placement and v0 (user rule: "everything that
+    // changes the track path, not just aesthetics"). Tie spacing and colors
+    // stay menu-local-undo only.
+    record DocState(List<List<BezierBaker.Node>> lanes, double heart, double gauge,
+                    double px, double py, double pz, double v0) {}
+
+    private boolean docApplying = false;   // suppress spinner listeners while
+                                           // an undo/redo writes them back
+
+    DocState snapshotDoc() {
+        List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
+        for (List<BezierBaker.Node> lane : lanes) {
+            List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
+            for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
+            copy.add(laneCopy);
+        }
+        TrackPiece p = coaster.pieces.get(0);
+        return new DocState(copy, heartOffset, railGauge, p.x, p.y, p.z, coaster.v0);
+    }
+
+    /** Restore a document snapshot: lanes, path settings, and the spinner
+     *  displays (their listeners are suppressed — fields are set here). */
+    void applyDocState(DocState s) {
+        docApplying = true;
+        for (int i = 0; i < 3; i++) {
+            lanes.get(i).clear();
+            lanes.get(i).addAll(s.lanes().get(i));
+        }
+        heartOffset = s.heart();
+        railGauge = s.gauge();
+        TrackPiece p = coaster.pieces.get(0);
+        p.x = s.px(); p.y = s.py(); p.z = s.pz();
+        coaster.v0 = s.v0();
+        coaster.soleSection().vDesign = s.v0();
+        heartSpinner.getValueFactory().setValue(s.heart());
+        gaugeSpinner.getValueFactory().setValue(s.gauge());
+        startXSpinner.getValueFactory().setValue(s.px());
+        startYSpinner.getValueFactory().setValue(s.py());
+        startZSpinner.getValueFactory().setValue(s.pz());
+        startSpeedSpinner.getValueFactory().setValue(s.v0());
+        docApplying = false;
+    }
+
+    // ---------- file lifecycle: New / Save / Save As, dirty flag, title ----------
+    private File currentFile = null;   // null = never saved ("Untitled")
+    private boolean dirty = false;
+
+    private String docName() {
+        return currentFile != null ? currentFile.getName() : "Untitled";
+    }
+
+    void markDirty() {
+        if (!dirty) {
+            dirty = true;
+            updateTitle();
+        }
+    }
+
+    private void updateTitle() {
+        if (stage != null)
+            stage.setTitle(docName() + (dirty ? "*" : "") + " — FVD Coaster Designer");
+    }
     private boolean railSolid = false; // false = vertical-G gradient, true = solid color
     private Color railColor = Color.rgb(220, 60, 50);
     // G-force gradient stops (per-coaster, saved in .fvd): each stop is a
@@ -616,7 +688,7 @@ public class FvdDesigner extends Application {
             if (e.getCode() == KeyCode.C) cKey = false;
             if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(false);
         });
-        stage.setTitle("FVD Coaster Designer");
+        updateTitle();   // "Untitled — FVD Coaster Designer" until saved/loaded
         stage.setScene(scene);
         stage.show();
         stage.centerOnScreen();
@@ -663,8 +735,9 @@ public class FvdDesigner extends Application {
         }
         if      (matches("undo", e))    editor.undo();
         else if (matches("redo", e))    editor.redo();
-        else if (matches("save", e))    saveDesign();
+        else if (matches("save", e))    saveDesign(false);
         else if (matches("load", e))    loadDesign();
+        else if (matches("newfile", e)) newDesign();
         else if (matches("export", e))  exportNl2Csv();
         else if (matches("smooth", e))  editor.toggleSmooth();
         else if (matches("flath", e))   editor.flattenHandles();
@@ -982,12 +1055,33 @@ public class FvdDesigner extends Application {
     }
 
     /** Spinner listener that applies the value AND records it in the
-     *  menu-local history. */
+     *  menu-local history (aesthetic per-coaster values: tie spacing). */
     private void wireMenuSpinner(Spinner<Double> sp, java.util.function.DoubleConsumer apply) {
         sp.valueProperty().addListener((obs, o, v) -> {
+            if (docApplying) return;   // undo/redo writes the display only
             pushMenuEdit(() -> sp.getValueFactory().setValue(o),
                          () -> sp.getValueFactory().setValue(v));
             apply.accept(v);
+            markDirty();
+            rebuildTrack();
+        });
+    }
+
+    /** Like wireMenuSpinner, but the value SHAPES THE TRACK PATH (heart,
+     *  gauge, start, v0), so each change also lands in the DOCUMENT undo
+     *  history (D51) — the snapshot is taken before apply, while the
+     *  field still holds the old value. Menu-local Ctrl+Z replays skip
+     *  the document push (menuApplying) so histories don't double up. */
+    private void wireDocSpinner(Spinner<Double> sp, java.util.function.DoubleConsumer apply) {
+        sp.valueProperty().addListener((obs, o, v) -> {
+            if (docApplying) return;   // undo/redo writes the display only
+            if (!menuApplying) {
+                editor.pushUndoSnapshot();
+                pushMenuEdit(() -> sp.getValueFactory().setValue(o),
+                             () -> sp.getValueFactory().setValue(v));
+            }
+            apply.accept(v);
+            markDirty();
             rebuildTrack();
         });
     }
@@ -1002,18 +1096,23 @@ public class FvdDesigner extends Application {
         if (railSolid == solid) return;
         pushMenuEdit(() -> setRailMode(!solid), () -> setRailMode(solid));
         setRailMode(solid);
+        markDirty();
     }
 
     private MenuBar buildMenuBar() {
         // --- File: save/load ---
-        MenuItem saveItem = new MenuItem("Save…");
-        saveItem.setOnAction(e -> saveDesign());
+        MenuItem newItem = new MenuItem("New…");
+        newItem.setOnAction(e -> newDesign());
+        MenuItem saveItem = new MenuItem("Save");
+        saveItem.setOnAction(e -> saveDesign(false));
+        MenuItem saveAsItem = new MenuItem("Save As…");
+        saveAsItem.setOnAction(e -> saveDesign(true));
         MenuItem loadItem = new MenuItem("Load…");
         loadItem.setOnAction(e -> loadDesign());
         MenuItem exportItem = new MenuItem("Export NL2 CSV…");
         exportItem.setOnAction(e -> exportNl2Csv());
-        Menu fileMenu = new Menu("File", null, saveItem, loadItem,
-            new SeparatorMenuItem(), exportItem);
+        Menu fileMenu = new Menu("File", null, newItem, saveItem, saveAsItem,
+            loadItem, new SeparatorMenuItem(), exportItem);
 
         // --- Edit: app-wide settings, persisted across runs ---
         MenuItem shortcutsItem = new MenuItem("Shortcuts…");
@@ -1025,25 +1124,31 @@ public class FvdDesigner extends Application {
         // --- Coaster: per-coaster settings, saved in the .fvd file ---
         heartSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-3.0, 3.0, heartOffset, 0.1));
         heartSpinner.setPrefWidth(70);
-        wireMenuSpinner(heartSpinner, v -> heartOffset = v);
+        wireDocSpinner(heartSpinner, v -> heartOffset = v);
         gaugeSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(0.3, 2.5, railGauge, 0.1));
         gaugeSpinner.setPrefWidth(70);
-        wireMenuSpinner(gaugeSpinner, v -> railGauge = v);
+        wireDocSpinner(gaugeSpinner, v -> railGauge = v);
         tieSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(0.2, 10.0, tieSpacing, 0.1));
         tieSpinner.setPrefWidth(70);
         wireMenuSpinner(tieSpinner, v -> tieSpacing = v);
-        startXSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, startX, 1));
+        TrackPiece piece0 = coaster.pieces.get(0);
+        startXSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.x, 1));
         startXSpinner.setPrefWidth(70);
-        wireMenuSpinner(startXSpinner, v -> startX = v);
-        startYSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, startY, 1));
+        wireDocSpinner(startXSpinner, v -> coaster.pieces.get(0).x = v);
+        startYSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.y, 1));
         startYSpinner.setPrefWidth(70);
-        wireMenuSpinner(startYSpinner, v -> startY = v);
-        startZSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, startZ, 1));
+        wireDocSpinner(startYSpinner, v -> coaster.pieces.get(0).y = v);
+        startZSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.z, 1));
         startZSpinner.setPrefWidth(70);
-        wireMenuSpinner(startZSpinner, v -> startZ = v);
-        startSpeedSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 100, startSpeed, 1));
+        wireDocSpinner(startZSpinner, v -> coaster.pieces.get(0).z = v);
+        startSpeedSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 100, coaster.v0, 1));
         startSpeedSpinner.setPrefWidth(70);
-        wireMenuSpinner(startSpeedSpinner, v -> startSpeed = v);
+        // the spinner is v0 AND the sole section's design speed — they
+        // stay coupled until Phase 3 gives dynamics its own controls
+        wireDocSpinner(startSpeedSpinner, v -> {
+            coaster.v0 = v;
+            coaster.soleSection().vDesign = v;
+        });
 
         Label heartLbl = new Label("Heart (m)");
         heartLbl.setTextFill(Color.BLACK);   // menu popup is light; default fill washed out
@@ -1158,9 +1263,13 @@ public class FvdDesigner extends Application {
             + "lateral G, roll rate) over ride time are integrated into the 3D track. "
             + "Pick a lane with the colored buttons, keys 1/2/3, or by clicking a "
             + "dimmed curve — every edit rebuilds the track live.");
-        helpText(box, "Ctrl+Z / Ctrl+Shift+Z undo and redo coaster edits (any new "
-            + "edit clears the redo branch). File > Save/Load "
-            + "stores designs (.fvd) including the Coaster-menu settings; File > "
+        helpText(box, "Ctrl+Z / Ctrl+Shift+Z undo and redo DOCUMENT edits — the "
+            + "curves plus everything that shapes the path: heart, gauge, start "
+            + "point and start speed (any new edit clears the redo branch; tie "
+            + "spacing and colors are cosmetic and stay out). The window title "
+            + "shows the open file, with * while unsaved. File > New starts a "
+            + "fresh 1 s design (offering to save first), Save writes straight "
+            + "to the open file, Save As picks a new one; File > "
             + "Export NL2 CSV hands the track to NoLimits 2. Keys shown "
             + "here are defaults — rebind anything in Edit > Shortcuts; the stats bar "
             + "always shows your current bindings.");
@@ -1219,7 +1328,7 @@ public class FvdDesigner extends Application {
         helpKey(box, "Edit > Shortcuts", "click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
         helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps (arrows walk the 1-2-5 series) · neon heartline · 3D node markers · POV marker. Every row has a ↺ reset. Per-user.");
         helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start point (y = height above the ground plane), start speed (also on the first node's double-click dialog), rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-coaster, saved in the .fvd.");
-        helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it; closing locks them in.");
+        helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it. Path-shaping values (heart, gauge, start, speed) ALSO land in the document history, so after closing, plain Ctrl+Z steps them back too.");
 
         ScrollPane scroll = new ScrollPane(box);
         scroll.setFitToWidth(true);
@@ -1342,6 +1451,7 @@ public class FvdDesigner extends Application {
                 railSolid = true;
                 solidModeItem.setSelected(true);
             }
+            markDirty();
             rebuildTrack();
         });
 
@@ -1366,6 +1476,7 @@ public class FvdDesigner extends Application {
                 pushMenuEdit(() -> vs.getValueFactory().setValue(o),
                              () -> vs.getValueFactory().setValue(v));
                 gradStops[gi] = v;
+                markDirty();
                 rebuildTrack();
             });
             ColorPicker gp = new ColorPicker(gradColors[gi]);
@@ -1376,6 +1487,7 @@ public class FvdDesigner extends Application {
                     pushMenuEdit(() -> gp.setValue(oc), () -> gp.setValue(nc));
                 }
                 gradColors[gi] = nc;
+                markDirty();
                 rebuildTrack();
             });
             grid.addRow(2 + i, new Label("Stop " + (i + 1)), vs, gp);
@@ -1722,18 +1834,15 @@ public class FvdDesigner extends Application {
     // =====================================================================
 
     private void rebuildTrack() {
-        List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(lanes, 0.05);
-
-        FVDIntegrator.Options opts = new FVDIntegrator.Options();
-        opts.dt = INTEGRATE_DT;
-        opts.v0 = startSpeed;
-        opts.pos0 = new Vec3(startX, startY, startZ);
-        opts.startHeading = new Vec3(1, 0, 0);
-
-        List<FVDIntegrator.Sample> samples = FVDIntegrator.integrateTrack(kfs, opts);
+        // the three-pass pipeline (Phase 1): geometry per section at its
+        // design speed, then global dynamics + analysis. For the current
+        // single-force-section document this reproduces the old direct
+        // integrator call bit-for-bit (gated headlessly, D50).
+        TrackCompiler.Result compiled = TrackCompiler.compile(coaster, INTEGRATE_DT);
+        List<FVDIntegrator.Sample> samples = compiled.samples();
         if (samples.size() < 2) return;
         lastSamples = samples;
-        resultRates = FVDIntegrator.bodyRates(samples);
+        resultRates = compiled.rates();
 
         // two rails + cross ties, offset from the heartline
         MeshView leftRail = buildRailMesh(samples, -railGauge / 2);
@@ -2024,163 +2133,164 @@ public class FvdDesigner extends Application {
     // Save / load
     // =====================================================================
 
-    private void saveDesign() {
-        FileChooser fc = new FileChooser();
-        fc.setTitle("Save coaster design");
-        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("FVD design (*.fvd)", "*.fvd"));
-        fc.setInitialFileName("coaster.fvd");
-        File f = fc.showSaveDialog(stage);
-        if (f == null) return;
+    /** Save (Ctrl+S) writes straight to the open file; Save As — or a
+     *  never-saved document — asks where. Returns true if written. */
+    private boolean saveDesign(boolean saveAs) {
+        File f = currentFile;
+        if (saveAs || f == null) {
+            FileChooser fc = new FileChooser();
+            fc.setTitle("Save coaster design");
+            fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("FVD design (*.fvd)", "*.fvd"));
+            fc.setInitialFileName(currentFile != null ? currentFile.getName() : "coaster.fvd");
+            f = fc.showSaveDialog(stage);
+            if (f == null) return false;
+        }
         try (PrintWriter out = new PrintWriter(f, "UTF-8")) {
-            out.println("FVDD2");   // v2: handle time-offsets are FRACTIONS of the segment
-            out.printf(Locale.US, "heart %.4f%n", heartOffset);
-            out.printf(Locale.US, "gauge %.4f%n", railGauge);
-            out.printf(Locale.US, "tiespace %.4f%n", tieSpacing);
-            out.printf(Locale.US, "start %.4f %.4f %.4f%n", startX, startY, startZ);
-            out.printf(Locale.US, "v0 %.4f%n", startSpeed);
-            // rail color lines are ignored by older versions (unknown-line rule)
-            out.printf(Locale.US, "railmode %s%n", railSolid ? "solid" : "gradient");
-            out.printf(Locale.US, "railcolor %.4f %.4f %.4f%n",
-                railColor.getRed(), railColor.getGreen(), railColor.getBlue());
-            StringBuilder gcLine = new StringBuilder("gradcolors");
-            for (Color c : gradColors) {
-                gcLine.append(String.format(Locale.US, " %.4f %.4f %.4f",
-                    c.getRed(), c.getGreen(), c.getBlue()));
-            }
-            out.println(gcLine);
-            out.printf(Locale.US, "gradstops %.4f %.4f %.4f %.4f%n",
-                gradStops[0], gradStops[1], gradStops[2], gradStops[3]);
-            for (int lane = 0; lane < 3; lane++) {
-                out.println("lane " + lane);
-                for (BezierBaker.Node n : lanes.get(lane)) {
-                    // 8th field = straight-lock; older readers only take the
-                    // first 7 and ignore extras (field-level forward compat)
-                    out.printf(Locale.US, "n %.4f %.4f %.4f %.4f %.4f %.4f %d %d%n",
-                        n.t, n.val, n.outFrac, n.outDv, n.inFrac, n.inDv,
-                        n.smooth ? 1 : 0, n.straightOut ? 1 : 0);
-                }
-            }
+            // FVDD3 via DesignIO (Phase 1, D50) — cosmetics travel as
+            // plain doubles so the writer stays JavaFX-free
+            DesignIO.save(coaster, uiCosmetics(), out);
+            currentFile = f;
+            dirty = false;
+            updateTitle();
             statsLabel.setText("Saved: " + f.getName());
+            return true;
         } catch (Exception ex) {
             statsLabel.setText("Save failed: " + ex.getMessage());
+            return false;
         }
     }
 
+    /** Unsaved changes gate for New/Load: offer Save / Don't Save /
+     *  Cancel. Returns true when it is OK to discard the current state. */
+    private boolean confirmSaveDiscard() {
+        if (!dirty) return true;
+        ButtonType save = new ButtonType("Save", ButtonBar.ButtonData.YES);
+        ButtonType dont = new ButtonType("Don't Save", ButtonBar.ButtonData.NO);
+        Alert a = new Alert(Alert.AlertType.CONFIRMATION,
+            "Save changes to " + docName() + "?", save, dont, ButtonType.CANCEL);
+        a.initOwner(stage);
+        a.setTitle("Unsaved changes");
+        a.setHeaderText(null);
+        ButtonType r = a.showAndWait().orElse(ButtonType.CANCEL);
+        if (r == save) return saveDesign(false);   // cancelled chooser = stay
+        return r == dont;
+    }
+
+    /** File > New (Ctrl+N): offer to save, then start a fresh document —
+     *  one 1 s force/time section holding 1 g / 0 / 0, default settings,
+     *  empty history, "Untitled" title. */
+    private void newDesign() {
+        if (!confirmSaveDiscard()) return;
+        docApplying = true;   // spinners get set programmatically below
+        for (int i = 0; i < 3; i++) {
+            lanes.get(i).clear();
+            lanes.get(i).add(new BezierBaker.Node(0, i == 0 ? 1 : 0));
+            lanes.get(i).add(new BezierBaker.Node(1, i == 0 ? 1 : 0));
+            BezierBaker.applyDefaultHandles(lanes.get(i));
+        }
+        coaster.pieces.clear();
+        TrackPiece piece = new TrackPiece(0, 21, 0, 0);
+        piece.sections.add(new ForceSection(lanes, 26));
+        coaster.pieces.add(piece);
+        coaster.v0 = 26;
+        coaster.speedRegions.clear();
+
+        DesignIO.Cosmetics def = DesignIO.Cosmetics.defaults();
+        heartOffset = def.heart();
+        railGauge = def.gauge();
+        tieSpacing = def.tiespace();
+        railSolid = def.railSolid();
+        railColor = Color.color(def.railColor()[0], def.railColor()[1], def.railColor()[2]);
+        for (int i = 0; i < 4; i++) {
+            gradColors[i] = Color.color(def.gradColors()[i * 3],
+                def.gradColors()[i * 3 + 1], def.gradColors()[i * 3 + 2]);
+        }
+        System.arraycopy(def.gradStops(), 0, gradStops, 0, 4);
+
+        heartSpinner.getValueFactory().setValue(heartOffset);
+        gaugeSpinner.getValueFactory().setValue(railGauge);
+        tieSpinner.getValueFactory().setValue(tieSpacing);
+        startXSpinner.getValueFactory().setValue(0.0);
+        startYSpinner.getValueFactory().setValue(21.0);
+        startZSpinner.getValueFactory().setValue(0.0);
+        startSpeedSpinner.getValueFactory().setValue(26.0);
+        (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
+        docApplying = false;
+
+        editor.clearHistory();
+        editor.clearSelection();
+        editor.resetView();
+        currentFile = null;
+        dirty = false;
+        updateTitle();
+        editor.refresh();
+        rebuildTrack();
+        statsLabel.setText("New design");
+    }
+
+    /** Snapshot the UI-side per-coaster cosmetics for DesignIO. */
+    private DesignIO.Cosmetics uiCosmetics() {
+        double[] rail = { railColor.getRed(), railColor.getGreen(), railColor.getBlue() };
+        double[] grad = new double[12];
+        for (int i = 0; i < 4; i++) {
+            grad[i * 3]     = gradColors[i].getRed();
+            grad[i * 3 + 1] = gradColors[i].getGreen();
+            grad[i * 3 + 2] = gradColors[i].getBlue();
+        }
+        return new DesignIO.Cosmetics(heartOffset, railGauge, tieSpacing,
+            railSolid, rail, grad, gradStops.clone());
+    }
+
     private void loadDesign() {
+        if (!confirmSaveDiscard()) return;   // same courtesy as File > New
         FileChooser fc = new FileChooser();
         fc.setTitle("Load coaster design");
         fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("FVD design (*.fvd)", "*.fvd"));
         File f = fc.showOpenDialog(stage);
         if (f == null) return;
         try (BufferedReader in = new BufferedReader(new FileReader(f, java.nio.charset.StandardCharsets.UTF_8))) {
-            String header = in.readLine();
-            if (header == null || !header.startsWith("FVDD")) throw new Exception("not an FVD design file");
-            // FVDD1 stored handle time-offsets in absolute seconds (in-handle
-            // negative); FVDD2 stores fractions of the neighboring segment
-            boolean legacy = header.trim().equals("FVDD1");
-
-            double newHeart = heartOffset, newGauge = railGauge, newTie = tieSpacing;
-            double[] newStart = { startX, startY, startZ };
-            double newV0 = startSpeed;
-            boolean newSolid = railSolid;
-            Color newColor = railColor;
-            Color[] newGrad = gradColors.clone();
-            double[] newStops = gradStops.clone();
-            List<List<BezierBaker.Node>> newLanes = new ArrayList<>();
-            for (int i = 0; i < 3; i++) newLanes.add(new ArrayList<>());
-            int curLane = -1;
-
-            String line;
-            while ((line = in.readLine()) != null) {
-                String[] parts = line.trim().split("\\s+");
-                if (parts.length == 0 || parts[0].isEmpty()) continue;
-                switch (parts[0]) {
-                    case "heart" -> newHeart = Double.parseDouble(parts[1]);
-                    case "gauge" -> newGauge = Double.parseDouble(parts[1]);
-                    case "tiespace" -> newTie = clamp(Double.parseDouble(parts[1]), 0.2, 10);
-                    case "start" -> {
-                        for (int k = 0; k < 3; k++) {
-                            newStart[k] = clamp(Double.parseDouble(parts[k + 1]), -500, 500);
-                        }
-                    }
-                    case "v0" -> newV0 = clamp(Double.parseDouble(parts[1]), 1, 100);
-                    case "railmode" -> newSolid = parts[1].equals("solid");
-                    case "railcolor" -> newColor = Color.color(
-                        clamp(Double.parseDouble(parts[1]), 0, 1),
-                        clamp(Double.parseDouble(parts[2]), 0, 1),
-                        clamp(Double.parseDouble(parts[3]), 0, 1));
-                    case "gradcolors" -> {
-                        for (int k = 0; k < 4; k++) {
-                            newGrad[k] = Color.color(
-                                clamp(Double.parseDouble(parts[1 + k * 3]), 0, 1),
-                                clamp(Double.parseDouble(parts[2 + k * 3]), 0, 1),
-                                clamp(Double.parseDouble(parts[3 + k * 3]), 0, 1));
-                        }
-                    }
-                    case "gradstops" -> {
-                        for (int k = 0; k < 4; k++) {
-                            newStops[k] = clamp(Double.parseDouble(parts[1 + k]), G_MIN, G_MAX);
-                        }
-                    }
-                    case "lane"  -> curLane = Integer.parseInt(parts[1]);
-                    case "n" -> {
-                        if (curLane < 0 || curLane > 2) throw new Exception("node outside lane section");
-                        BezierBaker.Node n = new BezierBaker.Node(
-                            Double.parseDouble(parts[1]), Double.parseDouble(parts[2]));
-                        n.outFrac = Double.parseDouble(parts[3]);  // raw seconds if legacy
-                        n.outDv   = Double.parseDouble(parts[4]);
-                        n.inFrac  = Double.parseDouble(parts[5]);
-                        n.inDv    = Double.parseDouble(parts[6]);
-                        n.smooth = !parts[7].equals("0");
-                        n.straightOut = parts.length > 8 && parts[8].equals("1");
-                        newLanes.get(curLane).add(n);
-                    }
-                    default -> { /* ignore unknown lines: forward compatibility */ }
-                }
-            }
-            for (List<BezierBaker.Node> lane : newLanes) {
-                if (lane.size() < 2) throw new Exception("each lane needs at least 2 nodes");
-            }
-            if (legacy) {   // absolute seconds -> fraction of the segment
-                for (List<BezierBaker.Node> lane : newLanes) {
-                    for (int i = 0; i < lane.size(); i++) {
-                        BezierBaker.Node n = lane.get(i);
-                        double outDt = n.outFrac, inDt = n.inFrac;
-                        n.outFrac = i < lane.size() - 1
-                            ? clamp(outDt / (lane.get(i + 1).t - n.t), 0, BezierBaker.MAX_FRAC)
-                            : BezierBaker.DEFAULT_FRAC;
-                        n.inFrac = i > 0
-                            ? clamp(-inDt / (n.t - lane.get(i - 1).t), 0, BezierBaker.MAX_FRAC)
-                            : BezierBaker.DEFAULT_FRAC;
-                    }
-                }
-            }
+            // FVDD3/2/1 parsing lives in DesignIO (Phase 1, D50); legacy
+            // flat files arrive as one piece holding one force section
+            DesignIO.LoadResult r = DesignIO.load(in);
 
             editor.pushUndoSnapshot(); // loading is undoable
-            for (int i = 0; i < 3; i++) {
-                lanes.get(i).clear();
-                lanes.get(i).addAll(newLanes.get(i));
+            coaster.pieces.clear();
+            coaster.pieces.addAll(r.coaster().pieces);
+            coaster.v0 = r.coaster().v0;
+            coaster.speedRegions.clear();
+            coaster.speedRegions.addAll(r.coaster().speedRegions);
+            // the editor keeps editing the SAME lane list objects across
+            // loads: copy the loaded section-0 nodes into them and point
+            // the section at them
+            DesignIO.rebindLanes(coaster, lanes);
+
+            DesignIO.Cosmetics cos = r.cosmetics();
+            heartOffset = cos.heart();
+            railGauge = cos.gauge();
+            tieSpacing = cos.tiespace();
+            railSolid = cos.railSolid();
+            railColor = Color.color(cos.railColor()[0], cos.railColor()[1], cos.railColor()[2]);
+            for (int i = 0; i < 4; i++) {
+                gradColors[i] = Color.color(cos.gradColors()[i * 3],
+                    cos.gradColors()[i * 3 + 1], cos.gradColors()[i * 3 + 2]);
             }
-            heartOffset = newHeart;
-            railGauge = newGauge;
-            tieSpacing = newTie;
-            startX = newStart[0]; startY = newStart[1]; startZ = newStart[2];
-            startSpeed = newV0;
-            railSolid = newSolid;
-            railColor = newColor;
-            System.arraycopy(newGrad, 0, gradColors, 0, 4);
-            System.arraycopy(newStops, 0, gradStops, 0, 4);
-            heartSpinner.getValueFactory().setValue(newHeart);
-            gaugeSpinner.getValueFactory().setValue(newGauge);
-            tieSpinner.getValueFactory().setValue(newTie);
-            startXSpinner.getValueFactory().setValue(startX);
-            startYSpinner.getValueFactory().setValue(startY);
-            startZSpinner.getValueFactory().setValue(startZ);
-            startSpeedSpinner.getValueFactory().setValue(startSpeed);
+            System.arraycopy(cos.gradStops(), 0, gradStops, 0, 4);
+
+            TrackPiece p0 = coaster.pieces.get(0);
+            heartSpinner.getValueFactory().setValue(heartOffset);
+            gaugeSpinner.getValueFactory().setValue(railGauge);
+            tieSpinner.getValueFactory().setValue(tieSpacing);
+            startXSpinner.getValueFactory().setValue(p0.x);
+            startYSpinner.getValueFactory().setValue(p0.y);
+            startZSpinner.getValueFactory().setValue(p0.z);
+            startSpeedSpinner.getValueFactory().setValue(coaster.v0);
             (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
             editor.clearSelection();
             editor.refresh();
             rebuildTrack();
+            currentFile = f;
+            dirty = false;
+            updateTitle();
             statsLabel.setText("Loaded: " + f.getName());
         } catch (Exception ex) {
             statsLabel.setText("Load failed: " + ex.getMessage());
@@ -2401,9 +2511,11 @@ public class FvdDesigner extends Application {
 
         private long lastNudgeNanos = 0;   // coalesces arrow-key undo snapshots
 
-        private final Deque<List<List<BezierBaker.Node>>> undoStack = new ArrayDeque<>();
-        private final Deque<List<List<BezierBaker.Node>>> redoStack = new ArrayDeque<>();
-        private List<List<BezierBaker.Node>> pendingSnapshot = null;
+        // DOCUMENT-level history (D51): snapshots carry lanes + the
+        // path-shaping settings (heart/gauge/start/v0), not lanes alone
+        private final Deque<DocState> undoStack = new ArrayDeque<>();
+        private final Deque<DocState> redoStack = new ArrayDeque<>();
+        private DocState pendingSnapshot = null;
         private boolean gestureMoved = false;
         private static final int UNDO_LIMIT = 100;
 
@@ -2732,15 +2844,7 @@ public class FvdDesigner extends Application {
 
         // ---------- undo ----------
 
-        private List<List<BezierBaker.Node>> snapshot() {
-            List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
-            for (List<BezierBaker.Node> lane : lanes) {
-                List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
-                for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
-                copy.add(laneCopy);
-            }
-            return copy;
-        }
+        private DocState snapshot() { return snapshotDoc(); }
 
         void pushUndoSnapshot() { pushUndo(snapshot()); }
 
@@ -2759,10 +2863,11 @@ public class FvdDesigner extends Application {
             }
         }
 
-        private void pushUndo(List<List<BezierBaker.Node>> snap) {
+        private void pushUndo(DocState snap) {
             undoStack.push(snap);
             while (undoStack.size() > UNDO_LIMIT) undoStack.removeLast();
             redoStack.clear();   // a fresh edit invalidates the redo branch
+            markDirty();
         }
 
         void undo() {
@@ -2780,15 +2885,26 @@ public class FvdDesigner extends Application {
             applySnapshot(redoStack.pop());
         }
 
-        private void applySnapshot(List<List<BezierBaker.Node>> snap) {
-            for (int i = 0; i < 3; i++) {
-                lanes.get(i).clear();
-                lanes.get(i).addAll(snap.get(i));
-            }
+        private void applySnapshot(DocState snap) {
+            applyDocState(snap);
             if (selIdx >= active().size()) selIdx = -1;
             selSet.removeIf(i -> i >= active().size());
+            markDirty();
             redraw();
             rebuildTrack();
+        }
+
+        /** New document: history starts over. */
+        void clearHistory() {
+            undoStack.clear();
+            redoStack.clear();
+            pendingSnapshot = null;
+        }
+
+        /** Zoomed time window back to auto-fit (new document). */
+        void resetView() {
+            viewT0 = 0;
+            viewT1 = -1;
         }
 
         // ---------- smooth toggle ----------
@@ -3419,7 +3535,7 @@ public class FvdDesigner extends Application {
             } else {
                 // node 0: the ride's start speed lives here too (same value
                 // as the Coaster-menu spinner, whichever lane you opened)
-                v0Field = new TextField(String.format(Locale.US, "%.3f", startSpeed));
+                v0Field = new TextField(String.format(Locale.US, "%.3f", coaster.v0));
                 grid.addRow(row++, new Label("Start speed (m/s)"), v0Field);
             }
             // vertical axis is the GLOBAL value, not a delta
@@ -3465,7 +3581,7 @@ public class FvdDesigner extends Application {
                     // through the spinner so the menu shows it and the track
                     // rebuilds (start speed is per-coaster, not in lane undo)
                     startSpeedSpinner.getValueFactory().setValue(
-                        clamp(parseOr(fV0, startSpeed), 1, 100));
+                        clamp(parseOr(fV0, coaster.v0), 1, 100));
                 }
                 double val = parseOr(fVal, n.val);
                 if (prev != null) {

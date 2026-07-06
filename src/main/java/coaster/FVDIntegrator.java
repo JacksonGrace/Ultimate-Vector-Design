@@ -51,6 +51,7 @@ public class FVDIntegrator {
         public double v0 = 5;         // starting speed m/s
         public Vec3 pos0 = Vec3.ZERO;
         public Vec3 startHeading = new Vec3(1, 0, 0);
+        public Vec3 startUp = new Vec3(0, 1, 0);   // entry-pose seeding (Phase 1)
         public double friction = 0;   // crude per-second speed bleed factor
     }
 
@@ -123,7 +124,9 @@ public class FVDIntegrator {
         Vec3 pos = opts.pos0;
         double v = opts.v0;
         Vec3 T = opts.startHeading.normalize();
-        Vec3 U = new Vec3(0, 1, 0);
+        // orthonormalize the entry up against T (float-exact no-op for
+        // the default (0,1,0) against (1,0,0): dot is 0, sqrt(1) is 1)
+        Vec3 U = opts.startUp.sub(T.scale(opts.startUp.dot(T))).normalize();
         Vec3 R = U.cross(T);
 
         double y0 = pos.y();

@@ -888,3 +888,97 @@ User feel-pass on the fresh ortho views:
   right-click therefore does NOT hand off to fly (the press is eaten as
   the pan anchor) — exit ortho first (T / orbit away), then right-click
   flies as usual. Primary/middle drags still rotate-and-exit by design.
+
+## D50. Phase 1 milestone A: document model, three-pass pipeline, FVDD3 (v9.0)
+The overhaul's foundation, delivered feature-neutral (the app looks and
+behaves identically; the architecture underneath is the SECTIONS-DESIGN
+one). New pure-core files: Quat, TrackPose, Section (sealed) +
+ForceSection, TrackPiece, Coaster, TrackCompiler, DesignIO.
+- **The document (Coaster)** owns what physics consumes: global v0 +
+  friction, pieces (placement origin + heading yaw) holding sections,
+  and the Phase-3 SpeedRegion model slot. The single ForceSection's lane
+  lists are THE SAME OBJECTS the graph editor mutates (shared by
+  reference — zero editor churn, loads copy INTO them via
+  DesignIO.rebindLanes). Cosmetics (heart/gauge/ties/colors) stay
+  UI-side deliberately, traveling through DesignIO.Cosmetics at I/O —
+  they move into the document with the milestone-B split.
+- **TrackCompiler = the three passes** (§1): passG per section (force
+  sections run the UNCHANGED bake+RK4 at v0 = vDesign, energy referenced
+  to the section's own entry height, seeded from the entry pose), passD
+  global true speed from energy vs the global start, passA resulting
+  rates. For today's document shape the passes are arranged to add ZERO
+  arithmetic — compile() output is bit-identical to the old direct call.
+  Section chaining re-bases t/s and drops the duplicated boundary
+  sample; a new PIECE keeps its first sample (that skip-first bug was
+  caught by the piece-independence gate while writing it).
+- **Quaternions live at the MODEL level** (TrackPose.orient, piece yaw,
+  section exit poses via Quat.fromFrame), NOT inside the force-section
+  integrator, which keeps stepping T/U as vectors. The spec's
+  "Pass G integrates orientation as a quaternion" (§2) conflicts with
+  its own §1 "Phase 1 must reproduce current output bit-for-bit" — the
+  gate wins; re-discretizing orientation would shift every float. Geo
+  sections (Phase 2) integrate quaternions natively. Identity paths are
+  float-exact by construction (IDENTITY.rotate adds literal zeros;
+  aboutY(0) == IDENTITY) — the bit-for-bit gate rides on this.
+- **FVDD3 written, FVDD3/2/1 read, all in DesignIO** — save/load is
+  finally out of FvdDesigner and headlessly testable (TESTING #4's
+  old wish). Format: global lines (v0 + cosmetics, same shapes as
+  FVDD2), then `piece x y z yaw` blocks holding
+  `section force vDesign domain reversed` blocks holding the same
+  lane/n lines (8th field straight-lock). Unknown-line and
+  extra-field rules unchanged. Legacy flat files load as one piece at
+  their `start` (default (0,21,0) — what a fresh session's spinners
+  did to them anyway) holding one force section with vDesign = their
+  v0 (default 26); FVDD1 handle conversion moved along.
+- **Gates all passed** (scratch Phase1Gate, see TESTING #11): default
+  document compiles BIT-IDENTICAL to the old pipeline (raw double
+  bits, every field of all 1347 samples); trueV == Sample.v bitwise;
+  FVDD3 save→load→save byte-identical; FVDD2/1 fixtures load right;
+  editing piece A leaves piece B's world geometry bitwise unchanged;
+  changing global v0 leaves ALL geometry bitwise unchanged (shape
+  depends on vDesign only — §0 holds).
+- **Still open in Phase 1 (milestone B):** the mechanical FvdDesigner
+  split (GraphEditor / Viewport3D / Dialogs / shell), section-aware
+  graph strips, document-level undo (settings included or not — needs
+  a user call: today heart/gauge/v0 stay menu-local), and the
+  section-insertion UI that makes multi-section real. The MODEL and
+  pipeline already handle multi-section/multi-piece (gated above);
+  only the UI is single-section.
+
+## D51. Document undo widened, file lifecycle: New / Save / Save As / title (v9.1)
+User call on the milestone-A question, plus a workflow feature round:
+- **Document undo now includes heart, gauge, start x/y/z and start
+  speed** — the rule is the user's own: "everything that changes the
+  track path, not just aesthetics." Tie spacing and rail colors remain
+  cosmetic (menu-local undo only, but they DO mark the file dirty).
+  Implementation: undo snapshots are a DocState record (deep-copied
+  lanes + the four path settings); the Coaster-menu spinners for path
+  values are wired through wireDocSpinner, which pushes a document
+  snapshot BEFORE applying (the field still holds the old value at
+  listener entry). Menu-local Ctrl+Z replays skip the document push
+  (menuApplying guard) so the two histories never double-record; undo/
+  redo application suppresses the listeners entirely (docApplying) and
+  writes fields + spinner displays directly. Granularity: one document
+  step per spinner CLICK (matches the old menu-local feel); a node-0
+  dialog Apply that changes BOTH start speed and node values lands as
+  two steps (speed, then nodes) — accepted, each step is coherent.
+  Undoing a LOAD now restores the pre-load settings too (the pre-load
+  snapshot carries them), which the old lanes-only undo silently lost.
+- **File > New… (Ctrl+N, rebindable "newfile")**: if dirty, offers
+  Save / Don't Save / Cancel (Save on a never-saved file runs the
+  chooser; cancelling the chooser aborts the New). A fresh document is
+  one 1 s force/time section — Gv 1 g, Gl 0, roll 0, default handles —
+  at (0,21,0), v0 26, default cosmetics, EMPTY undo history, auto-fit
+  view, "Untitled" title. File > Load now runs the same unsaved-changes
+  gate (same data-loss risk; flagged as a judgment call).
+- **The window title is the document**: "name.fvd — FVD Coaster
+  Designer", with * after the name while unsaved ("Untitled" before the
+  first save). Dirty is set at every document mutation choke point
+  (pushUndo, the menu-spinner wirings, rail mode/color/gradient
+  handlers, undo/redo application — content differs from disk either
+  way) and cleared on save/load/new. Deliberately NOT a compare-to-
+  saved-state check — cheap and predictable beats clever here.
+- **Save vs Save As**: Ctrl+S / File > Save writes straight to the open
+  file (no chooser) once one exists; Save As… always asks. The old
+  always-ask Save behavior is gone — that's what "the file that is
+  open" in the title implies.

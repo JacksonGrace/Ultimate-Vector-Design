@@ -38,6 +38,7 @@ public class AppSettings {
         { "viewSide", "Side view (ortho)",        "Shift+T" },
         { "save",   "Save design",                "Ctrl+S" },
         { "load",   "Load design",                "Ctrl+O" },
+        { "newfile", "New design",                "Ctrl+N" },
         { "export", "Export NL2 CSV",             "Ctrl+E" },
         { "undo",   "Undo",                       "Ctrl+Z" },
         { "redo",   "Redo",                       "Ctrl+Shift+Z" },
