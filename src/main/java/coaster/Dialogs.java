@@ -192,7 +192,7 @@ class Dialogs {
         helpKey(box, "Shift+click / box", "multi-select (drag a box on empty plot); dragging any member moves the group. The MAIN node (full ring) is the last one clicked — or the earliest in a box.");
         helpKey(box, "Delete / rt-click", "remove node(s): interior deletes bridge the gap, deleting the last node shortens the ride; node 0 stays.");
         helpKey(box, "Double-click", "type the transition time, value and handle sizes exactly — typed handle sizes slide the knob along its current angle (like S). On the first node the ride's start speed is edited here too.");
-        helpKey(box, "B · H · F", "smooth/broken · level the handles (every selected node) · straighten between two adjacent selected nodes.");
+        helpKey(box, "B · H · F", "smooth/broken · level the handles (every selected node) · straighten between two adjacent selected nodes. On a node at a SECTION EDGE, B instead matches its single handle's slope across the boundary — a one-time move (also a button in its double-click dialog).");
         helpKey(box, "Shift+H", "level the selection ONTO the main node: all selected nodes take its value with flat handles — one horizontal line.");
         helpKey(box, "Shift+F", "straight-LOCK the segment between two adjacent selected nodes: it is drawn as twin thin lines and STAYS a line — move an endpoint and the line follows; its knobs only slide along it. Shift+F with either endpoint selected unlocks. Inserting on a locked segment keeps both halves locked.");
         helpKey(box, "A / Append", "+1 s at the ride end (active lane only; the others keep holding) — or a 1 s flat hold after the selected node (all lanes shift).");

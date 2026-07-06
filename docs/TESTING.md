@@ -467,6 +467,15 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     Save → load: both sections and the active-strip behavior survive
     (FVDD3). POV rides across the boundary seamlessly. With ONE section
     everything must look exactly as before (feature-neutral baseline).
+    v9.6 polish: drag a node onto the '+' line near the top — the ⊕
+    drops to mid-plot and the node stays selectable (and vice versa);
+    inactive strips are clearly legible (alpha 0.20). Select section
+    2's FIRST node, press B (or use "Match slope across boundary" in
+    its dialog): its out-handle angles so the curve continues the
+    previous section's end slope with no kink at the boundary — then
+    drag it freely (no lock). Same from section 1's LAST node toward
+    section 2. B on the ride's very first/last node does nothing;
+    B on interior nodes still toggles smooth/broken.
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes

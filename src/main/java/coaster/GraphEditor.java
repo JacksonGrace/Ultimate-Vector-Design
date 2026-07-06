@@ -232,6 +232,9 @@ class GraphEditor extends Region {
         app.rebuildTrack();
     }
 
+    // inactive-strip visibility (v9.6 user feel pass: 0.13 was too faint)
+    private static final double INACTIVE_SECTION_ALPHA = 0.20;
+
     /** Greyed strips for inactive sections + boundary lines. */
     private void drawInactiveSections(GraphicsContext gc) {
         List<ForceSection> secs = sections();
@@ -239,7 +242,7 @@ class GraphEditor extends Region {
         for (int k = 0; k < secs.size(); k++) {
             double dur = BezierBaker.rideEnd(secs.get(k).lanes);
             if (k != activeSection) {
-                gc.setGlobalAlpha(0.13);
+                gc.setGlobalAlpha(INACTIVE_SECTION_ALPHA);
                 gc.setLineWidth(1.5);
                 for (int L = 0; L < LANES; L++) {
                     gc.setStroke(FvdDesigner.LANE_COLORS[L]);
@@ -275,6 +278,18 @@ class GraphEditor extends Region {
         }
     }
 
+    /** Pixel distance from a point to the nearest ACTIVE-section node
+     *  (any lane — dimmed-lane nodes are clickable too). */
+    private double nearestNodePx(double x, double y) {
+        double best = 1e9;
+        for (int L = 0; L < LANES; L++) {
+            for (BezierBaker.Node n : app.lanes.get(L)) {
+                best = Math.min(best, Math.hypot(x - ltToX(n.t), y - valToY(L, n.val)));
+            }
+        }
+        return best;
+    }
+
     /** The vertical line + circled '+' at the ride end (user spec):
      *  click opens the add-section menu. */
     private void drawAddButton(GraphicsContext gc, double w) {
@@ -289,7 +304,13 @@ class GraphEditor extends Region {
         gc.setLineDashes(4, 6);
         gc.strokeLine(x, MARGIN_TOP, x, MARGIN_TOP + plotHeight());
         gc.setLineDashes((double[]) null);
+        // the ride's last node sits exactly on this line — if one lands
+        // under the button, drop the button to mid-plot (user request)
         double cy = MARGIN_TOP + 16;
+        double mid = MARGIN_TOP + plotHeight() / 2;
+        if (nearestNodePx(x, cy) < 24 && nearestNodePx(x, mid) > nearestNodePx(x, cy)) {
+            cy = mid;
+        }
         gc.setGlobalAlpha(0.9);
         gc.setFill(Color.rgb(45, 50, 62));
         gc.fillOval(x - 9, cy - 9, 18, 18);
@@ -865,7 +886,13 @@ class GraphEditor extends Region {
     // ---------- smooth toggle ----------
 
     void toggleSmooth() {
-        if (selIdx <= 0 || selIdx >= active().size() - 1) return;
+        // section-EDGE nodes have no smooth/broken meaning (one handle) —
+        // there B does a ONE-TIME slope match across the section boundary
+        if (selIdx == 0 || selIdx == active().size() - 1) {
+            matchBoundarySlope(selIdx);
+            return;
+        }
+        if (selIdx < 0) return;
         pushUndoSnapshot();
         BezierBaker.Node n = active().get(selIdx);
         n.smooth = !n.smooth;
@@ -877,6 +904,45 @@ class GraphEditor extends Region {
         }
         redraw();
         app.rebuildTrack();
+    }
+
+    /** B (or the node dialog's button) on a node at a section EDGE:
+     *  angle its single handle so the curve's slope is CONTINUOUS across
+     *  the boundary — the start node's out-handle takes the previous
+     *  section's end slope, the end node's in-handle takes the next
+     *  section's start slope. A one-time move, not a lock (a straight-
+     *  locked segment re-chords over it); no adjacent section = no-op.
+     *  Endpoint slope of a cubic IS its handle-line slope, so the match
+     *  is exact. */
+    void matchBoundarySlope(int idx) {
+        List<BezierBaker.Node> lane = active();
+        List<ForceSection> secs = sections();
+        if (idx == 0 && activeSection > 0 && lane.size() >= 2) {
+            List<BezierBaker.Node> prevLane =
+                secs.get(activeSection - 1).lanes.get(activeLane);
+            BezierBaker.Node pl = prevLane.get(prevLane.size() - 1);
+            double inDt = prevLane.size() >= 2
+                ? BezierBaker.effInDt(prevLane.get(prevLane.size() - 2), pl) : 0;
+            double slope = Math.abs(inDt) < 1e-9 ? 0 : pl.inDv / inDt;
+            pushUndoSnapshot();
+            BezierBaker.Node n = lane.get(0);
+            n.outDv = slope * BezierBaker.effOutDt(n, lane.get(1));
+            redraw();
+            app.rebuildTrack();
+        } else if (idx == lane.size() - 1 && idx > 0
+                && activeSection < secs.size() - 1) {
+            List<BezierBaker.Node> nextLane =
+                secs.get(activeSection + 1).lanes.get(activeLane);
+            BezierBaker.Node n0 = nextLane.get(0);
+            double outDt = nextLane.size() >= 2
+                ? BezierBaker.effOutDt(n0, nextLane.get(1)) : 0;
+            double slope = Math.abs(outDt) < 1e-9 ? 0 : n0.outDv / outDt;
+            pushUndoSnapshot();
+            BezierBaker.Node n = lane.get(idx);
+            n.inDv = slope * BezierBaker.effInDt(lane.get(idx - 1), n);
+            redraw();
+            app.rebuildTrack();
+        }
     }
 
     // ---------- coordinate mapping ----------
@@ -1506,6 +1572,20 @@ class GraphEditor extends Region {
         }
         for (javafx.scene.Node c : grid.getChildren()) {
             if (c instanceof TextField tf) tf.setPrefColumnCount(7);
+        }
+
+        // section-edge nodes: the cross-boundary slope match lives here
+        // too (same one-time move as pressing B on the node)
+        boolean edgeStart = idx == 0 && activeSection > 0;
+        boolean edgeEnd = idx == lane.size() - 1 && idx > 0
+            && activeSection < sections().size() - 1;
+        if (edgeStart || edgeEnd) {
+            Button match = new Button("Match slope across boundary");
+            match.setOnAction(ev -> {
+                matchBoundarySlope(idx);
+                dlg.close();
+            });
+            grid.add(match, 0, row++, 2, 1);
         }
 
         Button ok = new Button("Apply");

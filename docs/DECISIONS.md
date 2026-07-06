@@ -1113,3 +1113,25 @@ SECTIONS-DESIGN §8).
   continuous frames; editing section B leaves section A BITWISE
   unchanged; the canonical FVDD3 round-trip now uses a two-section
   document. Everything else still green, bit-for-bit included.
+
+## D56. Section polish round (v9.6)
+User hand-test feedback on v9.5, all three items:
+- **The '+' dodges nodes**: the ride's last node sits exactly on the
+  add-section line and the button covered it. If a node (any lane of
+  the active section) is within 24 px of the button's home spot (top of
+  the plot), the button drops to mid-plot height — unless a node is
+  even closer there (nearestNodePx picks the clearer of the two).
+- **Inactive strips brightened**: alpha 0.13 → 0.20, named
+  INACTIVE_SECTION_ALPHA in GraphEditor for future feel passes (the
+  active section's inactive LANES stay at 0.25 — strips remain a step
+  fainter, deliberately).
+- **B on a section-EDGE node = one-time cross-boundary slope match**
+  (also a "Match slope across boundary" button in the node's
+  double-click dialog): the start node's out-handle takes the previous
+  section's END slope; the end node's in-handle takes the next
+  section's START slope. A cubic's endpoint slope IS its handle-line
+  slope, so the match is exact — computed from the adjacent section's
+  handle directly, no polyline differencing. NOT a lock, per the user:
+  edit freely afterwards (and a straight-locked segment's enforcement
+  wins over it). Interior nodes keep the classic smooth/broken B;
+  edge nodes with no adjacent section (ride start/end) no-op.
