@@ -1578,8 +1578,8 @@ class GraphEditor extends Region {
         }
 
         // POV camera position on the track (toggle in Edit > Options)
-        if (app.povActive && app.settings.povMarker()) {
-            double px2 = tToX(app.povTime);
+        if (app.viewport.povActive && app.settings.povMarker()) {
+            double px2 = tToX(app.viewport.povTime);
             if (px2 >= MARGIN_LEFT - 1 && px2 <= w - MARGIN_RIGHT + 1) {
                 gc.setGlobalAlpha(0.4);
                 gc.setStroke(FvdDesigner.TIME_COLOR);   // yellow = time

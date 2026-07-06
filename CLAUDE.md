@@ -83,18 +83,27 @@ DesignIO.java       save/load: writes FVDD3, reads FVDD3/FVDD2/FVDD1
                     (legacy = one piece/one section). Headlessly
                     round-trip tested at last.
 
-GraphEditor.java    JavaFX GRAPH EDITOR (split out in v9.2, D52): the
+GraphEditor.java    JavaFX GRAPH EDITOR (split out v9.2, D52): the
                     force-curve canvas — lanes, selection, node/handle
                     drags, document undo stacks, node dialog. Reaches
                     the shell through a `final FvdDesigner app` backref
                     (app.rebuildTrack(), app.settings, …).
 
-FvdDesigner.java    ALL remaining JavaFX (the SHELL): 3D view (two-rail
-                    mesh, orbit/fly/POV cameras, ortho views, markers),
-                    menu bar (File/Edit/Coaster), toolbar, export, file
-                    lifecycle, shortcuts/options dialogs. Holds the
-                    Coaster document. Still to split (milestone B):
-                    Viewport3D.java and Dialogs.java.
+Viewport3D.java     JavaFX 3D VIEW (split out v9.4, D54): orbit/fly/POV
+                    cameras + pseudo-ortho views, mouse/scroll handlers,
+                    animation timers, rail/tie/heartline meshes, ground
+                    grid + LOD, track picking, node markers, and
+                    rebuildTrack (the pipeline entry — the shell keeps
+                    name-stable delegates). Same `app` backref pattern.
+
+Dialogs.java        JavaFX DIALOGS (split out v9.4, D54): Help,
+                    Shortcuts, Rail colors, Options + option-row
+                    helpers. Menu-local undo machinery stays on the
+                    shell (the Coaster menu shares it).
+
+FvdDesigner.java    the SHELL (~1.1k lines): document + file lifecycle
+                    (New/Save/dirty title), key dispatch, menu bar,
+                    toolbar, layout, menu-local undo, NL2 export dialog.
 ```
 
 Pipeline on every edit: `lanes → TrackCompiler.compile (passG: bake +
@@ -475,10 +484,11 @@ Existing headless invariants must pass unchanged.
   pipeline (bit-identical output gated), DesignIO with FVDD3.
 - Milestone B: ~~document-level undo~~ DONE v9.1 (D51, incl. heart/gauge/
   start/v0 per user rule) + ~~file lifecycle~~ (New/Save/Save As/dirty
-  title — a user feature request folded in); FvdDesigner split part 1
-  DONE v9.2 (D52: GraphEditor.java out, shell 4.2k → 2.4k lines).
-  Remaining: Viewport3D.java + Dialogs.java split, section-aware graph
-  strips, section-insertion UI.
+  title — a user feature request folded in); ~~FvdDesigner split~~
+  COMPLETE v9.4 (D52 GraphEditor, D54 Viewport3D + Dialogs; shell
+  4.2k → 1.1k lines). Remaining: section-aware graph strips +
+  section-insertion UI (the last Phase-1 items — functional, need a
+  UX round with the user before building).
 
 **Phase 2 — section types (easiest first):** geo sections (direct
 pitch/yaw/roll rates — NO solver needed) + reversal → straight/curve mode →

@@ -1,0 +1,590 @@
+package coaster;
+
+import javafx.animation.AnimationTimer;
+import javafx.application.Application;
+import javafx.geometry.Insets;
+import javafx.geometry.Orientation;
+import javafx.geometry.Point2D;
+import javafx.geometry.Point3D;
+import javafx.geometry.Pos;
+import javafx.geometry.Rectangle2D;
+import javafx.geometry.Side;
+import javafx.geometry.VPos;
+import javafx.scene.AmbientLight;
+import javafx.scene.Cursor;
+import javafx.scene.Group;
+import javafx.scene.PerspectiveCamera;
+import javafx.scene.PointLight;
+import javafx.scene.Scene;
+import javafx.scene.SceneAntialiasing;
+import javafx.scene.SubScene;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ButtonBar;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.CheckMenuItem;
+import javafx.scene.control.ColorPicker;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.CustomMenuItem;
+import javafx.scene.control.Label;
+import javafx.scene.control.Menu;
+import javafx.scene.control.MenuBar;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.RadioButton;
+import javafx.scene.control.RadioMenuItem;
+import javafx.scene.control.ScrollPane;
+import javafx.scene.control.SeparatorMenuItem;
+import javafx.scene.control.Slider;
+import javafx.scene.control.SplitPane;
+import javafx.scene.control.Spinner;
+import javafx.scene.control.SpinnerValueFactory;
+import javafx.scene.control.TextField;
+import javafx.scene.control.ToggleButton;
+import javafx.scene.control.ToggleGroup;
+import javafx.scene.control.Tooltip;
+import javafx.scene.image.PixelWriter;
+import javafx.scene.image.WritableImage;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.MouseEvent;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.scene.paint.PhongMaterial;
+import javafx.scene.robot.Robot;
+import javafx.scene.shape.CullFace;
+import javafx.scene.shape.MeshView;
+import javafx.scene.shape.Sphere;
+import javafx.scene.shape.TriangleMesh;
+import javafx.scene.text.Font;
+import javafx.scene.text.TextAlignment;
+import javafx.scene.transform.Affine;
+import javafx.scene.transform.Rotate;
+import javafx.scene.transform.Translate;
+import javafx.stage.FileChooser;
+import javafx.stage.Modality;
+import javafx.stage.Screen;
+import javafx.stage.Stage;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.PrintWriter;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+
+/**
+ * The DIALOGS (Phase 1 milestone B split part 2, D54): Help,
+ * Shortcuts, Rail colors and Options windows plus their small
+ * control-wiring helpers — extracted verbatim from FvdDesigner.
+ * Menu-local undo machinery stays on the shell (the Coaster menu
+ * uses it too); dialogs reach it through `app`.
+ */
+class Dialogs {
+
+    /** The shell: settings, menu-undo machinery, viewport cameras. */
+    private final FvdDesigner app;
+
+    Dialogs(FvdDesigner app) { this.app = app; }
+
+    /**
+     * The Help window (click "Help" in the menu bar). MAINTENANCE RULE
+     * (user requirement): every new user-facing feature or control MUST be
+     * added here, in the matching section, when it ships. Prioritize the
+     * non-obvious. Layout: helpHead = section, helpKey = aligned
+     * key/gesture row, helpText = prose for non-key behavior.
+     */
+    void showHelpDialog() {
+        VBox box = new VBox(5);
+        box.setPadding(new Insets(18));
+
+        // small diagram: a transition with node, handles and the insert dot
+        Canvas diagram = new Canvas(560, 110);
+        GraphicsContext g = diagram.getGraphicsContext2D();
+        g.setFill(Color.rgb(28, 31, 40));
+        g.fillRoundRect(0, 0, 560, 110, 8, 8);
+        g.setStroke(FvdDesigner.LANE_COLORS[0]);
+        g.setLineWidth(2);
+        g.beginPath();
+        g.moveTo(30, 85);
+        g.bezierCurveTo(120, 85, 180, 30, 270, 30);
+        g.stroke();
+        g.setLineDashes(3, 7);
+        g.strokeLine(270, 30, 420, 30);
+        g.setLineDashes((double[]) null);
+        g.setStroke(Color.WHITE);
+        g.setLineWidth(1);
+        g.strokeLine(270, 30, 320, 30);   // out handle
+        g.strokeLine(270, 30, 215, 30);   // in handle
+        g.setFill(Color.WHITE);
+        g.fillOval(316, 26, 8, 8);
+        g.fillOval(211, 26, 8, 8);
+        g.setFill(FvdDesigner.LANE_COLORS[0]);
+        g.fillOval(264, 24, 12, 12);
+        g.fillOval(24, 79, 12, 12);
+        g.setFill(Color.rgb(255, 255, 255, 0.5));
+        g.fillOval(146, 54, 8, 8);        // insert dot on the curve
+        g.setFill(Color.rgb(200, 205, 215));
+        g.setFont(Font.font(11));
+        g.fillText("node", 258, 18);
+        g.fillText("handles (drag · Shift · Ctrl)", 330, 55);
+        g.fillText("click curve = insert", 100, 78);
+        g.fillText("dotted = held value", 380, 22);
+
+        box.getChildren().add(diagram);
+        VBox.setMargin(diagram, new Insets(0, 0, 8, 0));
+
+        helpHead(box, "Getting started");
+        helpText(box, "You design FORCES, not shapes: the three curves (vertical G, "
+            + "lateral G, roll rate) over ride time are integrated into the 3D track. "
+            + "Pick a lane with the colored buttons, keys 1/2/3, or by clicking a "
+            + "dimmed curve — every edit rebuilds the track live.");
+        helpText(box, "Ctrl+Z / Ctrl+Shift+Z undo and redo DOCUMENT edits — the "
+            + "curves plus everything that shapes the path: heart, gauge, start "
+            + "point and start speed (any new edit clears the redo branch; tie "
+            + "spacing and colors are cosmetic and stay out). The window title "
+            + "shows the open file, with * while unsaved. File > New starts a "
+            + "fresh 1 s design (offering to save first), Save writes straight "
+            + "to the open file, Save As picks a new one; File > "
+            + "Export NL2 CSV hands the track to NoLimits 2. Keys shown "
+            + "here are defaults — rebind anything in Edit > Shortcuts; the stats bar "
+            + "always shows your current bindings.");
+
+        helpHead(box, "Graph view");
+        helpKey(box, "Scroll", "zoom the time axis around the cursor; fully zoomed out = auto-fit.");
+        helpKey(box, "Right-drag", "pan while zoomed in.");
+        helpKey(box, "Hover curve", "white dot + the value there; hold Shift for the slope instead.");
+        helpKey(box, "Resulting (toolbar)", "dropdown of read-only derived curves: pitch rate and yaw rate (°/s, thin dashed, on the roll lane's scale, colored like the lane each answers to — pitch~vert G, yaw~lat G). No roll entry: the resulting roll rate IS the roll lane.");
+        helpText(box, "Value axes auto-scale to the curves. The dotted line after a "
+            + "lane's last node is its held final value — click it to add a real node. "
+            + "Dragging past a plot edge grows that axis, faster the farther past. The "
+            + "divider resizes the graph; the corner button on the 3D view collapses it.");
+
+        helpHead(box, "Nodes");
+        helpKey(box, "Click curve", "insert a node exactly ON it — the shape does not change.");
+        helpKey(box, "Drag", "move freely; the readout shows Δt from the previous node + value.");
+        helpKey(box, "Ctrl", "snap transition time and absolute value (steps set in Options; transitions can be as short as 0.01 s).");
+        helpKey(box, "S (hold)", "slide along one axis from the start point — picked instantly from the dominant direction, switches if you pull the other way. Combines with Ctrl snapping: pressing S mid-drag with Ctrl held slides — it never triggers Ctrl+S save (no modifier combo fires during a drag).");
+        helpKey(box, "Z / X", "sticky vertical/horizontal lock; overrides S, same key releases. Guides: lane color = value changing, yellow = time changing.");
+        helpKey(box, "Arrows", "nudge by snap steps; Ctrl+arrow lands ON the grid; hold to glide.");
+        helpKey(box, "Shift+click / box", "multi-select (drag a box on empty plot); dragging any member moves the group. The MAIN node (full ring) is the last one clicked — or the earliest in a box.");
+        helpKey(box, "Delete / rt-click", "remove node(s): interior deletes bridge the gap, deleting the last node shortens the ride; node 0 stays.");
+        helpKey(box, "Double-click", "type the transition time, value and handle sizes exactly — typed handle sizes slide the knob along its current angle (like S). On the first node the ride's start speed is edited here too.");
+        helpKey(box, "B · H · F", "smooth/broken · level the handles (every selected node) · straighten between two adjacent selected nodes.");
+        helpKey(box, "Shift+H", "level the selection ONTO the main node: all selected nodes take its value with flat handles — one horizontal line.");
+        helpKey(box, "Shift+F", "straight-LOCK the segment between two adjacent selected nodes: it is drawn as twin thin lines and STAYS a line — move an endpoint and the line follows; its knobs only slide along it. Shift+F with either endpoint selected unlocks. Inserting on a locked segment keeps both halves locked.");
+        helpKey(box, "A / Append", "+1 s at the ride end (active lane only; the others keep holding) — or a 1 s flat hold after the selected node (all lanes shift).");
+        helpKey(box, "Ripple checks", "drags also shift every later node in time and/or value (toolbar).");
+
+        helpHead(box, "Handles");
+        helpKey(box, "Drag", "free (angle + length).");
+        helpKey(box, "S (hold)", "slide: length only, along the current line (dashed rail).");
+        helpKey(box, "Ctrl", "snap length to ease presets — cubic 0.33, sine 0.36, quintic 0.47, circle 0.55 — plus 0.05/0.1 steps up to 1.5.");
+        helpText(box, "Round knob = smooth (the partner handle mirrors proportionally); "
+            + "square = broken (B toggles). Handle lengths — the number in the drag "
+            + "readout and the node dialog — are FRACTIONS of the gap to the "
+            + "neighbor (0.33 = a third of the segment), so re-timing nodes keeps "
+            + "curve shapes. \"dv\" is the handle's value offset from its node. "
+            + "A handle beyond the "
+            + "visible scale draws as a dashed stub with a hollow edge marker — click "
+            + "the marker to expand the view; click elsewhere to restore.");
+
+        helpHead(box, "Cameras");
+        helpKey(box, "Orbit", "drag or MIDDLE-drag = rotate · scroll = zoom · Shift+click (or hold C and click) the track = orbit around that spot · Ctrl+click the track = insert a node there.");
+        helpKey(box, "T / Shift+T", "snap to a TOP or SIDE view with a near-orthographic lens (no perspective — for judging alignments). Top locks square to the grid; side centers on the selected node and aligns TANGENT to the track there (the track runs across the screen; nearest side kept — no selection = world-axis elevation). Shift+T AGAIN re-tangents to the current selection; T again in the top view returns to the previous perspective. Right-drag PANS without leaving the view; scroll zooms; orbiting away keeps the angle and brings perspective back.");
+        helpKey(box, "Track markers", "small spheres on the track mark the active lane's nodes (selection shows white; Options toggle). Read-only for now — dragging them comes later.");
+        helpKey(box, "Fly", "right-click the 3D view: WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits keeping the view.");
+        helpKey(box, "POV", "Space. Starts hands-off: the camera sits on the track (following edits) while W/S and the S key stay with the graph. Right-click CAPTURES: mouse hides, W/S ride at simulated speed (Shift/Ctrl faster/slower), no mouse look; right-click releases. Scroll jumps along the track either way.");
+        helpKey(box, "Space (captured)", "flips between fly (WASD) and POV (W/S) with the mouse still hidden.");
+        helpText(box, "The yellow line on the graph marks the POV camera (Options "
+            + "toggle). The neon heartline hides itself while riding POV.");
+
+        helpHead(box, "Menus & app.settings");
+        helpKey(box, "File > Export NL2 CSV", "(Ctrl+E) writes the track for NoLimits 2's CSV import. Choose heartline (default) or rail center (the spline NL2 builds its track around), plus the point spacing; both remembered per-user.");
+        helpKey(box, "Edit > Shortcuts", "click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
+        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps (arrows walk the 1-2-5 series) · neon heartline · 3D node markers · POV marker. Every row has a ↺ reset. Per-user.");
+        helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start point (y = height above the ground plane), start speed (also on the first node's double-click dialog), rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-app.coaster, saved in the .fvd.");
+        helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it. Path-shaping values (heart, gauge, start, speed) ALSO land in the document history, so after closing, plain Ctrl+Z steps them back too.");
+
+        ScrollPane scroll = new ScrollPane(box);
+        scroll.setFitToWidth(true);
+        scroll.setPrefSize(640, 660);
+
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);   // non-modal: usable as a reference while editing
+        dlg.setTitle("Help");
+        dlg.setScene(new Scene(scroll));
+        dlg.show();
+    }
+
+    static void helpHead(VBox box, String text) {
+        Label l = new Label(text);
+        l.setStyle("-fx-font-weight: bold; -fx-font-size: 13;");
+        VBox.setMargin(l, new Insets(10, 0, 2, 0));
+        box.getChildren().add(l);
+    }
+
+    static void helpText(VBox box, String text) {
+        Label l = new Label(text);
+        l.setWrapText(true);
+        l.setMaxWidth(566);
+        l.setPadding(new Insets(1, 0, 1, 10));
+        box.getChildren().add(l);
+    }
+
+    /** One aligned "key/gesture -> what it does" row. */
+    static void helpKey(VBox box, String term, String desc) {
+        Label t = new Label(term);
+        t.setStyle("-fx-font-weight: bold;");
+        t.setMinWidth(122);
+        t.setMaxWidth(122);
+        t.setWrapText(true);
+        Label d = new Label(desc);
+        d.setWrapText(true);
+        d.setMaxWidth(434);
+        HBox row = new HBox(10, t, d);
+        row.setPadding(new Insets(1, 0, 1, 10));
+        box.getChildren().add(row);
+    }
+
+    /** All shortcuts, rebindable: click a key button, press the new combo.
+     *  Edited rows get a ↺ button that restores the default. Persisted. */
+    void showShortcutsDialog() {
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Shortcuts");
+
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+
+        String[] capturing = { null };       // action id awaiting a key press
+        List<Runnable> rowRefreshers = new ArrayList<>();
+        Runnable refreshAll = () -> rowRefreshers.forEach(Runnable::run);
+
+        int row = 0;
+        for (String[] a : AppSettings.ACTIONS) {
+            String id = a[0];
+            Button combo = new Button();
+            combo.setPrefWidth(110);
+            Button reset = new Button("↺");   // circle-and-arrow: back to default
+            reset.setTooltip(new Tooltip("Reset to default (" + a[2] + ")"));
+
+            rowRefreshers.add(() -> {
+                combo.setText(app.settings.shortcut(id));
+                reset.setVisible(!app.settings.isDefaultShortcut(id));
+            });
+            combo.setOnAction(ev -> {
+                capturing[0] = id;
+                refreshAll.run();              // clear any stale "press a key…"
+                combo.setText("press a key…");
+            });
+            reset.setOnAction(ev -> {
+                app.settings.resetShortcut(id);
+                refreshAll.run();
+                app.rebuildTrack();                // stats-bar hint shows bindings
+            });
+            grid.addRow(row++, new Label(a[1]), combo, reset);
+        }
+        refreshAll.run();
+
+        Scene sc = new Scene(grid);
+        sc.addEventFilter(KeyEvent.KEY_PRESSED, ev -> {
+            if (capturing[0] == null) return;
+            ev.consume();
+            if (ev.getCode().isModifierKey()) return;   // wait for the real key
+            if (ev.getCode() != KeyCode.ESCAPE) {       // Escape cancels capture
+                app.settings.setShortcut(capturing[0], comboString(ev));
+            }
+            capturing[0] = null;
+            refreshAll.run();
+            app.rebuildTrack();
+        });
+        dlg.setScene(sc);
+        dlg.show();
+    }
+
+    /** Serialize a pressed key (with modifiers) into the combo format above. */
+    static String comboString(KeyEvent e) {
+        StringBuilder sb = new StringBuilder();
+        if (e.isControlDown()) sb.append("Ctrl+");
+        if (e.isAltDown())     sb.append("Alt+");
+        if (e.isShiftDown())   sb.append("Shift+");
+        if (e.isMetaDown())    sb.append("Meta+");
+        return sb.append(FvdDesigner.normalizeNumpad(e.getCode()).getName()).toString();
+    }
+
+    /** The ColorPicker gets its own dialog: embedded in the Coaster menu its
+     *  "Custom Color" popup was owned by the menu popup, which auto-hides on
+     *  click — the owner died and the app crashed. A real window owner fixes it. */
+    void showRailColorDialog() {
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Rail color");
+
+        ColorPicker picker = new ColorPicker(app.railColor);
+        picker.setOnAction(e -> {
+            Color nc = picker.getValue();
+            Color oc = app.railColor;
+            if (!nc.equals(oc)) {
+                app.pushMenuEdit(() -> picker.setValue(oc), () -> picker.setValue(nc));
+            }
+            app.railColor = nc;
+            if (!app.railSolid) {           // picking a color implies solid mode
+                app.railSolid = true;
+                app.solidModeItem.setSelected(true);
+            }
+            app.markDirty();
+            app.rebuildTrack();
+        });
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        grid.addRow(0, new Label("Solid rail color"), picker);
+
+        // customizable G-force gradient: each stop is a G value + a color
+        // (flat below the first and above the last, lerped between)
+        Label gradHead = new Label("G-force gradient stops (g value + color)");
+        gradHead.setStyle("-fx-font-weight: bold;");
+        grid.add(gradHead, 0, 1, 3, 1);
+        for (int i = 0; i < 4; i++) {
+            final int gi = i;
+            Spinner<Double> vs = new Spinner<>(
+                new SpinnerValueFactory.DoubleSpinnerValueFactory(FvdDesigner.G_MIN, FvdDesigner.G_MAX, app.gradStops[gi], 0.1));
+            vs.setPrefWidth(75);
+            vs.setEditable(true);
+            vs.valueProperty().addListener((obs, o, v) -> {
+                app.pushMenuEdit(() -> vs.getValueFactory().setValue(o),
+                             () -> vs.getValueFactory().setValue(v));
+                app.gradStops[gi] = v;
+                app.markDirty();
+                app.rebuildTrack();
+            });
+            ColorPicker gp = new ColorPicker(app.gradColors[gi]);
+            gp.setOnAction(ev -> {
+                Color nc = gp.getValue();
+                Color oc = app.gradColors[gi];
+                if (!nc.equals(oc)) {
+                    app.pushMenuEdit(() -> gp.setValue(oc), () -> gp.setValue(nc));
+                }
+                app.gradColors[gi] = nc;
+                app.markDirty();
+                app.rebuildTrack();
+            });
+            grid.addRow(2 + i, new Label("Stop " + (i + 1)), vs, gp);
+        }
+
+        Scene sc = new Scene(grid);
+        app.installMenuUndoKeys(sc);
+        dlg.setScene(sc);
+        app.beginMenuSession();
+        dlg.setOnHidden(e -> app.endMenuSession());
+        dlg.show();
+    }
+
+    /** Slider with live apply + persisted commit + menu-local undo (drags
+     *  record one entry per gesture; clicks/keys one per change). */
+    void wireOptionSlider(Slider s, Label valLbl, String fmt,
+                                  java.util.function.DoubleConsumer apply,
+                                  java.util.function.DoubleConsumer persist) {
+        double[] dragStart = { s.getValue() };
+        s.valueProperty().addListener((obs, o, v) -> {
+            apply.accept(v.doubleValue());
+            valLbl.setText(String.format(fmt, v.doubleValue()));
+            if (!s.isValueChanging()) {
+                persist.accept(v.doubleValue());
+                app.pushMenuEdit(() -> s.setValue(o.doubleValue()),
+                             () -> s.setValue(v.doubleValue()));
+            }
+        });
+        s.valueChangingProperty().addListener((obs, was, is) -> {
+            if (is) {
+                dragStart[0] = s.getValue();
+            } else {
+                double from = dragStart[0], to = s.getValue();
+                persist.accept(to);
+                if (from != to) app.pushMenuEdit(() -> s.setValue(from), () -> s.setValue(to));
+            }
+        });
+    }
+
+    /** Settings spinner with persisted apply + menu-local undo. */
+    void wireOptionSpinner(Spinner<Double> sp, java.util.function.DoubleConsumer persist) {
+        sp.valueProperty().addListener((obs, o, v) -> {
+            app.pushMenuEdit(() -> sp.getValueFactory().setValue(o),
+                         () -> sp.getValueFactory().setValue(v));
+            persist.accept(v);
+        });
+    }
+
+    static Slider optionSlider(double min, double max, double value, double tick) {
+        Slider s = new Slider(min, max, value);
+        s.setPrefWidth(240);
+        s.setShowTickMarks(true);
+        s.setShowTickLabels(true);
+        s.setMajorTickUnit(tick);
+        return s;
+    }
+
+    /** Little ↺ that restores one Options row to its default (the change
+     *  goes through the control, so it persists and is menu-undoable). */
+    Button optionReset(Runnable restore) {
+        Button b = new Button("↺");
+        b.setTooltip(new Tooltip("Reset to default"));
+        b.setOnAction(e -> restore.run());
+        return b;
+    }
+
+    /** Spinner whose arrow buttons walk the 1-2-5 series in both directions
+     *  (… 0.05, 0.1, 0.2, 0.5, 1, 2, 5 …); typing still allows any value. */
+    static Spinner<Double> snap125Spinner(double min, double max, double initial) {
+        SpinnerValueFactory<Double> f = new SpinnerValueFactory<>() {
+            @Override public void decrement(int steps) {
+                double v = getValue();
+                for (int i = 0; i < steps; i++) v = nice125Prev(v);
+                setValue(Math.max(min, v));
+            }
+            @Override public void increment(int steps) {
+                double v = getValue();
+                for (int i = 0; i < steps; i++) v = nice125Next(v);
+                setValue(Math.min(max, v));
+            }
+        };
+        f.setConverter(new javafx.util.converter.DoubleStringConverter());
+        f.setValue(initial);
+        Spinner<Double> sp = new Spinner<>(f);
+        sp.setPrefWidth(80);
+        sp.setEditable(true);
+        return sp;
+    }
+
+    static double nice125Next(double v) {
+        double pow = Math.pow(10, Math.floor(Math.log10(v * 1.0001)));
+        double m = v / pow;
+        return (m < 1.5 ? 2 : m < 3.5 ? 5 : 10) * pow;
+    }
+
+    static double nice125Prev(double v) {
+        double pow = Math.pow(10, Math.floor(Math.log10(v * 0.9999)));
+        double m = v / pow;
+        return (m > 7 ? 5 : m > 3 ? 2 : m > 1.5 ? 1 : 0.5) * pow;
+    }
+
+    /** Visual/interaction options (app-wide, persisted). */
+    void showOptionsDialog() {
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Options");
+
+        Slider fovTrack = optionSlider(30, 110, app.settings.fov(), 20);
+        Label fovTrackVal = new Label(String.format("%.0f°", app.settings.fov()));
+        wireOptionSlider(fovTrack, fovTrackVal, "%.0f°",
+            v -> app.viewport.povCam.setFieldOfView(v),
+            app.settings::setFov);
+
+        Slider fovFly = optionSlider(30, 110, app.settings.flyFov(), 20);
+        Label fovFlyVal = new Label(String.format("%.0f°", app.settings.flyFov()));
+        wireOptionSlider(fovFly, fovFlyVal, "%.0f°",
+            v -> {
+                app.viewport.flyCam.setFieldOfView(v);
+                // never stomp the 1° ortho lens; it re-reads the setting on exit
+                if (!app.viewport.orthoView) app.viewport.orbitCam.setFieldOfView(v);
+            },
+            app.settings::setFlyFov);
+
+        Slider sens = optionSlider(0.03, 0.40, app.settings.flySens(), 0.1);
+        Label sensVal = new Label(String.format("%.2f", app.settings.flySens()));
+        wireOptionSlider(sens, sensVal, "%.2f",
+            v -> { }, app.settings::setFlySens);   // fly + orbit read it live
+
+        CheckBox heartCheck = new CheckBox("Show heartline (neon)");
+        heartCheck.setSelected(app.settings.showHeartline());
+        heartCheck.setOnAction(ev -> {
+            boolean on = heartCheck.isSelected();
+            app.pushMenuEdit(
+                () -> { heartCheck.setSelected(!on); app.settings.setShowHeartline(!on); app.rebuildTrack(); },
+                () -> { heartCheck.setSelected(on); app.settings.setShowHeartline(on); app.rebuildTrack(); });
+            app.settings.setShowHeartline(on);
+            app.rebuildTrack();
+        });
+
+        CheckBox markCheck = new CheckBox("Node markers on the 3D track");
+        markCheck.setSelected(app.settings.trackMarkers());
+        markCheck.setOnAction(ev -> {
+            boolean on = markCheck.isSelected();
+            app.pushMenuEdit(
+                () -> { markCheck.setSelected(!on); app.settings.setTrackMarkers(!on); app.editor.refreshMarkers(); },
+                () -> { markCheck.setSelected(on); app.settings.setTrackMarkers(on); app.editor.refreshMarkers(); });
+            app.settings.setTrackMarkers(on);
+            app.editor.refreshMarkers();
+        });
+
+        Spinner<Double> snapTSp = snap125Spinner(0.01, 2.0, app.settings.snapT());
+        wireOptionSpinner(snapTSp, app.settings::setSnapT);
+        Spinner<Double> snapGSp = snap125Spinner(0.01, 2.0, app.settings.snapG());
+        wireOptionSpinner(snapGSp, app.settings::setSnapG);
+        Spinner<Double> snapRollSp = snap125Spinner(0.5, 50, app.settings.snapRoll());
+        wireOptionSpinner(snapRollSp, app.settings::setSnapRoll);
+
+        CheckBox povMark = new CheckBox("POV position marker on the graph");
+        povMark.setSelected(app.settings.povMarker());
+        povMark.setOnAction(ev -> {
+            boolean on = povMark.isSelected();
+            app.pushMenuEdit(() -> { povMark.setSelected(!on); app.settings.setPovMarker(!on); app.editor.refresh(); },
+                         () -> { povMark.setSelected(on); app.settings.setPovMarker(on); app.editor.refresh(); });
+            app.settings.setPovMarker(on);
+            app.editor.refresh();
+        });
+
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        int r = 0;
+        grid.addRow(r++, new Label("POV camera FOV"), fovTrack, fovTrackVal,
+            optionReset(() -> fovTrack.setValue(AppSettings.FOV_DEFAULT)));
+        grid.addRow(r++, new Label("Fly & orbit FOV"), fovFly, fovFlyVal,
+            optionReset(() -> fovFly.setValue(AppSettings.FOV_DEFAULT)));
+        grid.addRow(r++, new Label("Mouse sensitivity (°/px)"), sens, sensVal,
+            optionReset(() -> sens.setValue(AppSettings.SENS_DEFAULT)));
+        grid.add(new Label("Snap: transition time (s)"), 0, r);
+        grid.add(snapTSp, 1, r);
+        grid.add(optionReset(() -> snapTSp.getValueFactory().setValue(AppSettings.SNAP_T_DEFAULT)), 3, r++);
+        grid.add(new Label("Snap: G value (g)"), 0, r);
+        grid.add(snapGSp, 1, r);
+        grid.add(optionReset(() -> snapGSp.getValueFactory().setValue(AppSettings.SNAP_G_DEFAULT)), 3, r++);
+        grid.add(new Label("Snap: roll rate (°/s)"), 0, r);
+        grid.add(snapRollSp, 1, r);
+        grid.add(optionReset(() -> snapRollSp.getValueFactory().setValue(AppSettings.SNAP_ROLL_DEFAULT)), 3, r++);
+        grid.add(heartCheck, 0, r++, 3, 1);
+        grid.add(markCheck, 0, r++, 3, 1);
+        grid.add(povMark, 0, r, 3, 1);
+
+        Scene sc = new Scene(grid);
+        app.installMenuUndoKeys(sc);
+        dlg.setScene(sc);
+        app.beginMenuSession();
+        dlg.setOnHidden(e -> app.endMenuSession());
+        dlg.show();
+    }
+
+}

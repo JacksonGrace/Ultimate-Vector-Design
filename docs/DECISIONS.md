@@ -1035,3 +1035,37 @@ the track where you are working:
   has no same-key exit; leave it by orbiting away (keeps angles,
   restores the lens) or via T, T. T-in-top still restores the saved
   perspective pose.
+
+## D54. FvdDesigner split complete: Viewport3D.java + Dialogs.java (v9.4)
+Second and final slice of the §8 mechanical split, same scripted recipe
+as D52 (verbatim move, `app` backref, curated prefixing, no-prefix-
+after-dot, comments untouched). FvdDesigner is now a 1,118-line SHELL:
+document + file lifecycle, key dispatch, menu bar + toolbar, layout,
+menu-local undo machinery, save/load/new/export.
+- **Viewport3D.java (~900 lines)**: cameras (orbit/fly/POV + the
+  pseudo-ortho views), all mouse/scroll handlers and both animation
+  timers (moved inside its constructor, which builds the SubScene the
+  shell lays out), rail/tie/heartline meshes, gradient texture, ground
+  grid + LOD, track picking, node markers, and rebuildTrack — the
+  pipeline entry stays name-stable via shell delegates (rebuildTrack /
+  refreshTrackMarkers / togglePov), so no call sites moved in
+  GraphEditor or the menus. lastSamples/resultRates stay on the shell
+  (editor, exporter and viewport all share them).
+- **Dialogs.java (~460 lines)**: Help, Shortcuts, Rail colors, Options
+  + the option-row helpers (sliders/spinners/reset/1-2-5 walkers) and
+  comboString. Menu-local undo machinery STAYS on the shell — the
+  Coaster menu and the doc/menu spinner wirings use it too; dialogs
+  reach it through app.
+- **The audit caught real bugs the compiler alone would not have**:
+  (a) a stale target/classes made the first post-split compile pass
+  VACUOUSLY green — after `rm -rf target/classes` the honest error list
+  appeared (always rebuild from scratch when verifying moves);
+  (b) the brace-walker returned early on wireOptionSlider's THREE-line
+  signature, splitting the method across both files — compile caught
+  it; the lesson is baked into this log because the recipe will be
+  reused (multi-line signatures need the walker to wait for the first
+  '{'). Post-fix: zero bare curated names, zero shadowing declarations,
+  multi-line-signature methods verified whole, from-scratch compile +
+  all headless suites green (bit-for-bit gate included).
+- File sizes after the full split: FvdDesigner 1,118 · GraphEditor
+  1,782 · Viewport3D ~900 · Dialogs ~460 · pure core untouched.
