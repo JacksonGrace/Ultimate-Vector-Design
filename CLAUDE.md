@@ -242,7 +242,19 @@ defaults Gv −1..4 g, Gl −1..1 g, roll ±150 °/s, expanding 1-2-5-rounded
 when the visible curve exceeds them, frozen during drags; inactive lanes
 25% alpha — clicking a dimmed lane's node or curve switches editing to it,
 with the active lane keeping hit-test priority). Lanes ending early draw
-their hold-final-value continuation DOTTED — clickable to append a node.
+their hold-final-value continuation DOTTED (to the SECTION end) —
+clickable to append a node. SECTIONS (v9.5, D55): the piece's sections
+are strips on one shared time axis — the active one edits normally in
+its own stretch (all node math is section-LOCAL via ltToX/xToLt; one
+section ⇒ tOff 0 ⇒ identical to the old editor), inactive ones draw all
+three lanes at alpha 0.13 with boundary lines between, and clicking a
+greyed strip activates it. A dashed line + circled '+' past the ride
+end opens the add-section menu (force 1 s hold today, vDesign frozen at
+the piece-end design speed per §0; Phase 2 items are disabled
+placeholders). Document undo snapshots ALL sections + the active index;
+the Start-speed spinner and node-0 dialog write SECTION 0's vDesign
+only; markers and 3D Ctrl+click-insert route through the section
+containing the clicked ride time.
 Shift+click = multi-select (group drag clamps against non-selected
 neighbors, ignores ripple; Delete removes all; F with an adjacent PAIR
 selected straightens the segment between them onto the chord; Shift+F
@@ -486,9 +498,12 @@ Existing headless invariants must pass unchanged.
   start/v0 per user rule) + ~~file lifecycle~~ (New/Save/Save As/dirty
   title — a user feature request folded in); ~~FvdDesigner split~~
   COMPLETE v9.4 (D52 GraphEditor, D54 Viewport3D + Dialogs; shell
-  4.2k → 1.1k lines). Remaining: section-aware graph strips +
-  section-insertion UI (the last Phase-1 items — functional, need a
-  UX round with the user before building).
+  4.2k → 1.1k lines); ~~section-aware graph + '+' add-section~~ DONE
+  v9.5 (D55).
+
+PHASE 1 IS COMPLETE (v9.5). Phase 2 next: geo sections first. The '+'
+menu and a future piece selector are where "attach floating piece" and
+multi-piece editing land (user roadmap in SECTIONS-DESIGN §8).
 
 **Phase 2 — section types (easiest first):** geo sections (direct
 pitch/yaw/roll rates — NO solver needed) + reversal → straight/curve mode →

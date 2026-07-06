@@ -113,7 +113,13 @@
     changed A. (f) Changing global v0 leaves ALL geometry bitwise
     unchanged — shape depends on vDesign only. (g) Quat exactness:
     IDENTITY.rotate returns its argument bitwise; aboutY(0) == IDENTITY;
-    fromFrame→T()/U() round-trips < 1e-12. All passed 2026-07-05.
+    fromFrame→T()/U() round-trips < 1e-12. (h) Sections (v9.5, D55):
+    Coaster.continuation holds the previous section's final values
+    (2 nodes, 1 s, given vDesign); a two-section piece compiles with
+    strictly increasing t, no position jump and continuous frames at
+    the boundary; editing section B leaves section A BITWISE unchanged;
+    the canonical FVDD3 round-trip runs on a two-section document.
+    All passed 2026-07-05/06.
 
 ## The historical headless harness (context, not a prescription)
 
@@ -445,6 +451,22 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     a new name. Load with unsaved changes shows the same gate. Undo of
     heart/gauge/start/speed changes also works after New (fresh
     history). Ctrl+N is rebindable ("New design").
+40. Sections (v9.5): a dashed vertical line with a circled + sits just
+    past the ride end. Click the + → menu; "Add force section (1 s
+    hold)" appends a strip holding the current end values — the new
+    section is ACTIVE (its curves normal), the original layout is now a
+    faint strip left of the boundary line, and the ride/stats grow by
+    1 s. Click the faint strip → editing returns to it (selection
+    clears); click back. Node edits inside section 2 behave exactly as
+    ever (drags, snapping, inserts, dialogs — all in its own stretch of
+    the axis; a knob dragged across the boundary still belongs to its
+    node). Ctrl+Z after adding removes the section (redo restores).
+    Ctrl+click the 3D track INSIDE section 2's stretch: section 2
+    activates and gets the node. Node markers follow the ACTIVE
+    section. The node-0 dialog offers "Start speed" only in section 1.
+    Save → load: both sections and the active-strip behavior survive
+    (FVDD3). POV rides across the boundary seamlessly. With ONE section
+    everything must look exactly as before (feature-neutral baseline).
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes

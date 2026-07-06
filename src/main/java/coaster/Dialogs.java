@@ -173,6 +173,15 @@ class Dialogs {
             + "Dragging past a plot edge grows that axis, faster the farther past. The "
             + "divider resizes the graph; the corner button on the 3D view collapses it.");
 
+        helpHead(box, "Sections");
+        helpText(box, "The ride is a chain of SECTIONS sharing one time axis "
+            + "(the groundwork for Phase 2's geo/bridge/curve modes). The "
+            + "section you are editing draws normally; the others are faint "
+            + "strips — click one to edit it. Boundaries show as vertical "
+            + "lines. Each section integrates from the previous one's end, at "
+            + "its own design speed frozen when it was created.");
+        helpKey(box, "⊕ at the ride end", "click the circled + on the dashed line past the last section to append a 1 s force section holding the final values (its own undo step). Adding other section types and attaching floating pieces arrive with Phase 2.");
+
         helpHead(box, "Nodes");
         helpKey(box, "Click curve", "insert a node exactly ON it — the shape does not change.");
         helpKey(box, "Drag", "move freely; the readout shows Δt from the previous node + value.");

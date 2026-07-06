@@ -1069,3 +1069,47 @@ menu-local undo machinery, save/load/new/export.
   all headless suites green (bit-for-bit gate included).
 - File sizes after the full split: FvdDesigner 1,118 · GraphEditor
   1,782 · Viewport3D ~900 · Dialogs ~460 · pure core untouched.
+
+## D55. Section-aware graph + '+' add-section — PHASE 1 COMPLETE (v9.5)
+The last two Phase-1 items, to the user's UX spec: sections render as
+strips on ONE shared time axis, inactive ones greyed (alpha 0.13, all
+three lanes) with boundary lines between; clicking a greyed strip
+activates it; a dashed vertical line with a circled '+' past the ride
+end opens the add-section menu (today: "force section, 1 s hold" —
+disabled placeholders advertise Phase 2's geo/bridge/curve and
+ATTACH-FLOATING-PIECE entries; the user also wants a PIECE SELECTOR
+eventually, one piece in the editor at a time — recorded in
+SECTIONS-DESIGN §8).
+- **All editor math went SECTION-LOCAL** behind two helpers: ltToX/xToLt
+  add/remove the active section's global start (tOff). With one section
+  tOff = 0 and every code path is IDENTITY with the pre-section editor —
+  that is the compatibility argument, plus the bit-for-bit gate which
+  still passes untouched. Global stays global: grid ticks, zoom/pan,
+  POV marker, resulting rates, strips, boundaries, '+'.
+- **The old maxT() split in two**: maxT() = whole-piece duration
+  (domain, auto-fit); sectionEnd() = the ACTIVE section's own ride end
+  (dotted holds, insert guard, hover walk) — exactly the old semantics,
+  now per section.
+- **app.lanes became a mutable pointer** at the active section's lane
+  lists; section switches re-point it, so GraphEditor's hundreds of
+  lane references needed no change. Loads/new re-point wholesale
+  (editor.resetSections()); DesignIO.rebindLanes is gone.
+- **Document undo covers sections**: DocState snapshots EVERY section
+  (lanes + vDesign) plus which one was active — adding a section, then
+  Ctrl+Z, removes it; redo re-adds. The node-0 start-speed dialog field
+  only appears in section 0 (the ride entry); the Start-speed spinner
+  writes v0 + section 0's vDesign, and LATER sections keep their
+  creation-time vDesign (§0: changing entry speed must never reshape
+  downstream geometry — their design-vs-true gap is what Phase 2's
+  influence/become-real tools are for).
+- **New section defaults**: 1 s, holds the previous section's final
+  lane values (Coaster.continuation, pure + gated), vDesign = design
+  speed at the piece's current end (from the compiled samples).
+- **On-track markers and 3D Ctrl+click-insert are section-aware**:
+  markers offset by the active section's start; a track click routes to
+  the section containing that ride time, activates it, inserts locally.
+- **Gates extended** (Phase1Gate #9): continuation holds end values;
+  chained compile is monotonic in t with no boundary jump and
+  continuous frames; editing section B leaves section A BITWISE
+  unchanged; the canonical FVDD3 round-trip now uses a two-section
+  document. Everything else still green, bit-for-bit included.

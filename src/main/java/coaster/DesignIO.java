@@ -246,22 +246,4 @@ public final class DesignIO {
         return Math.max(lo, Math.min(hi, v));
     }
 
-    /** Sections that arrived from a legacy file (or FVDD3) get their
-     *  lane node lists swapped for the given long-lived lists so the
-     *  editor keeps editing the same objects across loads. */
-    public static void rebindLanes(Coaster c, List<List<BezierBaker.Node>> shared) {
-        ForceSection s0 = c.soleSection();
-        for (int i = 0; i < 3; i++) {
-            shared.get(i).clear();
-            shared.get(i).addAll(s0.lanes.get(i));
-        }
-        c.pieces.get(0).sections.set(0, copyMeta(s0, shared));
-    }
-
-    private static ForceSection copyMeta(ForceSection from, List<List<BezierBaker.Node>> lanes) {
-        ForceSection s = new ForceSection(lanes, from.vDesign);
-        s.reversed = from.reversed;
-        s.name = from.name;
-        return s;
-    }
 }

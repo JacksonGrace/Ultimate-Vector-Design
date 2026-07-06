@@ -159,7 +159,9 @@ import java.util.Set;
 public class FvdDesigner extends Application {
 
     // ---------- track model: three independent node lanes ----------
-    final List<List<BezierBaker.Node>> lanes = new ArrayList<>();
+    // points at the ACTIVE section's lane lists (D55) - the graph editor
+    // re-targets it on section switches; loads/new re-point it wholesale
+    List<List<BezierBaker.Node>> lanes = new ArrayList<>();
     {
         List<BezierBaker.Node> gv = nodes(new double[][]{
             {0,1},{0.5,1},{0.7,2.5},{0.96,2.5},{1.16,0},{3.25,0},{3.45,2.6},
@@ -196,37 +198,47 @@ public class FvdDesigner extends Application {
     // heart, gauge, start placement and v0 (user rule: "everything that
     // changes the track path, not just aesthetics"). Tie spacing and colors
     // stay menu-local-undo only.
-    record DocState(List<List<BezierBaker.Node>> lanes, double heart, double gauge,
+    record SecState(List<List<BezierBaker.Node>> lanes, double vDesign) {}
+
+    record DocState(List<SecState> sections, int active, double heart, double gauge,
                     double px, double py, double pz, double v0) {}
 
     private boolean docApplying = false;   // suppress spinner listeners while
                                            // an undo/redo writes them back
 
     DocState snapshotDoc() {
-        List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
-        for (List<BezierBaker.Node> lane : lanes) {
-            List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
-            for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
-            copy.add(laneCopy);
+        List<SecState> secs = new ArrayList<>();
+        for (Section s : coaster.pieces.get(0).sections) {
+            ForceSection fs = (ForceSection) s;
+            List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
+            for (List<BezierBaker.Node> lane : fs.lanes) {
+                List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
+                for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
+                copy.add(laneCopy);
+            }
+            secs.add(new SecState(copy, fs.vDesign));
         }
         TrackPiece p = coaster.pieces.get(0);
-        return new DocState(copy, heartOffset, railGauge, p.x, p.y, p.z, coaster.v0);
+        return new DocState(secs, editor != null ? editor.activeSection() : 0,
+            heartOffset, railGauge, p.x, p.y, p.z, coaster.v0);
     }
 
     /** Restore a document snapshot: lanes, path settings, and the spinner
      *  displays (their listeners are suppressed — fields are set here). */
     void applyDocState(DocState s) {
         docApplying = true;
-        for (int i = 0; i < 3; i++) {
-            lanes.get(i).clear();
-            lanes.get(i).addAll(s.lanes().get(i));
+        TrackPiece piece0 = coaster.pieces.get(0);
+        piece0.sections.clear();
+        // snapshot lists are deep copies popped off the stack - adopt them
+        for (SecState st : s.sections()) {
+            piece0.sections.add(new ForceSection(st.lanes(), st.vDesign()));
         }
+        if (editor != null) editor.restoreActive(s.active());
         heartOffset = s.heart();
         railGauge = s.gauge();
         TrackPiece p = coaster.pieces.get(0);
         p.x = s.px(); p.y = s.py(); p.z = s.pz();
         coaster.v0 = s.v0();
-        coaster.soleSection().vDesign = s.v0();
         heartSpinner.getValueFactory().setValue(s.heart());
         gaugeSpinner.getValueFactory().setValue(s.gauge());
         startXSpinner.getValueFactory().setValue(s.px());
@@ -264,8 +276,8 @@ public class FvdDesigner extends Application {
      *  entry, the marker sync and the POV toggle live in Viewport3D. */
     void rebuildTrack() { viewport.rebuildTrack(); }
 
-    void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx) {
-        viewport.refreshTrackMarkers(lane, sel, selIdx);
+    void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx, double tOff) {
+        viewport.refreshTrackMarkers(lane, sel, selIdx, tOff);
     }
 
     void togglePov() { viewport.togglePov(); }
@@ -905,15 +917,17 @@ public class FvdDesigner extends Application {
     private void newDesign() {
         if (!confirmSaveDiscard()) return;
         docApplying = true;   // spinners get set programmatically below
+        List<List<BezierBaker.Node>> nl = new ArrayList<>(3);
         for (int i = 0; i < 3; i++) {
-            lanes.get(i).clear();
-            lanes.get(i).add(new BezierBaker.Node(0, i == 0 ? 1 : 0));
-            lanes.get(i).add(new BezierBaker.Node(1, i == 0 ? 1 : 0));
-            BezierBaker.applyDefaultHandles(lanes.get(i));
+            List<BezierBaker.Node> lane = new ArrayList<>(2);
+            lane.add(new BezierBaker.Node(0, i == 0 ? 1 : 0));
+            lane.add(new BezierBaker.Node(1, i == 0 ? 1 : 0));
+            BezierBaker.applyDefaultHandles(lane);
+            nl.add(lane);
         }
         coaster.pieces.clear();
         TrackPiece piece = new TrackPiece(0, 21, 0, 0);
-        piece.sections.add(new ForceSection(lanes, 26));
+        piece.sections.add(new ForceSection(nl, 26));
         coaster.pieces.add(piece);
         coaster.v0 = 26;
         coaster.speedRegions.clear();
@@ -941,8 +955,8 @@ public class FvdDesigner extends Application {
         docApplying = false;
 
         editor.clearHistory();
+        editor.resetSections();
         editor.clearSelection();
-        editor.resetView();
         currentFile = null;
         dirty = false;
         updateTitle();
@@ -982,10 +996,7 @@ public class FvdDesigner extends Application {
             coaster.v0 = r.coaster().v0;
             coaster.speedRegions.clear();
             coaster.speedRegions.addAll(r.coaster().speedRegions);
-            // the editor keeps editing the SAME lane list objects across
-            // loads: copy the loaded section-0 nodes into them and point
-            // the section at them
-            DesignIO.rebindLanes(coaster, lanes);
+            editor.resetSections();   // active section 0, lanes re-pointed
 
             DesignIO.Cosmetics cos = r.cosmetics();
             heartOffset = cos.heart();

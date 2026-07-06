@@ -344,10 +344,11 @@ class Viewport3D {
      *  time, sitting on the spine like the ties; selected nodes are
      *  white. Signature-guarded: the graph calls this on every redraw,
      *  but the scene graph only churns when something relevant changed. */
-    void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx) {
+    void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx, double tOff) {
         List<BezierBaker.Node> laneNodes = app.lanes.get(lane);
         StringBuilder sb = new StringBuilder();
         sb.append(lane).append('|').append(selIdx).append('|').append(sel)
+          .append('|').append(tOff)
           .append('|').append(System.identityHashCode(app.lastSamples))
           .append('|').append(app.settings.trackMarkers());
         for (BezierBaker.Node n : laneNodes) sb.append(';').append(n.t);
@@ -357,7 +358,7 @@ class Viewport3D {
         markerGroup.getChildren().clear();
         if (!app.settings.trackMarkers() || app.lastSamples == null || app.lastSamples.isEmpty()) return;
         for (int i = 0; i < laneNodes.size(); i++) {
-            int idx = (int) FvdDesigner.clamp(Math.round(laneNodes.get(i).t / FvdDesigner.INTEGRATE_DT),
+            int idx = (int) FvdDesigner.clamp(Math.round((tOff + laneNodes.get(i).t) / FvdDesigner.INTEGRATE_DT),
                                   0, app.lastSamples.size() - 1);
             FVDIntegrator.Sample sm = app.lastSamples.get(idx);
             Vec3 p = sm.pos().sub(sm.U().scale(app.heartOffset));   // spine, like ties

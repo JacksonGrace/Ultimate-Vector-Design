@@ -98,6 +98,210 @@ class GraphEditor extends Region {
     /** The shell: document, settings, viewport and pipeline access. */
     private final FvdDesigner app;
 
+    // ---------- sections (Phase 1 final, D55) ----------
+    // the piece's sections render as strips along one shared time axis;
+    // the ACTIVE one is editable, greyed ones activate on click, and a
+    // '+' affordance past the ride end appends a new section. All node
+    // math stays SECTION-LOCAL: ltToX/xToLt add/remove the section's
+    // global start, so with one section (tOff = 0) everything below is
+    // bit-identical to the pre-section editor.
+    private int activeSection = 0;
+    private double tOff = 0;                         // active section's global start
+    private double addBtnX = -999, addBtnY = -999;   // '+' hit centre (px)
+
+    private List<ForceSection> sections() {
+        List<ForceSection> out = new ArrayList<>();
+        for (Section s : app.coaster.pieces.get(0).sections) out.add((ForceSection) s);
+        return out;
+    }
+
+    int activeSection() { return activeSection; }
+
+    double activeSectionStart() { refreshOffset(); return tOff; }
+
+    private double sectionDur(int k) {
+        return BezierBaker.rideEnd(sections().get(k).lanes);
+    }
+
+    /** Duration of the whole piece = the global ride end. */
+    private double pieceDur() {
+        double d = 0;
+        for (int k = 0; k < sections().size(); k++) d += sectionDur(k);
+        return d;
+    }
+
+    private void refreshOffset() {
+        double o = 0;
+        List<ForceSection> secs = sections();
+        for (int k = 0; k < activeSection && k < secs.size(); k++) {
+            o += BezierBaker.rideEnd(secs.get(k).lanes);
+        }
+        tOff = o;
+    }
+
+    /** End of the ACTIVE section in its local time — its own ride end
+     *  (the old single-section maxT() semantics, now per section). */
+    private double sectionEnd() { return BezierBaker.rideEnd(app.lanes); }
+
+    private double ltToX(double localT) { return tToX(tOff + localT); }
+
+    private double xToLt(double x) { return xToT(x) - tOff; }
+
+    /** Which section contains this global time; -1 past the ride end. */
+    private int sectionAt(double globalT) {
+        if (globalT < -1e-9) return -1;
+        double o = 0;
+        List<ForceSection> secs = sections();
+        for (int k = 0; k < secs.size(); k++) {
+            double d = BezierBaker.rideEnd(secs.get(k).lanes);
+            if (globalT <= o + d + 1e-9) return k;
+            o += d;
+        }
+        return -1;
+    }
+
+    void setActiveSection(int k) {
+        List<ForceSection> secs = sections();
+        k = (int) FvdDesigner.clamp(k, 0, secs.size() - 1);
+        if (k == activeSection && app.lanes == secs.get(k).lanes) return;
+        activeSection = k;
+        app.lanes = secs.get(k).lanes;
+        selIdx = -1;
+        selSet.clear();
+        axisLock = 0;
+        handleViewExpand = false;
+        refreshOffset();
+        redraw();
+    }
+
+    /** After load/new: the section list was replaced wholesale. */
+    void resetSections() {
+        activeSection = 0;
+        app.lanes = sections().get(0).lanes;
+        selIdx = -1;
+        selSet.clear();
+        axisLock = 0;
+        handleViewExpand = false;
+        viewT0 = 0;
+        viewT1 = -1;
+        refreshOffset();
+    }
+
+    /** Undo/redo restore: re-point at the snapshot's section; the
+     *  caller (applySnapshot) fixes selection against the new lanes. */
+    void restoreActive(int k) {
+        List<ForceSection> secs = sections();
+        activeSection = (int) FvdDesigner.clamp(k, 0, secs.size() - 1);
+        app.lanes = secs.get(activeSection).lanes;
+        refreshOffset();
+    }
+
+    /** The '+' menu: force sections today; geo/bridge/curve modes and
+     *  attaching floating pieces join in Phase 2 (user roadmap). */
+    private void showAddSectionMenu(double screenX, double screenY) {
+        ContextMenu cm = new ContextMenu();
+        MenuItem force = new MenuItem("Add force section (1 s hold)");
+        force.setOnAction(ev -> addForceSection());
+        MenuItem phase2 = new MenuItem("Geo / bridge / curve — Phase 2");
+        phase2.setDisable(true);
+        MenuItem pieces = new MenuItem("Attach floating piece — Phase 2");
+        pieces.setDisable(true);
+        cm.getItems().addAll(force, phase2, pieces);
+        cm.show(canvas, screenX, screenY);
+    }
+
+    /** Append a 1 s hold-the-final-values force section. Its vDesign
+     *  freezes at the design speed of the piece's current end (§0:
+     *  later v0 edits must never reshape it). One undo step. */
+    private void addForceSection() {
+        pushUndoSnapshot();
+        List<ForceSection> secs = sections();
+        ForceSection prev = secs.get(secs.size() - 1);
+        double vEnd = app.lastSamples != null && !app.lastSamples.isEmpty()
+            ? app.lastSamples.get(app.lastSamples.size() - 1).v()
+            : prev.vDesign;
+        app.coaster.pieces.get(0).sections.add(Coaster.continuation(prev, vEnd));
+        activeSection = sections().size() - 1;
+        app.lanes = sections().get(activeSection).lanes;
+        selIdx = -1;
+        selSet.clear();
+        axisLock = 0;
+        handleViewExpand = false;
+        refreshOffset();
+        redraw();
+        app.rebuildTrack();
+    }
+
+    /** Greyed strips for inactive sections + boundary lines. */
+    private void drawInactiveSections(GraphicsContext gc) {
+        List<ForceSection> secs = sections();
+        double off = 0;
+        for (int k = 0; k < secs.size(); k++) {
+            double dur = BezierBaker.rideEnd(secs.get(k).lanes);
+            if (k != activeSection) {
+                gc.setGlobalAlpha(0.13);
+                gc.setLineWidth(1.5);
+                for (int L = 0; L < LANES; L++) {
+                    gc.setStroke(FvdDesigner.LANE_COLORS[L]);
+                    List<double[]> poly = BezierBaker.polyline(secs.get(k).lanes.get(L));
+                    gc.beginPath();
+                    boolean started = false;
+                    for (double[] p : poly) {
+                        double x = tToX(off + p[0]);
+                        double y = valToY(L, p[1]);
+                        if (!started) { gc.moveTo(x, y); started = true; }
+                        else gc.lineTo(x, y);
+                    }
+                    gc.stroke();
+                    double[] lastP = poly.get(poly.size() - 1);
+                    if (lastP[0] < dur - 1e-9) {   // hold to the section end
+                        gc.setLineDashes(3, 7);
+                        gc.strokeLine(tToX(off + lastP[0]), valToY(L, lastP[1]),
+                                      tToX(off + dur), valToY(L, lastP[1]));
+                        gc.setLineDashes((double[]) null);
+                    }
+                }
+                gc.setGlobalAlpha(1.0);
+            }
+            off += dur;
+            if (k < secs.size() - 1) {   // boundary between sections
+                double bx = tToX(off);
+                gc.setGlobalAlpha(0.55);
+                gc.setStroke(Color.rgb(150, 156, 175));
+                gc.setLineWidth(1);
+                gc.strokeLine(bx, MARGIN_TOP, bx, MARGIN_TOP + plotHeight());
+                gc.setGlobalAlpha(1.0);
+            }
+        }
+    }
+
+    /** The vertical line + circled '+' at the ride end (user spec):
+     *  click opens the add-section menu. */
+    private void drawAddButton(GraphicsContext gc, double w) {
+        double x = tToX(pieceDur());
+        if (x < MARGIN_LEFT - 1 || x > w - MARGIN_RIGHT + 1) {
+            addBtnX = -999;
+            return;
+        }
+        gc.setGlobalAlpha(0.55);
+        gc.setStroke(Color.rgb(150, 156, 175));
+        gc.setLineWidth(1);
+        gc.setLineDashes(4, 6);
+        gc.strokeLine(x, MARGIN_TOP, x, MARGIN_TOP + plotHeight());
+        gc.setLineDashes((double[]) null);
+        double cy = MARGIN_TOP + 16;
+        gc.setGlobalAlpha(0.9);
+        gc.setFill(Color.rgb(45, 50, 62));
+        gc.fillOval(x - 9, cy - 9, 18, 18);
+        gc.strokeOval(x - 9, cy - 9, 18, 18);
+        gc.setLineWidth(1.6);
+        gc.strokeLine(x - 4.5, cy, x + 4.5, cy);
+        gc.strokeLine(x, cy - 4.5, x, cy + 4.5);
+        gc.setGlobalAlpha(1.0);
+        addBtnX = x;
+        addBtnY = cy;
+    }
+
     private static final int LANES = 3;
     private static final String[] LANE_NAMES = { "Vertical G", "Lateral G", "Roll rate (deg/s)" };
     private static final String[] LANE_UNITS = { " g", " g", " °/s" };
@@ -242,6 +446,11 @@ class GraphEditor extends Region {
         canvas.setOnMousePressed(e -> {
             hoverT = Double.NaN;   // no insert preview while interacting
             if (e.getButton() == MouseButton.PRIMARY) {
+                // the '+' add-section affordance past the ride end
+                if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
+                    showAddSectionMenu(e.getScreenX(), e.getScreenY());
+                    return;
+                }
                 int hit = hitNode(e.getX(), e.getY());
                 // the node body ALWAYS outranks its own knobs, so a node
                 // overlapping its handles stays grabbable
@@ -308,6 +517,16 @@ class GraphEditor extends Region {
                         if (other[1] >= 0) selIdx = other[1];
                         redraw();
                     } else {
+                        // a primary press inside a GREYED section's strip
+                        // activates that section (like a dimmed lane)
+                        double gt = xToT(e.getX());
+                        if (gt < tOff - 1e-9 || gt > tOff + sectionEnd() + 1e-9) {
+                            int k = sectionAt(gt);
+                            if (k >= 0 && k != activeSection) {
+                                setActiveSection(k);
+                                return;
+                            }
+                        }
                         // empty plot: begin a box select (deselection
                         // happens on release if the box stays tiny)
                         boxX0 = e.getX(); boxY0 = e.getY();
@@ -410,7 +629,7 @@ class GraphEditor extends Region {
                     List<BezierBaker.Node> lane = active();
                     int first = -1;   // primary = EARLIEST node in the box
                     for (int i = 0; i < lane.size(); i++) {
-                        double px = tToX(lane.get(i).t);
+                        double px = ltToX(lane.get(i).t);
                         double py = valToY(activeLane, lane.get(i).val);
                         if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
                             selSet.add(i);
@@ -458,7 +677,10 @@ class GraphEditor extends Region {
     boolean isDragging() { return dragNodeIdx >= 0 || dragHandleIdx >= 0; }
 
     /** Sync the 3D node markers with this editor's lane/selection. */
-    void refreshMarkers() { app.refreshTrackMarkers(activeLane, selSet, selIdx); }
+    void refreshMarkers() {
+        refreshOffset();
+        app.refreshTrackMarkers(activeLane, selSet, selIdx, tOff);
+    }
 
     /** Spine-level track position of the primary selected node, or
      *  null when nothing is selected (side-view centering). */
@@ -477,15 +699,22 @@ class GraphEditor extends Region {
     private FVDIntegrator.Sample selectedSample() {
         if (selIdx < 0 || selIdx >= active().size()) return null;
         if (app.lastSamples == null || app.lastSamples.isEmpty()) return null;
-        int idx = (int) FvdDesigner.clamp(Math.round(active().get(selIdx).t / FvdDesigner.INTEGRATE_DT),
-                              0, app.lastSamples.size() - 1);
+        refreshOffset();
+        int idx = (int) FvdDesigner.clamp(
+            Math.round((tOff + active().get(selIdx).t) / FvdDesigner.INTEGRATE_DT),
+            0, app.lastSamples.size() - 1);
         return app.lastSamples.get(idx);
     }
 
-    /** Ctrl+click on the 3D track: insert at that ride time — same
-     *  rules as clicking the graph curve (exact split, gap guards,
-     *  selects the new node). */
-    void insertAtTime(double t) { insertNodeOnCurve(t); }
+    /** Ctrl+click on the 3D track: insert at that RIDE time — the
+     *  containing section activates, then the insert runs locally
+     *  (same rules as clicking the graph curve). */
+    void insertAtTime(double globalT) {
+        int k = sectionAt(globalT);
+        if (k < 0) return;
+        setActiveSection(k);
+        insertNodeOnCurve(globalT - tOff);
+    }
 
     /** Shift pressed/released while hovering: toggle the slope readout
      *  without waiting for the next mouse move. */
@@ -652,7 +881,7 @@ class GraphEditor extends Region {
 
     // ---------- coordinate mapping ----------
 
-    private double maxT() { return Math.max(0.5, BezierBaker.rideEnd(app.lanes)); }
+    private double maxT() { return Math.max(0.5, pieceDur()); }
     private double domain() { return maxT() * 1.08; }
     private double plotHeight() { return canvas.getHeight() - MARGIN_TOP - MARGIN_BOTTOM; }
     private double plotWidth() { return canvas.getWidth() - MARGIN_LEFT - MARGIN_RIGHT; }
@@ -688,7 +917,7 @@ class GraphEditor extends Region {
     private int hitNode(double x, double y) {
         List<BezierBaker.Node> lane = active();
         for (int i = 0; i < lane.size(); i++) {
-            double px = tToX(lane.get(i).t);
+            double px = ltToX(lane.get(i).t);
             double py = valToY(activeLane, lane.get(i).val);
             if (Math.hypot(x - px, y - py) <= NODE_HIT) return i;
         }
@@ -720,7 +949,7 @@ class GraphEditor extends Region {
             if (L == activeLane) continue;
             List<BezierBaker.Node> lane = app.lanes.get(L);
             for (int i = 0; i < lane.size(); i++) {
-                double d = Math.hypot(x - tToX(lane.get(i).t),
+                double d = Math.hypot(x - ltToX(lane.get(i).t),
                                       y - valToY(L, lane.get(i).val));
                 if (d < best) { best = d; bestLane = L; bestNode = i; }
             }
@@ -729,7 +958,7 @@ class GraphEditor extends Region {
 
         // curve body: vertical distance to the lane's value at this time
         // (evalAt holds the end values outside the node range)
-        double t = xToT(x);
+        double t = xToLt(x);
         double bestCurve = 7;
         for (int L = 0; L < LANES; L++) {
             if (L == activeLane) continue;
@@ -745,11 +974,11 @@ class GraphEditor extends Region {
         if (out) {
             if (idx >= lane.size() - 1) return null;
             double dt = BezierBaker.effOutDt(n, lane.get(idx + 1));
-            return new double[]{ tToX(n.t + dt), valToY(activeLane, n.val + n.outDv) };
+            return new double[]{ ltToX(n.t + dt), valToY(activeLane, n.val + n.outDv) };
         } else {
             if (idx <= 0) return null;
             double dt = BezierBaker.effInDt(lane.get(idx - 1), n);
-            return new double[]{ tToX(n.t + dt), valToY(activeLane, n.val + n.inDv) };
+            return new double[]{ ltToX(n.t + dt), valToY(activeLane, n.val + n.inDv) };
         }
     }
 
@@ -761,7 +990,7 @@ class GraphEditor extends Region {
 
         // beyond a plot edge the node rides the edge while dragGrowTimer
         // smoothly extends the axis at a rate set by the overshoot
-        double newT = xToT(x);
+        double newT = xToLt(x);
         double newVal = yToVal(activeLane, y);
 
         if (snap) {   // Ctrl enables snapping; free otherwise
@@ -903,21 +1132,21 @@ class GraphEditor extends Region {
             double curDt = (dragHandleIsOut ? 1 : -1) * oldFrac * segLen;
             double slope = oldDv / curDt;   // value units per second
 
-            double nx = tToX(n.t), ny = valToY(activeLane, n.val);
-            double kx = tToX(n.t + curDt), ky = valToY(activeLane, n.val + oldDv);
+            double nx = ltToX(n.t), ny = valToY(activeLane, n.val);
+            double kx = ltToX(n.t + curDt), ky = valToY(activeLane, n.val + oldDv);
             double dirX = kx - nx, dirY = ky - ny;
             double dirLen = Math.hypot(dirX, dirY);
             if (dirLen < 1e-6) return;
             dirX /= dirLen; dirY /= dirLen;
 
             double proj = Math.max(4, (x - nx) * dirX + (y - ny) * dirY);
-            double newDt = xToT(nx + dirX * proj) - n.t;
+            double newDt = xToLt(nx + dirX * proj) - n.t;
             newFrac = FvdDesigner.clamp(Math.abs(newDt) / segLen, MIN_FRAC, BezierBaker.MAX_FRAC);
             if (snap) newFrac = snapFrac(newFrac);
             newDv = slope * ((dragHandleIsOut ? 1 : -1) * newFrac * segLen);
         } else {
             // free: fraction from mouse time, dv from mouse value
-            double dt = xToT(x) - n.t;
+            double dt = xToLt(x) - n.t;
             newFrac = FvdDesigner.clamp((dragHandleIsOut ? dt : -dt) / segLen,
                             MIN_FRAC, BezierBaker.MAX_FRAC);
             if (snap) newFrac = snapFrac(newFrac);
@@ -971,16 +1200,16 @@ class GraphEditor extends Region {
         List<double[]> poly = BezierBaker.polyline(lane);
         double bestD2 = 9 * 9;
         double bestT = Double.NaN;
-        double px0 = tToX(poly.get(0)[0]), py0 = valToY(activeLane, poly.get(0)[1]);
+        double px0 = ltToX(poly.get(0)[0]), py0 = valToY(activeLane, poly.get(0)[1]);
         // the dotted hold-final-value extension is insertable too
         double laneEnd = lane.get(lane.size() - 1).t;
-        boolean extended = laneEnd < maxT() - 1e-9;
+        boolean extended = laneEnd < sectionEnd() - 1e-9;
         int segs = poly.size() + (extended ? 1 : 0);
         for (int i = 1; i < segs; i++) {
-            double t1 = i < poly.size() ? poly.get(i)[0] : maxT();
+            double t1 = i < poly.size() ? poly.get(i)[0] : sectionEnd();
             double v1 = i < poly.size() ? poly.get(i)[1] : lane.get(lane.size() - 1).val;
             double t0 = i < poly.size() ? poly.get(i - 1)[0] : laneEnd;
-            double px1 = tToX(t1), py1 = valToY(activeLane, v1);
+            double px1 = ltToX(t1), py1 = valToY(activeLane, v1);
             double segX = px1 - px0, segY = py1 - py0;
             double len2 = segX * segX + segY * segY;
             double u = len2 < 1e-9 ? 0
@@ -1017,7 +1246,7 @@ class GraphEditor extends Region {
             // on the dotted hold-final-value extension: append a real
             // node at the same level (flat sine transition)
             BezierBaker.Node last = lane.get(i - 1);
-            if (t - last.t < INSERT_GAP || t > maxT() + 1e-9) return;
+            if (t - last.t < INSERT_GAP || t > sectionEnd() + 1e-9) return;
             pushUndoSnapshot();
             n = new BezierBaker.Node(t, last.val);
             last.outFrac = SINE_FRAC; last.outDv = 0;
@@ -1258,9 +1487,9 @@ class GraphEditor extends Region {
         if (prev != null) {
             dtField = new TextField(String.format(Locale.US, "%.3f", n.t - prev.t));
             grid.addRow(row++, new Label("Transition time (s)"), dtField);
-        } else {
-            // node 0: the ride's start speed lives here too (same value
-            // as the Coaster-menu spinner, whichever lane you opened)
+        } else if (activeSection == 0) {
+            // node 0 of the FIRST section: the ride's start speed lives
+            // here too (same value as the Coaster-menu spinner)
             v0Field = new TextField(String.format(Locale.US, "%.3f", app.coaster.v0));
             grid.addRow(row++, new Label("Start speed (m/s)"), v0Field);
         }
@@ -1334,12 +1563,12 @@ class GraphEditor extends Region {
         for (int L = 0; L < LANES; L++) {
             double lo = DEF_MIN[L], hi = DEF_MAX[L];
             for (double[] p : BezierBaker.polyline(app.lanes.get(L))) {
-                if (p[0] < t0 || p[0] > t1) continue;
+                if (tOff + p[0] < t0 || tOff + p[0] > t1) continue;
                 lo = Math.min(lo, p[1]);
                 hi = Math.max(hi, p[1]);
             }
-            double eA = BezierBaker.evalAt(app.lanes.get(L), t0);
-            double eB = BezierBaker.evalAt(app.lanes.get(L), t1);
+            double eA = BezierBaker.evalAt(app.lanes.get(L), t0 - tOff);
+            double eB = BezierBaker.evalAt(app.lanes.get(L), t1 - tOff);
             lo = Math.min(lo, Math.min(eA, eB));
             hi = Math.max(hi, Math.max(eA, eB));
             // expanded-handle view: include the selected node's knobs
@@ -1404,6 +1633,7 @@ class GraphEditor extends Region {
         double w = canvas.getWidth(), h = canvas.getHeight();
         if (w <= 0 || h <= 0 || plotWidth() <= 0 || plotHeight() <= 0) return;
         enforceStraightLocks();   // before updateScale sees the handles
+        refreshOffset();          // section offsets before any t mapping
         updateScale();
         refreshMarkers();         // 3D markers follow lane + selection
         gc.setGlobalAlpha(1.0);
@@ -1459,6 +1689,8 @@ class GraphEditor extends Region {
             gc.strokeLine(MARGIN_LEFT, oy, w - MARGIN_RIGHT, oy);
         }
 
+        drawInactiveSections(gc);
+
         for (int lane = 0; lane < LANES; lane++) {
             if (lane == activeLane) continue;
             gc.setGlobalAlpha(INACTIVE_ALPHA);
@@ -1496,7 +1728,7 @@ class GraphEditor extends Region {
 
         List<BezierBaker.Node> lane = active();
         for (int i = 0; i < lane.size(); i++) {
-            double px = tToX(lane.get(i).t);
+            double px = ltToX(lane.get(i).t);
             double py = valToY(activeLane, lane.get(i).val);
             boolean isSel = (i == selIdx);
             boolean isDragged = (i == dragNodeIdx);
@@ -1534,7 +1766,7 @@ class GraphEditor extends Region {
         // the lane's value at that point alongside
         if (!Double.isNaN(hoverT)) {
             double hv = BezierBaker.evalAt(lane, hoverT);
-            double hx = tToX(hoverT);
+            double hx = ltToX(hoverT);
             double hy = valToY(activeLane, hv);
             gc.setGlobalAlpha(0.5);
             gc.setFill(Color.WHITE);
@@ -1563,7 +1795,7 @@ class GraphEditor extends Region {
         int lock = axisLock != 0 ? axisLock
                  : (dragNodeIdx >= 0 ? shiftAxis : 0);
         if (selIdx >= 0 && lock != 0) {
-            double lx = tToX(lane.get(selIdx).t);
+            double lx = ltToX(lane.get(selIdx).t);
             double ly = valToY(activeLane, lane.get(selIdx).val);
             gc.setGlobalAlpha(0.5);
             gc.setLineWidth(1.5);
@@ -1601,6 +1833,8 @@ class GraphEditor extends Region {
             gc.setLineWidth(1);
             gc.strokeRect(bx, by, bw, bh);
         }
+
+        drawAddButton(gc, w);
 
         gc.restore();   // end plot clip
 
@@ -1642,18 +1876,18 @@ class GraphEditor extends Region {
         gc.setStroke(FvdDesigner.LANE_COLORS[laneIdx]);
         gc.setLineWidth(2);
         gc.beginPath();
-        gc.moveTo(tToX(lane.get(0).t), valToY(laneIdx, lane.get(0).val));
+        gc.moveTo(ltToX(lane.get(0).t), valToY(laneIdx, lane.get(0).val));
         for (int i = 0; i < lane.size() - 1; i++) {
             BezierBaker.Node a = lane.get(i), b = lane.get(i + 1);
             if (a.straightOut) {   // drawn separately as twin lines
-                gc.moveTo(tToX(b.t), valToY(laneIdx, b.val));
+                gc.moveTo(ltToX(b.t), valToY(laneIdx, b.val));
                 continue;
             }
-            double c1x = tToX(a.t + BezierBaker.effOutDt(a, b));
+            double c1x = ltToX(a.t + BezierBaker.effOutDt(a, b));
             double c1y = valToY(laneIdx, a.val + a.outDv);
-            double c2x = tToX(b.t + BezierBaker.effInDt(a, b));
+            double c2x = ltToX(b.t + BezierBaker.effInDt(a, b));
             double c2y = valToY(laneIdx, b.val + b.inDv);
-            gc.bezierCurveTo(c1x, c1y, c2x, c2y, tToX(b.t), valToY(laneIdx, b.val));
+            gc.bezierCurveTo(c1x, c1y, c2x, c2y, ltToX(b.t), valToY(laneIdx, b.val));
         }
         gc.stroke();
 
@@ -1663,8 +1897,8 @@ class GraphEditor extends Region {
         for (int i = 0; i < lane.size() - 1; i++) {
             if (!lane.get(i).straightOut) continue;
             BezierBaker.Node a = lane.get(i), b = lane.get(i + 1);
-            double ax = tToX(a.t), ay = valToY(laneIdx, a.val);
-            double bx = tToX(b.t), by = valToY(laneIdx, b.val);
+            double ax = ltToX(a.t), ay = valToY(laneIdx, a.val);
+            double bx = ltToX(b.t), by = valToY(laneIdx, b.val);
             double dx = bx - ax, dy = by - ay;
             double len = Math.hypot(dx, dy);
             if (len < 1e-6) continue;
@@ -1677,12 +1911,12 @@ class GraphEditor extends Region {
         // a lane that ends early holds its final value to the ride end:
         // drawn DOTTED to show it's implied, not authored (clickable to
         // insert a real node on it)
-        double end = maxT();
+        double end = sectionEnd();
         BezierBaker.Node last = lane.get(lane.size() - 1);
         if (last.t < end - 1e-9) {
             double ly = valToY(laneIdx, last.val);
             gc.setLineDashes(3, 7);
-            gc.strokeLine(tToX(last.t), ly, tToX(end), ly);
+            gc.strokeLine(ltToX(last.t), ly, ltToX(end), ly);
             gc.setLineDashes((double[]) null);
         }
     }
@@ -1690,7 +1924,7 @@ class GraphEditor extends Region {
     private void drawHandles(GraphicsContext gc, int idx) {
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(idx);
-        double nx = tToX(n.t);
+        double nx = ltToX(n.t);
         double ny = valToY(activeLane, n.val);
         outEdgeMarker = null;
         inEdgeMarker = null;

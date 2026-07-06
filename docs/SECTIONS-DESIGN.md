@@ -1,10 +1,10 @@
 # SECTIONS-DESIGN.md — Phase 1+ architecture: sections, pieces, and the geometry/dynamics split
 
-Status: PHASE 1 NEARLY COMPLETE — milestone A (v9.0, D50: document
-model, three-pass TrackCompiler, FVDD3/DesignIO, all gated in TESTING
-#11) and most of milestone B (v9.1 D51 document undo + file lifecycle;
-v9.2/v9.4 D52/D54 the full FvdDesigner split) are live. Remaining:
-section-aware graph strips + section-insertion UI (§8). One AMENDMENT to §2 below: quaternions are the model-level
+Status: PHASE 1 COMPLETE (v9.5, D50-D55) — document model, three-pass
+TrackCompiler, FVDD3/DesignIO, document undo + file lifecycle, the
+full FvdDesigner split, and the section-aware graph with the '+'
+add-section affordance are all live and gated (TESTING #11). Phase 2
+starts from here. One AMENDMENT to §2 below: quaternions are the model-level
 orientation (poses, placements, exit poses) but the FORCE-section
 integrator keeps stepping T/U as vectors — §1's bit-for-bit gate
 outranks §2's "Pass G integrates orientation as a quaternion" (they
@@ -173,8 +173,13 @@ Phase 0, D44) and Pass D's speed ODE. v floor 0.5 m/s stays
   one level up). Redo becomes worth adding here.
 - **Graph:** one strip along the time/distance axis per section; inactive
   sections greyed (like inactive lanes today); click a greyed section to
-  activate; section boundaries drawn; insertion = toolbar/menu "insert
-  section" at end or between two (splits the strip).
+  activate; section boundaries drawn. IMPLEMENTED v9.5 (D55) with the
+  user's insertion gesture: a vertical line + circled '+' past the ride
+  end opens the add-section menu. USER ROADMAP for that menu (Phase 2+):
+  it will also list existing FLOATING PIECES to attach (a piece can hold
+  several sections); and the editor needs a PIECE SELECTOR — only one
+  floating piece is shown in the graph at a time. Insert-BETWEEN-two-
+  sections (splitting the strip) is also still to come.
 - **FvdDesigner split**: COMPLETE (GraphEditor v9.2 D52; Viewport3D +
   Dialogs v9.4 D54; DesignIO v9.0 D50 — round-trip tested at last);
   FvdDesigner is the ~1.1k-line shell. Pure core grew: Section types,

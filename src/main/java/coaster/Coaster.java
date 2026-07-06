@@ -44,9 +44,28 @@ public class Coaster {
         return c;
     }
 
-    /** The single editable section while the UI is single-section
-     *  (Phase 1); fails loudly if the shape ever surprises us. */
+    /** The FIRST section of the first piece — the ride entry, whose
+     *  vDesign the Start-speed spinner writes; fails loudly if the
+     *  shape ever surprises us. */
     public ForceSection soleSection() {
         return (ForceSection) pieces.get(0).sections.get(0);
+    }
+
+    /** A 1 s force section holding the given section's final lane
+     *  values — what the graph's '+' affordance appends (D55). vDesign
+     *  comes from the caller (the design speed at the previous
+     *  section's exit, frozen at creation per the §0 invariant). */
+    public static ForceSection continuation(ForceSection prev, double vDesign) {
+        List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
+        for (int i = 0; i < 3; i++) {
+            List<BezierBaker.Node> src = prev.lanes.get(i);
+            double v = src.get(src.size() - 1).val;
+            List<BezierBaker.Node> lane = new ArrayList<>(2);
+            lane.add(new BezierBaker.Node(0, v));
+            lane.add(new BezierBaker.Node(1, v));
+            BezierBaker.applyDefaultHandles(lane);
+            lanes.add(lane);
+        }
+        return new ForceSection(lanes, vDesign);
     }
 }
