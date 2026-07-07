@@ -47,25 +47,33 @@ public class Coaster {
     /** The FIRST section of the first piece — the ride entry, whose
      *  vDesign the Start-speed spinner writes; fails loudly if the
      *  shape ever surprises us. */
-    public ForceSection soleSection() {
-        return (ForceSection) pieces.get(0).sections.get(0);
+    public LaneSection soleSection() {
+        return (LaneSection) pieces.get(0).sections.get(0);
     }
 
-    /** A 1 s force section holding the given section's final lane
-     *  values — what the graph's '+' affordance appends (D55). vDesign
-     *  comes from the caller (the design speed at the previous
-     *  section's exit, frozen at creation per the §0 invariant). */
-    public static ForceSection continuation(ForceSection prev, double vDesign) {
-        List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
+    /** A 1 s SAME-MODE section holding the given section's final lane
+     *  values — what the graph's '+' affordance appends (D55; geo
+     *  joined in v10.1: holding the end rates keeps the transition as
+     *  seamless as force-after-force). vDesign comes from the caller
+     *  (the design speed at the previous section's exit, frozen at
+     *  creation per the §0 invariant). */
+    public static LaneSection continuation(LaneSection prev, double vDesign) {
+        double[] end = new double[3];
         for (int i = 0; i < 3; i++) {
             List<BezierBaker.Node> src = prev.lanes.get(i);
-            double v = src.get(src.size() - 1).val;
-            List<BezierBaker.Node> lane = new ArrayList<>(2);
-            lane.add(new BezierBaker.Node(0, v));
-            lane.add(new BezierBaker.Node(1, v));
-            BezierBaker.applyDefaultHandles(lane);
-            lanes.add(lane);
+            end[i] = src.get(src.size() - 1).val;
         }
-        return new ForceSection(lanes, vDesign);
+        List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(end[0], end[1], end[2]);
+        return prev instanceof GeoSection
+            ? new GeoSection(lanes, vDesign) : new ForceSection(lanes, vDesign);
+    }
+
+    /** A 1 s force section holding explicit Gv/Gl/roll-rate values —
+     *  the force '+' after a GEO section holds the felt end state
+     *  (design-speed Gv/Gl from the compiled samples + the geo roll
+     *  lane's final value) instead of copying rate lanes as forces. */
+    public static ForceSection holdSection(double gv, double gl, double roll,
+                                           double vDesign) {
+        return new ForceSection(LaneSection.holdLanes(gv, gl, roll), vDesign);
     }
 }

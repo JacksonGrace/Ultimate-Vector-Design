@@ -79,17 +79,21 @@ public final class DesignIO {
             out.printf(Locale.US, "piece %.4f %.4f %.4f %.4f%n",
                 piece.x, piece.y, piece.z, piece.yawDeg);
             for (Section section : piece.sections) {
-                ForceSection fs = (ForceSection) section;   // Phase 1: only mode
-                out.printf(Locale.US, "section force %.4f %s %d%n",
+                LaneSection fs = (LaneSection) section;   // force | geo (Phase 2)
+                out.printf(Locale.US, "section %s %.4f %s %d%n",
+                    fs instanceof GeoSection ? "geo" : "force",
                     fs.vDesign,
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
                     fs.reversed ? 1 : 0);
                 for (int lane = 0; lane < 3; lane++) {
                     out.println("lane " + lane);
                     for (BezierBaker.Node n : fs.lanes.get(lane)) {
-                        out.printf(Locale.US, "n %.4f %.4f %.4f %.4f %.4f %.4f %d %d%n",
+                        // 8th field straight-lock, 9th level-lock — both
+                        // ride the ignore-extra-fields rule for old readers
+                        out.printf(Locale.US, "n %.4f %.4f %.4f %.4f %.4f %.4f %d %d %d%n",
                             n.t, n.val, n.outFrac, n.outDv, n.inFrac, n.inDv,
-                            n.smooth ? 1 : 0, n.straightOut ? 1 : 0);
+                            n.smooth ? 1 : 0, n.straightOut ? 1 : 0,
+                            n.levelOut ? 1 : 0);
                     }
                 }
                 out.println("endsection");
@@ -121,7 +125,7 @@ public final class DesignIO {
         double[] start = { 0, 21, 0 };   // legacy `start` line (FVDD2/1)
 
         TrackPiece curPiece = null;
-        ForceSection curSection = null;
+        LaneSection curSection = null;
         int curLane = -1;
         // legacy flat files: one implicit piece + section holds everything
         if (!v3) {
@@ -172,10 +176,13 @@ public final class DesignIO {
                 }
                 case "section" -> {
                     if (curPiece == null) throw new IOException("section outside piece");
-                    if (!parts[1].equals("force"))
-                        throw new IOException("unknown section mode: " + parts[1]);
-                    curSection = ForceSection.empty(
-                        parts.length > 2 ? clamp(Double.parseDouble(parts[2]), 1, 100) : v0);
+                    double vd = parts.length > 2
+                        ? clamp(Double.parseDouble(parts[2]), 1, 100) : v0;
+                    curSection = switch (parts[1]) {
+                        case "force" -> ForceSection.empty(vd);
+                        case "geo"   -> GeoSection.empty(vd);
+                        default -> throw new IOException("unknown section mode: " + parts[1]);
+                    };
                     if (parts.length > 4) curSection.reversed = parts[4].equals("1");
                     curPiece.sections.add(curSection);
                     curLane = -1;
@@ -196,6 +203,7 @@ public final class DesignIO {
                     n.inDv    = Double.parseDouble(parts[6]);
                     n.smooth = !parts[7].equals("0");
                     n.straightOut = parts.length > 8 && parts[8].equals("1");
+                    n.levelOut = parts.length > 9 && parts[9].equals("1");
                     curSection.lanes.get(curLane).add(n);
                 }
                 default -> { /* unknown lines ignored: forward compatibility */ }
@@ -213,7 +221,7 @@ public final class DesignIO {
 
         for (TrackPiece piece : c.pieces) {
             for (Section s : piece.sections) {
-                ForceSection fs = (ForceSection) s;
+                LaneSection fs = (LaneSection) s;
                 for (List<BezierBaker.Node> lane : fs.lanes) {
                     if (lane.size() < 2)
                         throw new IOException("each lane needs at least 2 nodes");
@@ -227,7 +235,7 @@ public final class DesignIO {
 
     /** FVDD1 stored handle time-offsets in absolute seconds (in-handle
      *  negative); convert to fractions of the neighboring segment. */
-    private static void convertLegacyHandles(ForceSection fs) {
+    private static void convertLegacyHandles(LaneSection fs) {
         for (List<BezierBaker.Node> lane : fs.lanes) {
             for (int i = 0; i < lane.size(); i++) {
                 BezierBaker.Node n = lane.get(i);

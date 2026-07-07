@@ -59,23 +59,93 @@ public final class TrackCompiler {
     }
 
     /** Pass G for one section at its DESIGN speed. Force sections are
-     *  the old integrator run, seeded from the entry pose. */
+     *  the old integrator run, seeded from the entry pose; geo sections
+     *  (Phase 2) integrate their authored body rates directly. REVERSED
+     *  sections (Phase 2, D67) generate the authored shape in the
+     *  CANONICAL frame and hand it to reverseAndPlace. */
     public static Centerline passG(Section section, TrackPose entry, double dt) {
-        if (!(section instanceof ForceSection fs))
-            throw new IllegalArgumentException("Phase 1 compiles force sections only");
-        List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(fs.lanes, 0.05);
-        FVDIntegrator.Options opts = new FVDIntegrator.Options();
-        opts.dt = dt;
-        opts.v0 = fs.vDesign;
-        opts.pos0 = entry.pos();
-        opts.startHeading = entry.T();   // identity orientation: exactly (1,0,0)
-        opts.startUp = entry.U();        //                       exactly (0,1,0)
-        List<FVDIntegrator.Sample> samples = FVDIntegrator.integrateTrack(kfs, opts);
-        FVDIntegrator.Sample last = samples.get(samples.size() - 1);
+        if (section instanceof ForceSection fs) {
+            List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(fs.lanes, 0.05);
+            FVDIntegrator.Options opts = new FVDIntegrator.Options();
+            opts.dt = dt;
+            opts.v0 = fs.vDesign;
+            if (fs.reversed) {
+                // canonical frame at the ENTRY HEIGHT: energy is
+                // height-relative but float rounding is not — this keeps
+                // the reversed shape bitwise equal to a forward run at
+                // the same height (gated)
+                opts.pos0 = new Vec3(0, entry.pos().y(), 0);
+                return reverseAndPlace(FVDIntegrator.integrateTrack(kfs, opts), entry);
+            }
+            opts.pos0 = entry.pos();
+            opts.startHeading = entry.T();   // identity orientation: exactly (1,0,0)
+            opts.startUp = entry.U();        //                       exactly (0,1,0)
+            List<FVDIntegrator.Sample> samples = FVDIntegrator.integrateTrack(kfs, opts);
+            FVDIntegrator.Sample last = samples.get(samples.size() - 1);
+            TrackPose exit = new TrackPose(last.pos(),
+                Quat.fromFrame(last.T(), last.U()),
+                entry.s0() + last.s(), entry.t0() + last.t());
+            return new Centerline(samples, exit);
+        }
+        if (section instanceof GeoSection gs) {
+            List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(gs.lanes, 0.05);
+            if (gs.reversed) {
+                GeoIntegrator.Result rr = GeoIntegrator.integrate(kfs, dt,
+                    gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY);
+                return reverseAndPlace(rr.samples(), entry);
+            }
+            // quaternion-native (the §2 amendment): the exit orientation
+            // is the integrated q itself, not a frame round-trip
+            GeoIntegrator.Result r = GeoIntegrator.integrate(
+                kfs, dt, gs.vDesign, entry.pos(), entry.orient());
+            FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
+            TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
+                entry.s0() + last.s(), entry.t0() + last.t());
+            return new Centerline(r.samples(), exit);
+        }
+        throw new IllegalArgumentException("unhandled section mode: " + section);
+    }
+
+    /** REVERSAL (Phase 2, D67; SECTIONS-DESIGN §3): the authored
+     *  centerline traversed back-to-front — same point set, opposite
+     *  direction (the §9 gate). The shape is generated in the CANONICAL
+     *  frame (identity pose at x=z=0, ENTRY height: a force shape is
+     *  only honest against gravity in the orientation it was authored
+     *  for, and yaw about world-Y is the one alignment preserving
+     *  that), then
+     *  the samples are reversed — T → −T, R → −R, U unchanged, felt Gl
+     *  negated, t/s re-based forward — and the whole line is yawed +
+     *  translated so its new FIRST sample sits exactly on the entry
+     *  position with the entry's horizontal heading. A pitched or
+     *  banked entry cannot be fully matched (that would tilt the shape
+     *  against its own gravity): the seam shows the mismatch honestly —
+     *  end the upstream section level for a clean join. The section's
+     *  vDesign stays the AUTHORED-direction entry speed (= the train's
+     *  exit side); the train-side design speed is the authored end of
+     *  the profile. */
+    static Centerline reverseAndPlace(List<FVDIntegrator.Sample> fwd, TrackPose entry) {
+        int n = fwd.size();
+        FVDIntegrator.Sample lastF = fwd.get(n - 1);
+        double tEnd = lastF.t(), sEnd = lastF.s();
+        Vec3 tRev = lastF.T().scale(-1);   // the train's entry direction
+        double yaw = Math.atan2(-entry.T().z(), entry.T().x())
+                   - Math.atan2(-tRev.z(), tRev.x());
+        Quat q = Quat.aboutY(Math.toDegrees(yaw));
+        Vec3 anchor = q.rotate(lastF.pos());
+        List<FVDIntegrator.Sample> out = new ArrayList<>(n);
+        for (int i = n - 1; i >= 0; i--) {
+            FVDIntegrator.Sample sm = fwd.get(i);
+            Vec3 pos = q.rotate(sm.pos()).sub(anchor).add(entry.pos());
+            Vec3 T = q.rotate(sm.T()).scale(-1);
+            Vec3 U = q.rotate(sm.U());
+            out.add(new FVDIntegrator.Sample(tEnd - sm.t(), sEnd - sm.s(),
+                pos, T, U, U.cross(T), sm.v(), sm.Gv(), -sm.Gl()));
+        }
+        FVDIntegrator.Sample last = out.get(out.size() - 1);
         TrackPose exit = new TrackPose(last.pos(),
             Quat.fromFrame(last.T(), last.U()),
             entry.s0() + last.s(), entry.t0() + last.t());
-        return new Centerline(samples, exit);
+        return new Centerline(out, exit);
     }
 
     /** Chain a section's samples onto the global list. The very first

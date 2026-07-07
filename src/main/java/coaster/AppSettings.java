@@ -19,29 +19,32 @@ import java.util.Properties;
  */
 public class AppSettings {
 
-    /** {id, display label, default combo} — order is the display order. */
+    /** {id, display label, default combo, category} — order is the
+     *  display order; the category groups the Shortcuts dialog's
+     *  titled columns (v10.3). */
     public static final String[][] ACTIONS = {
-        { "lane1",  "Select lane 1 (Vert G)",     "1" },
-        { "lane2",  "Select lane 2 (Lat G)",      "2" },
-        { "lane3",  "Select lane 3 (Roll)",       "3" },
-        { "smooth", "Toggle smooth/broken node",  "B" },
-        { "flath",  "Flatten handles (level)",    "H" },
-        { "levelSel", "Level selection to main node", "Shift+H" },
-        { "align",  "Straighten between selected pair", "F" },
-        { "alignLock", "Straight-lock between selected pair", "Shift+F" },
-        { "lockv",  "Lock node drag: vertical",   "Z" },
-        { "lockh",  "Lock node drag: horizontal", "X" },
-        { "delNode", "Delete selected node",      "Delete" },
-        { "append", "Append 1 s of track",        "A" },
-        { "pov",    "POV ride",                   "Space" },
-        { "viewTop",  "Top view (ortho)",         "T" },
-        { "viewSide", "Side view (ortho)",        "Shift+T" },
-        { "save",   "Save design",                "Ctrl+S" },
-        { "load",   "Load design",                "Ctrl+O" },
-        { "newfile", "New design",                "Ctrl+N" },
-        { "export", "Export NL2 CSV",             "Ctrl+E" },
-        { "undo",   "Undo",                       "Ctrl+Z" },
-        { "redo",   "Redo",                       "Ctrl+Shift+Z" },
+        { "lane1",  "Select lane 1 (Vert G / Pitch)", "1", "Graph editor" },
+        { "lane2",  "Select lane 2 (Lat G / Yaw)",    "2", "Graph editor" },
+        { "lane3",  "Select lane 3 (Roll)",       "3", "Graph editor" },
+        { "smooth", "Toggle smooth/broken node",  "B", "Graph editor" },
+        { "matchAll", "Match boundary: all lanes", "Shift+B", "Graph editor" },
+        { "flath",  "Level selection / flatten handles", "H", "Graph editor" },
+        { "levelSel", "Level-lock selection", "Shift+H", "Graph editor" },
+        { "align",  "Straighten between selected pair", "F", "Graph editor" },
+        { "alignLock", "Straight-lock between selected pair", "Shift+F", "Graph editor" },
+        { "lockv",  "Lock node drag: vertical",   "Z", "Graph editor" },
+        { "lockh",  "Lock node drag: horizontal", "X", "Graph editor" },
+        { "delNode", "Delete selected node",      "Delete", "Graph editor" },
+        { "append", "Append 1 s of track",        "A", "Graph editor" },
+        { "pov",    "POV ride",                   "Space", "View" },
+        { "viewTop",  "Top view (ortho)",         "T", "View" },
+        { "viewSide", "Side view (ortho)",        "Shift+T", "View" },
+        { "save",   "Save design",                "Ctrl+S", "File" },
+        { "load",   "Load design",                "Ctrl+O", "File" },
+        { "newfile", "New design",                "Ctrl+N", "File" },
+        { "export", "Export NL2 CSV",             "Ctrl+E", "File" },
+        { "undo",   "Undo",                       "Ctrl+Z", "History" },
+        { "redo",   "Redo",                       "Ctrl+Shift+Z", "History" },
     };
 
     public static final double FOV_DEFAULT = 65;
@@ -126,6 +129,28 @@ public class AppSettings {
     public void setSnapG(double v) { setD("snapG", v); }
     public double snapRoll() { return getD("snapRoll", SNAP_ROLL_DEFAULT); }
     public void setSnapRoll(double v) { setD("snapRoll", v); }
+
+    /** Ctrl-snap axis references (v10.2). Defaults = the historical
+     *  behavior: time snaps the TRANSITION length from the previous
+     *  node, value snaps the ABSOLUTE grid. Each axis can flip to the
+     *  other reference (absolute ride time / Δ value from previous). */
+    public boolean snapTAbsolute() {
+        return Boolean.parseBoolean(props.getProperty("snapTAbsolute", "false"));
+    }
+
+    public void setSnapTAbsolute(boolean on) {
+        props.setProperty("snapTAbsolute", String.valueOf(on));
+        save();
+    }
+
+    public boolean snapVRelative() {
+        return Boolean.parseBoolean(props.getProperty("snapVRelative", "false"));
+    }
+
+    public void setSnapVRelative(boolean on) {
+        props.setProperty("snapVRelative", String.valueOf(on));
+        save();
+    }
 
     /** Show the POV camera's track position as a line on the graph. */
     public boolean povMarker() {

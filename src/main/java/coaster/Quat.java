@@ -40,6 +40,12 @@ public record Quat(double w, double x, double y, double z) {
 
     public Quat conjugate() { return new Quat(w, -x, -y, -z); }
 
+    // component-wise helpers for RK4 quaternion integration (GeoIntegrator
+    // steps q' = ½·(0,ω)·q); results are NOT unit — normalize after combining
+    public Quat add(Quat o) { return new Quat(w + o.w, x + o.x, y + o.y, z + o.z); }
+
+    public Quat scale(double k) { return new Quat(w * k, x * k, y * k, z * k); }
+
     public Quat normalize() {
         double n = Math.sqrt(w * w + x * x + y * y + z * z);
         return n < 1e-12 ? IDENTITY : new Quat(w / n, x / n, y / n, z / n);

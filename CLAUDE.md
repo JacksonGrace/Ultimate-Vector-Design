@@ -66,8 +66,22 @@ Quat.java           unit quaternion (mul/rotate/fromFrame/aboutY). The
 TrackPose.java      pos + orient (+ running global s/t offsets): section
                     entry/exit contract.
 Section.java        sealed interface (domain TIME|DISTANCE, vDesign,
-                    reversed) — Phase 2 modes join the permits list.
-ForceSection.java   today's only mode: the three lanes + vDesign.
+                    reversed) — non-lane Phase 2 modes (bridge, curve,
+                    external) join the permits list as they land.
+LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
+                    lanes + vDesign + reversed live here so the editor,
+                    undo, IO and compiler handle force and geo through
+                    one type.
+ForceSection.java   classic FVD mode: lanes = Gv / Gl / roll rate.
+GeoSection.java     Phase 2 (v10.0, D58): lanes = pitch / yaw / roll
+                    rate (°/s), integrated DIRECTLY — no solver;
+                    gravity never bends the shape.
+GeoIntegrator.java  GEO PHYSICS. Pure Java, no JavaFX. RK4 on (pos,
+                    quaternion), q' = ½(0,Ω)⊗q, Ω = yaw·U − pitch·R +
+                    roll·T; reuses bake's Keyframe slots (Gv=pitch,
+                    Gl=yaw — mapping documented there only); records
+                    FELT Gv/Gl at design speed so rail colors/stats
+                    stay honest. See PHYSICS.md §2b.
 TrackPiece.java     placement (origin + heading yaw about Y) + section
                     chain; editing one piece can never move another.
 Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
@@ -75,10 +89,15 @@ Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     REFERENCE with the editor. Cosmetics stay UI-side
                     until milestone B (travel via DesignIO.Cosmetics).
 TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
-                    section at vDesign (force = unchanged bake+RK4),
-                    passD global true speed, passA resulting rates.
-                    Single-force-section output is BIT-IDENTICAL to the
-                    old direct call (gated headlessly).
+                    section at vDesign (force = unchanged bake+RK4;
+                    geo = GeoIntegrator, exit pose carries the
+                    integrated quaternion; REVERSED sections generate
+                    canonically at the entry height and
+                    reverseAndPlace flips + yaw-places them, D67),
+                    passD global true speed,
+                    passA resulting rates. Single-force-section output
+                    is BIT-IDENTICAL to the old direct call (gated
+                    headlessly).
 DesignIO.java       save/load: writes FVDD3, reads FVDD3/FVDD2/FVDD1
                     (legacy = one piece/one section). Headlessly
                     round-trip tested at last.
@@ -138,6 +157,13 @@ source tree — they won't compile against the current time-domain API.
   heart). Rails are derived: `spine = heart − U·heartOffset`, rails at
   `spine ± R·(gauge/2)`, radius 0.07 m (140 mm dia). `heartOffset` negative
   ⇒ inverted coaster (rails above rider).
+- GEO sections (v10.0) skip the force inversion: authored pitch/yaw/roll
+  rates feed `Ω = yaw·U − pitch·R + roll·T` directly; orientation
+  integrates as a quaternion (`q' = ½(0,Ω)⊗q`, RK4, PHYSICS.md §2b).
+  Gravity never bends geo shape — it only shows in the recorded felt
+  forces (`Gv = ω_pitch·v/g + U.y`, at design speed). Validated: exact
+  constant-rate angles + re-authoring the default layout's resulting
+  rates as geo reproduces the force geometry to 2 mm over 407 m.
 
 ## Key decisions and WHY (full log in docs/DECISIONS.md)
 
@@ -158,7 +184,10 @@ source tree — they won't compile against the current time-domain API.
   (`outFrac`/`inFrac`, 0..0.95) plus absolute dv value-offsets. Moving a
   node in time therefore rescales attached handles automatically — the curve
   squishes horizontally with its shape preserved (validated headlessly:
-  max deviation 0.002, polyline sampling noise). Defaults: flat tangents at
+  max deviation 0.002, polyline sampling noise). A D62 attempt to keep
+  smooth joints from kinking during re-times (rigid absolute handles)
+  was REVERTED in v10.5 on user decision — the squish applies to ALL
+  nodes, kinks accepted (D63). Defaults: flat tangents at
   1/3 segment ⇒ smooth S-curve force transitions. "Smooth" = matching slope
   dv/dt on both sides (unit-correct C1, deliberately NOT pixel-angle
   matching). Handle drag is FREE by default (angle + length); holding S
@@ -170,10 +199,16 @@ source tree — they won't compile against the current time-domain API.
   free drag mirrors the partner handle proportionally on BOTH axes
   (partner frac and dv scale by the dragged handle's ratios — equal handles
   act as mirror images, unequal ones stay proportional and collinear).
-  Node drags are free; CTRL snaps the TRANSITION length (Δt from the
-  previous node) and the value to the GLOBAL absolute grid — defaults
-  0.1 s, 0.1 G, 5 °/s roll, all adjustable in Options (deliberately not
-  Δ-value snapping).
+  Node drags are free; CTRL snaps time and value — DEFAULT references:
+  TRANSITION length (Δt from the previous node) for time, the GLOBAL
+  absolute grid for value (defaults 0.1 s, 0.1 G, 5 °/s roll, steps
+  adjustable in Options). v10.2/3: each axis's reference is a per-user
+  Options LOCAL/GLOBAL radio pair (horizontal defaults local = Δt,
+  vertical defaults global = absolute); the SECTION END
+  is its own snap point that ABSORBS grid points within half a step of
+  it (snapping near the end = exactly the end); and the end is a WALL —
+  a lane's last node stops there unless it STARTED the gesture at the
+  end (extend = drag to end, release, grab again; endLimitFor).
   B toggles smooth/broken per node; re-smoothing keeps the IN handle and
   re-angles the OUT handle (user spec).
 - **Undo/redo (DOCUMENT level, D51):** deep DocState snapshots — all lanes
@@ -189,9 +224,10 @@ source tree — they won't compile against the current time-domain API.
   text, `Locale.US` decimals (critical — default locale breaks parsing
   on comma-decimal systems), unknown lines ignored for forward
   compatibility, extra fields on known lines ignored (the straight-lock
-  8th `n` field rides on this). Global lines (v0, heart, gauge,
+  8th and level-lock 9th `n` fields ride on this). Global lines (v0,
+  heart, gauge,
   tiespace, railmode/railcolor/gradcolors/gradstops, speedregion), then
-  `piece x y z yaw` blocks holding `section force vDesign domain
+  `piece x y z yaw` blocks holding `section force|geo vDesign domain
   reversed` blocks holding `lane`/`n` lines. READS FVDD3, FVDD2 and
   FVDD1: legacy flat files load as one piece at their `start` (default
   (0,21,0)) with one force section (vDesign = their v0, default 26);
@@ -243,15 +279,66 @@ when the visible curve exceeds them, frozen during drags; inactive lanes
 25% alpha — clicking a dimmed lane's node or curve switches editing to it,
 with the active lane keeping hit-test priority). Lanes ending early draw
 their hold-final-value continuation DOTTED (to the SECTION end) —
-clickable to append a node. SECTIONS (v9.5, D55): the piece's sections
+clickable to append a node. SECTIONS (v9.5 D55, geo v10.0 D58, UX round
+v10.1 D59): the piece's sections
 are strips on one shared time axis — the active one edits normally in
 its own stretch (all node math is section-LOCAL via ltToX/xToLt; one
 section ⇒ tOff 0 ⇒ identical to the old editor), inactive ones draw all
-three lanes at alpha 0.13 with boundary lines between, and clicking a
-greyed strip activates it. A dashed line + circled '+' past the ride
-end opens the add-section menu (force 1 s hold today, vDesign frozen at
-the piece-end design speed per §0; Phase 2 items are disabled
-placeholders). Document undo snapshots ALL sections + the active index;
+three lanes at alpha 0.20 with boundary lines between, and clicking a
+greyed strip activates it. UNIFIED VIEW (D59): the plot always shows
+ONE mode's quantities — the active section's — so a strip of the OTHER
+mode draws what it DOES in the active units, derived from the compiled
+track via GraphEditor.derivedAt (geo view of force strips = resulting
+pitch/yaw/roll rates; force view of geo strips = felt Gv/Gl + resulting
+roll); everything shares the active axes and curves join at boundaries.
+Every lane curve carries a translucent zero-line fill
+(LANE_FILL_ALPHA 0.13, inherits the strip/lane alpha); the Resulting
+overlays have NO fill and stretch across the WHOLE ride since v10.8
+(path broken over a SEAM_TRIM band at each boundary; scale fitted to
+the visible window like a lane). Every
+wide-enough strip wears a force/geo BADGE at its top-left (type
+indicator, ◀ = reversed + per-section menu: info line, REVERSED check
+(v10.9 D67: the train runs the authored shape back-to-front — shape
+generated canonically at entry height, flipped, yaw-placed onto the
+entry's horizontal heading; pitched/banked seams mismatch honestly;
+felt Gl negates, roll rate is traversal-invariant — §3's "roll flips"
+was corrected; lanes still edit in the AUTHORED direction while
+inactive strips/B-matching/'+' holds use the compiled curves) +
+Delete section — disabled at
+one section; downstream re-chains, deleting the active one activates
+its predecessor; one undo step); press rank nodes/knobs > '+' > badges
+> curve insert (D57). An open '+'/badge menu dismisses on the next
+graph click (JavaFX auto-hide misses the canvas — openMenu field).
+A dashed line + circled '+' past the ride
+end opens the add-section menu: BOTH modes append a 1 s HOLD of the
+ride's end state (same-mode = final lane values via
+Coaster.continuation, now mode-generic; force-after-geo = felt end
+Gv/Gl + final roll; geo-after-force = resulting end pitch/yaw +
+authored roll), vDesign frozen at
+the piece-end design speed per §0; bridge/curve + attach-piece stay
+disabled placeholders. GEO sections author pitch/yaw/roll RATES (°/s,
+lane 0/1/2) with their OWN palette — pitch teal, yaw yellow, roll
+orange; GraphEditor.laneColor is the
+one accessor (curves, fills, buttons, guides, 3D markers). Selecting a
+geo section relabels+retints the lane buttons (setLaneButtonMode),
+retitles the y-axis and node dialogs, snaps ALL lanes by the
+roll step, defaults the scales to ±60 °/s (roll ±150) and drops the
+1 g reference line. B on a section-EDGE node (or "Match boundary
+(value + slope)" in its dialog) RETURNS it to the boundary — Shift+B
+(action "matchAll") does it for ALL THREE lanes' edge nodes as one
+undo step: value AND
+slope from the neighbor — exact from authored lanes same-mode (a lane
+holding past its last node is FLAT there), from the resulting curves
+cross-mode (v10.2: sampled ~3 samples INSIDE the neighbor via
+rateIdxAt — bodyRates smear boundary jumps across ±2 samples and the
+seam index shifts with the integrator cadence; sampling the smear made
+B converge over several presses. Same reason derived strips and
+overlays trim SEAM_TRIM = 2.5·dt off their ends — no tiny angled
+connector at seams. Cross-mode matching against the NEXT section stays
+mildly iterative: our exit pose moves its felt values). Clicking a
+greyed strip ALWAYS activates it — checked BEFORE the dimmed-lane test
+(v10.2: held end-values used to steal those clicks as lane switches).
+Document undo snapshots ALL sections + their modes + the active index;
 the Start-speed spinner and node-0 dialog write SECTION 0's vDesign
 only; markers and 3D Ctrl+click-insert route through the section
 containing the clicked ride time.
@@ -262,9 +349,14 @@ selected straightens the segment between them onto the chord; Shift+F
 node, enforced by enforceStraightLocks() at the top of every redraw
 (re-chords facing handles; smooth endpoints keep C1 unless that side is
 itself locked), drawn as TWIN 1px lines instead of the curve stroke;
-endpoints stay draggable (line follows), facing knobs slide along the
-chord (enforcement pins dv — emergent, no special drag code); Shift+F
-with either endpoint selected unlocks; inserting on a locked segment
+endpoints stay draggable (line follows); the FACING knobs are HIDDEN
+and unclickable since v10.4 (knobPos null — collinear control points
+make the cubic exactly the chord, so they do nothing); Shift+F
+with a lone endpoint selected unlocks (with pairs selected the
+pair-priority rule above applies) — a joint whose two sides sit at
+DIFFERENT slopes comes out BROKEN (a kinked "smooth" node was a lie;
+matching slopes, e.g. insert-on-the-line then unlock, stay smooth);
+inserting on a locked segment
 locks both halves; saved as an 8th field on `n` lines — old readers
 ignore extra fields, missing field = unlocked). Holding S
 during a node drag = transient axis constraint from the dominant movement
@@ -297,7 +389,16 @@ persisted per-user): `1/2/3` lane select · click node = select + show handles
 square knobs) · click the curve = insert node exactly ON it (hover shows a
 translucent dot riding the line; flat segments insert level with SINE
 handles, curved ones use an exact de Casteljau split — tangent handles,
-curve unchanged, headless-tested) · right-click delete · `A` append 1 s
+curve unchanged, headless-tested; keeping the button down chains
+straight into a node DRAG — one gesture, one undo step, Ctrl snaps
+live, v10.1; Ctrl while HOVERING snaps the dot in TIME per the
+horizontal snap reference — value stays on the curve — and the click
+inserts there; the dot hides where the snapped spot lacks INSERT_GAP
+room, shared insertRoomAt) · right-click a NODE = its editor dialog
+(v10.7 — was delete; Delete key only now) · right-click a SEGMENT =
+its lock menu (Unlocked/Straight/Horizontal radios, one segment, same
+flags as Shift+F/Shift+H; opens on a CLEAN release ≤3 px so
+right-drag pan still works from the curve) · `A` append 1 s
 to the ACTIVE lane only, holding its final value (other lanes keep their
 dotted hold — no nodes added; appended transitions get SINE handles, not
 cubic — only the shipped default layout keeps 1/3) ·
@@ -308,10 +409,27 @@ Shift ×4, Ctrl ×0.25; right-click releases; while captured, Space flips
 between fly (WASD) and POV (W/S) without releasing (`povCaptured`);
 scroll = fast burst either way, translucent graph line marks the camera
 (Options toggle, default on) ·
-`H` flatten handles — of EVERY selected node when multi-selected ·
-`Shift+H` (action "levelSel") level the selection ONTO the main node: all
-selected nodes take selIdx's value with flat handles (one horizontal
-line; <2 selected falls back to H) · `Z`/`X` toggle vertical/horizontal
+`H` (action "flath") level the selection ONTO the main node — all
+selected nodes take selIdx's value with flat handles, one horizontal
+line; a single selected node just gets flat handles (v10.5 re-deal:
+this was Shift+H's move) ·
+`Shift+H` (action "levelSel") LEVEL-LOCK the selection: level onto the
+main node, then the segments BETWEEN selected nodes hold HORIZONTAL via
+Node.levelOut — enforceLocks pins each right node's value to its
+left's, moveNode writes a RIGHT-end move back through the run (v10.6:
+EITHER end steers the line's height; interior nodes snap back on) and
+the facing handles stay flat; drawn as the straight lock's twin lines
+PLUS a
+translucent lane-color band between them; facing knobs hidden;
+inserted nodes stay ON the line, both halves locked; saved as a 9th
+`n` field;
+Shift+F⇄Shift+H swap a segment's lock type directly (each clears the
+other). BOTH lock toggles are PAIR-PRIORITY (v10.6, D64): with
+adjacent nodes selected they add/convert/remove locking ONLY between
+the selected nodes (all-already-locked = unlock; locks merely sharing
+an endpoint with the selection are untouched), and both take 2+ nodes
+(three nodes = two segments, each its own line); a lone selected
+endpoint still unlocks its own segment(s) · `Z`/`X` toggle vertical/horizontal
 node-drag lock (translucent guide line; per-selection) · `Ctrl+S/O` save/load ·
 `Ctrl+Z` undo · `Delete` deletes the selected node (interior deletes bridge
 the gap — neighbors keep positions/handles; last-node deletes shorten the
@@ -338,7 +456,12 @@ y-axis label + "Time (s)"
 x-axis label + faded per-gridline value labels, adaptive 1-2-5 grid lines.
 Insert allows 0.02 s from a node (INSERT_GAP); MIN transition length 0.01 s.
 Ctrl-snap steps are Options settings (settings.snapT/snapG/snapRoll;
-spinner arrows walk the 1-2-5 series; every Options row has a ↺ reset).
+spinner arrows walk the 1-2-5 series; every value row has a ↺ reset),
+and so are the axis references — per-axis LOCAL/GLOBAL radio pairs
+(v10.3 wording): "Horizontal snap (time)" local = Δt from previous
+(default) / global = absolute ride time; "Vertical snap (value)"
+local = Δ from previous / global = absolute (default); backed by
+settings.snapTAbsolute/snapVRelative.
 The S-slide axis constraint engages
 instantly, re-picks from total |dx| vs |dy| each event (can switch mid-
 drag), and is OVERRIDDEN by explicit Z/X; S engages mid-drag EVEN WITH
@@ -346,9 +469,10 @@ CTRL HELD (snap+slide compose), and while a drag is live or S is held
 as the slide key, key events with ANY modifier fire no bound action —
 Ctrl+S must not save (nor Ctrl+Z undo) mid-gesture; deliberate Ctrl+S
 at rest still saves; guide lines are colored by what
-the drag CHANGES — lane color = value changing (vertical guide), YELLOW =
-time changing (horizontal guide); yellow stays the time color everywhere
-else too (`TIME_COLOR`: "Time (s)" label, POV marker). Guides draw at
+the drag CHANGES — lane color = value changing (vertical guide), LIGHT
+PURPLE = time changing (horizontal guide); purple is the time color
+everywhere (`TIME_COLOR` rgb(200,165,255), v10.2 — was yellow, which
+geo yaw now owns: "Time (s)" label, POV marker). Guides draw at
 alpha 0.5; S-dragging a handle shows its dashed slide rail. Hovering the curve
 shows the insert dot plus the lane's value (Shift REPLACES it with the
 ANALYTIC slope from `BezierBaker.slopeAt` — differencing the baked
@@ -382,7 +506,9 @@ rail-center-vs-heartline radios and a segment-length spinner, both persisted
 per-user in AppSettings; spacing rounds to a whole number of equal segments;
 the CSV negates Z for NL2's right-handed world — see D40 before touching
 signs), Edit
-(Shortcuts dialog — rebind by clicking + pressing a key, ↺ resets an edited
+(Shortcuts dialog — TWO titled category columns since v10.3 (Graph
+editor | View/File/History, ACTIONS carries the category as its 4th
+field); rebind by clicking + pressing a key, ↺ resets an edited
 binding to default; Options dialog — the TWO FOV sliders 30–110°, mouse
 sensitivity, snap steps, "Show heartline (neon)" check — hairline
 self-illuminated yellow tube on the integrated path, app-wide default off,
@@ -429,13 +555,31 @@ was the auto-hiding menu popup; the same dialog customizes the FOUR
 G-force gradient stops — each a COLOR and a G VALUE spinner, defaults
 0/1/3/5 g, flat outside the ends and lerped between stops, saved as
 `gradcolors` + `gradstops` lines). Toolbar: lane toggles, Ripple time/value
-checks, "Resulting" DROPDOWN (CheckMenuItems, persisted per-user: dashed
-read-only overlays of the RESULTING pitch rate and yaw rate from
-FVDIntegrator.bodyRates, drawn on the roll lane's scale in the matching
-lane colors; auto-scale includes enabled ones; roll is deliberately NOT
+checks, "Resulting" popup (persisted per-user; a dark hover-dismissed Popup of
+CheckBoxes since v10.3 — stays open while picks are clicked, closes
+250 ms after the mouse leaves both it and the button, re-entry cancels;
+Popup's default consumeAutoHidingEvents makes the button click-to-close
+work. v10.4: the hide timer VERIFIES the real cursor via
+Robot.getMousePosition and re-arms instead of hiding while it's inside
+— JavaFX skips MOUSE_ENTERED when the popup appears under an
+already-moving mouse, which let the button's exit-timer hide it
+mid-hover. MODE-AWARE since v10.2 — the two entries retitle with the active
+section: over a FORCE section they are the resulting pitch/yaw rates
+from FVDIntegrator.bodyRates wearing the GEO palette; over a GEO
+section the felt VERTICAL/LATERAL G in the FORCE palette. Color rule: a
+curve wears its QUANTITY's palette. v10.3: enabled overlays share ONE
+RESULTING SCALE — fitted like lane scales, defaults ±60 °/s / −1..4 g,
+frozen during drags — labeled on a RIGHT-EDGE axis (ticks + rotated
+title; marginRight() widens 14→48 px while shown; the roll lane no
+longer auto-fits overlays), and hovering an overlay shows a dot + its
+value in the curve's color (insert dot keeps priority; Shift swaps in
+the numeric slope, v10.4). Roll is
+deliberately NOT
 offered — the resulting roll rate is the authored roll lane),
 POV, Append (no shortcut hints on buttons — the stats bar hint is
-generated from live bindings). Stats bar shows ride time, track length,
+generated from live bindings); the Resulting overlays span the WHOLE
+ride since v10.8 (v10.1-v10.7 drew them over the active section
+only). Stats bar shows ride time, track length,
 height range, top speed, Gv range. Window sizes itself to
 `Screen.getVisualBounds()` (capped 1400×880) — do not hardcode window sizes;
 that broke on the user's 1080p screen once already.
@@ -501,12 +645,28 @@ Existing headless invariants must pass unchanged.
   4.2k → 1.1k lines); ~~section-aware graph + '+' add-section~~ DONE
   v9.5 (D55).
 
-PHASE 1 IS COMPLETE (v9.5). Phase 2 next: geo sections first. The '+'
+PHASE 1 IS COMPLETE (v9.5). The '+'
 menu and a future piece selector are where "attach floating piece" and
 multi-piece editing land (user roadmap in SECTIONS-DESIGN §8).
 
-**Phase 2 — section types (easiest first):** geo sections (direct
-pitch/yaw/roll rates — NO solver needed) + reversal → straight/curve mode →
+**Phase 2 — section types (easiest first):** ~~geo sections~~ DONE
+v10.0 (D58: LaneSection base, quaternion-native GeoIntegrator,
+mode-aware editor, `section geo` in FVDD3, gated TESTING #12 incl. the
+2 mm force/geo equivalence canary) + UX rounds v10.1-v10.4 (D59-D62:
+unified view, zero-line fills, geo palette, section badges + delete,
+boundary return (Shift+B = all lanes), insert-drag, end-wall/end-snap,
+snap axis toggles,
+purple time, mode-aware Resulting with right-edge axis + hover/slope,
+hover-dismissed Resulting popup (cursor-verified, seam-padded),
+categorized Shortcuts dialog, straight-lock knob
+hiding + honest unlock, H re-deal + LEVEL LOCK v10.5, pair-priority
+lock toggles + multi-segment F + two-ended level v10.6, right-click
+node dialog + segment lock menu + Ctrl-snapped inserts v10.7,
+full-ride Resulting overlays + Gv/Gl color swap v10.8 — the
+D62 C1-preserving re-timing was reverted in v10.5) →
+~~reversal~~ DONE v10.9 (D67: badge-menu toggle, canonical generation
++ yaw placement, Gl negates / roll invariant, gated TESTING #13) →
+straight/curve mode →
 split/reconnect + piece placement gizmos → bridge sections + influence
 curves + "become real".
 

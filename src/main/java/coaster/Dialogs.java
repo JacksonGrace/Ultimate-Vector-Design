@@ -167,34 +167,56 @@ class Dialogs {
         helpKey(box, "Scroll", "zoom the time axis around the cursor; fully zoomed out = auto-fit.");
         helpKey(box, "Right-drag", "pan while zoomed in.");
         helpKey(box, "Hover curve", "white dot + the value there; hold Shift for the slope instead.");
-        helpKey(box, "Resulting (toolbar)", "dropdown of read-only derived curves: pitch rate and yaw rate (°/s, thin dashed, on the roll lane's scale, colored like the lane each answers to — pitch~vert G, yaw~lat G). No roll entry: the resulting roll rate IS the roll lane.");
-        helpText(box, "Value axes auto-scale to the curves. The dotted line after a "
+        helpKey(box, "Resulting (toolbar)", "read-only derived curves across the WHOLE ride (thin dashed; a small gap at each section boundary is deliberate): with a force section active, pitch/yaw rates (°/s, geo colors); with a geo section active, felt vertical/lateral G (force colors). The picks live in a menu that stays open while you toggle them and closes when the mouse leaves it (or the button). Enabled curves get their OWN axis on the RIGHT edge of the plot — fitted to the visible view like the lanes — and hovering a curve shows its value there (Shift for its slope). No roll entry: the resulting roll rate IS the roll lane. These overlays are the one thing without a zero-line tint.");
+        helpText(box, "Value axes auto-scale to the curves; every lane curve is "
+            + "tinted toward its zero line. The dotted line after a "
             + "lane's last node is its held final value — click it to add a real node. "
             + "Dragging past a plot edge grows that axis, faster the farther past. The "
             + "divider resizes the graph; the corner button on the 3D view collapses it.");
 
         helpHead(box, "Sections");
-        helpText(box, "The ride is a chain of SECTIONS sharing one time axis "
-            + "(the groundwork for Phase 2's geo/bridge/curve modes). The "
+        helpText(box, "The ride is a chain of SECTIONS sharing one time axis. The "
             + "section you are editing draws normally; the others are faint "
             + "strips — click one to edit it. Boundaries show as vertical "
             + "lines. Each section integrates from the previous one's end, at "
             + "its own design speed frozen when it was created.");
-        helpKey(box, "⊕ at the ride end", "click the circled + on the dashed line past the last section to append a 1 s force section holding the final values (its own undo step). Adding other section types and attaching floating pieces arrive with Phase 2.");
+        helpText(box, "Two section kinds so far. FORCE sections are the classic "
+            + "FVD model: vertical G, lateral G and roll rate lanes. GEO "
+            + "sections specify the motion DIRECTLY: pitch (teal), yaw "
+            + "(yellow) and roll rates (°/s) — gravity does not bend them, "
+            + "the track goes exactly where the rates point it (zero rates "
+            + "= dead straight, however the track is oriented). Selecting a "
+            + "geo section recolors and relabels the lane buttons and axes "
+            + "(Pitch/Yaw/Roll, all °/s with the roll snap step); rail "
+            + "colors and stats still show the forces the geometry produces "
+            + "at its design speed.");
+        helpText(box, "The whole graph always shows ONE kind of quantity — "
+            + "the active section's: editing a geo section, force strips "
+            + "display their RESULTING pitch/yaw/roll rates; editing a "
+            + "force section, geo strips display the forces they produce. "
+            + "So curves join up across every boundary, and B on a "
+            + "boundary node RETURNS it there — the node takes the "
+            + "neighboring section's value and slope at the boundary "
+            + "(exact for same-kind neighbors, from the resulting curves "
+            + "across kinds; also a button in the node's double-click "
+            + "dialog).");
+        helpKey(box, "Type badge", "the small force/geo tag at the top of each strip names its kind (a ◀ marks a reversed section); click it for per-section actions: REVERSED — the train runs the section's shape back-to-front (same shape, opposite direction; your lanes still read in the AUTHORED direction, and the faint strip shows the resulting train-direction picture; join it to a LEVEL upstream end — a pitched or banked seam can't fully match and shows honestly) — and Delete section (the ride keeps at least one; downstream sections re-chain from the new end).");
+        helpKey(box, "⊕ at the ride end", "click the circled + on the dashed line past the last section to add one (its own undo step): a 1 s FORCE or GEO section HOLDING the ride's end state (end forces / end rates), so the transition is seamless either way. Bridge/curve modes and attaching floating pieces come later in Phase 2. Any open menu dismisses on the next click, including on the graph.");
 
         helpHead(box, "Nodes");
-        helpKey(box, "Click curve", "insert a node exactly ON it — the shape does not change.");
-        helpKey(box, "Drag", "move freely; the readout shows Δt from the previous node + value.");
-        helpKey(box, "Ctrl", "snap transition time and absolute value (steps set in Options; transitions can be as short as 0.01 s).");
+        helpKey(box, "Click curve", "insert a node exactly ON it — the shape does not change. Keep the button down to drag the new node away in the same motion (Ctrl snaps as usual; insert + drag = one undo step). Holding Ctrl while HOVERING snaps the insert dot in time (per the horizontal snap reference; its value keeps riding the curve) — the click inserts at that snapped spot.");
+        helpKey(box, "Right-click", "on a NODE: its editor dialog (same as double-click). On a SEGMENT: its lock menu — Unlocked / Straight / Horizontal (one segment at a time; same locks as Shift+F / Shift+H). Right-DRAG still pans: the menu only opens on a clean click.");
+        helpKey(box, "Drag", "move freely; the readout shows Δt from the previous node + value. A lane's LAST node stops at the section end (where the other lanes already are) — release and grab it again to pull past and extend the section.");
+        helpKey(box, "Ctrl", "snap time and value (steps set in Options; transitions can be as short as 0.01 s). Each axis can snap relative to the previous node or to the absolute grid — two Options checkboxes; defaults: time = Δt, value = absolute. The section end is a snap point of its own, and grid points right next to it are ignored — snapping near the end lands exactly ON it.");
         helpKey(box, "S (hold)", "slide along one axis from the start point — picked instantly from the dominant direction, switches if you pull the other way. Combines with Ctrl snapping: pressing S mid-drag with Ctrl held slides — it never triggers Ctrl+S save (no modifier combo fires during a drag).");
-        helpKey(box, "Z / X", "sticky vertical/horizontal lock; overrides S, same key releases. Guides: lane color = value changing, yellow = time changing.");
+        helpKey(box, "Z / X", "sticky vertical/horizontal lock; overrides S, same key releases. Guides: lane color = value changing, light purple = time changing.");
         helpKey(box, "Arrows", "nudge by snap steps; Ctrl+arrow lands ON the grid; hold to glide.");
         helpKey(box, "Shift+click / box", "multi-select (drag a box on empty plot); dragging any member moves the group. The MAIN node (full ring) is the last one clicked — or the earliest in a box.");
-        helpKey(box, "Delete / rt-click", "remove node(s): interior deletes bridge the gap, deleting the last node shortens the ride; node 0 stays.");
+        helpKey(box, "Delete", "remove the selected node(s): interior deletes bridge the gap, deleting the last node shortens the ride; node 0 stays. (Right-click no longer deletes — it opens the node's dialog.)");
         helpKey(box, "Double-click", "type the transition time, value and handle sizes exactly — typed handle sizes slide the knob along its current angle (like S). On the first node the ride's start speed is edited here too.");
-        helpKey(box, "B · H · F", "smooth/broken · level the handles (every selected node) · straighten between two adjacent selected nodes. On a node at a SECTION EDGE, B instead matches its single handle's slope across the boundary — a one-time move (also a button in its double-click dialog).");
-        helpKey(box, "Shift+H", "level the selection ONTO the main node: all selected nodes take its value with flat handles — one horizontal line.");
-        helpKey(box, "Shift+F", "straight-LOCK the segment between two adjacent selected nodes: it is drawn as twin thin lines and STAYS a line — move an endpoint and the line follows; its knobs only slide along it. Shift+F with either endpoint selected unlocks. Inserting on a locked segment keeps both halves locked.");
+        helpKey(box, "B · H · F", "smooth/broken · level the selection onto the MAIN node (one node: flatten its handles) · straighten between two adjacent selected nodes. On a node at a SECTION EDGE, B instead returns it to the boundary — the neighboring section's value AND slope (also a button in its double-click dialog); Shift+B does that for ALL THREE lanes' edge nodes at once (one undo step).");
+        helpKey(box, "Shift+H", "LEVEL-LOCK the selection (2+ nodes): they jump onto the main node's value and the segments BETWEEN the selected nodes lock HORIZONTAL — drawn as twin lines with a tinted band between them. The run stays level through any edit: drag EITHER END vertically to move the whole line, interior nodes are pinned to it, and nodes inserted on it stay on the line. Selecting all of a locked stretch's nodes and pressing Shift+H again unlocks it; a lone selected endpoint unlocks too. Same key swaps a straight-locked segment to level and vice versa.");
+        helpKey(box, "Shift+F", "straight-LOCK the segments BETWEEN the selected nodes (2+ — three selected nodes lock two segments): drawn as twin thin lines (no fill — that's the level lock) and each STAYS a line — move an endpoint and its line follows. Facing handle knobs are hidden (they can't change a line). Locks merely NEIGHBORING the selection are never disturbed — the toggle only adds, converts or removes locking between the selected nodes (all already locked = unlock). A lone selected endpoint unlocks its segment(s); a node whose two sides ended up at DIFFERENT slopes comes out broken (matching slopes — e.g. a node inserted on the line — stay smooth). Inserting on a locked segment keeps both halves locked.");
         helpKey(box, "A / Append", "+1 s at the ride end (active lane only; the others keep holding) — or a 1 s flat hold after the selected node (all lanes shift).");
         helpKey(box, "Ripple checks", "drags also shift every later node in time and/or value (toolbar).");
 
@@ -218,13 +240,13 @@ class Dialogs {
         helpKey(box, "Fly", "right-click the 3D view: WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits keeping the view.");
         helpKey(box, "POV", "Space. Starts hands-off: the camera sits on the track (following edits) while W/S and the S key stay with the graph. Right-click CAPTURES: mouse hides, W/S ride at simulated speed (Shift/Ctrl faster/slower), no mouse look; right-click releases. Scroll jumps along the track either way.");
         helpKey(box, "Space (captured)", "flips between fly (WASD) and POV (W/S) with the mouse still hidden.");
-        helpText(box, "The yellow line on the graph marks the POV camera (Options "
-            + "toggle). The neon heartline hides itself while riding POV.");
+        helpText(box, "The light-purple line on the graph marks the POV camera "
+            + "(Options toggle). The neon heartline hides itself while riding POV.");
 
         helpHead(box, "Menus & app.settings");
         helpKey(box, "File > Export NL2 CSV", "(Ctrl+E) writes the track for NoLimits 2's CSV import. Choose heartline (default) or rail center (the spline NL2 builds its track around), plus the point spacing; both remembered per-user.");
-        helpKey(box, "Edit > Shortcuts", "click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
-        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps (arrows walk the 1-2-5 series) · neon heartline · 3D node markers · POV marker. Every row has a ↺ reset. Per-user.");
+        helpKey(box, "Edit > Shortcuts", "grouped by category (Graph editor · View · File · History): click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
+        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps (arrows walk the 1-2-5 series) · horizontal/vertical snap LOCAL vs GLOBAL (horizontal: local = Δt from the previous node, global = absolute ride time — default local; vertical: local = Δ value from the previous node, global = absolute values — default global) · neon heartline · 3D node markers · POV marker. Per-user.");
         helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start point (y = height above the ground plane), start speed (also on the first node's double-click dialog), rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-app.coaster, saved in the .fvd.");
         helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it. Path-shaping values (heart, gauge, start, speed) ALSO land in the document history, so after closing, plain Ctrl+Z steps them back too.");
 
@@ -270,25 +292,29 @@ class Dialogs {
     }
 
     /** All shortcuts, rebindable: click a key button, press the new combo.
-     *  Edited rows get a ↺ button that restores the default. Persisted. */
+     *  Edited rows get a ↺ button that restores the default. Persisted.
+     *  Grouped by category into TWO titled columns (v10.3 — the flat
+     *  list outgrew the screen): "Graph editor" fills the left column,
+     *  the smaller categories (View / File / History) stack right. */
     void showShortcutsDialog() {
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
         dlg.initModality(Modality.WINDOW_MODAL);
         dlg.setTitle("Shortcuts");
 
-        GridPane grid = new GridPane();
-        grid.setHgap(12);
-        grid.setVgap(8);
-        grid.setPadding(new Insets(14));
-
         String[] capturing = { null };       // action id awaiting a key press
         List<Runnable> rowRefreshers = new ArrayList<>();
         Runnable refreshAll = () -> rowRefreshers.forEach(Runnable::run);
 
-        int row = 0;
+        java.util.LinkedHashMap<String, GridPane> cats = new java.util.LinkedHashMap<>();
         for (String[] a : AppSettings.ACTIONS) {
             String id = a[0];
+            GridPane grid = cats.computeIfAbsent(a[3], k -> {
+                GridPane g = new GridPane();
+                g.setHgap(12);
+                g.setVgap(8);
+                return g;
+            });
             Button combo = new Button();
             combo.setPrefWidth(110);
             Button reset = new Button("↺");   // circle-and-arrow: back to default
@@ -308,11 +334,25 @@ class Dialogs {
                 refreshAll.run();
                 app.rebuildTrack();                // stats-bar hint shows bindings
             });
-            grid.addRow(row++, new Label(a[1]), combo, reset);
+            grid.addRow(grid.getRowCount(), new Label(a[1]), combo, reset);
         }
         refreshAll.run();
 
-        Scene sc = new Scene(grid);
+        VBox left = new VBox(6);
+        VBox right = new VBox(6);
+        boolean first = true;
+        for (var entry : cats.entrySet()) {
+            Label title = new Label(entry.getKey());
+            title.setStyle("-fx-font-weight: bold; -fx-font-size: 13;");
+            VBox block = new VBox(6, title, entry.getValue());
+            (first ? left : right).getChildren().add(block);
+            if (!first) VBox.setMargin(block, new Insets(6, 0, 0, 0));
+            first = false;
+        }
+        HBox cols = new HBox(30, left, right);
+        cols.setPadding(new Insets(14));
+
+        Scene sc = new Scene(cols);
         sc.addEventFilter(KeyEvent.KEY_PRESSED, ev -> {
             if (capturing[0] == null) return;
             ev.consume();
@@ -554,6 +594,48 @@ class Dialogs {
         Spinner<Double> snapRollSp = snap125Spinner(0.5, 50, app.settings.snapRoll());
         wireOptionSpinner(snapRollSp, app.settings::setSnapRoll);
 
+        // snap axis references (v10.2; Local/Global wording v10.3):
+        // HORIZONTAL (time) — Local = Δt from the previous node,
+        // Global = the absolute ride-time grid; VERTICAL (value) —
+        // Local = Δ from the previous node's value, Global = absolute
+        // values. Defaults: horizontal LOCAL, vertical GLOBAL (the
+        // historical behavior). Mutually exclusive per axis.
+        ToggleGroup hSnapGrp = new ToggleGroup();
+        RadioButton hLocal = new RadioButton("Local");
+        RadioButton hGlobal = new RadioButton("Global");
+        hLocal.setToggleGroup(hSnapGrp);
+        hGlobal.setToggleGroup(hSnapGrp);
+        hLocal.setTooltip(new Tooltip("Snap the transition length — Δt from the previous node"));
+        hGlobal.setTooltip(new Tooltip("Snap to the absolute ride-time grid (the axis ticks)"));
+        (app.settings.snapTAbsolute() ? hGlobal : hLocal).setSelected(true);
+        Runnable hApply = () -> {
+            boolean glob = hGlobal.isSelected();
+            app.pushMenuEdit(
+                () -> { (glob ? hLocal : hGlobal).setSelected(true); app.settings.setSnapTAbsolute(!glob); },
+                () -> { (glob ? hGlobal : hLocal).setSelected(true); app.settings.setSnapTAbsolute(glob); });
+            app.settings.setSnapTAbsolute(glob);
+        };
+        hLocal.setOnAction(ev -> hApply.run());
+        hGlobal.setOnAction(ev -> hApply.run());
+
+        ToggleGroup vSnapGrp = new ToggleGroup();
+        RadioButton vLocal = new RadioButton("Local");
+        RadioButton vGlobal = new RadioButton("Global");
+        vLocal.setToggleGroup(vSnapGrp);
+        vGlobal.setToggleGroup(vSnapGrp);
+        vLocal.setTooltip(new Tooltip("Snap the CHANGE in value — Δ from the previous node"));
+        vGlobal.setTooltip(new Tooltip("Snap to the absolute value grid (0.0, 0.1, 0.2 …)"));
+        (app.settings.snapVRelative() ? vLocal : vGlobal).setSelected(true);
+        Runnable vApply = () -> {
+            boolean loc = vLocal.isSelected();
+            app.pushMenuEdit(
+                () -> { (loc ? vGlobal : vLocal).setSelected(true); app.settings.setSnapVRelative(!loc); },
+                () -> { (loc ? vLocal : vGlobal).setSelected(true); app.settings.setSnapVRelative(loc); });
+            app.settings.setSnapVRelative(loc);
+        };
+        vLocal.setOnAction(ev -> vApply.run());
+        vGlobal.setOnAction(ev -> vApply.run());
+
         CheckBox povMark = new CheckBox("POV position marker on the graph");
         povMark.setSelected(app.settings.povMarker());
         povMark.setOnAction(ev -> {
@@ -584,6 +666,16 @@ class Dialogs {
         grid.add(new Label("Snap: roll rate (°/s)"), 0, r);
         grid.add(snapRollSp, 1, r);
         grid.add(optionReset(() -> snapRollSp.getValueFactory().setValue(AppSettings.SNAP_ROLL_DEFAULT)), 3, r++);
+        grid.add(new Label("Horizontal snap (time)"), 0, r);
+        grid.add(new HBox(12, hLocal, hGlobal), 1, r, 2, 1);
+        grid.add(optionReset(() -> {
+            if (!hLocal.isSelected()) { hLocal.setSelected(true); hApply.run(); }
+        }), 3, r++);
+        grid.add(new Label("Vertical snap (value)"), 0, r);
+        grid.add(new HBox(12, vLocal, vGlobal), 1, r, 2, 1);
+        grid.add(optionReset(() -> {
+            if (!vGlobal.isSelected()) { vGlobal.setSelected(true); vApply.run(); }
+        }), 3, r++);
         grid.add(heartCheck, 0, r++, 3, 1);
         grid.add(markCheck, 0, r++, 3, 1);
         grid.add(povMark, 0, r, 3, 1);

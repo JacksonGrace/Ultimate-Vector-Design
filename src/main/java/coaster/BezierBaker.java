@@ -43,11 +43,19 @@ public class BezierBaker {
         // straight — the editor re-chords its facing handles after every
         // edit. Pure data here; enforcement lives in the UI layer.
         public boolean straightOut = false;
+        // level-lock (Shift+H, v10.5): the segment leaving this node is
+        // held HORIZONTAL — the right node takes this node's value and
+        // the facing handles stay flat. Mutually exclusive with
+        // straightOut (the toggles clear each other).
+        public boolean levelOut = false;
 
         public Node(double t, double val) {
             this.t = t;
             this.val = val;
         }
+
+        /** Either lock owns the segment leaving this node. */
+        public boolean lockedOut() { return straightOut || levelOut; }
 
         public Node copy() {
             Node n = new Node(t, val);
@@ -55,6 +63,7 @@ public class BezierBaker {
             n.inFrac = inFrac;   n.inDv = inDv;
             n.smooth = smooth;
             n.straightOut = straightOut;
+            n.levelOut = levelOut;
             return n;
         }
     }

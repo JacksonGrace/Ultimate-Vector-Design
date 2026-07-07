@@ -121,6 +121,50 @@
     the canonical FVDD3 round-trip runs on a two-section document.
     All passed 2026-07-05/06.
 
+12. **Phase-2 geo gates (v10.0, D58 — scratch Phase2Gate; 28 checks,
+    supersedes nothing: #11's bit-for-bit and pass-D checks are
+    RE-RUN inside it and must stay green).**
+    (a) Constant-rate analytics: 30 °/s pitch / 45 °/s yaw / 50 °/s
+    roll geo sections produce EXACTLY rate × t_last of angle change —
+    assert against the LAST SAMPLE's t, not the nominal duration: the
+    integrator loop (force and geo alike) records its final sample at
+    the largest accumulated t ≤ duration, so a 2 s section's last
+    sample can land at 1.99 s (float accumulation; pre-existing
+    cadence, do not "fix" the test by padding durations).
+    (b) Pure pitch stays in the x-y plane; pure roll leaves the path
+    straight; level yaw holds height and up; a dive at vDesign 10
+    changes pitch by exactly rate × t (rate integration is
+    speed-independent even though the SHAPE is not).
+    (c) Chirality: geo +yaw turns the same direction as force +Gl.
+    (d) EQUIVALENCE CANARY (the strong one): feed the default layout's
+    resulting bodyRates back in as geo keyframes at the same
+    entry/vDesign — end position within 2 mm over 407 m, end frame
+    within 0.001°. A sign error anywhere in Ω/quaternion/frame
+    conventions diverges wildly here.
+    (e) Mixed force→geo→force chain: t strictly increasing, no
+    boundary jump, force prefix BITWISE equal to the solo compile;
+    editing the geo section or changing v0 moves nothing upstream
+    (§0); FVDD3 round-trip byte-identical with the geo section aboard,
+    modes/vDesign/flags surviving.
+    (f) Felt-G recording: straight level geo = exactly 1 g / 0;
+    pull-up entry Gv = ω·v/g + 1. Coaster.holdSection and
+    GeoSection.straight hold their values.
+    All passed 2026-07-06.
+
+13. **Reversal gates (v10.9, D67 — in the same scratch Phase2Gate).**
+    Forward vs reversed compile of the default layout at the same
+    entry: same count; PAIRWISE DISTANCES identical to 1e-9 (the §9
+    "same point set" gate, robust to the rigid placement); U.y, v and
+    Gv BITWISE equal per mirrored sample and Gl bitwise NEGATED (the
+    canonical run at the ENTRY HEIGHT makes this exact — a canonical
+    run at y=0 was 1 ulp off, which is why the entry-height rule
+    exists); t/s ascend in traversal order; the reversed first sample
+    sits exactly on the entry pose with exact horizontal heading;
+    force + reversed-force chain compiles continuous and monotonic;
+    a reversed geo section with +50 °/s roll reads +50 in passA —
+    roll rate is traversal-INVARIANT (T and the bank rate both flip
+    and cancel; felt Gl flips instead). All passed 2026-07-06.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.
@@ -197,10 +241,11 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
    angle (curve steepens/relaxes but the tangent direction at the node
    is unchanged — like an S-drag); on node 0 the dialog shows "Start
    speed (m/s)" instead of a transition time and applying it updates the
-   Coaster-menu spinner and the stats top speed. Right-click or Delete
+   Coaster-menu spinner and the stats top speed. The Delete
    key removes the selected node: neighbors
    stay put (positions AND handle settings) with the curve bridging the
-   gap; deleting the last node shortens the ride; node 0 refuses.
+   gap; deleting the last node shortens the ride; node 0 refuses
+   (v10.7: right-click no longer deletes — see step 48).
 6. A appends 1 s; ride time in stats bar grows by 1.0; the appended
    transition's handles sit at the SINE fraction (readout ~36%, not 33%).
    ONLY the active lane gets the new node — switch lanes: the other two
@@ -290,11 +335,11 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     never shows where a click would refuse.
 21. Select a node, press Z: translucent vertical guide appears, drags only
     change value; Z again unlocks. X: horizontal guide, drags only change
-    time. Selecting another node clears the lock. H levels the selected
-    node's handles (both dv 0) — with a multi-selection EVERY selected
-    node's handles go flat (values untouched). Shift+H with 2+ selected:
-    every selected node jumps to the PRIMARY node's value with flat
-    handles — the run becomes one horizontal line; segments to unselected
+    time. Selecting another node clears the lock. H with one node
+    selected levels its handles (both dv 0); with 2+ selected every
+    node jumps to the PRIMARY node's value with flat handles — the run
+    becomes one horizontal line (v10.5: this was Shift+H; Shift+H now
+    LEVEL-LOCKS, see step 46); segments to unselected
     neighbors still transition. Primary = last clicked, or the EARLIEST
     node of a box selection (check its ring). All keys rebindable in
     Shortcuts.
@@ -339,8 +384,9 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     IMMEDIATELY to the dominant axis and SWITCHES axes if you pull further
     the other way (total dx vs dy); the node returns to its original
     row/column; Shift while dragging does nothing axis-wise. Guide colors:
-    vertical guide = lane color (value changing), horizontal = yellow
-    (time changing); "Time (s)" label is yellow. Z/X override S's choice
+    vertical guide = lane color (value changing), horizontal = light purple
+    (time changing, v10.2); "Time (s)" label is the same purple. Z/X
+    override S's choice
     (press again to return it). With exactly two ADJACENT nodes selected,
     F straightens the segment between them into a line (smooth neighbors
     stay C1). Ctrl-drag a handle far out: snaps at 0.1 steps up
@@ -398,13 +444,23 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     pre-lock handle shape. In the node dialog the handle rows read just
     "In handle"/"Out handle" (no "(fraction)").
 35. Toolbar "Resulting" dropdown: check "Pitch rate" — a thin dashed
-    green curve appears (°/s on the roll lane's scale); check "Yaw rate"
-    — dashed blue joins it. On the default layout the pitch-rate curve
+    TEAL curve appears (rates wear the geo palette since v10.2); check
+    "Yaw rate" — dashed YELLOW joins it. Both stretch across the WHOLE
+    ride (v10.8; a tiny deliberate gap at each section boundary — the
+    derived data smears there) on their OWN shared scale, labeled
+    down the plot's RIGHT edge (v10.3: ticks + rotated "Resulting rate
+    (°/s)" title; the plot narrows slightly while shown; the roll
+    lane's axis no longer expands for them). On the
+    default layout the pitch-rate curve
     swings through the hills while yaw stays ~0 (it's a no-lateral
     layout). There is NO roll entry (the resulting roll rate is the
-    roll lane itself). The roll lane's value axis expands if an enabled
-    curve pokes past it; unchecking both restores the default axis.
+    roll lane itself). Unchecking both removes the right axis and
+    restores the full plot width.
     Picks survive an app restart. Editing nodes updates the curves live.
+    With a GEO section active the same two picks retitle to "Vertical
+    G (g)" / "Lateral G (g)" and draw the felt forces in the FORCE
+    palette (Gv blue / Gl green since v10.8 — swapped), the right axis
+    retitling to "Resulting G (g)".
 36. Redo: drag a node, Ctrl+Z — it snaps back; Ctrl+Shift+Z — the drag
     returns. Undo ×5 then redo ×5 walks forward through the same states.
     After an undo, make ANY new edit: Ctrl+Shift+Z now does nothing (the
@@ -479,6 +535,195 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     drag it freely (no lock). Same from section 1's LAST node toward
     section 2. B on the ride's very first/last node does nothing;
     B on interior nodes still toggles smooth/broken.
+41. Geo sections (v10.0, behavior updated v10.1): click the ⊕ → the
+    menu offers "Add geo section (1 s hold)" (bridge/curve and
+    attach-piece still disabled). Add one after the default layout:
+    the track CONTINUES ITS END MOTION (the new section holds the
+    resulting end pitch/yaw + the authored roll — the default layout
+    ends level, so it runs near-straight), the lane buttons relabel
+    AND recolor from Vert G (blue) / Lat G (green) / Roll (orange) —
+    Gv/Gl colors swapped in v10.8 — to Pitch (teal) / Yaw (yellow) /
+    Roll (orange), the
+    y-axis label reads "Pitch rate (deg/s)" and the value axis shows
+    ±60. Drag the pitch lane's end node up to ~40: the extension
+    curls upward live; yaw bends it sideways; roll twists it (watch
+    the ties). 3D node markers wear the geo colors too. Ctrl-drag in
+    ANY geo lane snaps by the ROLL step (whole °/s, not 0.1 g). The
+    1 g green reference line is gone in geo lanes; hover readouts and
+    the node dialog say °/s. Add a FORCE section after the geo one:
+    its lanes hold the felt end forces (stats bar Gv range doesn't
+    jump). Undo removes sections one at a time and restores the right
+    mode/labels/colors; redo brings them back. Save → load: modes
+    survive ("section geo" line in the .fvd); the rail G-force
+    gradient colors the geo stretch by the forces it actually
+    produces (dive in a geo section = red at the pull-out even though
+    no force lane authored it). POV rides the whole chain seamlessly.
+42. Section UX round (v10.1): with force + geo sections in the ride —
+    UNIFIED VIEW: editing the geo section, the force strip shows
+    faint teal/yellow/orange RATE curves (its resulting rates — the
+    default layout's pitch swings, yaw flat); click into the force
+    section and the geo strip shows faint blue/green/orange FORCE
+    curves (what its rates make the rider feel; Gv blue / Gl green
+    since the v10.8 swap). Curves meet at the
+    boundary with no unit clash; all strips share the active axes.
+    Every lane curve (active, dimmed lanes, strips) has a translucent
+    same-color fill down to its zero line; the dashed "Resulting"
+    overlays have NO fill and draw ONLY across the section being
+    edited. BOUNDARY RETURN: drag a section's first node somewhere
+    wild, press B (or "Match boundary (value + slope)" in its
+    dialog) — the node jumps back to the previous section's end value
+    and takes its end slope; works at force↔geo boundaries too (from
+    the resulting curves) and when the neighbor lane HOLDS at the
+    boundary the matched slope is flat. BADGES: every strip wide
+    enough shows a force/geo tag at its top-left (active = brighter);
+    click it → info line + "Delete section" (greyed with one section
+    only). Deleting a middle section re-chains the later ones from
+    the new end; deleting the active one selects its predecessor
+    (labels/colors follow); Ctrl+Z restores the section, redo deletes
+    again. MENUS: with the ⊕ or badge menu open, click ANYWHERE on
+    the graph — the menu closes and nothing else happens (no node
+    grabbed, no insert). INSERT-DRAG: press on the curve and drag
+    without releasing — the node inserts and follows the mouse in one
+    motion; same with Ctrl held from the start (snapping live);
+    Ctrl+Z after release removes the node entirely (one step).
+43. Snap/boundary round (v10.2): make a lane end EARLY in a section
+    (drag its last node left of the other lanes' end). Plain-drag it
+    right: it STOPS DEAD at the section end — release, grab it again,
+    and now it pulls past, extending the section (two deliberate
+    gestures). Ctrl-drag it toward the end: within half a snap step of
+    the end there is NO grid stop just before it — it snaps exactly ON
+    the end (readout Δt lands on the full remaining gap); further left
+    the normal grid points return. Options: check "Time snap: absolute
+    ride time" — Ctrl-drags now land nodes on the axis-tick grid
+    (whole 0.1 s positions even when the previous node sits off-grid);
+    check "Value snap: Δ from previous node" — Ctrl-drags land values
+    at 0.1 g offsets from the previous node's value instead of the
+    absolute grid; both survive a restart; Ctrl+arrow matches the same
+    references. B at a force↔geo boundary: ONE press lands the edge
+    node on the neighbor's boundary value/slope (a second press does
+    nothing new; matching the section END against a cross-mode NEXT
+    section may take a couple of presses — its felt values move with
+    our exit pose). No tiny angled connector at strip seams (derived
+    curves and overlays stop ~0.025 s short of the boundary). Click
+    directly ON a faint strip's curve: the section ALWAYS activates
+    (previously stolen as a lane switch when the click lined up with a
+    held value). Time is LIGHT PURPLE everywhere: "Time (s)" label,
+    horizontal drag guide, POV marker line.
+44. Dialog/overlay round (v10.3): Edit > Shortcuts now shows TWO
+    columns with bold category titles — Graph editor (left), View /
+    File / History (right); rebinding and ↺ still work in every
+    column and the dialog fits a 1080p screen. Edit > Options: the
+    snap references are two LOCAL/GLOBAL radio rows — "Horizontal
+    snap (time)" defaults Local, "Vertical snap (value)" defaults
+    Global; flip them and Ctrl-drags follow (see step 43); ↺ restores
+    each default; choices survive a restart. "Resulting ▾": the menu
+    is a dark popup that STAYS OPEN while clicking the checkboxes
+    (toggle both in one visit) and closes ~¼ s after the mouse leaves
+    both the popup and the button — hovering back inside cancels the
+    close; hovering the button itself never closes it. With a curve
+    enabled: value ticks run down the RIGHT edge of the plot with a
+    rotated axis title; hover the dashed curve — a dot rides it with
+    "pitch 23.4 °/s" (or "Gv 1.82 g" in geo sections) in the curve's
+    color; the readout follows the mouse along the curve and never
+    appears while the white insert dot is showing on the editable
+    curve.
+45. Boundary/lock round (v10.4; the C1 "no-kink" re-timing that
+    shipped here was REVERTED in v10.5 — re-timing squishes ALL
+    handles with their segments again, kinks included, per user
+    decision). Shift+B on a section's first/last node:
+    ALL THREE lanes' edge nodes jump to their boundary values/slopes
+    at once; one Ctrl+Z restores all three (rebindable as "Match
+    boundary: all lanes"). Straight-lock: lock a segment (Shift+F) and
+    select an endpoint — the knobs FACING the locked segment are gone
+    (nothing to drag; the line can't bend); outer knobs remain.
+    Insert a node on the locked segment, drag it (two straight
+    halves), then Shift+F to unlock: the node comes out BROKEN
+    (square) since its sides have different slopes — but insert on a
+    locked segment and unlock WITHOUT moving anything: it stays
+    smooth (slopes match). "Resulting" popup: click the button and
+    IMMEDIATELY click a checkbox — the popup must NOT vanish while
+    the mouse is over it (it only closes ~¼ s after the cursor is
+    truly outside both popup and button — flick the mouse in and out
+    quickly to confirm re-entry cancels the close). Shift while
+    hovering a resulting curve swaps its readout to the slope
+    ("pitch −14.2 °/s/s"), toggling live like the lane hover.
+46. Level lock (v10.5, toggles refined v10.6): select 3 adjacent nodes
+    at different values,
+    press H — they jump onto the MAIN node's value, one horizontal
+    line (H with a single node still just flattens its handles).
+    Undo, then press Shift+H instead: same leveling PLUS the run
+    locks — twin thin lines with a TINTED BAND between them (the
+    straight lock's look plus fill). Drag an interior locked node
+    vertically: it snaps back onto the line (horizontal moves work);
+    drag EITHER END node vertically: the whole line moves with it
+    (v10.6 — both ends steer). Click-insert on the locked stretch: the
+    new node lands ON the
+    line and both halves stay locked; dragging it slides along the
+    line only. Knobs facing the locked stretch are hidden. Shift+F
+    with the two endpoints of a level segment selected: the band
+    disappears, plain twin lines remain (now a straight lock — drag
+    an endpoint vertically and the line ANGLES instead of staying
+    level); Shift+H on it again: it re-levels and the band returns
+    (direct swap both ways). Shift+H with ONE locked node selected
+    unlocks (kinked joints come out broken). Locks survive save/load
+    (9th n-field) and Ctrl+Z steps each lock/unlock back. RESULTING
+    POPUP SEAM: open the popup and park the cursor exactly on the
+    boundary line between the button and the popup — it must NOT
+    close (the old 2 px gap read as "outside").
+47. Pair-priority toggles + multi-F (v10.6): straight-lock a segment,
+    then select ITS RIGHT NODE plus the next unlocked node and press
+    Shift+F — the NEW segment locks and the existing lock is
+    UNTOUCHED (previously this unlocked the neighbor instead). Same
+    drill with Shift+H against a level-locked neighbor. Select THREE
+    nodes and Shift+F: both segments between them lock straight (two
+    independent lines hinging at the middle node — drag it and both
+    stay straight); select all three again, Shift+F unlocks both.
+    Select a locked pair plus one unlocked neighbor segment's node:
+    Shift+F locks the unlocked one too (mixed = lock everything
+    between). Selecting a level pair and its straight-locked neighbor
+    pair, Shift+H: everything between the selected nodes goes LEVEL
+    (the straight neighbor converts — it was between selected nodes,
+    not merely neighboring). A single selected endpoint still
+    unlocks its own segment(s), both lock types.
+48. Right-click + snapped inserts (v10.7): right-click a NODE — its
+    editor dialog opens (identical to double-click; the node gets
+    selected; NOTHING is deleted). Right-click the CURVE between two
+    nodes — a three-way menu appears: Unlocked / Straight /
+    Horizontal, with the segment's current state checked; picking
+    Straight shows the twin lines, Horizontal levels the right node
+    onto the left and adds the tinted band, Unlocked clears either
+    (kinked joints come out broken); each pick is one undo step and
+    the menu dismisses on the next graph click like the other menus.
+    Start a right-DRAG on the curve while zoomed in: it PANS (no menu
+    on release after real movement); a clean right-click on empty
+    plot still just pans/does nothing. Ctrl-hover the curve: the
+    insert dot JUMPS between snapped times (Δt grid from the previous
+    node by default; absolute grid when the horizontal snap is
+    Global) while staying ON the curve vertically; pressing Ctrl with
+    the mouse parked moves the dot without wiggling; clicking inserts
+    exactly at the dot (drag-chain and undo unchanged); near a node
+    where the snapped spot has no room the dot disappears and the
+    click does nothing.
+49. Reversal (v10.9): click a section's badge → check "Reversed". The
+    badge gains a ◀ and the 3D track re-lays that section run
+    BACK-TO-FRONT from the same entry point: with the default layout
+    reversed as section 2 of a chain, the shape is the same hills
+    mirrored against the direction of travel (the train hits the
+    original ride's END first). POV rides through it seamlessly in
+    chain order. The active reversed section still edits its lanes in
+    the AUTHORED direction (drag a Gv node and the mirrored stretch
+    updates live); as an INACTIVE strip it draws the derived
+    train-direction curves (like a cross-mode strip). B on a
+    neighbor's boundary node matches against the reversed section's
+    compiled curves (values converge in one press, prev side). If the
+    upstream section ends banked or pitched, the seam shows a visible
+    kink — ending it level joins cleanly (yaw-only alignment is
+    deliberate). Toggle off → exact original geometry returns; Ctrl+Z
+    steps the toggle; save → load keeps it (5th token of the
+    `section` line, all FVDD3 files since v9.0 carry it). Stats bar
+    Gv range unchanged by reversal; watch the felt LATERAL G flip
+    sign on a reversed turning section (Resulting → Lateral G over a
+    geo one, or rail colors on a force one).
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes

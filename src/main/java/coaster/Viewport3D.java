@@ -346,9 +346,10 @@ class Viewport3D {
      *  but the scene graph only churns when something relevant changed. */
     void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx, double tOff) {
         List<BezierBaker.Node> laneNodes = app.lanes.get(lane);
+        Color laneCol = app.editor.laneColor(lane);   // mode palette (geo: teal/yellow)
         StringBuilder sb = new StringBuilder();
         sb.append(lane).append('|').append(selIdx).append('|').append(sel)
-          .append('|').append(tOff)
+          .append('|').append(tOff).append('|').append(laneCol)
           .append('|').append(System.identityHashCode(app.lastSamples))
           .append('|').append(app.settings.trackMarkers());
         for (BezierBaker.Node n : laneNodes) sb.append(';').append(n.t);
@@ -365,7 +366,7 @@ class Viewport3D {
             boolean isSel = i == selIdx || sel.contains(i);
             // selection reads from any distance: white AND bigger
             Sphere ball = new Sphere(isSel ? 0.32 : 0.22, 12);
-            ball.setMaterial(new PhongMaterial(isSel ? Color.WHITE : FvdDesigner.LANE_COLORS[lane]));
+            ball.setMaterial(new PhongMaterial(isSel ? Color.WHITE : laneCol));
             ball.setTranslateX(p.x());
             ball.setTranslateY(-p.y());   // Y-flip discipline
             ball.setTranslateZ(p.z());

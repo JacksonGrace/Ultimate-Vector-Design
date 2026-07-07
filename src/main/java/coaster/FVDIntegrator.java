@@ -60,8 +60,9 @@ public class FVDIntegrator {
 
     private record Deriv(Vec3 dPos, Vec3 dT, Vec3 dU) {}
 
-    /** Keyframe lerp at t. Binary search — RK4 calls this 4x per step. */
-    private static Keyframe interpAt(List<Keyframe> kfs, double t) {
+    /** Keyframe lerp at t. Binary search — RK4 calls this 4x per step.
+     *  Package-visible: GeoIntegrator reuses it (same bake grid). */
+    static Keyframe interpAt(List<Keyframe> kfs, double t) {
         Keyframe first = kfs.get(0);
         if (t <= first.t()) return first;
         Keyframe last = kfs.get(kfs.size() - 1);
@@ -84,8 +85,9 @@ public class FVDIntegrator {
         );
     }
 
-    /** Speed from energy conservation vs the start height (algebraic). */
-    private static double speedAt(Vec3 pos, double v0, double y0) {
+    /** Speed from energy conservation vs the start height (algebraic).
+     *  Package-visible: GeoIntegrator shares the design-speed profile. */
+    static double speedAt(Vec3 pos, double v0, double y0) {
         return Math.sqrt(Math.max(v0 * v0 + 2 * G0 * (y0 - pos.y()), 0));
     }
 

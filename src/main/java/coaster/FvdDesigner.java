@@ -1,7 +1,9 @@
 package coaster;
 
 import javafx.animation.AnimationTimer;
+import javafx.animation.PauseTransition;
 import javafx.application.Application;
+import javafx.geometry.Bounds;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Point2D;
@@ -72,8 +74,10 @@ import javafx.scene.transform.Rotate;
 import javafx.scene.transform.Translate;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
+import javafx.stage.Popup;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
+import javafx.util.Duration;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -198,7 +202,8 @@ public class FvdDesigner extends Application {
     // heart, gauge, start placement and v0 (user rule: "everything that
     // changes the track path, not just aesthetics"). Tie spacing and colors
     // stay menu-local-undo only.
-    record SecState(List<List<BezierBaker.Node>> lanes, double vDesign) {}
+    record SecState(List<List<BezierBaker.Node>> lanes, double vDesign,
+                    boolean geo, boolean reversed) {}
 
     record DocState(List<SecState> sections, int active, double heart, double gauge,
                     double px, double py, double pz, double v0) {}
@@ -209,14 +214,15 @@ public class FvdDesigner extends Application {
     DocState snapshotDoc() {
         List<SecState> secs = new ArrayList<>();
         for (Section s : coaster.pieces.get(0).sections) {
-            ForceSection fs = (ForceSection) s;
+            LaneSection fs = (LaneSection) s;
             List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
             for (List<BezierBaker.Node> lane : fs.lanes) {
                 List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
                 for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
                 copy.add(laneCopy);
             }
-            secs.add(new SecState(copy, fs.vDesign));
+            secs.add(new SecState(copy, fs.vDesign,
+                fs instanceof GeoSection, fs.reversed));
         }
         TrackPiece p = coaster.pieces.get(0);
         return new DocState(secs, editor != null ? editor.activeSection() : 0,
@@ -231,7 +237,11 @@ public class FvdDesigner extends Application {
         piece0.sections.clear();
         // snapshot lists are deep copies popped off the stack - adopt them
         for (SecState st : s.sections()) {
-            piece0.sections.add(new ForceSection(st.lanes(), st.vDesign()));
+            LaneSection sec = st.geo()
+                ? new GeoSection(st.lanes(), st.vDesign())
+                : new ForceSection(st.lanes(), st.vDesign());
+            sec.reversed = st.reversed();
+            piece0.sections.add(sec);
         }
         if (editor != null) editor.restoreActive(s.active());
         heartOffset = s.heart();
@@ -295,13 +305,48 @@ public class FvdDesigner extends Application {
     static final double G_MIN = -1.0, G_MAX = 5.0;
     static final double INTEGRATE_DT = 0.01;
 
-    // lane accent colors, shared by the graph curves and the lane buttons
+    // lane accent colors, shared by the graph curves, node markers and the
+    // lane buttons. Vert G blue / Lat G green since v10.8 (user swap; green
+    // was Gv from v5). GEO mode has its OWN palette (v10.1 user spec): pitch
+    // teal, yaw yellow, roll keeps the force palette's orange. (TIME moved
+    // to light purple in v10.2, so yaw owns yellow outright.)
     static final Color[] LANE_COLORS = {
-        Color.rgb(120, 220, 130), Color.rgb(120, 170, 255), Color.rgb(255, 170, 90)
+        Color.rgb(120, 170, 255), Color.rgb(120, 220, 130), Color.rgb(255, 170, 90)
     };
-    // TIME is yellow throughout the graph UI: the "Time (s)" axis label, the
-    // vertical (time-pinning) guide line, the POV position marker
-    static final Color TIME_COLOR = Color.rgb(235, 205, 90);
+    static final Color[] GEO_LANE_COLORS = {
+        Color.rgb(80, 210, 200), Color.rgb(245, 215, 80), Color.rgb(255, 170, 90)
+    };
+    // lane-button captions per section mode
+    static final String[] FORCE_LANE_BTN = { "Vert G", "Lat G", "Roll" };
+    static final String[] GEO_LANE_BTN = { "Pitch", "Yaw", "Roll" };
+
+    static final String TOOLBTN_STYLE =
+        "-fx-background-color: rgb(45,50,62); -fx-text-fill: rgb(210,215,225);";
+
+    /** Relabel + retint the lane buttons for the active section's mode
+     *  (called by the editor on section switches, undo restores, loads,
+     *  adds and deletes). The "Resulting" picks retitle with it: they
+     *  show rates over force sections, felt forces over geo ones. */
+    void setLaneButtonMode(boolean geo) {
+        String[] names = geo ? GEO_LANE_BTN : FORCE_LANE_BTN;
+        Color[] cols = geo ? GEO_LANE_COLORS : LANE_COLORS;
+        for (int i = 0; i < 3; i++) {
+            if (laneButtons[i] == null) continue;
+            laneButtons[i].setText(names[i]);
+            laneButtons[i].setStyle(TOOLBTN_STYLE + String.format(
+                " -fx-text-fill: rgb(%d,%d,%d);",
+                (int) (cols[i].getRed() * 255), (int) (cols[i].getGreen() * 255),
+                (int) (cols[i].getBlue() * 255)));
+        }
+        if (resPitchCheck != null) {
+            resPitchCheck.setText(geo ? "Vertical G (g)" : "Pitch rate (°/s)");
+            resYawCheck.setText(geo ? "Lateral G (g)" : "Yaw rate (°/s)");
+        }
+    }
+    // TIME is light purple throughout the graph UI (v10.2, was yellow —
+    // freed for the geo yaw lane): the "Time (s)" axis label, the
+    // horizontal (time-changing) guide line, the POV position marker
+    static final Color TIME_COLOR = Color.rgb(200, 165, 255);
 
 
     Stage stage;
@@ -320,6 +365,7 @@ public class FvdDesigner extends Application {
     private SplitPane mainSplit;           // 3D view over graph panel
     private double lastDividerPos = 0.6;   // restore point for the collapse toggle
     RadioMenuItem gradientModeItem, solidModeItem;
+    private CheckBox resPitchCheck, resYawCheck;   // retitled per mode
 
     // app-wide settings persisted across runs (shortcuts, FOV)
     final AppSettings settings = new AppSettings();
@@ -354,11 +400,11 @@ public class FvdDesigner extends Application {
         editor = new GraphEditor(this);
 
         ToggleGroup laneGroup = new ToggleGroup();
-        String[] names = { "Vert G", "Lat G", "Roll" };
+        String[] names = FORCE_LANE_BTN;
         HBox toolbar = new HBox(6);
         toolbar.setPadding(new Insets(4, 8, 4, 8));
         toolbar.setStyle("-fx-background-color: rgb(25,28,36);");
-        String btnStyle = "-fx-background-color: rgb(45,50,62); -fx-text-fill: rgb(210,215,225);";
+        String btnStyle = TOOLBTN_STYLE;
         for (int i = 0; i < 3; i++) {
             final int lane = i;
             ToggleButton b = new ToggleButton(names[i]);
@@ -386,34 +432,81 @@ public class FvdDesigner extends Application {
 
         // "Resulting" dropdown: pick which read-only derived curves overlay
         // the plot (roll is absent on purpose — the resulting roll rate IS
-        // the authored roll lane; more picks arrive with the section work).
-        // A plain Button + ContextMenu instead of a MenuButton: MenuButton's
-        // separate arrow region broke the flat toolbar-button look — this
-        // keeps "Resulting ▾" in one clean button-sized space.
+        // the authored roll lane). The two entries are MODE-AWARE (v10.2):
+        // force sections show the resulting pitch/yaw rates, geo sections
+        // the felt vertical/lateral G — setLaneButtonMode retitles them.
+        // v10.3: a custom dark Popup of CheckBoxes instead of a
+        // ContextMenu — it stays open while items are clicked (toggle
+        // several without reopening) and dismisses by HOVER: a 250 ms
+        // grace timer starts whenever the mouse leaves both the button
+        // and the popup, and cancels on re-entry.
         Button resBtn = new Button("Resulting ▾");
         resBtn.setFocusTraversable(false);
         resBtn.setStyle(btnStyle);
-        CheckMenuItem resPitchItem = new CheckMenuItem("Pitch rate (°/s)");
-        resPitchItem.setSelected(settings.resPitch());
-        resPitchItem.setOnAction(e -> {
-            settings.setResPitch(resPitchItem.isSelected());
+        resPitchCheck = new CheckBox("Pitch rate (°/s)");
+        resPitchCheck.setSelected(settings.resPitch());
+        resPitchCheck.setStyle("-fx-text-fill: rgb(210,215,225);");
+        resPitchCheck.setOnAction(e -> {
+            settings.setResPitch(resPitchCheck.isSelected());
             editor.refresh();
         });
-        CheckMenuItem resYawItem = new CheckMenuItem("Yaw rate (°/s)");
-        resYawItem.setSelected(settings.resYaw());
-        resYawItem.setOnAction(e -> {
-            settings.setResYaw(resYawItem.isSelected());
+        resYawCheck = new CheckBox("Yaw rate (°/s)");
+        resYawCheck.setSelected(settings.resYaw());
+        resYawCheck.setStyle("-fx-text-fill: rgb(210,215,225);");
+        resYawCheck.setOnAction(e -> {
+            settings.setResYaw(resYawCheck.isSelected());
             editor.refresh();
         });
-        ContextMenu resMenu = new ContextMenu(resPitchItem, resYawItem);
+        VBox resBox = new VBox(8, resPitchCheck, resYawCheck);
+        resBox.setPadding(new Insets(10, 16, 10, 12));
+        resBox.setStyle("-fx-background-color: rgb(38,42,53);"
+            + " -fx-background-radius: 6;"
+            + " -fx-border-color: rgb(95,102,120); -fx-border-radius: 6;");
+        Popup resPopup = new Popup();
+        resPopup.getContent().add(resBox);
+        resPopup.setAutoHide(true);   // backstop: clicks elsewhere close it
+        // hover dismissal, verified against the REAL cursor: when the
+        // popup materializes under an already-moving mouse, JavaFX can
+        // skip MOUSE_ENTERED entirely — the exit-timer from leaving the
+        // button then hid the menu mid-hover (v10.4 fix for the "fast
+        // click closes it" report). So the timer's finish re-checks the
+        // actual pointer via Robot and re-arms instead of hiding while
+        // it sits over the popup or the button.
+        Robot resRobot = new Robot();
+        PauseTransition resHide = new PauseTransition(Duration.millis(250));
+        resHide.setOnFinished(e -> {
+            if (!resPopup.isShowing()) return;
+            Point2D m = resRobot.getMousePosition();
+            if (screenContains(resBox, m) || screenContains(resBtn, m)) {
+                resHide.playFromStart();   // still hovered: poll again
+            } else {
+                resPopup.hide();
+            }
+        });
         resBtn.setOnAction(e -> {
-            if (resMenu.isShowing()) resMenu.hide();
-            else resMenu.show(resBtn, Side.BOTTOM, 0, 2);
+            if (resPopup.isShowing()) {
+                resPopup.hide();
+            } else {
+                // flush against the button — a visible gap was a dead
+                // zone the cursor-check called "outside" (v10.5)
+                Bounds b = resBtn.localToScreen(resBtn.getBoundsInLocal());
+                resPopup.show(resBtn, b.getMinX(), b.getMaxY() - 1);
+                resHide.playFromStart();   // self-arm: hover state unknown yet
+            }
         });
+        resBtn.setOnMouseEntered(e -> resHide.stop());
+        resBtn.setOnMouseExited(e -> {
+            if (resPopup.isShowing()) resHide.playFromStart();
+        });
+        resBox.setOnMouseEntered(e -> resHide.stop());
+        resBox.setOnMouseMoved(e -> resHide.stop());   // covers a missed enter
+        resBox.setOnMouseExited(e -> resHide.playFromStart());
         Tooltip.install(resBtn, new Tooltip(
-            "Overlay read-only RESULTING curves derived from the\n"
-            + "integrated track (°/s, thin dashed, on the roll lane's\n"
-            + "scale). Picks persist per-user."));
+            "Overlay read-only RESULTING curves for the section being\n"
+            + "edited (thin dashed, on the right-edge axis): force\n"
+            + "sections show pitch/yaw rates (°/s, geo colors); geo\n"
+            + "sections show felt vertical/lateral G (force colors).\n"
+            + "Hover a curve for its value. Picks persist per-user."));
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -483,6 +576,7 @@ public class FvdDesigner extends Application {
             if (e.getCode() == KeyCode.S) slideKey = false;
             if (e.getCode() == KeyCode.C) cKey = false;
             if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(false);
+            if (e.getCode() == KeyCode.CONTROL) editor.ctrlHover(false);
         });
         updateTitle();   // "Untitled — FVD Coaster Designer" until saved/loaded
         stage.setScene(scene);
@@ -508,6 +602,7 @@ public class FvdDesigner extends Application {
             cKey = true;
         }
         if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(true);
+        if (e.getCode() == KeyCode.CONTROL) editor.ctrlHover(true);
         if (viewport.flyActive || (viewport.povActive && viewport.povCaptured)) {   // camera owns movement keys
             KeyCode c = e.getCode();
             boolean movement = c == KeyCode.W || c == KeyCode.S
@@ -538,8 +633,9 @@ public class FvdDesigner extends Application {
         else if (matches("newfile", e)) newDesign();
         else if (matches("export", e))  exportNl2Csv();
         else if (matches("smooth", e))  editor.toggleSmooth();
-        else if (matches("flath", e))   editor.flattenHandles();
-        else if (matches("levelSel", e)) editor.levelSelected();
+        else if (matches("matchAll", e)) editor.matchBoundaryAll();
+        else if (matches("flath", e))   editor.levelSelected();
+        else if (matches("levelSel", e)) editor.toggleLevelLock();
         else if (matches("align", e))   editor.straightenSelected();
         else if (matches("alignLock", e)) editor.toggleStraightLock();
         else if (matches("lockv", e))   editor.toggleAxisLock(true);
@@ -1119,6 +1215,17 @@ public class FvdDesigner extends Application {
 
     static double clamp(double v, double lo, double hi) {
         return Math.max(lo, Math.min(hi, v));
+    }
+
+    /** Does the node's on-screen bounding box (padded a few px, so the
+     *  seam between the Resulting button and its popup never counts as
+     *  "outside") contain this screen point? */
+    private static boolean screenContains(javafx.scene.Node n, Point2D p) {
+        Bounds b = n.localToScreen(n.getBoundsInLocal());
+        if (b == null) return false;
+        double pad = 6;
+        return p.getX() >= b.getMinX() - pad && p.getX() <= b.getMaxX() + pad
+            && p.getY() >= b.getMinY() - pad && p.getY() <= b.getMaxY() + pad;
     }
 
     public static void main(String[] args) {

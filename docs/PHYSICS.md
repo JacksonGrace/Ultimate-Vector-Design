@@ -60,6 +60,34 @@ pos += T · v · dt ;  s += v · dt
 The sign `−ωU·R`: rotating about −R takes T toward U (verify with the cyclic
 products above). Getting this sign wrong flips pull-ups into dives.
 
+## 2b. Geo sections: direct body rates (Phase 2, `GeoIntegrator.java`)
+
+GEO sections skip the force inversion entirely: the designer authors the
+body rates themselves (pitch/yaw/roll, deg/s) and the integrator applies
+them directly —
+
+```
+Ω    = yaw·U − pitch·R + roll·T       (rad/s, from the authored lanes)
+q'   = ½ · (0, Ω) ⊗ q                 (orientation as a unit quaternion)
+pos' = T · v                          (v = design-speed energy profile, §3)
+```
+
+Signs match the resulting-rate extraction (`pitch = T'·U`, `yaw = T'·R`,
+`roll = −U'·R`): +pitch pulls up, +yaw turns rider-right, +roll matches
+the roll lane. Gravity plays NO role in the shape — a zero-rate geo
+section is a straight line whatever its orientation; gravity only shows
+up in the felt forces reported downstream, which are the §2 equations
+inverted: `Gv = ω_pitch·v/g + U.y`, `Gl = ω_yaw·v/g + R.y` (recorded per
+sample at the design speed). Orientation integrates NATIVELY as a
+quaternion (classic RK4 on (pos, q), q normalized after each step and
+inside each stage) — the SECTIONS-DESIGN §2 amendment: geo gets the
+quaternion path while the force integrator keeps its bit-for-bit-gated
+T/U vectors. Validated: constant-rate sections produce exact angle
+changes (rate × last-sample t, independent of the speed profile), and
+re-authoring the default layout's RESULTING body rates as a geo section
+reproduces the force-built geometry to 2 mm over 407 m (end frame within
+0.001°) — the strongest cross-check of the sign conventions we have.
+
 ## 3. Speed model
 
 Energy conservation relative to the *start* height, then a crude quadratic

@@ -1,15 +1,27 @@
 # SECTIONS-DESIGN.md — Phase 1+ architecture: sections, pieces, and the geometry/dynamics split
 
-Status: PHASE 1 COMPLETE (v9.5, D50-D55) — document model, three-pass
-TrackCompiler, FVDD3/DesignIO, document undo + file lifecycle, the
-full FvdDesigner split, and the section-aware graph with the '+'
-add-section affordance are all live and gated (TESTING #11). Phase 2
-starts from here. One AMENDMENT to §2 below: quaternions are the model-level
+Status: PHASE 1 COMPLETE (v9.5, D50-D55); PHASE 2 STARTED — GEO
+SECTIONS LIVE (v10.0, D58, gated TESTING #12): LaneSection base under
+the sealed Section, quaternion-native GeoIntegrator, mode-aware graph
+editor, `section geo` in FVDD3, '+'-menu entry; UX rounds v10.1-v10.2
+(D59-D60):
+unified one-mode graph view (other-mode strips show their RESULTING
+curves), geo lane palette, zero-line fills, section badges + delete,
+boundary return (value + slope, cross-mode, seam-safe), insert-then-
+drag, section-end snap + wall, snap axis toggles, purple time,
+mode-aware Resulting overlays; REVERSAL live (v10.9, D67 — badge-menu
+toggle, canonical generation + yaw placement, gated TESTING #13).
+Still to come in
+Phase 2: straight/curve mode, split/reconnect + placement
+gizmos, bridge sections + influence + "become real". One AMENDMENT to
+§2 below: quaternions are the model-level
 orientation (poses, placements, exit poses) but the FORCE-section
 integrator keeps stepping T/U as vectors — §1's bit-for-bit gate
 outranks §2's "Pass G integrates orientation as a quaternion" (they
-conflict; re-discretizing would shift every float). Geo sections
-integrate quaternions natively when they land. Read PHYSICS.md first;
+conflict; re-discretizing would shift every float). Geo sections DO
+integrate quaternions natively (GeoIntegrator, as amended — the
+force/geo equivalence canary in TESTING #12d validates the pairing).
+Read PHYSICS.md first;
 this doc builds on its conventions (T/U/R frame, time-domain force
 equations, Y-flip is rendering-only and irrelevant here).
 
@@ -103,12 +115,22 @@ DISPLAY/readout convention only — never a second math path.
   deg/m). Integration is direct — no solver, speed-independent in DISTANCE
   domain. This supersedes the old "needs a solver" roadmap note (that was
   for *targeting* end pitch, which can come later as a tool ON these).
+  IMPLEMENTED v10.0 (D58) in TIME domain (deg/s; DISTANCE arrives with
+  the domain toggle): GeoIntegrator, quaternion-native, felt-G recorded
+  at design speed; PHYSICS.md §2b has the equations.
 - **Straight/curve:** analytic; NL2-style node editing in the viewport.
 - **Bridge (§4)** and **External:** produce/carry fixed geometry.
 
 **Reversal:** a geometry-level transform (run the centerline backward,
-T → −T, R → −R, U unchanged; roll sign flips in readouts). Original lanes
+T → −T, R → −R, U unchanged). Original lanes
 stay editable; regeneration re-applies the flip. No shape change.
+IMPLEMENTED v10.9 (D67): canonical-frame generation (identity heading,
+entry height) + yaw-only placement onto the entry's horizontal heading
+(a force shape is gravity-honest only in its authored orientation, so
+a pitched/banked seam shows its mismatch honestly). SIGN CORRECTION to
+the original note here: felt Gl negates, but the ROLL RATE is
+traversal-INVARIANT — T and the bank-change-per-second both flip and
+cancel (derived + gated, TESTING #13).
 
 ## 4. Bridge sections
 
