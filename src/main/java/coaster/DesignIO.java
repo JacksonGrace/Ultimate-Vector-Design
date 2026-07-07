@@ -76,9 +76,75 @@ public final class DesignIO {
                 r.s0(), r.length(), r.mode(), r.value());
         }
         for (TrackPiece piece : c.pieces) {
-            out.printf(Locale.US, "piece %.4f %.4f %.4f %.4f%n",
-                piece.x, piece.y, piece.z, piece.yawDeg);
+            // 5th-8th fields (v12.1): the piece's BASE ORIENTATION
+            // quaternion (split/reversal anchor); missing = identity,
+            // riding the ignore-extra-fields rule for old readers.
+            // %.10f keeps the quantized quat unit to ~4e-10, under the
+            // loader's re-normalize threshold — round-trips stay byte-
+            // identical
+            out.printf(Locale.US, "piece %.4f %.4f %.4f %.4f %.10f %.10f %.10f %.10f%n",
+                piece.x, piece.y, piece.z, piece.yawDeg,
+                piece.baseOrient.w(), piece.baseOrient.x(),
+                piece.baseOrient.y(), piece.baseOrient.z());
             for (Section section : piece.sections) {
+                if (section instanceof BridgeSection bs) {
+                    // bridge (v13.0): the FROZEN solve inputs — poses at
+                    // %.10f (world-anchored geometry re-derives from
+                    // them deterministically) + tangent lengths
+                    out.printf(Locale.US, "section bridge %.4f distance %d%n",
+                        bs.vDesign, bs.reversed ? 1 : 0);
+                    out.printf(Locale.US, "bpose"
+                        + " %.10f %.10f %.10f %.10f %.10f %.10f %.10f"
+                        + " %.10f %.10f %.10f %.10f %.10f %.10f %.10f%n",
+                        bs.solvedEntry.pos().x(), bs.solvedEntry.pos().y(),
+                        bs.solvedEntry.pos().z(),
+                        bs.solvedEntry.orient().w(), bs.solvedEntry.orient().x(),
+                        bs.solvedEntry.orient().y(), bs.solvedEntry.orient().z(),
+                        bs.solvedTarget.pos().x(), bs.solvedTarget.pos().y(),
+                        bs.solvedTarget.pos().z(),
+                        bs.solvedTarget.orient().w(), bs.solvedTarget.orient().x(),
+                        bs.solvedTarget.orient().y(), bs.solvedTarget.orient().z());
+                    out.printf(Locale.US, "blen %.4f %.4f%n", bs.lenA, bs.lenB);
+                    // seam curvature vectors (v13.1 — G² ends; only the
+                    // orphaned-bridge fallback ever reads them back,
+                    // live compiles re-capture)
+                    out.printf(Locale.US, "bacc %.10f %.10f %.10f %.10f %.10f %.10f%n",
+                        bs.accA.x(), bs.accA.y(), bs.accA.z(),
+                        bs.accB.x(), bs.accB.y(), bs.accB.z());
+                    // seam jerk vectors + roll rates + target entry
+                    // speed (v13.2 — rate-slope/speed continuity)
+                    out.printf(Locale.US, "bdyn %.10f %.10f %.10f %.10f %.10f %.10f"
+                        + " %.10f %.10f %.10f%n",
+                        bs.jerkA.x(), bs.jerkA.y(), bs.jerkA.z(),
+                        bs.jerkB.x(), bs.jerkB.y(), bs.jerkB.z(),
+                        bs.rollA, bs.rollB, bs.vB);
+                    out.println("endsection");
+                    continue;
+                }
+                if (section instanceof StraightCurveSection sc) {
+                    // straight/curve (v11.0): element lines instead of
+                    // lanes — same unknown-line forgiveness both ways.
+                    // Trailing roll fields (v11.1): mode 0 = rate °/s,
+                    // 1 = global bank °; readers default MISSING fields
+                    // to rate 0 so v11.0 saves keep their geometry.
+                    out.printf(Locale.US, "section sc %.4f distance %d%n",
+                        sc.vDesign, sc.reversed ? 1 : 0);
+                    for (StraightCurveSection.Element e : sc.elements) {
+                        int rm = e.rollMode == StraightCurveSection.RollMode.GLOBAL
+                            ? 1 : 0;
+                        if (e.kind == StraightCurveSection.Kind.STRAIGHT) {
+                            out.printf(Locale.US, "elem straight %.4f %.4f %d %.4f%n",
+                                e.length, e.smoothIn, rm, e.rollVal);
+                        } else {
+                            out.printf(Locale.US,
+                                "elem curve %.4f %.4f %.4f %.4f %d %.4f%n",
+                                e.radius, e.angleDeg, e.dirDeg, e.smoothIn,
+                                rm, e.rollVal);
+                        }
+                    }
+                    out.println("endsection");
+                    continue;
+                }
                 LaneSection fs = (LaneSection) section;   // force | geo (Phase 2)
                 out.printf(Locale.US, "section %s %.4f %s %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
@@ -125,7 +191,7 @@ public final class DesignIO {
         double[] start = { 0, 21, 0 };   // legacy `start` line (FVDD2/1)
 
         TrackPiece curPiece = null;
-        LaneSection curSection = null;
+        Section curSection = null;
         int curLane = -1;
         // legacy flat files: one implicit piece + section holds everything
         if (!v3) {
@@ -170,6 +236,9 @@ public final class DesignIO {
                         clamp(Double.parseDouble(parts[2]), -500, 500),
                         clamp(Double.parseDouble(parts[3]), -500, 500),
                         parts.length > 4 ? Double.parseDouble(parts[4]) : 0);
+                    if (parts.length > 8) {   // base orientation (v12.1)
+                        curPiece.baseOrient = loadQuat(parts, 5);
+                    }
                     c.pieces.add(curPiece);
                     curSection = null;
                     curLane = -1;
@@ -181,19 +250,25 @@ public final class DesignIO {
                     curSection = switch (parts[1]) {
                         case "force" -> ForceSection.empty(vd);
                         case "geo"   -> GeoSection.empty(vd);
+                        case "sc"    -> new StraightCurveSection(new ArrayList<>(), vd);
+                        case "bridge" -> new BridgeSection(   // poses via bpose
+                            new TrackPose(Vec3.ZERO, Quat.IDENTITY),
+                            new TrackPose(new Vec3(10, 0, 0), Quat.IDENTITY),
+                            5, 5, vd);
                         default -> throw new IOException("unknown section mode: " + parts[1]);
                     };
-                    if (parts.length > 4) curSection.reversed = parts[4].equals("1");
+                    if (parts.length > 4) curSection.reversed(parts[4].equals("1"));
                     curPiece.sections.add(curSection);
                     curLane = -1;
                 }
                 case "lane" -> {
-                    if (curSection == null) throw new IOException("lane outside section");
+                    if (!(curSection instanceof LaneSection))
+                        throw new IOException("lane outside lane section");
                     curLane = Integer.parseInt(parts[1]);
                     if (curLane < 0 || curLane > 2) throw new IOException("bad lane index");
                 }
                 case "n" -> {
-                    if (curSection == null || curLane < 0)
+                    if (!(curSection instanceof LaneSection ls) || curLane < 0)
                         throw new IOException("node outside lane section");
                     BezierBaker.Node n = new BezierBaker.Node(
                         Double.parseDouble(parts[1]), Double.parseDouble(parts[2]));
@@ -204,7 +279,69 @@ public final class DesignIO {
                     n.smooth = !parts[7].equals("0");
                     n.straightOut = parts.length > 8 && parts[8].equals("1");
                     n.levelOut = parts.length > 9 && parts[9].equals("1");
-                    curSection.lanes.get(curLane).add(n);
+                    ls.lanes.get(curLane).add(n);
+                }
+                case "bpose" -> {
+                    if (!(curSection instanceof BridgeSection bs))
+                        throw new IOException("bpose outside bridge section");
+                    bs.solvedEntry = new TrackPose(
+                        new Vec3(Double.parseDouble(parts[1]),
+                            Double.parseDouble(parts[2]), Double.parseDouble(parts[3])),
+                        loadQuat(parts, 4));
+                    bs.solvedTarget = new TrackPose(
+                        new Vec3(Double.parseDouble(parts[8]),
+                            Double.parseDouble(parts[9]), Double.parseDouble(parts[10])),
+                        loadQuat(parts, 11));
+                }
+                case "blen" -> {
+                    if (!(curSection instanceof BridgeSection bs))
+                        throw new IOException("blen outside bridge section");
+                    bs.lenA = Math.max(0.01, Double.parseDouble(parts[1]));
+                    bs.lenB = Math.max(0.01, Double.parseDouble(parts[2]));
+                }
+                case "bacc" -> {   // v13.1; missing = zero (v13.0 = G¹)
+                    if (!(curSection instanceof BridgeSection bs))
+                        throw new IOException("bacc outside bridge section");
+                    bs.accA = new Vec3(Double.parseDouble(parts[1]),
+                        Double.parseDouble(parts[2]), Double.parseDouble(parts[3]));
+                    bs.accB = new Vec3(Double.parseDouble(parts[4]),
+                        Double.parseDouble(parts[5]), Double.parseDouble(parts[6]));
+                }
+                case "bdyn" -> {   // v13.2; missing = zeros (v13.1 shape)
+                    if (!(curSection instanceof BridgeSection bs))
+                        throw new IOException("bdyn outside bridge section");
+                    bs.jerkA = new Vec3(Double.parseDouble(parts[1]),
+                        Double.parseDouble(parts[2]), Double.parseDouble(parts[3]));
+                    bs.jerkB = new Vec3(Double.parseDouble(parts[4]),
+                        Double.parseDouble(parts[5]), Double.parseDouble(parts[6]));
+                    bs.rollA = Double.parseDouble(parts[7]);
+                    bs.rollB = Double.parseDouble(parts[8]);
+                    bs.vB = Double.parseDouble(parts[9]);
+                }
+                case "elem" -> {
+                    if (!(curSection instanceof StraightCurveSection sc))
+                        throw new IOException("elem outside straight/curve section");
+                    StraightCurveSection.Element e = switch (parts[1]) {
+                        case "straight" -> StraightCurveSection.Element.straight(
+                            Math.max(0.01, Double.parseDouble(parts[2])),
+                            Math.max(0, Double.parseDouble(parts[3])));
+                        case "curve" -> StraightCurveSection.Element.curve(
+                            Math.max(0.1, Double.parseDouble(parts[2])),
+                            Double.parseDouble(parts[3]),
+                            Double.parseDouble(parts[4]),
+                            Math.max(0, Double.parseDouble(parts[5])));
+                        default -> throw new IOException("unknown element kind: " + parts[1]);
+                    };
+                    // trailing roll fields (v11.1); ABSENT on v11.0
+                    // lines = rate 0, the exact old behavior (the
+                    // GLOBAL-0 factory default is for NEW elements only)
+                    int ri = parts[1].equals("straight") ? 4 : 6;
+                    e.rollMode = parts.length > ri && parts[ri].equals("1")
+                        ? StraightCurveSection.RollMode.GLOBAL
+                        : StraightCurveSection.RollMode.RATE;
+                    e.rollVal = parts.length > ri + 1
+                        ? Double.parseDouble(parts[ri + 1]) : 0;
+                    sc.elements.add(e);
                 }
                 default -> { /* unknown lines ignored: forward compatibility */ }
             }
@@ -221,6 +358,12 @@ public final class DesignIO {
 
         for (TrackPiece piece : c.pieces) {
             for (Section s : piece.sections) {
+                if (s instanceof BridgeSection) continue;   // bpose defaulted is fine
+                if (s instanceof StraightCurveSection sc) {
+                    if (sc.elements.isEmpty())
+                        throw new IOException("straight/curve section needs >= 1 element");
+                    continue;
+                }
                 LaneSection fs = (LaneSection) s;
                 for (List<BezierBaker.Node> lane : fs.lanes) {
                     if (lane.size() < 2)
@@ -231,6 +374,19 @@ public final class DesignIO {
         }
 
         return new LoadResult(c, new Cosmetics(heart, gauge, tie, solid, rail, grad, stops));
+    }
+
+    /** Four quat fields starting at parts[at]. Re-normalized only when
+     *  genuinely off-unit: %.10f quantization stays under the
+     *  threshold, keeping save→load→save byte-identical. */
+    private static Quat loadQuat(String[] parts, int at) {
+        Quat q = new Quat(
+            Double.parseDouble(parts[at]),
+            Double.parseDouble(parts[at + 1]),
+            Double.parseDouble(parts[at + 2]),
+            Double.parseDouble(parts[at + 3]));
+        double n2 = q.w() * q.w() + q.x() * q.x() + q.y() * q.y() + q.z() * q.z();
+        return Math.abs(n2 - 1) > 1e-9 ? q.normalize() : q;
     }
 
     /** FVDD1 stored handle time-offsets in absolute seconds (in-handle

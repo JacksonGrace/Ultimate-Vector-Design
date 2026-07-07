@@ -45,10 +45,10 @@ public class Coaster {
     }
 
     /** The FIRST section of the first piece — the ride entry, whose
-     *  vDesign the Start-speed spinner writes; fails loudly if the
-     *  shape ever surprises us. */
-    public LaneSection soleSection() {
-        return (LaneSection) pieces.get(0).sections.get(0);
+     *  vDesign the Start-speed spinner writes (any mode since v11.0 —
+     *  deleting section 0 can leave a straight/curve section first). */
+    public Section soleSection() {
+        return pieces.get(0).sections.get(0);
     }
 
     /** A 1 s SAME-MODE section holding the given section's final lane
@@ -75,5 +75,106 @@ public class Coaster {
     public static ForceSection holdSection(double gv, double gl, double roll,
                                            double vDesign) {
         return new ForceSection(LaneSection.holdLanes(gv, gl, roll), vDesign);
+    }
+
+    /** SPLIT a piece before section sectionIdx (v12.0, D70; exact
+     *  orientation v12.1, D71): sections [sectionIdx..] move to a NEW
+     *  piece inserted right after, placed at the compiled boundary
+     *  pose — position AND full orientation (the pose lands in the
+     *  piece's baseOrient, yaw delta 0), so splitting NEVER changes
+     *  the track (bitwise, gated — user rule). Section objects move
+     *  BY REFERENCE — lanes/elements stay the same objects the editor
+     *  holds. Returns the new piece's index. */
+    public int splitPiece(int pieceIdx, int sectionIdx, TrackPose boundary) {
+        TrackPiece src = pieces.get(pieceIdx);
+        if (sectionIdx <= 0 || sectionIdx >= src.sections.size()) return -1;
+        TrackPiece cut = new TrackPiece(boundary.pos().x(), boundary.pos().y(),
+            boundary.pos().z(), 0);
+        cut.baseOrient = boundary.orient();
+        List<Section> tail = src.sections.subList(sectionIdx, src.sections.size());
+        cut.sections.addAll(tail);
+        tail.clear();
+        pieces.add(pieceIdx + 1, cut);
+        return pieceIdx + 1;
+    }
+
+    /** REVERSE a whole piece (v12.1, D71 — the user-facing reversal;
+     *  the per-section flag is its mechanism): a pure MODEL
+     *  transformation, so the rest of the app needs no reversal mode —
+     *  the section list flips to TRAIN order with each section's
+     *  reversed flag toggled, and the placement re-anchors at the old
+     *  EXIT pose (position + full orientation with T flipped, into
+     *  baseOrient, yaw delta reset). On a level-seamed piece the track
+     *  STAYS PUT and the train runs it backward (gated); pitched or
+     *  banked seams re-join with the same yaw-only honesty as always
+     *  (D67). Applying it twice restores the original (level: bitwise).
+     *  The caller passes the piece's compiled exit pose. */
+    public void reversePiece(int pieceIdx, TrackPose exit) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        piece.x = exit.pos().x();
+        piece.y = exit.pos().y();
+        piece.z = exit.pos().z();
+        piece.yawDeg = 0;
+        piece.baseOrient = Quat.fromFrame(exit.T().scale(-1), exit.U());
+        java.util.Collections.reverse(piece.sections);
+        for (Section s : piece.sections) s.reversed(!s.reversed());
+    }
+
+    /** ATTACH a floating piece to the end of another (v12.0, D70): its
+     *  sections append to the target's chain (re-chaining from the
+     *  target's exit pose on the next compile — their LOCAL shapes are
+     *  untouched, §0) and the emptied piece dissolves. The floating
+     *  placement is deliberately discarded — attaching MEANS "continue
+     *  from the target's end". */
+    public void attachPiece(int targetIdx, int floatingIdx) {
+        if (targetIdx == floatingIdx) return;
+        TrackPiece target = pieces.get(targetIdx);
+        TrackPiece floating = pieces.get(floatingIdx);
+        target.sections.addAll(floating.sections);
+        pieces.remove(floatingIdx);
+    }
+
+    /** Move a piece to a new list position (v13.1, D73): bridging to
+     *  an arbitrary piece reorders it to just after the bridging piece
+     *  — the piece order IS the ride timeline, so "connect these two"
+     *  means "this one comes next". `to` is the FINAL index. */
+    public void movePiece(int from, int to) {
+        if (from == to) return;
+        TrackPiece p = pieces.remove(from);
+        pieces.add(to, p);
+    }
+
+    /** "Optimize placement" (v13.1, D73; SECTIONS-DISTANCE spinner
+     *  v13.2; SECTIONS-DESIGN §4's second
+     *  mode, closed-form): translate + yaw the TARGET piece (only
+     *  those DOF, per spec) so it sits dead ahead of the chain end
+     *  with its heading aligned — for level
+     *  ends that is the zero-curvature (minimum strain) placement, and
+     *  the live-follow bridge straightens accordingly. Pitched ends
+     *  keep their honest vertical curvature (yaw cannot tilt).
+     *  dist > 0 = the requested gap length (the toolbar spinner);
+     *  dist ≤ 0 = keep the current gap distance. */
+    public void alignPieceForBridge(TrackPose chainEnd, int targetIdx,
+                                    double dist) {
+        TrackPiece t = pieces.get(targetIdx);
+        TrackPose cur = t.entryPose();
+        double d = dist > 0 ? dist
+            : Math.max(1, cur.pos().sub(chainEnd.pos()).length());
+        Vec3 p = chainEnd.pos().add(chainEnd.T().scale(d));
+        t.x = p.x();
+        t.y = p.y();
+        t.z = p.z();
+        Vec3 ta = chainEnd.T(), tb = cur.T();
+        double ha2 = ta.x() * ta.x() + ta.z() * ta.z();
+        double hb2 = tb.x() * tb.x() + tb.z() * tb.z();
+        if (ha2 > 1e-12 && hb2 > 1e-12) {   // both headings defined
+            double delta = Math.toDegrees(
+                Math.atan2(-ta.z(), ta.x()) - Math.atan2(-tb.z(), tb.x()));
+            double yaw = t.yawDeg + delta;
+            // wrap into the spinner's range, same orientation
+            while (yaw > 360) yaw -= 360;
+            while (yaw < -360) yaw += 360;
+            t.yawDeg = yaw;
+        }
     }
 }

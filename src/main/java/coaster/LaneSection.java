@@ -57,7 +57,11 @@ public sealed abstract class LaneSection implements Section
 
     @Override public double vDesign() { return vDesign; }
 
+    @Override public void vDesign(double v) { vDesign = v; }
+
     @Override public Domain domain() { return Domain.TIME; }
 
     @Override public boolean reversed() { return reversed; }
+
+    @Override public void reversed(boolean r) { reversed = r; }
 }

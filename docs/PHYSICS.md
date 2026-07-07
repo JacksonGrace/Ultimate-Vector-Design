@@ -88,7 +88,69 @@ re-authoring the default layout's RESULTING body rates as a geo section
 reproduces the force-built geometry to 2 mm over 407 m (end frame within
 0.001°) — the strongest cross-check of the sign conventions we have.
 
-## 3. Speed model
+## 2c. Straight/curve sections: curvature per meter (v11.0, `ScIntegrator.java`)
+
+STRAIGHT/CURVE sections author geometry in DISTANCE: an element list
+(straight length | arc radius + signed angle + direction) defines a
+curvature-vector profile over arc length —
+
+```
+Ω/m  = κ(s) · (cos(dir)·U − sin(dir)·R)    κ = sign(angle)/radius
+Ω    = v · Ω/m                             (rad/s at the design speed)
+q'   = ½ · (0, Ω) ⊗ q,   pos' = T·v,   s' = v
+```
+
+The rotation axis is invariant under its own rotation (rotating U and R
+about `cos·U − sin·R` reproduces the same combination), so each element
+is an EXACT circle or line: dir 0 = flat turn, +angle = rider-right
+(matching +Gl and +yaw chirality); dir 90 = pull-up; negative angle
+mirrors. Since pos' and q' both scale by the same v, dq/ds is
+speed-independent — the SHAPE cannot depend on the speed profile, only
+the time mapping does.
+
+TRANSITION SMOOTHING blends the curvature COMPONENTS (cU, cR) with a
+sine ease `(1 − cos πu)/2` over the entry element's smoothing length,
+CENTERED on the boundary. The ease is symmetric, so the blend
+integrates to the mean curvature and an arc's TOTAL TURN ANGLE is
+preserved exactly through straight↔arc transitions (one fixed rotation
+axis; arc↔arc with different dir mixes axes — approximately preserved).
+Blend halves clamp proportionally when they'd overlap inside a short
+element (still boundary-centered ⇒ still angle-preserving).
+
+INTEGRATION ACCURACY: RK4 loses two orders stepping OVER a curvature
+step — the k4 stage evaluates at the step's far side (~0.02–0.13° of
+heading per sharp crossing at dt = 0.01). ScIntegrator therefore
+SUB-STEPS: every RK4 leg lands exactly on the next profile breakpoint
+(element boundary, blend edge, section end) via Newton-sized leg
+lengths, and each stage's profile lookup is capped to the leg's own
+side. Samples still land on the uniform dt grid (downstream indexes
+ride time). Validated (TESTING #14): exact line/circle/direction, sharp
+chains analytic to 1e-6°, smoothing preserves the turn to 1e-6°,
+smoothIn 0 bitwise equal to sharp.
+
+ROLL (v11.1, D69) is per element, two modes:
+
+- RATE (°/s): ω_T = rate·T joins Ω — a TIME rate exactly like the roll
+  lane, deliberately NOT v-scaled (cU/cR are per-meter, cT per-second),
+  blended across boundaries with the same sine ease. Rate 0 leaves the
+  frame purely curvature-driven, so the bank vs the horizon DRIFTS
+  through pitched turns (rotating about a tilted U traces a cone).
+- GLOBAL (°): the value is the BANK ANGLE VS THE HORIZON, held by an
+  algebraic projection after every integration leg: measure the bank
+  as the angle of U against the level up at T (the T-perpendicular
+  direction nearest world Y), about T — positive matches the roll
+  lane — then roll the quaternion about T by the difference. A pure
+  T-roll moves neither pos nor T, so the projection CANNOT bend the
+  spine (gated bitwise). The target eases from the element's measured
+  ENTRY bank over max(smoothIn, 2 m) with the house sine ease, so bank
+  is always continuous; corrections < 1e-12 rad are skipped (planar
+  zero-bank runs stay bit-identical to v11.0); near-vertical track
+  (1 − T.y² < 1e-6) has no defined bank and is left untouched.
+
+Validated (TESTING #14g): exact rate twist on a straight, 25° global
+bank held to 1e-9, spine unbent in both modes, and the motivating
+case — a 20° dip into a 90° flat turn — dead level under GLOBAL 0
+(R.y ~1e-17) vs R.y = 0.342 of drift under RATE 0.
 
 Energy conservation relative to the *start* height, then a crude quadratic
 friction bleed:

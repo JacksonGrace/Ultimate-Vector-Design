@@ -1557,3 +1557,454 @@ train traverses the authored shape back-to-front.
   bitwise-negated; entry lands exactly on the entry pose with exact
   horizontal heading; t/s ascend; chained force+reversed compile
   continuous; +50 °/s reversed geo roll reads +50 (invariance).
+
+## D68. STRAIGHT/CURVE sections + the element strip widget (v11.0)
+The next Phase-2 mode (SECTIONS-DESIGN §2/§3): the first NON-LANE
+section. The designer authors an ELEMENT LIST — straights (length) and
+circular arcs (radius + signed angle + direction) — the classic NL2
+way to build stations, brake runs and lift approaches. User calls made
+up front: the editing surface is a STRIP WIDGET REPLACING THE LANES
+(not a dialog-first or viewport-first flow), and transition SMOOTHING
+ships from day one.
+- **Model.** `StraightCurveSection implements Section` directly —
+  `LaneSection` stays the base of the two lane modes only. Elements
+  are mutable (editor edits in place; undo deep-copies via
+  `Element.copy`). Always DISTANCE domain: curvature is authored per
+  meter, so the SHAPE is fully speed-independent; vDesign only maps it
+  onto ride time. `Section` grew `vDesign(double)`/`reversed(boolean)`
+  setters so the editor and the Start-speed spinner write through the
+  interface (`Coaster.soleSection` returns `Section` now).
+- **Geometry = a curvature-vector profile over arc length.** Inside an
+  element, Ω/m = κ·(cos(dir)·U − sin(dir)·R) with κ = sign(angle)/R —
+  that axis is invariant under its own rotation, so each element is an
+  EXACT circle/line (gated to 1e-7). dir 0 = flat turn (+angle =
+  rider-right, matching +Gl chirality), 90 = pull-up, negative angle
+  mirrors. ScIntegrator RK4s (pos, quat, s) in TIME (downstream
+  indexes uniform ride time) with v algebraic from energy — the
+  s-profile makes shape independent of the speed profile anyway.
+- **Smoothing = sine-eased curvature blend, centered on the boundary,
+  stored per element as `smoothIn` (entry transition; element 0's
+  entry is the section seam and stays sharp).** The symmetric ease
+  integrates to the mean curvature, so an arc's TOTAL TURN ANGLE is
+  preserved EXACTLY through straight↔arc blends (single fixed rotation
+  axis; gated to 1e-6°); arc↔arc blends with different dir mix axes
+  and preserve it only approximately. Blend halves that would overlap
+  inside a short element clamp proportionally (turn still preserved —
+  each blend stays boundary-centered). smoothIn 0 is BITWISE sharp.
+- **Integration accuracy lesson: never RK4 OVER a curvature step.**
+  The k4 stage samples the derivative at the step's endpoint — across
+  a sharp element boundary that reads the NEXT element's κ and costs
+  ~0.02–0.13° of heading per crossing at dt 0.01. The integrator now
+  SUB-STEPS: each RK4 leg lands exactly on the next profile breakpoint
+  (element boundary / blend edge / section end) via 3 Newton
+  refinements of the leg length, and every stage lookup is capped to
+  the leg's own side. Samples stay on the uniform dt grid (legs are
+  interior); sharp chains hit analytic headings to 1e-6°.
+- **Compiler.** passG gains the s/c branch (canonical + reverseAndPlace
+  when reversed, same as geo). `TrackCompiler.Result` gains
+  per-section `Span(i0, i1, t0, t1, s0, sLen)` — a DISTANCE-domain
+  section's DURATION exists only after compilation, so the editor lays
+  out strips from the spans (authored-lane sections keep exact
+  authored durations; an s/c strip uses its compiled span, estimate
+  `totalLen/vDesign` before the first compile). Model edits that
+  resize an s/c section rebuild BEFORE redraw so the layout never sees
+  stale spans.
+- **Editor: the element STRIP WIDGET.** With an s/c section active,
+  `app.lanes` points at a shared empty NO_LANES (every node path —
+  hit tests, locks, markers, nudges — is naturally a no-op) and the
+  strip draws: felt-G derived curves behind at SC_CURVE_ALPHA 0.45,
+  a translucent band per element (straight slate 150,160,185 / curve
+  rose 235,130,180 — a hue no lane owns), a labeled chip ("— 12 m",
+  "R20 90°→", arrow = turn plane by nearest 45°), dashed separators,
+  a white smoothing DIAMOND on each internal boundary (filled =
+  blending, hollow = sharp) + translucent blend-zone band. The plot
+  stays in FORCE view (activeGeo() false): other strips and the
+  Resulting overlays read as felt G / rates, lane buttons grey out
+  (setLaneButtonMode mode 2), scales fit the derived curves.
+  Interactions — press rank diamonds > '+' > badges > boundary grabs >
+  band select > strip activation: drag a separator (or the section
+  end) to resize the element left of it (straight = length, curve =
+  re-angle at fixed radius; Ctrl snaps by the new Options "element
+  length" step, default 1 m; H_RESIZE cursor; live readout; edge
+  auto-grow rides the same dragGrowTimer); drag a diamond to size the
+  blend (snaps shut under 0.2 m); click a band to select; double-click
+  or right-click > "Edit element…" for the typed dialog (kind radios,
+  length / radius+angle+direction, entry smoothing — disabled on
+  element 0); right-click also inserts straight/curve before/after
+  and deletes (menu deferred to a clean ≤3 px release so right-drag
+  still pans, same as segment locks); Delete = delete selected
+  element; A = append a straight after the selection (the '+'-append
+  analog). Inserted/appended elements default smoothIn =
+  SC_SMOOTH_DEFAULT (2 m) — smoothing-on is the shipped default;
+  the '+'-menu's new SECTION ("10 m straight", the seamless
+  continuation of any mode) starts sharp at the seam. Inactive s/c
+  strips draw derived curves + faint separators; clicking one
+  activates it (generic path). A REVERSED s/c strip maps authored
+  arc length back-to-front (element 0 draws at the strip's right
+  edge — what the train does); drags stay live through the same
+  authored↔traversal conversion.
+- **Cross-mode plumbing**: boundaryState routes s/c neighbors through
+  the compiled curves (an s/c section is never "same mode"; its roll
+  lane doesn't exist, so laneIdx 2 derives too); the '+' hold after an
+  s/c section takes felt end G + resulting roll (rollEnd falls back to
+  compiled rates exactly like after a reversed section); 3D
+  Ctrl+click-insert on s/c track just activates the section; the badge
+  menu gains total length + element count + "Append element"; undo
+  SecState carries mode + deep-copied elements.
+- **FVDD3**: `section sc <vDesign> distance <reversed>` block with
+  `elem straight <len> <smooth>` / `elem curve <radius> <angle> <dir>
+  <smooth>` lines — unknown-line forgiveness unchanged both ways
+  (old readers skip `elem`; new reader rejects `lane`/`n` inside sc
+  blocks). Round-trip byte-identical (gated).
+- **Gates** (TESTING #14): analytic line/circle/direction + felt G;
+  sharp-chain analytic heading; smoothing turn preservation + clamp +
+  bitwise-sharp-at-zero; reversal point set; force→s/c chain §0
+  invariance; span alignment; round-trip. All legacy gates re-run
+  green (bit-for-bit baseline untouched).
+- **Deliberate scope cuts** (for the feel pass): no banking control on
+  elements (bank = whatever the entry pose carries; a "bank to" field
+  can join later), no drag-to-reorder of bands, no viewport gizmos
+  (that's the split/reconnect + placement roadmap item), DISTANCE
+  domain for force/geo lanes still pending (the domain toggle).
+  (The banking cut lasted one session — D69.)
+
+## D69. s/c roll modes + drag-extend fix + "Append" (v11.1)
+First feel-pass on v11.0, three user calls.
+- **Boundary drags could only SHORTEN.** scSAtT clamped the cursor's
+  arc length to the CURRENT total, so the section-end drag could never
+  express "past the end". It now EXTRAPOLATES beyond both span ends at
+  the boundary sample's speed (the live rebuild re-maps every event,
+  so the extension converges under the cursor). The before-entry side
+  extrapolates negative, which is what lets a REVERSED section extend
+  (its authored end draws at the strip's LEFT edge).
+- **Toolbar button is just "Append"** — it appends whatever the active
+  section authors (seconds on lane sections, elements on s/c); the
+  tooltip carries the per-mode meaning. The keyboard action was
+  already generic (A).
+- **Per-element ROLL, two modes** (Element.rollMode/rollVal, dialog
+  radios, chip suffix ∠°/↻°/s when non-zero):
+  - RATE (°/s): body roll about T at a constant rate, the roll lane's
+    semantics — joins Ω as ω_T = rate·T (a TIME rate, deliberately
+    NOT v-scaled: cU/cR are per-meter, cT is per-second), blended
+    across boundaries with the same sine ease as curvature. Rate 0 =
+    exact v11.0 behavior: bank vs the horizon DRIFTS through pitched
+    turns (rotating about a tilted U cones — gated: a 20° dip into a
+    90° flat turn picks up R.y 0.342 of parasitic bank).
+  - GLOBAL (°): hold the value as the BANK ANGLE VS THE HORIZON —
+    NL2-classic banking, the user's ask ("enter at roll 0, slope down,
+    turn — the track stays level, just visually twisting"). Enforced
+    as an ALGEBRAIC PROJECTION after every integration leg: measure
+    the bank (angle of U vs the level up at T, about T; positive =
+    the roll lane's positive), roll the quaternion about T by the
+    difference. A pure T-roll never moves pos or T, so the projection
+    CANNOT bend the spine (gated bitwise on pos). The target eases
+    from the element's ENTRY bank (measured at runtime, so it is
+    always continuous whatever preceded) over max(smoothIn,
+    ROLL_EASE_MIN = 2 m), capped by the element — bank never jumps
+    even with smoothing off. Near-vertical track (1 − T.y² < 1e-6)
+    has no defined bank: the projection holds off (re-eases when the
+    track leaves the pole). Corrections under 1e-12 rad are skipped —
+    planar zero-bank runs stay bit-identical, which is what let the
+    factory default change without moving any v11.0 gate.
+- **Defaults**: NEW elements default GLOBAL 0 (level rails — the
+  station/brake norm, and the reason the mode exists); the LOADER
+  defaults short v11.0 elem lines to RATE 0 so existing saves keep
+  their exact geometry. FVDD3 elem lines gain two trailing fields
+  (mode 0|1, value) riding the ignore-extra-fields rule.
+- **Consequence, documented**: a RATE element's total twist depends on
+  the design speed (deg/s over a distance-authored element), so s/c
+  shape is fully speed-independent only with GLOBAL/zero-rate rolls.
+- **Gates** (TESTING #14g): exact rate twist, spine unbent both modes,
+  25° global bank held to 1e-9, the slope+turn level-vs-drift pair,
+  roll fields round-trip, v11.0-format lines load as RATE 0.
+
+## D70. Phase 2 continues: SPLIT / ATTACH / PIECE SELECTOR (v12.0)
+The multi-piece milestone (SECTIONS-DESIGN §8): the model carried
+TrackPiece placements since Phase 1 and the compiler already chained
+pieces — v12.0 gives them EDITING. 3D drag gizmos are deliberately a
+LATER round (spinner placement shipped first; gizmos are pure viewport
+interaction and deserve their own feel pass).
+- **Split** (badge menu, "Split piece before this section"): sections
+  k.. move BY REFERENCE to a new piece inserted right after, placed at
+  the compiled boundary — position exact, orientation YAW-ONLY (the
+  piece spec: pieces never tilt, one gizmo-friendly DOF). A LEVEL
+  boundary therefore re-lays the ride bitwise (gated — the identity
+  quaternion path again); a pitched/banked boundary re-lays level from
+  the exact point and the seam shows honestly, same doctrine as
+  reversal (D67) — split where the track is level for a clean cut.
+  The editor follows the section being edited onto the new piece.
+  Splitting keeps the duplicated boundary sample (a new piece's first
+  sample is a genuinely new point — appendRebased has always worked
+  this way), so sample count grows by one per split; downstream code
+  never assumed grid alignment across sections since v11.0.
+- **Attach** (the '+' menu, real at last): a floating piece's sections
+  append to the ACTIVE piece's chain and the emptied piece dissolves;
+  its placement is deliberately discarded — attaching MEANS "continue
+  from this end" (§0 keeps every section's local shape; attach after
+  split at a level boundary reproduces the original ride bitwise,
+  gated). "Attach floating piece" lists every other piece.
+- **Piece selector**: the graph shows ONE piece at a time (§8). A
+  toolbar "Piece k/n ▾" button (hidden while single-piece — the common
+  case stays uncluttered) lists pieces with section counts +
+  placements; 3D Ctrl+click activates the piece AND section under the
+  cursor (activateGlobal maps global ride time through the spans).
+- **Global timeline**: pieces concatenate on the compiled timeline, so
+  the editor keeps ALL lookups in global ride time and the active
+  piece lives in the window [pieceT0, pieceT0+pieceDur] — the axis
+  shows the piece's true global stretch (piece 2 starts at piece 1's
+  end time; POV rides pieces in order, teleporting across gaps until
+  bridges land). Auto-fit, zoom/pan clamps, '+' line, badges, strips
+  and the span indexing (spanBase offsets) all follow the window.
+- **Placement UI**: the Coaster menu's "Start x/y/z" is now "PIECE
+  x/y/z" + a NEW "Piece yaw (°)" spinner — they edit the ACTIVE
+  piece (piece 0 of a single-piece ride = the old Start row exactly);
+  values sync on piece switches (listener-suppressed). Piece
+  placements + the active piece + active section ride the undo
+  DocState (now a list of PieceStates).
+- **Deletion**: deleting a piece's LAST section deletes the piece
+  (when others remain); the document keeps ≥ 1 section overall.
+- **'+' / vEnd fix**: adding a section reads the ACTIVE PIECE's end
+  sample (via its span) for the frozen vDesign / felt-G hold — the
+  ride's last sample belongs to another piece now.
+- **Gates** (TESTING #15): level split bitwise (+1 boundary sample),
+  attach round-back bitwise, pitched split honest + upstream bitwise,
+  placement rigidity + §0 isolation, two-piece FVDD3 round-trip.
+  (The pitched-split "honest re-lay" behavior lasted one review — the
+  user's actual spec was orientation preservation; D71 fixes it.)
+
+## D71. Splits never tilt; reversal is a PIECE operation (v12.1)
+Two user corrections to v12.0/D67 semantics.
+- **"Never tilt" meant the EDIT CONTROLS, not the split.** Splitting
+  must not change the track's orientation AT ALL. TrackPiece therefore
+  gains a BASE ORIENTATION quaternion (`baseOrient`, identity for
+  from-scratch pieces): entryPose = pos + aboutY(yawDeg)·baseOrient,
+  with yaw 0 exactly baseOrient (float-exact path). A split copies the
+  compiled boundary's EXACT exit pose into the new piece — position
+  AND full orientation — so splitting is bitwise at ANY boundary,
+  pitched or banked (gated; the yaw-only re-lay is gone).
+  `TrackCompiler.Span` now carries each section's exit TrackPose (the
+  chain's own quaternion, NOT a frame round-trip from samples — that
+  distinction is what makes the gate bitwise for geo/s/c sections,
+  whose exit orientation is the natively integrated q). The EDIT
+  control stays yaw-only on top (pitch editing is user-approved for
+  later, with the same rule: the original orientation must be
+  revertible — zeroing the deltas does that, since baseOrient itself
+  is never edited). FVDD3 piece lines gain the quat as fields 5-8
+  (%.10f keeps the quantized quat unit within the loader's
+  re-normalize threshold, so round-trips stay byte-identical; missing
+  fields = identity, old files unchanged).
+- **Reversal applies to a WHOLE PIECE** ("the train runs the piece
+  backward"), and it is a MODEL TRANSFORMATION, not a compile mode:
+  `Coaster.reversePiece` re-anchors the placement at the piece's old
+  EXIT (position + reversed orientation into baseOrient: fromFrame(−T,
+  U) — right-handed with R = U×(−T) = −R, matching reverseAndPlace's
+  frame flip), REVERSES the section list to train order, and TOGGLES
+  each section's reversed flag. Consequences: the TRACK STAYS PUT and
+  the train runs it the other way (level-seamed pieces exactly —
+  gated; pitched/banked seams re-join with D67's usual yaw-only
+  honesty per section); the editor needs NO reversal mode (the list IS
+  train order; strips, '+', markers, POV all just work); applying it
+  twice restores the model EXACTLY and the geometry to integration
+  noise (gated at 4e-14). The section-level `reversed` flag remains in
+  the model and FVDD3 as reversal's MECHANISM (and D67's gates keep
+  running on it), but its badge-menu checkbox is GONE — the user-facing
+  control is Coaster menu > "Reverse piece (flip travel direction)",
+  acting on the ACTIVE piece; the ◀ badge still marks flagged
+  sections. The editor follows the edited section to its new list
+  position (index n−1−k).
+- **Confirmed on the roadmap** (user Q&A): mid-section splitting — a
+  piece split at an arbitrary point INSIDE a section, likely node-
+  anchored (select a node, split there), which will split the lanes
+  via the exact de Casteljau machinery insertNodeOnCurve already uses;
+  and DIRECT ATTACH stays a first-class join even after bridge
+  sections land (bridges are additive, not a replacement).
+
+## D72. BRIDGE sections (v13.0)
+SECTIONS-DESIGN §4, user-picked next. A bridge is the LAST section of
+a piece and connects its chain end to the NEXT piece's entry with a
+G¹ spline. BridgeSection.java holds the model AND the geometry (the
+solve is closed-form — no integrator class).
+- **FROZEN world-anchored geometry (the §4 feedback guard).** A
+  bridge stores the two POSES it was solved against (solvedEntry /
+  solvedTarget, world coordinates) + tangent lengths; its geometry is
+  a pure function of those. passG deliberately IGNORES the incoming
+  chain pose. Editing upstream track or moving the target piece
+  changes NO bridge bit (gated bitwise) — the badge goes "bridge !"
+  in the warning color instead, the active strip says "endpoints
+  moved — badge ▸ Re-solve bridge", and the badge menu's explicit
+  "Re-solve bridge" re-captures both poses (one undo step; tangent
+  lengths kept). poseMatches compares pos to 1e-9 and |q·q'| to
+  1−1e-12 (q ≡ −q). A bridge whose piece is LAST (target gone) is
+  permanently dirty.
+- **Geometry**: quintic Hermite on position, p'' = 0 at both ends,
+  end tangents = T·lenA / T·lenB (user-adjustable via the badge
+  menu's "Bridge tangents…" dialog; default = half the gap, floored
+  at 1 m). Collinear matched endpoints degenerate to an EXACT
+  straight line (gated to 1e-12). Orientation: rotation-minimizing
+  frame transport along the spline, then the residual roll error vs
+  the target's U distributes as a sine-eased TWIST about T — roll
+  matched at both ends (gated ~1e-6°), zero roll rate at the seams.
+  G¹ deliberately: tangent DIRECTIONS match, curvature steps at the
+  seams honestly like every other boundary.
+- **Sampling**: geometric presample (5 cm) with analytic curvature
+  from the polynomial, then a time-domain walk at dt with v from
+  energy at vDesign (frozen at creation from the chain-end sample) —
+  felt Gv/Gl = v²·κ projected + gravity components, so rail colors
+  and stats are honest. Exit pose = solvedTarget VERBATIM: a clean
+  bridge meets the next piece's entry bitwise (the duplicated seam
+  sample matches the split precedent).
+- **Editor**: '+' menu "Bridge to piece N (connect the gap)" (needs a
+  following piece); a piece ENDING with a bridge refuses further
+  add/attach ("extend the NEXT piece" hint) — its end is glued.
+  Active bridge strip = derived felt-G curves (nothing to drag; badge
+  menu carries re-solve/tangents/delete/split). Reversing a piece
+  containing a bridge is refused with a stats-bar hint (its poses are
+  world-anchored A→B; delete the bridge first). Lane buttons disable
+  (the no-lane mode 2, shared with s/c).
+- **FVDD3**: `section bridge vDesign distance 0` + `bpose` (14 fields:
+  two pos+quat poses at %.10f — the same skip-renormalize round-trip
+  trick as piece baseOrient) + `blen lenA lenB`. Loader defaults are
+  placeholders; bpose fills them (missing bpose = degenerate but
+  loadable, unknown-line rules unchanged).
+- **Gates** (TESTING #16): endpoint/tangent/roll exactness at posed
+  ends, collinear-line degeneracy, chain continuity + exact seam,
+  frozen-bitwise under target moves, dirty/in-sync reporting,
+  re-solve re-join, byte-identical round-trip.
+- **Scope note**: §4's "Optimize placement" solver mode (translate +
+  yaw the target piece to minimize bridge strain) is NOT in this
+  round — autocomplete-only first; influence curves + "become real"
+  (§5) also remain on the roadmap.
+  (The freeze doctrine and the optimize gap both lasted one review —
+  D73 is the user's redesign.)
+
+## D73. Bridges v2: LIVE-FOLLOW, G² ends, any piece, optimize (v13.1)
+Four user calls on v13.0, plus two viewport fixes in the same round.
+- **LIVE-FOLLOW replaces the freeze.** The user wants to move the
+  attached piece and watch the bridge move with it — and he is right
+  that there is no feedback loop: a bridge's geometry never feeds its
+  own endpoints (D72's freeze guarded against a problem that belongs
+  to §5 influence mode). The compiler now RE-CAPTURES the solve inputs
+  (both poses AND both seam curvatures) on every compile, so dragging
+  the target piece's spinners re-joins live. solvedEntry/solvedTarget/
+  accA/accB remain in the model + FVDD3 as the LAST CAPTURE: they
+  govern alone only when the target piece is GONE (deleted/attached) —
+  the orphaned bridge stays frozen at its last shape, badge "bridge !"
+  ("no following piece"). "Re-solve bridge" is deleted (nothing to
+  re-solve); poseMatches/dirty machinery gone with it. Gated: move
+  target → next compile's bridge exit sits on the new entry to 1e-12;
+  delete target → bridge samples bitwise frozen.
+- **G² ends** (user upgrade request): the quintic's end second
+  derivatives now match the NEIGHBORS' curvature vectors instead of
+  zero — p''(0)/p''(1) = acc·len² (κ ⊥ T; the parallel part stays
+  zero). accA is MEASURED off the compiled chain's tail samples
+  (mode-agnostic); accB is computed ANALYTICALLY from the target's
+  first section (force: κ = (ωR·R + ωU·U)/v from node-0 targets; geo:
+  (yaw·R + pitch·U)/v; s/c: κ(cos·R + sin·U) from element 0; reversed
+  sections read their authored END with the lateral sign flipped —
+  approximate for lane sections). Gated with one-sided |ΔT|/Δs probes
+  at each seam: curvature is CONTINUOUS across both (arc 0.0503 vs
+  bridge 0.0491 / 0.0379 vs 0.0400) — the v13.0 G¹ bridge read ~0
+  there. acc = 0 reproduces G¹ exactly, which is how v13.0 files load
+  (`bacc` line missing) and why the collinear-line gate is untouched.
+  NOTE the honest limitation: the neighbors' curvature is matched at
+  design speeds; the felt-G at the seam is continuous only insofar as
+  speeds match (same §0 story as everywhere).
+- **Bridge to ANY piece** (user: "in the future" — cheap now): the '+'
+  menu's bridge entry is a submenu of every other piece. Picking a
+  non-adjacent one REORDERS it to come right after the bridging piece
+  (Coaster.movePiece) — the piece list IS the ride timeline, and
+  connecting means "this one follows". Picking an EARLIER piece moves
+  it too (if that was piece 0 the ride start changes — well-defined,
+  undoable; closing a loop back to the ride start is a separate
+  future feature).
+- **"Optimize placement" implemented as an explicit, repeatable
+  ACTION** (badge menu: "Optimize placement of piece N (align dead
+  ahead)"): closed-form, no numeric solver needed — with the gap
+  distance held, minimum strain = target dead ahead along the chain
+  end's tangent with horizontal headings aligned (translate + yaw
+  only, per the §4 DOF spec; yaw wraps into the spinner range). The
+  live-follow bridge straightens with it (gated: max chord deviation
+  1.4e-14 m for level ends). Chosen over a per-bridge auto-optimize
+  TOGGLE deliberately: a live optimizer would fight the user's own
+  placement drags — if the toggle semantics are wanted anyway, this
+  action is the piece it would call.
+- **Viewport fix: no more stretched connectors between pieces** (user
+  bug report): the rail/heartline tube meshes strung rings across
+  piece gaps (consecutive samples of DIFFERENT pieces). Rings farther
+  apart than MESH_GAP_BREAK = 3.5 m (max legit ring spacing is
+  SAMPLE_STRIDE·v·dt = 3 m at the 100 m/s cap) no longer get tube
+  faces. Gaps smaller than that still draw a connector — rare and
+  reads as intentional track; revisit if it bites.
+- **Viewport: plain CLICK activates a piece** (user request): a clean
+  primary click (≤3 px, no modifiers, orbit mode) on any track
+  activates its piece + section in the graph (activateAt → the spans
+  map global ride time back). Drags still orbit; Shift/C+click still
+  recenters; Ctrl+click still inserts.
+
+## D74. Seam smoothness ("G4"), gap spinner, piece-UX round (v13.2)
+Six user calls on v13.1.
+- **The seam SNAP, diagnosed**: G² matched curvature VALUES, but three
+  things still stepped at bridge seams — the rate graphs' SLOPES
+  (dκ/ds unconstrained: the quintic dumped its end curvature within a
+  meter, ~600 °/s² probed), the SPEED at the far seam (the bridge's
+  energy profile vs the target's own design speed — rates = κ·v, so a
+  v step is a rate step), and the ROLL RATE (the old twist eased to
+  zero-slope ends against neighbors rolling at e.g. 15 °/s). All
+  three are fixed; together the rate/felt graphs are continuous in
+  VALUE and SLOPE at both seams (the user's "G4 — keep the slope of
+  the graphs the same"):
+  1. SEPTIC (degree-7) Hermite: p, p', p'', p''' at both ends; p'''
+     ends = the neighbors' d²T/ds² · len³. Seam derivatives are
+     MEASURED, not modeled: one-sided quadratic fits of T(s) over the
+     chain's tail samples / a pre-integrated target-head (one extra
+     passG per bridge per compile — mode-agnostic, reversed sections
+     included). CRITICAL detail (probed the hard way): the raw T''
+     carries a −|κ|²·T parametrization term; imposed at len³ scale it
+     made the septic RING (a tame seam whipped into a reverse-
+     curvature spike within 2 m). Both seam vectors are therefore
+     projected ⊥ T — only the perpendicular parts are geometry.
+  2. SPEED BLEND: the bridge's design profile eases from its energy
+     curve onto the target's entry design speed (sine ease, zero end
+     slopes — dv/dt = −g·T.y stays continuous at both seams because
+     the ends keep the pure energy slope). vDesign itself is now
+     LIVE-captured (the chain-end speed), so the near seam can't
+     drift either. Physically the blend means the connector contains
+     whatever invisible brake/boost the design-speed mismatch implies
+     — Phase 3 makes speed real everywhere.
+  3. ROLL-RATE-MATCHED TWIST: the twist profile is a quintic scalar
+     Hermite whose end slopes are the neighbors' measured roll rates
+     (zero rates reproduce the old ease exactly).
+  Persisted as the `bdyn` line (jerks, roll rates, vB; missing =
+  zeros = the v13.1 shape). HONEST LIMIT, gated as such: cramped or
+  conflicting geometry (a 5 m dive over a 20 m gap, ends pinned
+  level; entry curving away from the target's heading) still needs
+  FAST transients — smooth, slope-matched, but violent; that is the
+  geometry's demand, and the cure is the gap spinner / tangents /
+  optimize, not more derivatives. The no-snap gates therefore run on
+  geometry where a smooth continuation exists.
+- **Bridge GAP spinner** (user): a toolbar "Gap (m)" spinner appears
+  while a live bridge is active; every change (arrow clicks included)
+  RE-RUNS the placement optimization at that distance — the target
+  slides along the chain end's tangent, the live bridge follows.
+  Arrow bursts coalesce into one undo step (nudge-style, 800 ms);
+  the value re-syncs from the actual gap after every rebuild
+  (docApplying-guarded, so syncing never re-optimizes).
+- **Piece settings moved to the graph area** (user): the Coaster
+  menu's Piece x/y/z + yaw rows and "Reverse piece" now live in a
+  toolbar "Placement ▾" dropdown next to the piece selector (same
+  spinner objects, same menu-local undo wiring; the Coaster menu
+  keeps heart/gauge/ties/speed/colors — the truly per-coaster knobs).
+- **Inactive pieces DESATURATE in the viewport** (user): meshes are
+  now built PER PIECE (sample ranges from the spans); inactive pieces
+  get a desaturated+darkened gradient texture (deriveColor sat 0.30,
+  bright 0.80) or desaturated solid color, dimmer ties and specular.
+  setActivePiece triggers a rebuild so the highlight follows the
+  editor (and the 3D plain-click).
+- **Piece-boundary mesh semantics** (user #5/#6, interpreted): meshes
+  never span a piece boundary — so detached pieces stay visually
+  detached — while a clean bridge/attach seam abuts EXACTLY (zero
+  gap) and reads as one continuous track; deleting the bridge (badge
+  ▸ Delete) leaves the pieces apart again. Coincident-but-detached
+  ends (a fresh split) are distinguished by the desaturation change
+  rather than a fake physical gap — the geometry genuinely coincides.
+  MESH_GAP_BREAK stays as an in-piece safety net.

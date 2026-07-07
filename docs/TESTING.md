@@ -165,6 +165,106 @@
     roll rate is traversal-INVARIANT (T and the bank rate both flip
     and cancel; felt Gl flips instead). All passed 2026-07-06.
 
+14. **Straight/curve gates (v11.0, D68 — same scratch Phase2Gate).**
+    (a) Analytic elements: a 50 m straight lands EXACTLY (0 error, s
+    bitwise == total length — the Newton landing); an R20 90° dir-0
+    curve is an exact circle (max radial error < 1e-7, endpoint and
+    −z heading to 1e-6°); dir 90 pulls UP in the vertical plane with
+    exact pitch; negative angle mirrors the turn. Felt G: straight
+    level = 1 g/0; flat turn Gl = v²/Rg; pull-up entry Gv = v²/Rg + 1
+    (all 1e-9).
+    (b) SHARP straight→arc→straight chain ends on the ANALYTIC
+    heading to 1e-6° — this rides on the integrator sub-stepping at
+    profile breakpoints with side-capped lookups (stepping OVER a
+    curvature step cost ~0.02–0.13° per crossing before; the k4 stage
+    read the next element's κ).
+    (c) Smoothing: the same chain with 6 m blends ends on the SAME
+    analytic heading (symmetric sine blend integrates to the mean
+    curvature — turn angle preserved exactly for straight↔arc), arc
+    length bitwise unchanged, path visibly eased; smoothIn 0 is
+    BITWISE identical to sharp; blends overflowing a short middle
+    element clamp proportionally and still keep the turn.
+    (d) Reversal: same point set (pairwise distances 1e-9), entry
+    pose landed, t/s ascend.
+    (e) Chain + §0: force→s/c compile continuous; force prefix
+    bitwise == solo; mirroring the s/c turn moves ONLY the s/c
+    stretch. Spans (new compile output): one per section, contiguous
+    index ranges, exact t/s chaining, s/c span length == authored.
+    (f) FVDD3 round-trip byte-identical with force+geo+s/c aboard;
+    kinds/radius/angle/direction/smoothing/reversed survive; loaded
+    document compiles.
+    (g) Roll (v11.1, D69): RATE 40 °/s on a straight = exact twist
+    (rate × last-sample t) with the spine unbent (endpoint 1e-9);
+    GLOBAL 25° holds the bank vs the horizon to 1e-9 and the
+    projection never moves the position; positive bank twists the
+    same way as +roll rate; the USER SCENARIO — 20° dip then a 90°
+    flat turn — stays LEVEL under GLOBAL 0 (R.y ~1e-17) while the
+    same chain under RATE 0 drifts to R.y 0.342 (the v11.0 cone
+    behavior, kept for compatibility); roll mode/value round-trip on
+    elem lines; v11.0-format elem lines (no roll fields) load as
+    RATE 0 so old saves keep their geometry. All passed 2026-07-06.
+
+15. **Piece gates (v12.0 D70, revised v12.1 D71 — same scratch
+    Phase2Gate).**
+    Split at an EXACTLY LEVEL boundary: the two-piece compile is
+    BITWISE the original ride plus one duplicated boundary sample (a
+    new piece's first sample is kept, not dropped), and that sample
+    sits exactly ON the boundary. Split at a PITCHED boundary: ALSO
+    bitwise (v12.1 — the span's exact exit pose lands in the new
+    piece's baseOrient; the v12.0 yaw-only re-lay is gone per user
+    rule "splitting must not change orientation at all"). Attach
+    after a split: bitwise the original, count included. Moving
+    piece 2 (x/z/yaw): piece 1 bitwise untouched (§0) and piece 2
+    transforms RIGIDLY (pairwise distances 1e-9) onto its new origin.
+    FVDD3 round-trip byte-identical with two placed pieces (piece
+    lines carry the base-orientation quat at %.10f — under the
+    loader's re-normalize threshold); placements survive.
+    PIECE REVERSAL (v12.1): on a level straight+turn chain,
+    reversePiece flips the section list to train order with toggled
+    flags, starts exactly at the old exit (1e-12), ends at the old
+    entry (1e-9 — the track STAYS PUT), preserves arc length;
+    reversing again restores the model EXACTLY (same section objects,
+    original order, flags cleared) and the geometry to 4e-14 m.
+    All passed 2026-07-07.
+
+16. **Bridge gates (v13.0 D72, revised for v13.1 D73 — same scratch
+    Phase2Gate).**
+    Between two arbitrarily posed endpoints (yawed + banked): both
+    endpoint positions land to 1e-12, tangent DIRECTIONS match both
+    seams to 1e-6°, roll (U) matches both ends (~1e-6°, the eased
+    twist); t/s monotonic, all finite. Collinear matched endpoints
+    with zero seam curvature degenerate to an EXACT straight line
+    (y/z to 1e-12, s to 1e-9, felt 1 g/0). Two-piece chain with a
+    fresh bridge: whole compile continuous (the gap is closed) and
+    the bridge exit sits EXACTLY on the next piece's entry (1e-12).
+    LIVE-FOLLOW (v13.1, replaced the v13.0 freeze): moving/yawing the
+    target piece re-joins on the NEXT COMPILE to 1e-12 with the chain
+    still continuous; deleting the target ORPHANS the bridge — its
+    samples stay bitwise frozen at the last capture. G²/G³ (v13.1,
+    septic v13.2):
+    one-sided |ΔT|/Δs probes on both sides of each seam agree
+    (arc 0.0501 vs bridge 0.0502 entering; 0.0400 vs 0.0400 leaving —
+    the G¹ bridge read ~0 on its side). OPTIMIZE PLACEMENT: aligning
+    the target dead ahead matches headings to 1e-9 and the bridge
+    straightens to a 1.4e-14 m max chord deviation. movePiece reorders
+    an arbitrary bridge target to follow the bridging piece. FVDD3
+    round-trip byte-identical with a bridge aboard (bpose/bacc at
+    %.10f).
+    SEAM SMOOTHNESS (v13.2, D74): on a rolling straight bridged to a
+    dead-ahead lower/slower piece — a real v mismatch (energy would
+    land ~7 m/s off the target's design speed): the far seam has NO
+    speed step (20.000 vs 20.000); the roll rate flows through
+    (~15 °/s both sides — the old twist snapped it to 0);
+    pitch/yaw/roll rates step ≤ 3.5 °/s per sample into the bridge
+    and ≤ 8 °/s across the exit window measured clear of the
+    duplicate boundary sample (bodyRates' zero-dt rows there are a
+    measurement artifact, probed) — v13.1-era snaps measured 15-44+.
+    The `bdyn` line round-trips byte-identical. NOTE the honest
+    limit, probed and documented in D74: cramped/conflicting bridges
+    (5 m dive over a 20 m gap; entry curving away from the target
+    heading) legitimately need violent-but-smooth transients — that
+    is the geometry, not the seams. All passed 2026-07-07.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.
@@ -704,26 +804,158 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     exactly at the dot (drag-chain and undo unchanged); near a node
     where the snapped spot has no room the dot disappears and the
     click does nothing.
-49. Reversal (v10.9): click a section's badge → check "Reversed". The
-    badge gains a ◀ and the 3D track re-lays that section run
-    BACK-TO-FRONT from the same entry point: with the default layout
-    reversed as section 2 of a chain, the shape is the same hills
-    mirrored against the direction of travel (the train hits the
-    original ride's END first). POV rides through it seamlessly in
-    chain order. The active reversed section still edits its lanes in
-    the AUTHORED direction (drag a Gv node and the mirrored stretch
-    updates live); as an INACTIVE strip it draws the derived
-    train-direction curves (like a cross-mode strip). B on a
-    neighbor's boundary node matches against the reversed section's
-    compiled curves (values converge in one press, prev side). If the
-    upstream section ends banked or pitched, the seam shows a visible
-    kink — ending it level joins cleanly (yaw-only alignment is
-    deliberate). Toggle off → exact original geometry returns; Ctrl+Z
-    steps the toggle; save → load keeps it (5th token of the
-    `section` line, all FVDD3 files since v9.0 carry it). Stats bar
-    Gv range unchanged by reversal; watch the felt LATERAL G flip
-    sign on a reversed turning section (Resulting → Lateral G over a
-    geo one, or rail colors on a force one).
+49. Reversal (v10.9 mechanics; PIECE-scoped UI since v12.1 — see
+    step 53 for the current control; the per-section badge check is
+    GONE). The underlying per-section behavior still holds and is
+    what step 53 exercises through the piece operation: a reversed
+    section runs its authored shape back-to-front; the active one
+    still edits its lanes in the AUTHORED direction (drag a Gv node
+    and the mirrored stretch updates live); as an INACTIVE strip it
+    draws the derived train-direction curves (like a cross-mode
+    strip); B on a neighbor's boundary node matches against its
+    compiled curves. Pitched/banked seams show an honest kink
+    (yaw-only alignment per section). The ◀ badge marks flagged
+    sections; the flag stays the 5th token of the `section` line.
+    Stats bar Gv range unchanged by reversal; felt LATERAL G flips
+    sign on a reversed turning section.
+50. Straight/curve sections (v11.0): '+' past the ride end → "Add
+    straight/curve section" — a 10 m dead-straight continuation
+    appears (3D: no kink at the seam whatever preceded it), the strip
+    shows one slate band with a "— 10 m" chip, lane buttons GREY OUT,
+    the y-axis reads force units and the felt-G curves draw faintly
+    behind the band. Right-click the band → "Insert curve after" — a
+    rose band ("R20 90°→", 2 m smoothing pre-set) and the 3D track
+    turns right through 90°. Drag the separator between them: the
+    straight resizes live (readout "length … m"; Ctrl steps by the
+    Options element-length snap, default 1 m; cursor is ↔ over
+    grabbable lines); drag the section END line: the curve re-angles
+    at its radius (readout "arc … m (…°)"). Drag the ◇ diamond away
+    from its boundary — the shaded blend zone widens and the 3D
+    corner visibly eases (curvature ramps instead of jumping); drag
+    it back onto the boundary — it snaps hollow (sharp). Double-click
+    the curve band: dialog — set direction 90 → the turn becomes a
+    pull-UP; angle −90 mirrors; entry smoothing types exactly;
+    element 0's smoothing field is disabled (seam). Delete removes
+    the selected element (last one refuses); A appends a straight.
+    Click a lane-section strip then back — selection/deselection and
+    the mode swap are clean both ways; B on the lane section's edge
+    node matches against the s/c section's compiled felt G. Reverse
+    the s/c section via its badge: elements draw in TRAIN order
+    (chips mirrored) and drags still work. Undo steps every element
+    edit/insert/delete/drag as one step each; save → load → identical
+    elements (elem lines); NL2 export includes the s/c stretch. Add a
+    force section AFTER the s/c one: it holds the felt end G
+    seamlessly. POV rides the whole chain smoothly.
+51. S/c drag-extend + roll (v11.1): drag the section-END separator
+    RIGHT — the last element GROWS past the old end (v11.0 could only
+    shorten; keep pulling and the view edge auto-grows). Same for
+    internal separators. The toolbar button reads just "Append".
+    Roll: build dip-then-turn (curve R30 −20° dir 90, straight,
+    curve R20 90° dir 0) — with the default roll (Global bank 0) the
+    rails stay LEVEL through the whole thing, visibly twisting in
+    POV. Open the turn's dialog → Roll = Rate (°/s), value 0 — now
+    the turn banks over as it comes off the slope (the old drift).
+    Set Global bank 25 on a straight: the track twists in over ~2 m
+    and holds 25° vs the horizon (chip shows ∠25°); Rate 40 on a
+    straight twists continuously (chip ↻40°/s). Element 0 accepts
+    roll too (only its SMOOTHING is seam-locked). Save/load keeps
+    modes and values; a v11.0 save opens with its old geometry
+    (loader defaults those elements to Rate 0).
+52. Pieces (v12.0; split exactness v12.1): with a 3-section ride,
+    click section 2's badge →
+    "Split piece before this section". A "Piece 1/2 ▾" button appears
+    on the toolbar; the graph now shows only piece 1's strips and the
+    3D track is COMPLETELY UNCHANGED — split anywhere, mid-hill,
+    banked, pitched: nothing moves (the boundary's full orientation
+    lands in the new piece's base orientation, v12.1).
+    The button lists both pieces (✓ marks active); picking piece 2
+    jumps the graph to its stretch of the timeline (axis continues
+    piece 1's time). Coaster menu now reads "Piece x/y/z" + "Piece
+    yaw": with piece 2 active, change x/z/yaw — piece 2 slides/turns
+    rigidly in 3D (yaw on TOP of its natural orientation; set it back
+    to 0 and the original orientation returns exactly), piece 1 never
+    moves, the spinners re-sync when you
+    switch pieces. 3D Ctrl+click on either piece's track activates
+    that piece + section (and inserts a node on lane sections, as
+    ever). ⊕ at piece 1's end → "Attach floating piece" → Piece 2:
+    the pieces merge back into one chain re-laid from piece 1's end
+    (the moved placement is discarded), and the piece button hides.
+    Undo steps split/attach/placement each as one step, restoring the
+    active piece too. Save with two pieces → load: both pieces +
+    placements + base orientations return. Deleting a piece's only
+    section deletes the
+    piece (badge > Delete); the POV rides pieces in order, jumping
+    across the gap between them.
+53. Reverse piece (v12.1): Coaster menu > "Reverse piece (flip travel
+    direction)" on a level-ending ride: the 3D track DOES NOT MOVE
+    but the POV now runs it the other way (the old exit is the new
+    start; the stats ride time is unchanged). The strips reorder to
+    train order and every section badge wears ◀; the section you were
+    editing stays active at its new position. Sections still edit in
+    their authored direction (step 49). Reverse again: everything —
+    order, badges, geometry, placement spinners — returns exactly.
+    On a ride ending pitched/banked, reversing re-joins interior
+    seams with visible kinks where they aren't level (honest, like
+    D67) — undo restores. Ctrl+Z steps each reversal; save → load
+    keeps the reversed state (flags + piece base orientation).
+54. Bridges (v13.0; live-follow + G² + any-piece + optimize v13.1):
+    split a ride, move piece 2 well away (x/z/yaw), then on piece 1:
+    ⊕ → "Bridge to piece" → pick piece 2 — a
+    smooth spline spans the gap in 3D, the POV rides across without
+    jumping, and a "bridge" badge appears on the new strip (its strip
+    shows the felt-G curves; the graph timeline includes the bridge's
+    seconds). Now MOVE piece 2 again (x/z/yaw spinners): the bridge
+    FOLLOWS LIVE, staying glued to both ends while you spin the
+    values. Edit piece 1's track upstream — same: the bridge re-joins
+    every rebuild. If the seam sits on curved track (e.g. piece 1
+    ends mid-turn), look closely at the join: the bridge CONTINUES
+    the curve (G² — no visible straightening right at the seam; the
+    v13.0 bridge went momentarily straight there). Badge → Bridge
+    tangents…: larger entry tangent = leaves straighter and sweeps
+    wider; smaller = turns off sooner (one undo step per apply).
+    Badge → "Optimize placement of piece 2": piece 2 jumps dead ahead
+    of piece 1's end at the same distance with headings aligned — the
+    bridge straightens (level ends: dead straight); repeatable after
+    further moves; one undo step. With THREE pieces, ⊕ → Bridge to
+    piece 3 from piece 1: piece 3 reorders to follow piece 1 on the
+    timeline (piece button renumbers) and the bridge connects them.
+    Delete piece 2 while bridged: the bridge keeps its last shape and
+    its badge turns "bridge !" ("no following piece"). ⊕ on piece 1
+    says "Piece ends with a bridge — extend the NEXT piece"
+    (add/attach disabled); Coaster > Reverse piece on piece 1 refuses
+    with a stats-bar hint. Delete the bridge via its badge — the gap
+    returns. Undo steps create/tangents/optimize/delete each as one
+    step; save → load keeps the bridge (bpose/bacc lines); NL2
+    export includes it.
+55. Viewport (v13.1): with two DETACHED pieces there is NO stretched
+    rail/heartline connector between them — each piece's track ends
+    cleanly in the air (the old ghost tube between piece ends is
+    gone). Plain-CLICK (no modifiers, no drag) any piece's track in
+    orbit view: the graph switches to that piece + section (piece
+    button + strips + placement spinners all follow); dragging still
+    orbits, Shift/C+click still recenters, Ctrl+click still inserts a
+    node. Clicking empty sky changes nothing.
+56. v13.2 UX round: INACTIVE pieces render desaturated/darker in 3D
+    (gradient and solid modes both); clicking another piece swaps the
+    highlight instantly. The toolbar gains "Placement ▾" next to the
+    piece selector — Piece x/y/z, Piece yaw and Reverse piece now
+    live there (gone from the Coaster menu; Ctrl+Z inside the popup
+    still does menu-local undo). With a bridge ACTIVE a "Gap (m)"
+    spinner appears on the toolbar: each up/down click slides the
+    NEXT piece dead-ahead to that distance and the bridge re-solves
+    live (arrow bursts = one undo step; the value re-syncs if you
+    move the piece by hand). SEAM SMOOTHNESS: bridge a rolling/curved
+    chain end to a piece with a different design speed — watch the
+    Resulting rate overlays flow across both bridge seams with no
+    step and no kink (v13.1 snapped visibly); the felt-G curves and
+    rail colors blend across too (the bridge's speed eases onto the
+    next piece's design speed). A cramped bridge (big drop over a
+    short gap) still shows a fast-but-smooth swing INSIDE the bridge
+    — that's the geometry; raise the Gap or re-tangent to calm it.
+    Bridged pieces read as ONE continuous track in 3D (flush seam);
+    deleting the bridge separates them again; a fresh split shows its
+    boundary via the saturation change (the tubes genuinely
+    coincide).
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes

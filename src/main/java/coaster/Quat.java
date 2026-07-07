@@ -28,6 +28,14 @@ public record Quat(double w, double x, double y, double z) {
         return new Quat(Math.cos(h), 0, Math.sin(h), 0);
     }
 
+    /** Rotation of rad about an arbitrary UNIT axis (world coords) —
+     *  the s/c global-bank projection rolls about the current T. */
+    public static Quat aboutAxis(Vec3 axis, double rad) {
+        double h = rad / 2;
+        double s = Math.sin(h);
+        return new Quat(Math.cos(h), axis.x() * s, axis.y() * s, axis.z() * s);
+    }
+
     /** Hamilton product: this THEN other applied... composition q1.mul(q2)
      *  rotates by q2 first, then q1 (standard convention: (q1·q2)·v). */
     public Quat mul(Quat o) {

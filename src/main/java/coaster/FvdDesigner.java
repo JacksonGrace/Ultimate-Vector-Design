@@ -202,60 +202,106 @@ public class FvdDesigner extends Application {
     // heart, gauge, start placement and v0 (user rule: "everything that
     // changes the track path, not just aesthetics"). Tie spacing and colors
     // stay menu-local-undo only.
-    record SecState(List<List<BezierBaker.Node>> lanes, double vDesign,
-                    boolean geo, boolean reversed) {}
+    // mode: 0 force, 1 geo, 2 straight/curve (lanes null, elements
+    // set), 3 bridge (lanes+elements null, bridge set)
+    record SecState(List<List<BezierBaker.Node>> lanes,
+                    List<StraightCurveSection.Element> elements,
+                    double vDesign, int mode, boolean reversed,
+                    BridgeSection bridge) {}
 
-    record DocState(List<SecState> sections, int active, double heart, double gauge,
-                    double px, double py, double pz, double v0) {}
+    // one per TrackPiece (v12.0; baseOrient v12.1): sections + placement
+    record PieceState(List<SecState> sections,
+                      double x, double y, double z, double yaw, Quat base) {}
+
+    record DocState(List<PieceState> pieces, int activePiece, int active,
+                    double heart, double gauge, double v0) {}
 
     private boolean docApplying = false;   // suppress spinner listeners while
                                            // an undo/redo writes them back
 
     DocState snapshotDoc() {
-        List<SecState> secs = new ArrayList<>();
-        for (Section s : coaster.pieces.get(0).sections) {
-            LaneSection fs = (LaneSection) s;
-            List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
-            for (List<BezierBaker.Node> lane : fs.lanes) {
-                List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
-                for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
-                copy.add(laneCopy);
+        List<PieceState> ps = new ArrayList<>();
+        for (TrackPiece piece : coaster.pieces) {
+            List<SecState> secs = new ArrayList<>();
+            for (Section s : piece.sections) {
+                if (s instanceof BridgeSection bs) {
+                    secs.add(new SecState(null, null, bs.vDesign, 3,
+                        bs.reversed, bs.copy()));
+                    continue;
+                }
+                if (s instanceof StraightCurveSection sc) {
+                    List<StraightCurveSection.Element> els =
+                        new ArrayList<>(sc.elements.size());
+                    for (StraightCurveSection.Element e : sc.elements) els.add(e.copy());
+                    secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed, null));
+                    continue;
+                }
+                LaneSection fs = (LaneSection) s;
+                List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
+                for (List<BezierBaker.Node> lane : fs.lanes) {
+                    List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
+                    for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
+                    copy.add(laneCopy);
+                }
+                secs.add(new SecState(copy, null, fs.vDesign,
+                    fs instanceof GeoSection ? 1 : 0, fs.reversed, null));
             }
-            secs.add(new SecState(copy, fs.vDesign,
-                fs instanceof GeoSection, fs.reversed));
+            ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
+                piece.yawDeg, piece.baseOrient));
         }
-        TrackPiece p = coaster.pieces.get(0);
-        return new DocState(secs, editor != null ? editor.activeSection() : 0,
-            heartOffset, railGauge, p.x, p.y, p.z, coaster.v0);
+        return new DocState(ps,
+            editor != null ? editor.activePiece() : 0,
+            editor != null ? editor.activeSection() : 0,
+            heartOffset, railGauge, coaster.v0);
     }
 
-    /** Restore a document snapshot: lanes, path settings, and the spinner
-     *  displays (their listeners are suppressed — fields are set here). */
+    /** Restore a document snapshot: pieces, path settings, and the
+     *  spinner displays (their listeners are suppressed — fields are
+     *  set here; placement spinners show the ACTIVE piece). */
     void applyDocState(DocState s) {
         docApplying = true;
-        TrackPiece piece0 = coaster.pieces.get(0);
-        piece0.sections.clear();
+        coaster.pieces.clear();
         // snapshot lists are deep copies popped off the stack - adopt them
-        for (SecState st : s.sections()) {
-            LaneSection sec = st.geo()
-                ? new GeoSection(st.lanes(), st.vDesign())
-                : new ForceSection(st.lanes(), st.vDesign());
-            sec.reversed = st.reversed();
-            piece0.sections.add(sec);
+        for (PieceState pst : s.pieces()) {
+            TrackPiece piece = new TrackPiece(pst.x(), pst.y(), pst.z(), pst.yaw());
+            piece.baseOrient = pst.base();
+            for (SecState st : pst.sections()) {
+                Section sec = switch (st.mode()) {
+                    case 3  -> st.bridge();   // deep copy, adopted
+                    case 2  -> new StraightCurveSection(st.elements(), st.vDesign());
+                    case 1  -> new GeoSection(st.lanes(), st.vDesign());
+                    default -> new ForceSection(st.lanes(), st.vDesign());
+                };
+                sec.reversed(st.reversed());
+                piece.sections.add(sec);
+            }
+            coaster.pieces.add(piece);
         }
-        if (editor != null) editor.restoreActive(s.active());
+        if (editor != null) editor.restoreActive(s.activePiece(), s.active());
         heartOffset = s.heart();
         railGauge = s.gauge();
-        TrackPiece p = coaster.pieces.get(0);
-        p.x = s.px(); p.y = s.py(); p.z = s.pz();
         coaster.v0 = s.v0();
         heartSpinner.getValueFactory().setValue(s.heart());
         gaugeSpinner.getValueFactory().setValue(s.gauge());
-        startXSpinner.getValueFactory().setValue(s.px());
-        startYSpinner.getValueFactory().setValue(s.py());
-        startZSpinner.getValueFactory().setValue(s.pz());
         startSpeedSpinner.getValueFactory().setValue(s.v0());
         docApplying = false;
+        syncPlacementSpinners();
+        updatePieceButton();
+    }
+
+    /** Point the placement spinners at the ACTIVE piece's values
+     *  (listener-safe: docApplying suppresses the undo push). */
+    void syncPlacementSpinners() {
+        if (editor == null || startXSpinner == null) return;
+        TrackPiece p = coaster.pieces.get(
+            Math.min(editor.activePiece(), coaster.pieces.size() - 1));
+        boolean was = docApplying;
+        docApplying = true;
+        startXSpinner.getValueFactory().setValue(p.x);
+        startYSpinner.getValueFactory().setValue(p.y);
+        startZSpinner.getValueFactory().setValue(p.z);
+        yawSpinner.getValueFactory().setValue(p.yawDeg);
+        docApplying = was;
     }
 
     // ---------- file lifecycle: New / Save / Save As, dirty flag, title ----------
@@ -281,6 +327,49 @@ public class FvdDesigner extends Application {
     // ---------- the 3D viewport (Viewport3D.java, D54) ----------
     Viewport3D viewport;
     Dialogs dialogs;   // Help/Shortcuts/Rail-colors/Options (Dialogs.java, D54)
+
+    /** The piece the editor is pointed at (placement spinners write
+     *  here; falls back to piece 0 before the editor exists). */
+    TrackPiece activePieceRef() {
+        int p = editor != null ? editor.activePiece() : 0;
+        return coaster.pieces.get(Math.min(p, coaster.pieces.size() - 1));
+    }
+
+    /** Show/sync the bridge GAP spinner: visible while the active
+     *  section is a bridge with a live target (v13.2). The value
+     *  tracks the actual gap; docApplying suppresses the listener so
+     *  syncing never re-runs the optimization. */
+    void updateBridgeControls() {
+        if (bridgeGapSpinner == null || editor == null) return;
+        boolean show = editor.activeBridgeWithTarget();
+        bridgeGapLbl.setVisible(show);
+        bridgeGapLbl.setManaged(show);
+        bridgeGapSpinner.setVisible(show);
+        bridgeGapSpinner.setManaged(show);
+        if (show) {
+            double gap = Math.max(1, editor.activeBridgeGap());
+            if (Math.abs(bridgeGapSpinner.getValue() - gap) > 0.05) {
+                boolean was = docApplying;
+                docApplying = true;
+                bridgeGapSpinner.getValueFactory().setValue(
+                    Math.round(gap * 10) / 10.0);
+                docApplying = was;
+            }
+        }
+    }
+
+    /** Refresh the piece selector: label = the active piece, hidden
+     *  entirely while the ride is a single piece (the common case). */
+    void updatePieceButton() {
+        if (pieceBtn == null) return;
+        boolean multi = coaster.pieces.size() > 1;
+        pieceBtn.setVisible(multi);
+        pieceBtn.setManaged(multi);
+        if (multi && editor != null) {
+            pieceBtn.setText("Piece " + (editor.activePiece() + 1)
+                + "/" + coaster.pieces.size() + " ▾");
+        }
+    }
 
     /** Delegates kept so the split moved no call sites: the pipeline
      *  entry, the marker sync and the POV toggle live in Viewport3D. */
@@ -325,14 +414,18 @@ public class FvdDesigner extends Application {
 
     /** Relabel + retint the lane buttons for the active section's mode
      *  (called by the editor on section switches, undo restores, loads,
-     *  adds and deletes). The "Resulting" picks retitle with it: they
-     *  show rates over force sections, felt forces over geo ones. */
-    void setLaneButtonMode(boolean geo) {
+     *  adds and deletes). mode: 0 force, 1 geo, 2 straight/curve — SC
+     *  has no lanes, so the buttons grey out and disable; the plot
+     *  shows the FORCE view there (felt G), so the "Resulting" picks
+     *  read as rates, same as over a force section. */
+    void setLaneButtonMode(int mode) {
+        boolean geo = mode == 1;
         String[] names = geo ? GEO_LANE_BTN : FORCE_LANE_BTN;
         Color[] cols = geo ? GEO_LANE_COLORS : LANE_COLORS;
         for (int i = 0; i < 3; i++) {
             if (laneButtons[i] == null) continue;
             laneButtons[i].setText(names[i]);
+            laneButtons[i].setDisable(mode == 2);
             laneButtons[i].setStyle(TOOLBTN_STYLE + String.format(
                 " -fx-text-fill: rgb(%d,%d,%d);",
                 (int) (cols[i].getRed() * 255), (int) (cols[i].getGreen() * 255),
@@ -355,13 +448,24 @@ public class FvdDesigner extends Application {
     // compiled track shared by the editor, viewport and exporter
     List<FVDIntegrator.Sample> lastSamples;
     double[][] resultRates;   // {t, pitch, yaw, roll} deg/s per sample
+    // per-section sample spans from the last compile (v11.0): the
+    // editor lays out DISTANCE-domain strips from these
+    List<TrackCompiler.Span> sectionSpans;
     final ToggleButton[] laneButtons = new ToggleButton[3];
     boolean rippleT, rippleV;   // ripple-edit toggles (time / value)
     boolean slideKey;           // S held: slide nodes/handles along a line
     boolean cKey;               // C held: click the track = recenter orbit
     private Spinner<Double> heartSpinner, gaugeSpinner, tieSpinner;
     private Spinner<Double> startXSpinner, startYSpinner, startZSpinner;
+    private Spinner<Double> yawSpinner;   // active piece's heading (v12.0)
     Spinner<Double> startSpeedSpinner;
+    private Button pieceBtn;              // piece selector (hidden at 1 piece)
+    // piece placement/reverse live in a toolbar dropdown since v13.2
+    // (user: piece settings belong by the graph, not the Coaster menu)
+    private HBox placementRow, yawPlacementRow;
+    private MenuItem reverseItem;
+    private Label bridgeGapLbl;           // bridge gap spinner (v13.2):
+    private Spinner<Double> bridgeGapSpinner;   // shown for active bridges
     private SplitPane mainSplit;           // 3D view over graph panel
     private double lastDividerPos = 0.6;   // restore point for the collapse toggle
     RadioMenuItem gradientModeItem, solidModeItem;
@@ -508,6 +612,74 @@ public class FvdDesigner extends Application {
             + "sections show felt vertical/lateral G (force colors).\n"
             + "Hover a curve for its value. Picks persist per-user."));
 
+        // piece selector (v12.0): hidden while the ride is one piece;
+        // lists every piece, click to make it the graph's piece
+        pieceBtn = new Button("Piece 1 ▾");
+        pieceBtn.setFocusTraversable(false);
+        pieceBtn.setStyle(btnStyle);
+        pieceBtn.setOnAction(e -> {
+            ContextMenu cm = new ContextMenu();
+            for (int p = 0; p < coaster.pieces.size(); p++) {
+                TrackPiece tp = coaster.pieces.get(p);
+                MenuItem it = new MenuItem(String.format(Locale.US,
+                    "%sPiece %d — %d section%s at (%.0f, %.0f, %.0f)",
+                    p == editor.activePiece() ? "✓ " : "   ",
+                    p + 1, tp.sections.size(),
+                    tp.sections.size() == 1 ? "" : "s", tp.x, tp.y, tp.z));
+                final int idx = p;
+                it.setOnAction(ev -> editor.setActivePiece(idx));
+                cm.getItems().add(it);
+            }
+            cm.show(pieceBtn, javafx.geometry.Side.BOTTOM, 0, 0);
+        });
+        Tooltip.install(pieceBtn, new Tooltip(
+            "The graph edits ONE piece at a time; pick which.\n"
+            + "Split a piece from a section badge; attach a floating\n"
+            + "piece from the ⊕ menu at the ride end."));
+        updatePieceButton();
+
+        // piece placement/reverse dropdown (v13.2 — moved here from the
+        // Coaster menu per user; the rows are built with the menu bar
+        // and reparented into a fresh ContextMenu on each open)
+        Button placementBtn = new Button("Placement ▾");
+        placementBtn.setFocusTraversable(false);
+        placementBtn.setStyle(btnStyle);
+        placementBtn.setOnAction(e -> {
+            ContextMenu cm = new ContextMenu();
+            cm.getItems().addAll(
+                new CustomMenuItem(placementRow, false),
+                new CustomMenuItem(yawPlacementRow, false),
+                reverseItem);
+            cm.setOnShown(ev -> {
+                beginMenuSession();
+                installMenuUndoKeys(placementRow.getScene());
+            });
+            cm.setOnHidden(ev -> endMenuSession());
+            cm.show(placementBtn, javafx.geometry.Side.BOTTOM, 0, 0);
+        });
+        Tooltip.install(placementBtn, new Tooltip(
+            "The ACTIVE piece's placement: x/y/z, yaw (a delta on its\n"
+            + "natural orientation — 0 reverts), and Reverse piece."));
+
+        // bridge GAP spinner (v13.2): shown while a bridge with a live
+        // target is active; every change re-runs the placement
+        // optimization at that distance
+        bridgeGapLbl = new Label("Gap (m)");
+        bridgeGapLbl.setStyle("-fx-text-fill: rgb(200,205,215);");
+        bridgeGapSpinner = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 1000, 20, 5));
+        bridgeGapSpinner.setPrefWidth(80);
+        bridgeGapSpinner.setEditable(true);
+        bridgeGapSpinner.valueProperty().addListener((obs, o, v) -> {
+            if (docApplying) return;
+            editor.setBridgeGap(v);
+        });
+        Tooltip.install(bridgeGapSpinner, new Tooltip(
+            "Target length of this bridge: each change moves the next\n"
+            + "piece dead ahead at this distance (placement optimization)\n"
+            + "and the bridge re-solves to it."));
+        updateBridgeControls();
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
@@ -516,18 +688,23 @@ public class FvdDesigner extends Application {
         povBtn.setStyle(btnStyle);
         povBtn.setOnAction(e -> togglePov());
 
-        Button appendBtn = new Button("Append +1s");
+        // just "Append" (v11.1): it appends whatever the active section
+        // authors — seconds on lane sections, ELEMENTS on straight/curve
+        Button appendBtn = new Button("Append");
         appendBtn.setFocusTraversable(false);
         appendBtn.setStyle(btnStyle);
         appendBtn.setOnAction(e -> editor.appendAction());
         Tooltip.install(appendBtn, new Tooltip(
-            "No selection: extend the ride 1 s.\n"
-            + "Node selected: insert a 1 s flat hold after it\n"
-            + "(everything later shifts 1 s)."));
+            "Lane section — no selection: extend the ride 1 s;\n"
+            + "node selected: insert a 1 s flat hold after it\n"
+            + "(everything later shifts 1 s).\n"
+            + "Straight/curve section: append a 10 m straight element."));
 
         toolbar.setAlignment(Pos.CENTER_LEFT);
         toolbar.getChildren().addAll(rippleLbl, rippleTCheck, rippleVCheck,
-                                     resBtn, spacer, povBtn, appendBtn);
+                                     resBtn, pieceBtn, placementBtn,
+                                     bridgeGapLbl, bridgeGapSpinner,
+                                     spacer, povBtn, appendBtn);
 
         MenuBar menuBar = buildMenuBar();
 
@@ -866,23 +1043,28 @@ public class FvdDesigner extends Application {
         tieSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(0.2, 10.0, tieSpacing, 0.1));
         tieSpinner.setPrefWidth(70);
         wireMenuSpinner(tieSpinner, v -> tieSpacing = v);
+        // placement spinners edit the ACTIVE piece (v12.0) — piece 0
+        // for a single-piece document, exactly the old "Start" behavior
         TrackPiece piece0 = coaster.pieces.get(0);
         startXSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.x, 1));
         startXSpinner.setPrefWidth(70);
-        wireDocSpinner(startXSpinner, v -> coaster.pieces.get(0).x = v);
+        wireDocSpinner(startXSpinner, v -> activePieceRef().x = v);
         startYSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.y, 1));
         startYSpinner.setPrefWidth(70);
-        wireDocSpinner(startYSpinner, v -> coaster.pieces.get(0).y = v);
+        wireDocSpinner(startYSpinner, v -> activePieceRef().y = v);
         startZSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.z, 1));
         startZSpinner.setPrefWidth(70);
-        wireDocSpinner(startZSpinner, v -> coaster.pieces.get(0).z = v);
+        wireDocSpinner(startZSpinner, v -> activePieceRef().z = v);
+        yawSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, piece0.yawDeg, 5));
+        yawSpinner.setPrefWidth(70);
+        wireDocSpinner(yawSpinner, v -> activePieceRef().yawDeg = v);
         startSpeedSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 100, coaster.v0, 1));
         startSpeedSpinner.setPrefWidth(70);
         // the spinner is v0 AND the sole section's design speed — they
         // stay coupled until Phase 3 gives dynamics its own controls
         wireDocSpinner(startSpeedSpinner, v -> {
             coaster.v0 = v;
-            coaster.soleSection().vDesign = v;
+            coaster.soleSection().vDesign(v);
         });
 
         Label heartLbl = new Label("Heart (m)");
@@ -891,8 +1073,13 @@ public class FvdDesigner extends Application {
         gaugeLbl.setTextFill(Color.BLACK);
         Label tieLbl = new Label("Tie every (m)");
         tieLbl.setTextFill(Color.BLACK);
-        Label startLbl = new Label("Start x/y/z (m)");
+        // "Piece" rows (v12.0) live in the toolbar's Placement dropdown
+        // since v13.2 (user: piece settings belong by the graph); they
+        // are built here with the other spinners and stored as fields
+        Label startLbl = new Label("Piece x/y/z (m)");
         startLbl.setTextFill(Color.BLACK);
+        Label yawLbl = new Label("Piece yaw (°)");
+        yawLbl.setTextFill(Color.BLACK);
         Label speedLbl = new Label("Start speed (m/s)");
         speedLbl.setTextFill(Color.BLACK);
         HBox heartRow = new HBox(8, heartLbl, heartSpinner);
@@ -901,8 +1088,10 @@ public class FvdDesigner extends Application {
         gaugeRow.setAlignment(Pos.CENTER_LEFT);
         HBox tieRow = new HBox(8, tieLbl, tieSpinner);
         tieRow.setAlignment(Pos.CENTER_LEFT);
-        HBox startRow = new HBox(8, startLbl, startXSpinner, startYSpinner, startZSpinner);
-        startRow.setAlignment(Pos.CENTER_LEFT);
+        placementRow = new HBox(8, startLbl, startXSpinner, startYSpinner, startZSpinner);
+        placementRow.setAlignment(Pos.CENTER_LEFT);
+        yawPlacementRow = new HBox(8, yawLbl, yawSpinner);
+        yawPlacementRow.setAlignment(Pos.CENTER_LEFT);
         HBox speedRow = new HBox(8, speedLbl, startSpeedSpinner);
         speedRow.setAlignment(Pos.CENTER_LEFT);
 
@@ -918,11 +1107,17 @@ public class FvdDesigner extends Application {
         MenuItem colorItem = new MenuItem("Rail colors (solid & gradient)…");
         colorItem.setOnAction(e -> dialogs.showRailColorDialog());
 
+        // reversal is a PIECE operation (v12.1, D71 — was a per-section
+        // badge check): flips the travel direction of the active piece,
+        // track staying put (level seams exactly; others re-join with
+        // the usual yaw-only honesty). Lives in the Placement dropdown.
+        reverseItem = new MenuItem("Reverse piece (flip travel direction)");
+        reverseItem.setOnAction(e -> editor.reverseActivePiece());
+
         coasterMenu = new Menu("Coaster", null,
             new CustomMenuItem(heartRow, false),
             new CustomMenuItem(gaugeRow, false),
             new CustomMenuItem(tieRow, false),
-            new CustomMenuItem(startRow, false),
             new CustomMenuItem(speedRow, false),
             new SeparatorMenuItem(),
             gradientModeItem,
@@ -1046,6 +1241,7 @@ public class FvdDesigner extends Application {
         startXSpinner.getValueFactory().setValue(0.0);
         startYSpinner.getValueFactory().setValue(21.0);
         startZSpinner.getValueFactory().setValue(0.0);
+        yawSpinner.getValueFactory().setValue(0.0);
         startSpeedSpinner.getValueFactory().setValue(26.0);
         (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
         docApplying = false;
@@ -1053,11 +1249,12 @@ public class FvdDesigner extends Application {
         editor.clearHistory();
         editor.resetSections();
         editor.clearSelection();
+        updatePieceButton();
         currentFile = null;
         dirty = false;
         updateTitle();
-        editor.refresh();
-        rebuildTrack();
+        rebuildTrack();      // spans first (stale ones belong to the
+        editor.refresh();    // discarded document)
         statsLabel.setText("New design");
     }
 
@@ -1106,18 +1303,16 @@ public class FvdDesigner extends Application {
             }
             System.arraycopy(cos.gradStops(), 0, gradStops, 0, 4);
 
-            TrackPiece p0 = coaster.pieces.get(0);
             heartSpinner.getValueFactory().setValue(heartOffset);
             gaugeSpinner.getValueFactory().setValue(railGauge);
             tieSpinner.getValueFactory().setValue(tieSpacing);
-            startXSpinner.getValueFactory().setValue(p0.x);
-            startYSpinner.getValueFactory().setValue(p0.y);
-            startZSpinner.getValueFactory().setValue(p0.z);
             startSpeedSpinner.getValueFactory().setValue(coaster.v0);
+            syncPlacementSpinners();   // active piece (0 after reset)
+            updatePieceButton();
             (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
             editor.clearSelection();
-            editor.refresh();
-            rebuildTrack();
+            rebuildTrack();      // spans before the first graph layout:
+            editor.refresh();    // s/c strip widths come from the compile
             currentFile = f;
             dirty = false;
             updateTitle();

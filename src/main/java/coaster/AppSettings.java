@@ -52,6 +52,7 @@ public class AppSettings {
     public static final double SNAP_T_DEFAULT = 0.1;     // s
     public static final double SNAP_G_DEFAULT = 0.1;     // g
     public static final double SNAP_ROLL_DEFAULT = 5;    // deg/s
+    public static final double SNAP_LEN_DEFAULT = 1;     // m (s/c elements)
     public static final double NL2_SEGLEN_DEFAULT = 1.0; // m between CSV vertices
 
     private final File file;
@@ -129,6 +130,10 @@ public class AppSettings {
     public void setSnapG(double v) { setD("snapG", v); }
     public double snapRoll() { return getD("snapRoll", SNAP_ROLL_DEFAULT); }
     public void setSnapRoll(double v) { setD("snapRoll", v); }
+
+    /** Straight/curve element boundary drag snap (Ctrl), meters. */
+    public double snapLen() { return getD("snapLen", SNAP_LEN_DEFAULT); }
+    public void setSnapLen(double v) { setD("snapLen", v); }
 
     /** Ctrl-snap axis references (v10.2). Defaults = the historical
      *  behavior: time snaps the TRANSITION length from the previous

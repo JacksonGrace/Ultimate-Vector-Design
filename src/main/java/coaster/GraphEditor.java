@@ -109,20 +109,105 @@ class GraphEditor extends Region {
     private double tOff = 0;                         // active section's global start
     private double addBtnX = -999, addBtnY = -999;   // '+' hit centre (px)
 
-    private List<LaneSection> sections() {
-        List<LaneSection> out = new ArrayList<>();
-        for (Section s : app.coaster.pieces.get(0).sections) out.add((LaneSection) s);
-        return out;
+    // ---------- pieces (v12.0, D70) ----------
+    // the graph shows ONE piece's sections at a time (SECTIONS-DESIGN
+    // §8); the toolbar selector / 3D Ctrl+click switch pieces. All
+    // compiled lookups stay in GLOBAL ride time (pieces concatenate on
+    // the timeline), so the active piece's strips live in the window
+    // [pieceT0, pieceT0 + pieceDur] and everything derived just works.
+    private int activePiece = 0;
+
+    int activePiece() { return activePiece; }
+
+    private List<Section> sections() {
+        return app.coaster.pieces.get(activePiece).sections;
     }
 
-    // ---------- section MODE (Phase 2: force vs geo lanes) ----------
+    /** Flattened span index of the active piece's first section. */
+    private int spanBase() {
+        int n = 0;
+        for (int p = 0; p < activePiece && p < app.coaster.pieces.size(); p++) {
+            n += app.coaster.pieces.get(p).sections.size();
+        }
+        return n;
+    }
+
+    /** Span of the active piece's section k, or null (pre-compile /
+     *  stale). Structural edits rebuild BEFORE relayout, so live use
+     *  always sees fresh spans. */
+    private TrackCompiler.Span spanOf(int k) {
+        List<TrackCompiler.Span> spans = app.sectionSpans;
+        int idx = spanBase() + k;
+        return spans != null && idx >= 0 && idx < spans.size()
+            ? spans.get(idx) : null;
+    }
+
+    /** Global ride time where the active piece begins. */
+    private double pieceT0() {
+        if (activePiece == 0) return 0;
+        TrackCompiler.Span sp = spanOf(0);
+        return sp != null ? sp.t0() : 0;
+    }
+
+    void setActivePiece(int p) {
+        p = (int) FvdDesigner.clamp(p, 0, app.coaster.pieces.size() - 1);
+        if (p == activePiece) return;
+        activePiece = p;
+        activeSection = 0;
+        app.lanes = lanesFor(sections().get(0));
+        selIdx = -1;
+        selSet.clear();
+        elSel = -1;
+        axisLock = 0;
+        handleViewExpand = false;
+        canvas.setCursor(Cursor.DEFAULT);
+        viewT0 = 0;
+        viewT1 = -1;          // auto-fit the new piece's stretch
+        syncLaneButtons();
+        app.updatePieceButton();
+        app.syncPlacementSpinners();
+        app.rebuildTrack();   // inactive pieces desaturate (v13.2)
+        refreshOffset();
+        redraw();
+    }
+
+    // ---------- section MODE (Phase 2: force / geo lanes, s/c elements) ----------
     // one editor edits both lane-based modes; only the lane SEMANTICS
-    // switch — names, units, default scales, snap steps, lane buttons
+    // switch — names, units, default scales, snap steps, lane buttons.
+    // A STRAIGHT/CURVE section (v11.0) has no lanes at all: app.lanes
+    // points at NO_LANES (every node path naturally empty) and the strip
+    // shows the ELEMENT WIDGET instead; the plot stays in FORCE view
+    // (activeGeo() false), so other strips and overlays read as felt G.
+
+    /** Shared empty lanes for the no-lane modes: hit tests, markers and
+     *  lock enforcement all iterate to nothing. */
+    private static final List<List<BezierBaker.Node>> NO_LANES = List.of(
+        List.of(), List.of(), List.of());
+
+    private List<List<BezierBaker.Node>> lanesFor(Section s) {
+        return s instanceof LaneSection ls ? ls.lanes : NO_LANES;
+    }
 
     /** Is the ACTIVE section a geo (body-rate) section? */
     private boolean activeGeo() {
-        List<LaneSection> secs = sections();
+        List<Section> secs = sections();
         return activeSection < secs.size() && secs.get(activeSection) instanceof GeoSection;
+    }
+
+    /** The active STRAIGHT/CURVE section, or null (v11.0). */
+    private StraightCurveSection activeSc() {
+        List<Section> secs = sections();
+        return activeSection < secs.size()
+            && secs.get(activeSection) instanceof StraightCurveSection sc ? sc : null;
+    }
+
+    /** The active BRIDGE section, or null (v13.0) — like s/c it has no
+     *  lanes; unlike s/c it has no widget either (frozen geometry): the
+     *  strip shows the derived curves and the badge menu does the rest. */
+    private BridgeSection activeBridge() {
+        List<Section> secs = sections();
+        return activeSection < secs.size()
+            && secs.get(activeSection) instanceof BridgeSection b ? b : null;
     }
 
     private String laneName(int lane) {
@@ -146,20 +231,36 @@ class GraphEditor extends Region {
     private double defMin(int lane) { return modeDefMin(activeGeo())[lane]; }
     private double defMax(int lane) { return modeDefMax(activeGeo())[lane]; }
 
-    /** Lane buttons show the active mode's lane names + colors. */
+    /** Lane buttons show the active mode's lane names + colors (mode 2
+     *  = the no-lane modes: straight/curve AND bridge). The bridge GAP
+     *  spinner's visibility rides along (v13.2) — this runs on every
+     *  section/piece switch, load, add and delete. */
     private void syncLaneButtons() {
-        app.setLaneButtonMode(activeGeo());
+        app.setLaneButtonMode(activeGeo() ? 1
+            : activeSc() != null || activeBridge() != null ? 2 : 0);
+        app.updateBridgeControls();
     }
 
     int activeSection() { return activeSection; }
 
     double activeSectionStart() { refreshOffset(); return tOff; }
 
+    /** A lane section's duration is its authored ride end; a DISTANCE-
+     *  domain section's duration exists only after compilation — read
+     *  it from the last compile's span (estimate before the first). */
     private double sectionDur(int k) {
-        return BezierBaker.rideEnd(sections().get(k).lanes);
+        Section s = sections().get(k);
+        if (s instanceof LaneSection ls) return BezierBaker.rideEnd(ls.lanes);
+        TrackCompiler.Span sp = spanOf(k);
+        if (sp != null) return sp.t1() - sp.t0();
+        if (s instanceof StraightCurveSection sc) return sc.estDuration();
+        BridgeSection bs = (BridgeSection) s;   // pre-compile estimate
+        return Math.max(0.1,
+            bs.solvedTarget.pos().sub(bs.solvedEntry.pos()).length()
+                / Math.max(0.5, bs.vDesign));
     }
 
-    /** Duration of the whole piece = the global ride end. */
+    /** Duration of the ACTIVE piece (its window width, not the ride). */
     private double pieceDur() {
         double d = 0;
         for (int k = 0; k < sections().size(); k++) d += sectionDur(k);
@@ -167,29 +268,31 @@ class GraphEditor extends Region {
     }
 
     private void refreshOffset() {
-        double o = 0;
-        List<LaneSection> secs = sections();
-        for (int k = 0; k < activeSection && k < secs.size(); k++) {
-            o += BezierBaker.rideEnd(secs.get(k).lanes);
+        double o = pieceT0();
+        for (int k = 0; k < activeSection && k < sections().size(); k++) {
+            o += sectionDur(k);
         }
         tOff = o;
     }
 
     /** End of the ACTIVE section in its local time — its own ride end
      *  (the old single-section maxT() semantics, now per section). */
-    private double sectionEnd() { return BezierBaker.rideEnd(app.lanes); }
+    private double sectionEnd() {
+        return activeSc() != null
+            ? sectionDur(activeSection) : BezierBaker.rideEnd(app.lanes);
+    }
 
     private double ltToX(double localT) { return tToX(tOff + localT); }
 
     private double xToLt(double x) { return xToT(x) - tOff; }
 
-    /** Which section contains this global time; -1 past the ride end. */
+    /** Which ACTIVE-PIECE section contains this global time; -1 when
+     *  outside the piece's stretch (other pieces aren't drawn here). */
     private int sectionAt(double globalT) {
-        if (globalT < -1e-9) return -1;
-        double o = 0;
-        List<LaneSection> secs = sections();
-        for (int k = 0; k < secs.size(); k++) {
-            double d = BezierBaker.rideEnd(secs.get(k).lanes);
+        double o = pieceT0();
+        if (globalT < o - 1e-9) return -1;
+        for (int k = 0; k < sections().size(); k++) {
+            double d = sectionDur(k);
             if (globalT <= o + d + 1e-9) return k;
             o += d;
         }
@@ -197,26 +300,30 @@ class GraphEditor extends Region {
     }
 
     void setActiveSection(int k) {
-        List<LaneSection> secs = sections();
+        List<Section> secs = sections();
         k = (int) FvdDesigner.clamp(k, 0, secs.size() - 1);
-        if (k == activeSection && app.lanes == secs.get(k).lanes) return;
+        if (k == activeSection && app.lanes == lanesFor(secs.get(k))) return;
         activeSection = k;
-        app.lanes = secs.get(k).lanes;
+        app.lanes = lanesFor(secs.get(k));
         selIdx = -1;
         selSet.clear();
+        elSel = -1;
         axisLock = 0;
         handleViewExpand = false;
+        canvas.setCursor(Cursor.DEFAULT);
         syncLaneButtons();
         refreshOffset();
         redraw();
     }
 
-    /** After load/new: the section list was replaced wholesale. */
+    /** After load/new: the piece/section lists were replaced wholesale. */
     void resetSections() {
+        activePiece = 0;
         activeSection = 0;
-        app.lanes = sections().get(0).lanes;
+        app.lanes = lanesFor(sections().get(0));
         selIdx = -1;
         selSet.clear();
+        elSel = -1;
         axisLock = 0;
         handleViewExpand = false;
         viewT0 = 0;
@@ -225,12 +332,17 @@ class GraphEditor extends Region {
         refreshOffset();
     }
 
-    /** Undo/redo restore: re-point at the snapshot's section; the
-     *  caller (applySnapshot) fixes selection against the new lanes. */
-    void restoreActive(int k) {
-        List<LaneSection> secs = sections();
-        activeSection = (int) FvdDesigner.clamp(k, 0, secs.size() - 1);
-        app.lanes = secs.get(activeSection).lanes;
+    /** Undo/redo restore: re-point at the snapshot's piece + section;
+     *  the caller (applySnapshot) fixes selection against the lanes. */
+    void restoreActive(int piece, int section) {
+        activePiece = (int) FvdDesigner.clamp(piece, 0,
+            app.coaster.pieces.size() - 1);
+        List<Section> secs = sections();
+        activeSection = (int) FvdDesigner.clamp(section, 0, secs.size() - 1);
+        app.lanes = lanesFor(secs.get(activeSection));
+        StraightCurveSection sc = activeSc();
+        elSel = sc == null ? -1
+            : Math.min(elSel, sc.elements.size() - 1);
         syncLaneButtons();
         refreshOffset();
     }
@@ -245,68 +357,372 @@ class GraphEditor extends Region {
         cm.show(canvas, screenX, screenY);
     }
 
-    /** The '+' menu: force and geo sections (Phase 2); bridge/curve
-     *  modes and attaching floating pieces are still to come. */
+    /** The '+' menu: force, geo and straight/curve sections (Phase 2),
+     *  attaching a floating piece (v12.0), and BRIDGING to the next
+     *  piece (v13.0). A piece already ending with a bridge cannot be
+     *  extended — its end is glued to the next piece's entry. */
     private void showAddSectionMenu(double screenX, double screenY) {
         ContextMenu cm = new ContextMenu();
+        boolean endsBridge = !sections().isEmpty()
+            && sections().get(sections().size() - 1) instanceof BridgeSection;
         MenuItem force = new MenuItem("Add force section (1 s hold)");
-        force.setOnAction(ev -> addSection(false));
+        force.setOnAction(ev -> addSection(0));
         MenuItem geo = new MenuItem("Add geo section (1 s hold)");
-        geo.setOnAction(ev -> addSection(true));
-        MenuItem later = new MenuItem("Bridge / curve — later in Phase 2");
-        later.setDisable(true);
-        MenuItem pieces = new MenuItem("Attach floating piece — later in Phase 2");
-        pieces.setDisable(true);
-        cm.getItems().addAll(force, geo, later, pieces);
+        geo.setOnAction(ev -> addSection(1));
+        MenuItem sc = new MenuItem("Add straight/curve section (10 m straight)");
+        sc.setOnAction(ev -> addSection(2));
+        force.setDisable(endsBridge);
+        geo.setDisable(endsBridge);
+        sc.setDisable(endsBridge);
+        cm.getItems().addAll(force, geo, sc);
+        List<TrackPiece> pieces = app.coaster.pieces;
+        if (endsBridge) {
+            MenuItem hint = new MenuItem("Piece ends with a bridge — extend the NEXT piece");
+            hint.setDisable(true);
+            cm.getItems().add(hint);
+        } else if (pieces.size() > 1) {
+            // ANY piece (v13.1): the chosen one reorders to come next
+            // on the timeline — connecting MEANS "this one follows"
+            Menu bridge = new Menu("Bridge to piece");
+            for (int p = 0; p < pieces.size(); p++) {
+                if (p == activePiece) continue;
+                TrackPiece tp = pieces.get(p);
+                MenuItem it = new MenuItem(String.format(Locale.US,
+                    "Piece %d — %d section%s%s", p + 1, tp.sections.size(),
+                    tp.sections.size() == 1 ? "" : "s",
+                    p == activePiece + 1 ? " (next)" : ""));
+                final int idx = p;
+                it.setOnAction(ev -> addBridgeTo(idx));
+                bridge.getItems().add(it);
+            }
+            cm.getItems().add(bridge);
+        } else {
+            MenuItem bridge = new MenuItem("Bridge — needs another piece");
+            bridge.setDisable(true);
+            cm.getItems().add(bridge);
+        }
+        if (pieces.size() <= 1) {
+            MenuItem none = new MenuItem("Attach floating piece — none to attach");
+            none.setDisable(true);
+            cm.getItems().add(none);
+        } else {
+            // attaching = the floating piece's sections CONTINUE this
+            // piece's chain (its own placement is discarded — §0 keeps
+            // every section's local shape)
+            Menu attach = new Menu("Attach floating piece");
+            attach.setDisable(endsBridge);
+            for (int p = 0; p < pieces.size(); p++) {
+                if (p == activePiece) continue;
+                TrackPiece tp = pieces.get(p);
+                MenuItem it = new MenuItem(String.format(Locale.US,
+                    "Piece %d — %d section%s", p + 1, tp.sections.size(),
+                    tp.sections.size() == 1 ? "" : "s"));
+                final int idx = p;
+                it.setOnAction(ev -> attachFloating(idx));
+                attach.getItems().add(it);
+            }
+            cm.getItems().add(attach);
+        }
         showMenu(cm, screenX, screenY);
+    }
+
+    /** Append a live-following bridge from the ACTIVE piece's end to
+     *  piece `target`'s entry (v13.0 D72, any-piece + live v13.1 D73).
+     *  A non-adjacent target REORDERS to come right after this piece —
+     *  the piece order is the ride timeline, and connecting means
+     *  "this one follows". One undo step. */
+    private void addBridgeTo(int target) {
+        List<TrackPiece> pieces = app.coaster.pieces;
+        if (target == activePiece || target >= pieces.size()) return;
+        TrackCompiler.Span endSp = spanOf(sections().size() - 1);
+        if (endSp == null) return;
+        double vEnd = app.lastSamples != null
+            && endSp.i1() < app.lastSamples.size()
+            ? app.lastSamples.get(endSp.i1()).v() : sections()
+                .get(sections().size() - 1).vDesign();
+        pushUndoSnapshot();
+        TrackPose end = endSp.exit();   // capture BEFORE the reorder
+        TrackPiece tp = pieces.get(target);
+        if (target != activePiece + 1) {
+            if (target < activePiece) activePiece--;   // list shifts
+            app.coaster.movePiece(pieces.indexOf(tp), activePiece + 1);
+        }
+        BridgeSection br = BridgeSection.solve(end, tp.entryPose(), vEnd);
+        sections().add(br);
+        activeSection = sections().size() - 1;
+        app.lanes = lanesFor(br);
+        selIdx = -1;
+        selSet.clear();
+        elSel = -1;
+        axisLock = 0;
+        handleViewExpand = false;
+        syncLaneButtons();
+        app.rebuildTrack();   // the compile live-captures poses + G² acc
+        app.updatePieceButton();
+        refreshOffset();
+        redraw();
+    }
+
+    /** The bridge lost its target piece (deleted/attached): it stays
+     *  frozen at its last capture — the badge's warning state. */
+    private boolean bridgeOrphan(BridgeSection bs) {
+        return activePiece + 1 >= app.coaster.pieces.size();
+    }
+
+    /** The toolbar GAP spinner shows for an active, non-orphaned
+     *  bridge (v13.2). */
+    boolean activeBridgeWithTarget() {
+        BridgeSection bs = activeBridge();
+        return bs != null && !bridgeOrphan(bs);
+    }
+
+    /** Current straight-line gap the bridge spans (the spinner value). */
+    double activeBridgeGap() {
+        BridgeSection bs = activeBridge();
+        if (bs == null || bridgeOrphan(bs)) return 0;
+        return app.coaster.pieces.get(activePiece + 1).entryPose().pos()
+            .sub(bs.solvedEntry.pos()).length();
+    }
+
+    private long lastGapNanos = 0;   // coalesces spinner-arrow undo steps
+
+    /** The gap spinner's write path (v13.2): every change RE-RUNS the
+     *  placement optimization at the requested distance — the target
+     *  piece slides along the chain end's tangent and the live bridge
+     *  follows. Arrow bursts coalesce into one undo step. */
+    void setBridgeGap(double dist) {
+        BridgeSection bs = activeBridge();
+        if (bs == null || bridgeOrphan(bs) || dist <= 0) return;
+        long now = System.nanoTime();
+        if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
+        lastGapNanos = now;
+        app.coaster.alignPieceForBridge(bs.solvedEntry, activePiece + 1, dist);
+        app.rebuildTrack();
+        refreshOffset();
+        redraw();
+    }
+
+    /** The bridge's tangent-length dialog ("how straight it leaves /
+     *  arrives"; bigger = wider sweep). One undo step on Apply. */
+    private void showBridgeDialog(int idx) {
+        if (!(sections().get(idx) instanceof BridgeSection bs)) return;
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Bridge tangents — section " + (idx + 1));
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        TextField aF = new TextField(String.format(Locale.US, "%.2f", bs.lenA));
+        TextField bF = new TextField(String.format(Locale.US, "%.2f", bs.lenB));
+        aF.setPrefColumnCount(7);
+        bF.setPrefColumnCount(7);
+        grid.addRow(0, new Label("Entry tangent (m)"), aF);
+        grid.addRow(1, new Label("Exit tangent (m)"), bF);
+        Button ok = new Button("Apply");
+        ok.setDefaultButton(true);
+        Button cancel = new Button("Cancel");
+        cancel.setCancelButton(true);
+        HBox buttons = new HBox(8, ok, cancel);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        grid.add(buttons, 0, 2, 2, 1);
+        ok.setOnAction(ev -> {
+            pushUndoSnapshot();
+            bs.lenA = Math.max(0.1, parseOr(aF, bs.lenA));
+            bs.lenB = Math.max(0.1, parseOr(bF, bs.lenB));
+            app.rebuildTrack();
+            refreshOffset();
+            redraw();
+            dlg.close();
+        });
+        cancel.setOnAction(ev -> dlg.close());
+        dlg.setScene(new Scene(grid));
+        dlg.show();
+    }
+
+    /** Append floating piece p's sections to the ACTIVE piece (v12.0):
+     *  they re-chain from its exit pose on the rebuild; the emptied
+     *  piece dissolves. One undo step. */
+    private void attachFloating(int p) {
+        pushUndoSnapshot();
+        app.coaster.attachPiece(activePiece, p);
+        if (p < activePiece) activePiece--;   // list shifted under us
+        app.rebuildTrack();
+        app.updatePieceButton();
+        app.syncPlacementSpinners();
+        refreshOffset();
+        redraw();
+    }
+
+    /** Split the ACTIVE piece before section k (v12.0; exact since
+     *  v12.1): sections k.. move to a NEW floating piece placed at the
+     *  compiled boundary POSE — position and FULL orientation (into
+     *  baseOrient), so the track does not move AT ALL, whatever the
+     *  boundary's pitch or bank (user rule, gated bitwise). If the
+     *  section being edited moved, the editor follows it. One undo
+     *  step. */
+    private void splitAt(int k) {
+        if (k <= 0 || k >= sections().size()) return;
+        TrackCompiler.Span sp = spanOf(k - 1);
+        if (sp == null) return;
+        pushUndoSnapshot();
+        int np = app.coaster.splitPiece(activePiece, k, sp.exit());
+        if (np >= 0 && activeSection >= k) {
+            activePiece = np;         // follow the section being edited
+            activeSection -= k;
+        }
+        activeSection = (int) FvdDesigner.clamp(activeSection, 0,
+            sections().size() - 1);
+        app.lanes = lanesFor(sections().get(activeSection));
+        syncLaneButtons();
+        app.rebuildTrack();
+        app.updatePieceButton();
+        app.syncPlacementSpinners();
+        refreshOffset();
+        redraw();
+    }
+
+    /** Reverse the ACTIVE piece (v12.1, D71 — the Coaster menu item):
+     *  the model transformation lives in Coaster.reversePiece (train
+     *  order + toggled section flags + placement re-anchored at the
+     *  old exit); the editor follows the section it was editing to its
+     *  new list position. One undo step. */
+    void reverseActivePiece() {
+        for (Section s : sections()) {
+            if (s instanceof BridgeSection) {
+                // a bridge's poses are world-anchored A→B; running the
+                // piece backward through it has no defined meaning
+                app.statsLabel.setText("Reversing a piece with a bridge"
+                    + " isn't supported — delete the bridge first.");
+                return;
+            }
+        }
+        TrackCompiler.Span last = spanOf(sections().size() - 1);
+        if (last == null) return;
+        pushUndoSnapshot();
+        app.coaster.reversePiece(activePiece, last.exit());
+        activeSection = sections().size() - 1 - activeSection;
+        activeSection = (int) FvdDesigner.clamp(activeSection, 0,
+            sections().size() - 1);
+        app.lanes = lanesFor(sections().get(activeSection));
+        syncLaneButtons();
+        app.rebuildTrack();
+        app.syncPlacementSpinners();
+        refreshOffset();
+        redraw();
+    }
+
+    private static String modeName(Section s) {
+        return s instanceof GeoSection ? "Geo"
+             : s instanceof StraightCurveSection ? "Straight/curve"
+             : s instanceof BridgeSection ? "Bridge" : "Force";
     }
 
     /** The section BADGE menu (the strip's type tag doubles as its
-     *  per-section actions handle — reverse + delete today). */
+     *  per-section actions handle — reverse + delete, plus append
+     *  element on a straight/curve section). */
     private void showSectionMenu(int k, double screenX, double screenY) {
-        LaneSection sec = sections().get(k);
+        Section sec = sections().get(k);
         ContextMenu cm = new ContextMenu();
+        String extra = sec instanceof StraightCurveSection s
+            ? String.format(Locale.US, " · %.0f m, %d elem",
+                s.totalLen(), s.elements.size())
+            : "";
         MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s",
-            sec instanceof GeoSection ? "Geo" : "Force", k + 1, sec.vDesign));
+            "%s section %d — design %.1f m/s%s",
+            modeName(sec), k + 1, sec.vDesign(), extra));
         info.setDisable(true);
-        CheckMenuItem rev = new CheckMenuItem("Reversed (train runs it backward)");
-        rev.setSelected(sec.reversed);
-        rev.setOnAction(ev -> {
-            pushUndoSnapshot();
-            sec.reversed = rev.isSelected();
-            refreshOffset();
-            redraw();
-            app.rebuildTrack();
-        });
+        // the per-section Reversed check moved to piece scope in v12.1
+        // (Coaster menu > Reverse piece, D71); the ◀ badge still marks
+        // sections whose flag is set — that is reversal's MECHANISM
         MenuItem del = new MenuItem("Delete section");
-        del.setDisable(sections().size() <= 1);   // the ride keeps >= 1
+        // the DOCUMENT keeps >= 1 section; a piece's last section
+        // deletes the piece itself when others remain (v12.0)
+        del.setDisable(sections().size() <= 1 && app.coaster.pieces.size() <= 1);
         del.setOnAction(ev -> deleteSection(k));
-        cm.getItems().addAll(info, new SeparatorMenuItem(), rev, del);
+        MenuItem split = new MenuItem("Split piece before this section");
+        split.setDisable(k == 0);   // the piece starts here already
+        split.setOnAction(ev -> splitAt(k));
+        cm.getItems().addAll(info, new SeparatorMenuItem(), split, del);
+        if (sec instanceof StraightCurveSection s) {
+            MenuItem addEl = new MenuItem("Append element (10 m straight)");
+            addEl.setOnAction(ev -> {
+                pushUndoSnapshot();
+                s.elements.add(StraightCurveSection.Element.straight(10, SC_SMOOTH_DEFAULT));
+                if (k == activeSection) elSel = s.elements.size() - 1;
+                app.rebuildTrack();
+                refreshOffset();
+                redraw();
+            });
+            cm.getItems().add(addEl);
+        }
+        if (sec instanceof BridgeSection bs) {
+            if (bridgeOrphan(bs)) {
+                MenuItem status = new MenuItem(
+                    "! no following piece — frozen at its last shape");
+                status.setDisable(true);
+                cm.getItems().add(status);
+            }
+            MenuItem tangents = new MenuItem("Bridge tangents…");
+            tangents.setOnAction(ev -> showBridgeDialog(k));
+            // §4's second mode as an explicit, repeatable ACTION: move
+            // the target dead ahead + align headings (min-strain for
+            // level ends); the live bridge straightens with it
+            MenuItem align = new MenuItem(String.format(Locale.US,
+                "Optimize placement of piece %d (align dead ahead)",
+                activePiece + 2));
+            align.setDisable(bridgeOrphan(bs));
+            align.setOnAction(ev -> {
+                pushUndoSnapshot();
+                app.coaster.alignPieceForBridge(bs.solvedEntry,
+                    activePiece + 1, 0);
+                app.rebuildTrack();
+                refreshOffset();
+                redraw();
+            });
+            cm.getItems().addAll(tangents, align);
+        }
         showMenu(cm, screenX, screenY);
     }
 
-    /** Remove section k; downstream sections re-chain from the new
-     *  previous exit (their LOCAL shapes untouched, §0). One undo step. */
+    /** Remove section k of the ACTIVE piece; downstream sections
+     *  re-chain from the new previous exit (their LOCAL shapes
+     *  untouched, §0). Deleting a piece's LAST section deletes the
+     *  piece when others remain (v12.0). One undo step. */
     private void deleteSection(int k) {
-        List<LaneSection> secs = sections();
-        if (secs.size() <= 1 || k < 0 || k >= secs.size()) return;
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()) return;
+        boolean lastInPiece = secs.size() <= 1;
+        if (lastInPiece && app.coaster.pieces.size() <= 1) return;
         pushUndoSnapshot();
         boolean wasActive = k == activeSection;
-        app.coaster.pieces.get(0).sections.remove(k);
-        if (activeSection > k) activeSection--;
-        activeSection = (int) FvdDesigner.clamp(activeSection, 0, sections().size() - 1);
-        app.lanes = sections().get(activeSection).lanes;
+        if (lastInPiece) {
+            app.coaster.pieces.remove(activePiece);
+            activePiece = (int) FvdDesigner.clamp(activePiece, 0,
+                app.coaster.pieces.size() - 1);
+            activeSection = 0;
+            wasActive = true;
+        } else {
+            secs.remove(k);
+            if (activeSection > k) activeSection--;
+            activeSection = (int) FvdDesigner.clamp(activeSection, 0,
+                sections().size() - 1);
+        }
+        app.lanes = lanesFor(sections().get(activeSection));
         if (wasActive) {
             selIdx = -1;
             selSet.clear();
+            elSel = -1;
             axisLock = 0;
             handleViewExpand = false;
         }
         syncLaneButtons();
+        app.rebuildTrack();   // spans first: an s/c strip's width may shift
+        app.updatePieceButton();
+        app.syncPlacementSpinners();
         refreshOffset();
         redraw();
-        app.rebuildTrack();
     }
 
     /** Append a 1 s section HOLDING the ride's end state, so the
@@ -317,43 +733,55 @@ class GraphEditor extends Region {
      *  after geo: the felt end forces (compiled Gv/Gl at design speed)
      *  + the final roll rate. Geo after force: the RESULTING end
      *  pitch/yaw rates + the authored roll rate. */
-    private void addSection(boolean geo) {
+    private void addSection(int mode) {
         pushUndoSnapshot();
-        List<LaneSection> secs = sections();
-        LaneSection prev = secs.get(secs.size() - 1);
-        FVDIntegrator.Sample end = app.lastSamples != null && !app.lastSamples.isEmpty()
-            ? app.lastSamples.get(app.lastSamples.size() - 1) : null;
-        double vEnd = end != null ? end.v() : prev.vDesign;
-        List<BezierBaker.Node> roll = prev.lanes.get(2);
-        // a reversed prev's authored roll reads against the chain — use
-        // the compiled resulting roll at the ride end instead (D67)
-        double rollEnd = prev.reversed
-                && app.resultRates != null && app.resultRates.length > 0
-            ? app.resultRates[app.resultRates.length - 1][3]
-            : roll.get(roll.size() - 1).val;
-        LaneSection added;
-        if (geo == prev instanceof GeoSection && !prev.reversed) {
+        List<Section> secs = sections();
+        Section prevSec = secs.get(secs.size() - 1);
+        LaneSection prev = prevSec instanceof LaneSection ls ? ls : null;
+        // the ACTIVE PIECE's end sample (v12.0) — with pieces after
+        // this one, the ride's last sample belongs to somebody else
+        TrackCompiler.Span endSp = spanOf(secs.size() - 1);
+        int endIdx = endSp != null && app.lastSamples != null
+            && endSp.i1() < app.lastSamples.size() ? endSp.i1() : -1;
+        FVDIntegrator.Sample end = endIdx >= 0 ? app.lastSamples.get(endIdx) : null;
+        double vEnd = end != null ? end.v() : prevSec.vDesign();
+        // authored roll only reads WITH the chain from a non-reversed
+        // lane section; otherwise (reversed D67, or s/c which has no
+        // roll lane) use the compiled resulting roll at the piece end
+        double rollEnd = prev != null && !prev.reversed
+            ? prev.lanes.get(2).get(prev.lanes.get(2).size() - 1).val
+            : (app.resultRates != null && endIdx >= 0
+                && endIdx < app.resultRates.length
+                ? app.resultRates[endIdx][3] : 0);
+        Section added;
+        if (mode == 2) {
+            // straight/curve: a straight IS the seamless continuation
+            added = StraightCurveSection.straight(10, vEnd);
+        } else if (prev != null && !prev.reversed
+                && (mode == 1) == prev instanceof GeoSection) {
             added = Coaster.continuation(prev, vEnd);
-        } else if (geo) {
-            double[] endRates = app.resultRates != null && app.resultRates.length > 0
-                ? app.resultRates[app.resultRates.length - 1] : new double[4];
+        } else if (mode == 1) {
+            double[] endRates = app.resultRates != null && endIdx >= 0
+                && endIdx < app.resultRates.length
+                ? app.resultRates[endIdx] : new double[4];
             added = new GeoSection(
                 LaneSection.holdLanes(endRates[1], endRates[2], rollEnd), vEnd);
         } else {
             added = Coaster.holdSection(
                 end != null ? end.Gv() : 1, end != null ? end.Gl() : 0, rollEnd, vEnd);
         }
-        app.coaster.pieces.get(0).sections.add(added);
+        secs.add(added);
         activeSection = sections().size() - 1;
-        app.lanes = added.lanes;
+        app.lanes = lanesFor(added);
         selIdx = -1;
         selSet.clear();
+        elSel = mode == 2 ? 0 : -1;
         axisLock = 0;
         handleViewExpand = false;
         syncLaneButtons();
+        app.rebuildTrack();   // spans before layout: s/c widths need them
         refreshOffset();
         redraw();
-        app.rebuildTrack();
     }
 
     // inactive-strip visibility (v9.6 user feel pass: 0.13 was too faint)
@@ -369,21 +797,27 @@ class GraphEditor extends Region {
      *  Everything shares the active value scales, so curves join up
      *  visually across every boundary. */
     private void drawInactiveSections(GraphicsContext gc) {
-        List<LaneSection> secs = sections();
+        List<Section> secs = sections();
         boolean actGeo = activeGeo();
-        double off = 0;
+        double off = pieceT0();
         for (int k = 0; k < secs.size(); k++) {
-            double dur = BezierBaker.rideEnd(secs.get(k).lanes);
+            double dur = sectionDur(k);
             if (k != activeSection) {
                 gc.setGlobalAlpha(INACTIVE_SECTION_ALPHA);
                 gc.setLineWidth(1.5);
                 // REVERSED strips draw derived too: their authored lanes
-                // read back-to-front against the chain (D67)
-                if ((secs.get(k) instanceof GeoSection) == actGeo
-                        && !secs.get(k).reversed) {
-                    drawAuthoredStrip(gc, secs.get(k), off, dur);
+                // read back-to-front against the chain (D67); a
+                // straight/curve strip has no lanes — always derived,
+                // plus its faint element separators
+                if (secs.get(k) instanceof LaneSection ls
+                        && (ls instanceof GeoSection) == actGeo
+                        && !ls.reversed) {
+                    drawAuthoredStrip(gc, ls, off, dur);
                 } else {
                     drawDerivedStrip(gc, off, dur);
+                    if (secs.get(k) instanceof StraightCurveSection sc) {
+                        drawScSeparators(gc, sc, k);
+                    }
                 }
                 gc.setGlobalAlpha(1.0);
             }
@@ -504,10 +938,10 @@ class GraphEditor extends Region {
         return best;
     }
 
-    /** The vertical line + circled '+' at the ride end (user spec):
-     *  click opens the add-section menu. */
+    /** The vertical line + circled '+' at the ACTIVE PIECE's end (user
+     *  spec): click opens the add-section menu. */
     private void drawAddButton(GraphicsContext gc, double w) {
-        double x = tToX(pieceDur());
+        double x = tToX(pieceT0() + pieceDur());
         if (x < MARGIN_LEFT - 1 || x > w - marginRight() + 1) {
             addBtnX = -999;
             return;
@@ -554,15 +988,20 @@ class GraphEditor extends Region {
 
     private void drawSectionBadges(GraphicsContext gc, double w) {
         badgeRects.clear();
-        List<LaneSection> secs = sections();
-        double off = 0;
+        List<Section> secs = sections();
+        double off = pieceT0();
         gc.setFont(Font.font(10));
         gc.setTextAlign(TextAlignment.CENTER);
         gc.setTextBaseline(VPos.CENTER);
         for (int k = 0; k < secs.size(); k++) {
-            double dur = BezierBaker.rideEnd(secs.get(k).lanes);
-            String label = (secs.get(k) instanceof GeoSection ? "geo" : "force")
-                + (secs.get(k).reversed ? " ◀" : "");
+            double dur = sectionDur(k);
+            boolean dirty = secs.get(k) instanceof BridgeSection bs
+                && bridgeOrphan(bs);
+            String label = (secs.get(k) instanceof GeoSection ? "geo"
+                    : secs.get(k) instanceof StraightCurveSection ? "s/c"
+                    : secs.get(k) instanceof BridgeSection
+                        ? (dirty ? "bridge !" : "bridge") : "force")
+                + (secs.get(k).reversed() ? " ◀" : "");
             double bw = label.length() * 6 + 10;
             double x0 = Math.max(tToX(off), MARGIN_LEFT);
             double x1 = Math.min(tToX(off + dur), w - marginRight());
@@ -571,10 +1010,13 @@ class GraphEditor extends Region {
                 gc.setGlobalAlpha(k == activeSection ? 0.85 : 0.45);
                 gc.setFill(Color.rgb(45, 50, 62));
                 gc.fillRoundRect(bx, by, bw, 15, 7, 7);
-                gc.setStroke(Color.rgb(150, 156, 175));
+                // a dirty bridge wears the warning color (v13.0)
+                gc.setStroke(dirty ? Color.rgb(255, 140, 90)
+                                   : Color.rgb(150, 156, 175));
                 gc.setLineWidth(1);
                 gc.strokeRoundRect(bx, by, bw, 15, 7, 7);
-                gc.setFill(Color.rgb(205, 210, 220));
+                gc.setFill(dirty ? Color.rgb(255, 170, 130)
+                                 : Color.rgb(205, 210, 220));
                 gc.fillText(label, bx + bw / 2, by + 8);
                 badgeRects.add(new double[]{ bx, by, bw, 15, k });
             }
@@ -593,6 +1035,625 @@ class GraphEditor extends Region {
             }
         }
         return -1;
+    }
+
+    // ---------- straight/curve ELEMENT STRIP (v11.0, D68) ----------
+    // the active s/c section's strip REPLACES the lanes with the element
+    // widget: a translucent band per element (labeled chip at the top),
+    // dashed separators between them, and a smoothing DIAMOND on every
+    // internal boundary. Clicking a band selects; dragging a separator
+    // (or the section end) resizes the element left of it (Ctrl snaps by
+    // the Options length step); dragging a diamond sizes the blend;
+    // right-click = insert/delete menu; double-click = element dialog.
+    // The felt-G curves draw behind at SC_CURVE_ALPHA for context.
+    private int elSel = -1;            // selected element of the active s/c
+    private int elDragBoundary = -1;   // element whose LENGTH is dragging
+    private int elDragSmooth = -1;     // element whose ENTRY blend is dragging
+    private int rClickElem = -1;       // deferred right-click menu (pan-safe)
+
+    private static final double SC_CURVE_ALPHA = 0.45;
+    static final double SC_SMOOTH_DEFAULT = 2;   // m, new elements' entry blend
+    private static final double MIN_ELEM_LEN = 0.5;   // m
+    private static final Color SC_STRAIGHT_COLOR = Color.rgb(150, 160, 185);
+    private static final Color SC_CURVE_COLOR = Color.rgb(235, 130, 180);
+
+    /** Cumulative AUTHORED arc-length boundaries: [0, L0, L0+L1, …]. */
+    private static double[] scBoundsS(StraightCurveSection sc) {
+        double[] b = new double[sc.elements.size() + 1];
+        for (int i = 0; i < sc.elements.size(); i++) {
+            b[i + 1] = b[i] + sc.elements.get(i).arcLen();
+        }
+        return b;
+    }
+
+    /** The active section's span from the last compile, or null. */
+    private TrackCompiler.Span activeSpan() {
+        return spanOf(activeSection);
+    }
+
+    /** Global ride time where the compiled track crosses TRAVERSAL arc
+     *  length sTrav inside span sp (binary search + lerp on samples). */
+    private double timeAtSpanS(TrackCompiler.Span sp, double sTrav) {
+        List<FVDIntegrator.Sample> ss = app.lastSamples;
+        double target = sp.s0() + sTrav;
+        int lo = Math.min(sp.i0(), ss.size() - 1);
+        int hi = Math.min(sp.i1(), ss.size() - 1);
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (ss.get(mid).s() <= target) lo = mid; else hi = mid;
+        }
+        FVDIntegrator.Sample a = ss.get(lo), b = ss.get(hi);
+        double ds = b.s() - a.s();
+        double u = ds < 1e-12 ? 0 : FvdDesigner.clamp((target - a.s()) / ds, 0, 1);
+        return a.t() + (b.t() - a.t()) * u;
+    }
+
+    /** Global ride time of AUTHORED arc length s in the active s/c
+     *  section. Reversal runs the authored shape back-to-front, so
+     *  authored s maps to traversal (total − s) there — element 0 draws
+     *  at the strip's right edge, matching what the train does. */
+    private double scTimeAtS(StraightCurveSection sc, double sLocal) {
+        double sTrav = sc.reversed ? sc.totalLen() - sLocal : sLocal;
+        TrackCompiler.Span sp = activeSpan();
+        if (sp == null || app.lastSamples == null
+                || sp.i0() >= app.lastSamples.size()) {
+            double tot = Math.max(sc.totalLen(), 1e-6);
+            return tOff + sectionDur(activeSection) * (sTrav / tot);
+        }
+        return timeAtSpanS(sp, sTrav);
+    }
+
+    /** AUTHORED arc length under global ride time t (inverse map).
+     *  EXTRAPOLATES past both span ends at the boundary sample's speed
+     *  (v11.1): the cursor keeps meaning something beyond the current
+     *  section end, so a boundary drag can EXTEND the section, not
+     *  just shorten it (the live rebuild re-maps every event). */
+    private double scSAtT(StraightCurveSection sc, double gt) {
+        double tot = Math.max(sc.totalLen(), 1e-6);
+        TrackCompiler.Span sp = activeSpan();
+        double sTrav;
+        if (sp == null || app.lastSamples == null
+                || sp.i0() >= app.lastSamples.size()) {
+            double dur = Math.max(sectionDur(activeSection), 1e-6);
+            sTrav = tot * Math.max(0, (gt - tOff) / dur);
+        } else {
+            List<FVDIntegrator.Sample> ss = app.lastSamples;
+            int lo = Math.min(sp.i0(), ss.size() - 1);
+            int hi = Math.min(sp.i1(), ss.size() - 1);
+            FVDIntegrator.Sample first = ss.get(lo), last = ss.get(hi);
+            if (gt >= last.t()) {
+                sTrav = tot + (gt - last.t()) * Math.max(0.5, last.v());
+            } else if (gt <= first.t()) {
+                // negative: before the entry (extends a REVERSED
+                // section, whose authored end sits at the strip's left)
+                sTrav = (gt - first.t()) * Math.max(0.5, first.v());
+            } else {
+                while (hi - lo > 1) {
+                    int mid = (lo + hi) >>> 1;
+                    if (ss.get(mid).t() <= gt) lo = mid; else hi = mid;
+                }
+                FVDIntegrator.Sample a = ss.get(lo), b = ss.get(hi);
+                double dt = b.t() - a.t();
+                double u = dt < 1e-12 ? 0 : FvdDesigner.clamp((gt - a.t()) / dt, 0, 1);
+                sTrav = FvdDesigner.clamp(a.s() + (b.s() - a.s()) * u - sp.s0(), 0, tot);
+            }
+        }
+        return sc.reversed ? tot - sTrav : sTrav;
+    }
+
+    /** Element index under global ride time t. */
+    private int elementAtT(StraightCurveSection sc, double gt) {
+        double sAuth = scSAtT(sc, gt);
+        double[] b = scBoundsS(sc);
+        for (int i = 0; i < sc.elements.size(); i++) {
+            if (sAuth <= b[i + 1] + 1e-9) return i;
+        }
+        return sc.elements.size() - 1;
+    }
+
+    /** Which element BOUNDARY (1..n; n = the section end) is within
+     *  grab range of (x, y); 0/-1 = none (the entry is not draggable).
+     *  Nearest wins so tiny elements stay resizable. */
+    private int hitScBoundary(double x, double y) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null || y < MARGIN_TOP || y > MARGIN_TOP + plotHeight()) return -1;
+        double[] b = scBoundsS(sc);
+        int best = -1;
+        double bestD = 5;
+        for (int j = 1; j < b.length; j++) {
+            double d = Math.abs(x - tToX(scTimeAtS(sc, b[j])));
+            if (d <= bestD) { bestD = d; best = j; }
+        }
+        return best;
+    }
+
+    private double scDiamondY() { return MARGIN_TOP + 48; }
+
+    /** Which element's entry-smoothing diamond is under (x, y); -1 =
+     *  none. Diamonds sit on internal boundaries only (1..n-1). */
+    private int hitScDiamond(double x, double y) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null) return -1;
+        double[] b = scBoundsS(sc);
+        for (int j = 1; j < b.length - 1; j++) {
+            if (Math.hypot(x - tToX(scTimeAtS(sc, b[j])), y - scDiamondY()) <= 7) {
+                return j;
+            }
+        }
+        return -1;
+    }
+
+    private static String elemLabel(StraightCurveSection.Element e) {
+        String base = e.kind == StraightCurveSection.Kind.STRAIGHT
+            ? "— " + fmtVal(e.length) + " m"
+            : "R" + fmtVal(e.radius) + " " + fmtVal(Math.abs(e.angleDeg)) + "°"
+                + dirArrow(e);
+        // non-default roll rides the chip: ∠ = held global bank,
+        // ↻ = body roll rate (global 0 — level — is the quiet norm)
+        if (Math.abs(e.rollVal) > 1e-9) {
+            base += e.rollMode == StraightCurveSection.RollMode.GLOBAL
+                ? " ∠" + fmtVal(e.rollVal) + "°"
+                : " ↻" + fmtVal(e.rollVal) + "°/s";
+        }
+        return base;
+    }
+
+    /** Turn-plane arrow for a curve chip: the effective direction
+     *  (angle sign folds into dir ± 180) rounded to the nearest 45°. */
+    private static String dirArrow(StraightCurveSection.Element e) {
+        String[] arrows = { "→", "↗", "↑", "↖", "←", "↙", "↓", "↘" };
+        double eff = e.angleDeg >= 0 ? e.dirDeg : e.dirDeg + 180;
+        int oct = (int) Math.round(((eff % 360) + 360) % 360 / 45.0) % 8;
+        return arrows[oct];
+    }
+
+    /** The active s/c strip: derived felt-G context curves + the
+     *  element widget (bands, chips, separators, smoothing diamonds,
+     *  live drag readout). */
+    private void drawScStrip(GraphicsContext gc) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null) return;
+        double dur = sectionDur(activeSection);
+        gc.setGlobalAlpha(SC_CURVE_ALPHA);
+        gc.setLineWidth(1.5);
+        drawDerivedStrip(gc, tOff, dur);
+        gc.setGlobalAlpha(1.0);
+
+        double[] b = scBoundsS(sc);
+        // the same clamped blend halves the integrator uses
+        ScIntegrator.Profile prof = new ScIntegrator.Profile(sc);
+        double top = MARGIN_TOP, bot = MARGIN_TOP + plotHeight();
+        gc.setFont(Font.font(10));
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setTextBaseline(VPos.CENTER);
+        for (int i = 0; i < sc.elements.size(); i++) {
+            StraightCurveSection.Element e = sc.elements.get(i);
+            double xa = tToX(scTimeAtS(sc, b[i]));
+            double xb = tToX(scTimeAtS(sc, b[i + 1]));
+            double x0 = Math.min(xa, xb), x1 = Math.max(xa, xb);
+            Color col = e.kind == StraightCurveSection.Kind.STRAIGHT
+                ? SC_STRAIGHT_COLOR : SC_CURVE_COLOR;
+            gc.setFill(col.deriveColor(0, 1, 1, i == elSel ? 0.17 : 0.09));
+            gc.fillRect(x0, top, x1 - x0, bot - top);
+            if (i == elSel) {
+                gc.setStroke(col.deriveColor(0, 1, 1, 0.85));
+                gc.setLineWidth(1.5);
+                gc.strokeRect(x0 + 1, top + 1, x1 - x0 - 2, bot - top - 2);
+            }
+            String label = elemLabel(e);
+            double bw = label.length() * 6 + 12;
+            if (x1 - x0 >= bw + 6) {
+                double bx = (x0 + x1) / 2 - bw / 2, by = top + 24;
+                gc.setGlobalAlpha(0.92);
+                gc.setFill(Color.rgb(45, 50, 62));
+                gc.fillRoundRect(bx, by, bw, 15, 7, 7);
+                gc.setStroke(i == elSel ? Color.WHITE : col.deriveColor(0, 1, 1, 0.7));
+                gc.setLineWidth(1);
+                gc.strokeRoundRect(bx, by, bw, 15, 7, 7);
+                gc.setFill(col.brighter());
+                gc.fillText(label, bx + bw / 2, by + 8);
+                gc.setGlobalAlpha(1.0);
+            }
+        }
+        for (int j = 1; j < b.length; j++) {
+            double bx = tToX(scTimeAtS(sc, b[j]));
+            boolean internal = j < b.length - 1;
+            if (internal && prof.half[j] > 1e-9) {   // the blend zone
+                double za = tToX(scTimeAtS(sc, b[j] - prof.half[j]));
+                double zb = tToX(scTimeAtS(sc, b[j] + prof.half[j]));
+                gc.setFill(Color.rgb(255, 255, 255, 0.07));
+                gc.fillRect(Math.min(za, zb), top, Math.abs(zb - za), bot - top);
+            }
+            gc.setStroke(Color.rgb(200, 206, 222));
+            gc.setGlobalAlpha(internal ? 0.5 : 0.35);
+            gc.setLineWidth(1);
+            gc.setLineDashes(2, 5);
+            gc.strokeLine(bx, top, bx, bot);
+            gc.setLineDashes((double[]) null);
+            gc.setGlobalAlpha(1.0);
+            if (internal) {   // smoothing diamond: filled = blending
+                double dy = scDiamondY();
+                boolean on = sc.elements.get(j).smoothIn > 1e-9;
+                gc.setGlobalAlpha(0.85);
+                gc.beginPath();
+                gc.moveTo(bx, dy - 5);
+                gc.lineTo(bx + 5, dy);
+                gc.lineTo(bx, dy + 5);
+                gc.lineTo(bx - 5, dy);
+                gc.closePath();
+                if (on) { gc.setFill(Color.WHITE); gc.fill(); }
+                gc.setStroke(Color.WHITE);
+                gc.stroke();
+                gc.setGlobalAlpha(1.0);
+            }
+        }
+        // live readout for the running element drag, node-drag style
+        String readout = null;
+        double rx = 0;
+        if (elDragBoundary >= 0 && elDragBoundary < sc.elements.size()) {
+            StraightCurveSection.Element e = sc.elements.get(elDragBoundary);
+            readout = e.kind == StraightCurveSection.Kind.STRAIGHT
+                ? String.format(Locale.US, "length %.1f m", e.length)
+                : String.format(Locale.US, "arc %.1f m  (%.0f°)", e.arcLen(), e.angleDeg);
+            rx = tToX(scTimeAtS(sc, b[elDragBoundary + 1]));
+        } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
+            double sm = sc.elements.get(elDragSmooth).smoothIn;
+            readout = sm < 1e-9 ? "smooth off"
+                : String.format(Locale.US, "smooth %.1f m", sm);
+            rx = tToX(scTimeAtS(sc, b[elDragSmooth]));
+        }
+        if (readout != null) {
+            gc.setFill(Color.WHITE);
+            gc.setFont(Font.font(11));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.TOP);
+            double tw = readout.length() * 6.5;
+            gc.fillText(readout,
+                FvdDesigner.clamp(rx + 8, MARGIN_LEFT + 4,
+                    canvas.getWidth() - marginRight() - tw - 4),
+                MARGIN_TOP + plotHeight() * 0.5);
+        }
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.setTextBaseline(VPos.TOP);
+        gc.setLineWidth(2);
+    }
+
+    /** The active BRIDGE strip (v13.0): the felt-G derived curves at
+     *  s/c-widget alpha — there is nothing to edit here (frozen
+     *  geometry; the badge menu re-solves / re-tangents) — plus a
+     *  centered status line when the endpoints have drifted. */
+    private void drawBridgeStrip(GraphicsContext gc) {
+        BridgeSection bs = activeBridge();
+        if (bs == null) return;
+        double dur = sectionDur(activeSection);
+        gc.setGlobalAlpha(SC_CURVE_ALPHA);
+        gc.setLineWidth(1.5);
+        drawDerivedStrip(gc, tOff, dur);
+        gc.setGlobalAlpha(1.0);
+        if (bridgeOrphan(bs)) {
+            gc.setFill(Color.rgb(255, 170, 130));
+            gc.setFont(Font.font(11));
+            gc.setTextAlign(TextAlignment.CENTER);
+            gc.setTextBaseline(VPos.CENTER);
+            gc.fillText("no following piece — frozen at its last shape",
+                (tToX(tOff) + tToX(tOff + dur)) / 2,
+                MARGIN_TOP + plotHeight() * 0.5);
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.TOP);
+        }
+        gc.setLineWidth(2);
+    }
+
+    /** Faint element separators over an INACTIVE s/c strip (inherits
+     *  the caller's strip alpha). k is active-piece-local. */
+    private void drawScSeparators(GraphicsContext gc, StraightCurveSection sc, int k) {
+        TrackCompiler.Span sp = spanOf(k);
+        if (sp == null || app.lastSamples == null
+                || sp.i0() >= app.lastSamples.size()) return;
+        double[] b = scBoundsS(sc);
+        gc.setStroke(Color.rgb(200, 206, 222));
+        gc.setLineWidth(1);
+        gc.setLineDashes(2, 5);
+        for (int j = 1; j < b.length - 1; j++) {
+            double sTrav = sc.reversed ? sc.totalLen() - b[j] : b[j];
+            double bx = tToX(timeAtSpanS(sp, sTrav));
+            gc.strokeLine(bx, MARGIN_TOP, bx, MARGIN_TOP + plotHeight());
+        }
+        gc.setLineDashes((double[]) null);
+    }
+
+    /** Primary press while a straight/curve section is active. Press
+     *  rank mirrors the node editor's: diamonds (the "knobs") > '+' >
+     *  badges > boundary grabs > band select > strip activation. */
+    private void scPrimaryPressed(MouseEvent e) {
+        StraightCurveSection sc = activeSc();
+        int d = hitScDiamond(e.getX(), e.getY());
+        if (d >= 1) {
+            beginGesture();
+            elDragSmooth = d;
+            lastDragX = e.getX();
+            lastDragY = e.getY();
+            lastDragSnap = e.isControlDown();
+            dragTimerLast = 0;
+            dragGrowTimer.start();
+            return;
+        }
+        if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
+            showAddSectionMenu(e.getScreenX(), e.getScreenY());
+            return;
+        }
+        int badge = hitBadge(e.getX(), e.getY());
+        if (badge >= 0) {
+            showSectionMenu(badge, e.getScreenX(), e.getScreenY());
+            return;
+        }
+        int bIdx = hitScBoundary(e.getX(), e.getY());
+        if (bIdx >= 1) {
+            beginGesture();
+            elDragBoundary = bIdx - 1;
+            lastDragX = e.getX();
+            lastDragY = e.getY();
+            lastDragSnap = e.isControlDown();
+            dragTimerLast = 0;
+            dragGrowTimer.start();
+            return;
+        }
+        double gt = xToT(e.getX());
+        if (gt >= tOff - 1e-9 && gt <= tOff + sectionEnd() + 1e-9
+                && e.getY() >= MARGIN_TOP && e.getY() <= MARGIN_TOP + plotHeight()) {
+            int i = elementAtT(sc, gt);
+            if (i != elSel) {
+                elSel = i;
+                redraw();
+            }
+            return;
+        }
+        int k = sectionAt(gt);
+        if (k >= 0 && k != activeSection) {
+            setActiveSection(k);
+            return;
+        }
+        if (elSel != -1) {
+            elSel = -1;
+            redraw();
+        }
+    }
+
+    /** The running element drag: separators resize the element left of
+     *  them (straight = length, curve = angle at fixed radius); the
+     *  diamond sizes its boundary's blend, snapping shut near zero.
+     *  Ctrl snaps by the Options length step. Live recompile keeps the
+     *  x→arc-length map honest while the strip stretches. */
+    private void scDragTo(double x, boolean snap) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null) return;
+        double[] b = scBoundsS(sc);
+        double sAuth = scSAtT(sc, xToT(x));
+        if (elDragBoundary >= 0 && elDragBoundary < sc.elements.size()) {
+            double newLen = sAuth - b[elDragBoundary];
+            if (snap) {
+                double step = app.settings.snapLen();
+                newLen = Math.round(newLen / step) * step;
+            }
+            applyElemLen(sc.elements.get(elDragBoundary),
+                Math.max(MIN_ELEM_LEN, newLen));
+        } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
+            double len = 2 * Math.abs(sAuth - b[elDragSmooth]);
+            if (snap) {
+                double step = app.settings.snapLen();
+                len = Math.round(len / step) * step;
+            }
+            sc.elements.get(elDragSmooth).smoothIn = len < 0.2 ? 0 : len;
+        } else {
+            return;
+        }
+        app.rebuildTrack();
+        redraw();
+    }
+
+    /** Set an element's arc length: a straight's length directly; a
+     *  curve keeps its radius and re-angles (sign preserved). */
+    private static void applyElemLen(StraightCurveSection.Element el, double len) {
+        if (el.kind == StraightCurveSection.Kind.STRAIGHT) {
+            el.length = len;
+        } else {
+            double sign = el.angleDeg < 0 ? -1 : 1;
+            el.radius = Math.max(0.1, el.radius);
+            el.angleDeg = sign * Math.toDegrees(len / el.radius);
+        }
+    }
+
+    /** Right-click menu of one element (deferred to a clean release so
+     *  right-drag still pans). */
+    private void showElementMenu(int i, double screenX, double screenY) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null || i < 0 || i >= sc.elements.size()) return;
+        elSel = i;
+        redraw();
+        ContextMenu cm = new ContextMenu();
+        MenuItem edit = new MenuItem("Edit element…");
+        edit.setOnAction(ev -> showElementDialog(i));
+        MenuItem insSB = new MenuItem("Insert straight before");
+        insSB.setOnAction(ev -> insertElement(i, true));
+        MenuItem insCB = new MenuItem("Insert curve before");
+        insCB.setOnAction(ev -> insertElement(i, false));
+        MenuItem insSA = new MenuItem("Insert straight after");
+        insSA.setOnAction(ev -> insertElement(i + 1, true));
+        MenuItem insCA = new MenuItem("Insert curve after");
+        insCA.setOnAction(ev -> insertElement(i + 1, false));
+        MenuItem del = new MenuItem("Delete element");
+        del.setDisable(sc.elements.size() <= 1);
+        del.setOnAction(ev -> deleteElement(i));
+        cm.getItems().addAll(edit, new SeparatorMenuItem(),
+            insSB, insCB, insSA, insCA, new SeparatorMenuItem(), del);
+        showMenu(cm, screenX, screenY);
+    }
+
+    /** Insert an element at list position `at` (one undo step). New
+     *  elements arrive with the default entry blend — smoothing is a
+     *  first-class citizen here, not an afterthought. */
+    private void insertElement(int at, boolean straight) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null) return;
+        pushUndoSnapshot();
+        sc.elements.add(at, straight
+            ? StraightCurveSection.Element.straight(10, SC_SMOOTH_DEFAULT)
+            : StraightCurveSection.Element.curve(20, 90, 0, SC_SMOOTH_DEFAULT));
+        elSel = at;
+        app.rebuildTrack();
+        refreshOffset();
+        redraw();
+    }
+
+    private void deleteElement(int i) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null || sc.elements.size() <= 1
+                || i < 0 || i >= sc.elements.size()) return;
+        pushUndoSnapshot();
+        sc.elements.remove(i);
+        elSel = Math.min(elSel, sc.elements.size() - 1);
+        app.rebuildTrack();
+        refreshOffset();
+        redraw();
+    }
+
+    /** Double-click an element (or its right-click "Edit element…"):
+     *  type the parameters directly. The kind radios switch the visible
+     *  rows; switching keeps the arc length where it can. */
+    private void showElementDialog(int idx) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null || idx < 0 || idx >= sc.elements.size()) return;
+        StraightCurveSection.Element el = sc.elements.get(idx);
+        boolean isStraight = el.kind == StraightCurveSection.Kind.STRAIGHT;
+
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Element " + (idx + 1) + " — straight/curve section");
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+
+        ToggleGroup kindGrp = new ToggleGroup();
+        RadioButton rbS = new RadioButton("Straight");
+        RadioButton rbC = new RadioButton("Curve");
+        rbS.setToggleGroup(kindGrp);
+        rbC.setToggleGroup(kindGrp);
+        (isStraight ? rbS : rbC).setSelected(true);
+
+        TextField lenF = new TextField(String.format(Locale.US, "%.3f",
+            isStraight ? el.length : el.arcLen()));
+        TextField radF = new TextField(String.format(Locale.US, "%.3f",
+            el.radius > 0 ? el.radius : 20));
+        TextField angF = new TextField(String.format(Locale.US, "%.3f",
+            !isStraight ? el.angleDeg : 90));
+        TextField dirF = new TextField(String.format(Locale.US, "%.3f", el.dirDeg));
+        TextField smF = new TextField(String.format(Locale.US, "%.3f", el.smoothIn));
+        dirF.setTooltip(new Tooltip(
+            "Curve plane: 0 = flat turn (positive angle = right), 90 = pull up,"
+            + " 180 = left, 270 = drop; negative angle mirrors"));
+
+        // roll (v11.1): body rate like the roll lane, or a bank held
+        // against the HORIZON (global 0 = rails stay level through
+        // slopes and turns — the station/brake default)
+        ToggleGroup rollGrp = new ToggleGroup();
+        RadioButton rbRate = new RadioButton("Rate (°/s)");
+        RadioButton rbGlob = new RadioButton("Global bank (°)");
+        rbRate.setToggleGroup(rollGrp);
+        rbGlob.setToggleGroup(rollGrp);
+        rbRate.setTooltip(new Tooltip(
+            "Body roll about the track at this rate, like the roll lane"
+            + " (0 = never twist: bank drifts through pitched turns)"));
+        rbGlob.setTooltip(new Tooltip(
+            "Hold this bank angle measured against the horizon — 0 keeps"
+            + " the rails LEVEL through slopes and turns; eased in over"
+            + " max(entry smoothing, 2 m)"));
+        (el.rollMode == StraightCurveSection.RollMode.GLOBAL ? rbGlob : rbRate)
+            .setSelected(true);
+        TextField rollF = new TextField(String.format(Locale.US, "%.3f", el.rollVal));
+
+        int row = 0;
+        grid.add(new Label("Kind"), 0, row);
+        grid.add(new HBox(10, rbS, rbC), 1, row++);
+        Label lenL = new Label("Length (m)");
+        grid.addRow(row++, lenL, lenF);
+        Label radL = new Label("Radius (m)");
+        grid.addRow(row++, radL, radF);
+        Label angL = new Label("Angle (°)");
+        grid.addRow(row++, angL, angF);
+        Label dirL = new Label("Direction (°)");
+        grid.addRow(row++, dirL, dirF);
+        Label smL = new Label("Entry smoothing (m)");
+        grid.addRow(row++, smL, smF);
+        grid.add(new Label("Roll"), 0, row);
+        grid.add(new HBox(10, rbRate, rbGlob), 1, row++);
+        Label rollL = new Label("Roll value");
+        grid.addRow(row++, rollL, rollF);
+        if (idx == 0) {
+            smF.setDisable(true);
+            smL.setDisable(true);
+            smL.setTooltip(new Tooltip(
+                "Element 0's entry is the section seam — always sharp"));
+        }
+        for (javafx.scene.Node c : grid.getChildren()) {
+            if (c instanceof TextField tf) tf.setPrefColumnCount(7);
+        }
+
+        Runnable sync = () -> {
+            boolean st = rbS.isSelected();
+            lenF.setDisable(!st);
+            lenL.setDisable(!st);
+            radF.setDisable(st);
+            radL.setDisable(st);
+            angF.setDisable(st);
+            angL.setDisable(st);
+            dirF.setDisable(st);
+            dirL.setDisable(st);
+        };
+        sync.run();
+        rbS.setOnAction(ev -> sync.run());
+        rbC.setOnAction(ev -> sync.run());
+
+        Button ok = new Button("Apply");
+        ok.setDefaultButton(true);
+        Button cancel = new Button("Cancel");
+        cancel.setCancelButton(true);
+        HBox buttons = new HBox(8, ok, cancel);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        grid.add(buttons, 0, row, 2, 1);
+
+        ok.setOnAction(ev -> {
+            pushUndoSnapshot();
+            if (rbS.isSelected()) {
+                double keep = el.kind == StraightCurveSection.Kind.STRAIGHT
+                    ? el.length : el.arcLen();
+                el.kind = StraightCurveSection.Kind.STRAIGHT;
+                el.length = Math.max(MIN_ELEM_LEN, parseOr(lenF, keep));
+            } else {
+                el.kind = StraightCurveSection.Kind.CURVE;
+                el.radius = Math.max(0.1, parseOr(radF, el.radius > 0 ? el.radius : 20));
+                double ang = parseOr(angF, el.angleDeg != 0 ? el.angleDeg : 90);
+                if (Math.abs(ang) < 0.5) ang = ang < 0 ? -0.5 : 0.5;
+                el.angleDeg = ang;
+                el.dirDeg = parseOr(dirF, el.dirDeg);
+            }
+            if (idx > 0) el.smoothIn = Math.max(0, parseOr(smF, el.smoothIn));
+            el.rollMode = rbGlob.isSelected()
+                ? StraightCurveSection.RollMode.GLOBAL
+                : StraightCurveSection.RollMode.RATE;
+            el.rollVal = parseOr(rollF, el.rollVal);
+            elSel = idx;
+            app.rebuildTrack();
+            refreshOffset();
+            redraw();
+            dlg.close();
+        });
+        cancel.setOnAction(ev -> dlg.close());
+
+        dlg.setScene(new Scene(grid));
+        dlg.show();
     }
 
     private static final int LANES = 3;
@@ -702,7 +1763,8 @@ class GraphEditor extends Region {
             if (dragTimerLast == 0) { dragTimerLast = now; return; }
             double dt = Math.min((now - dragTimerLast) / 1e9, 0.05);
             dragTimerLast = now;
-            if (dragNodeIdx < 0 && dragHandleIdx < 0) return;
+            if (dragNodeIdx < 0 && dragHandleIdx < 0
+                    && elDragBoundary < 0 && elDragSmooth < 1) return;
             double plotRight = MARGIN_LEFT + plotWidth();
             double plotBottom = MARGIN_TOP + plotHeight();
             double winW = dragWinT1 - dragWinT0;
@@ -711,8 +1773,8 @@ class GraphEditor extends Region {
             if (lastDragX > plotRight) {
                 dragWinT1 += (lastDragX - plotRight) * 3 * dt * winW / plotWidth();
                 grew = true;
-            } else if (lastDragX < MARGIN_LEFT && dragWinT0 > 0) {
-                dragWinT0 = Math.max(0,
+            } else if (lastDragX < MARGIN_LEFT && dragWinT0 > pieceT0()) {
+                dragWinT0 = Math.max(pieceT0(),
                     dragWinT0 - (MARGIN_LEFT - lastDragX) * 3 * dt * winW / plotWidth());
                 grew = true;
             }
@@ -727,8 +1789,10 @@ class GraphEditor extends Region {
                 commitGestureSnapshot();
                 if (dragNodeIdx >= 0) {
                     dragNodeTo(lastDragX, lastDragY, lastDragSnap, lastDragShift);
-                } else {
+                } else if (dragHandleIdx >= 0) {
                     dragHandleTo(lastDragX, lastDragY, lastDragShift, lastDragSnap);
+                } else {
+                    scDragTo(lastDragX, lastDragSnap);
                 }
             }
         }
@@ -785,6 +1849,28 @@ class GraphEditor extends Region {
                 return;
             }
             if (e.getButton() == MouseButton.PRIMARY) {
+                // a straight/curve section has its own surface (v11.0)
+                if (activeSc() != null) {
+                    scPrimaryPressed(e);
+                    return;
+                }
+                // a bridge has NO surface (frozen): '+', badges and
+                // strip switches only (v13.0)
+                if (activeBridge() != null) {
+                    if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
+                        showAddSectionMenu(e.getScreenX(), e.getScreenY());
+                        return;
+                    }
+                    int badge = hitBadge(e.getX(), e.getY());
+                    if (badge >= 0) {
+                        showSectionMenu(badge, e.getScreenX(), e.getScreenY());
+                        return;
+                    }
+                    double gt = xToT(e.getX());
+                    int k = sectionAt(gt);
+                    if (k >= 0 && k != activeSection) setActiveSection(k);
+                    return;
+                }
                 int hit = hitNode(e.getX(), e.getY());
                 // the node body ALWAYS outranks its own knobs, so a node
                 // overlapping its handles stays grabbable
@@ -916,6 +2002,26 @@ class GraphEditor extends Region {
                     }
                 }
             } else if (e.getButton() == MouseButton.SECONDARY) {
+                if (activeBridge() != null) {   // pan only — no nodes
+                    rPressX = e.getX();
+                    rPressY = e.getY();
+                    panLastX = e.getX();
+                    return;
+                }
+                if (activeSc() != null) {
+                    // right-click an ELEMENT = its menu, deferred to a
+                    // clean release exactly like the segment lock menu
+                    double gt = xToT(e.getX());
+                    rClickElem = gt >= tOff - 1e-9
+                            && gt <= tOff + sectionEnd() + 1e-9
+                            && e.getY() >= MARGIN_TOP
+                            && e.getY() <= MARGIN_TOP + plotHeight()
+                        ? elementAtT(activeSc(), gt) : -1;
+                    rPressX = e.getX();
+                    rPressY = e.getY();
+                    panLastX = e.getX();   // right-drag = pan
+                    return;
+                }
                 int hit = hitNode(e.getX(), e.getY());
                 if (hit >= 0) {
                     // right-click a node = its editor dialog (v10.7 —
@@ -953,7 +2059,8 @@ class GraphEditor extends Region {
             }
             newW = Math.max(0.1, newW);
             double tm = xToT(e.getX());
-            double n0 = FvdDesigner.clamp(tm - (tm - t0) / width * newW, 0, domain() - newW);
+            double n0 = FvdDesigner.clamp(tm - (tm - t0) / width * newW,
+                pieceT0(), pieceT0() + domain() - newW);
             viewT0 = n0;
             viewT1 = n0 + newW;
             redraw();
@@ -962,7 +2069,13 @@ class GraphEditor extends Region {
         canvas.setOnMouseMoved(e -> {
             hoverSlope = e.isShiftDown();
             ctrlHover = e.isControlDown();
-            double t = (hitNode(e.getX(), e.getY()) < 0
+            if (activeSc() != null) {   // grab cursor over drag targets
+                boolean grab = hitScBoundary(e.getX(), e.getY()) >= 1
+                    || hitScDiamond(e.getX(), e.getY()) >= 1;
+                canvas.setCursor(grab ? Cursor.H_RESIZE : Cursor.DEFAULT);
+            }
+            double t = (activeSc() == null && activeBridge() == null
+                    && hitNode(e.getX(), e.getY()) < 0
                     && (selIdx < 0 || hitKnob(e.getX(), e.getY()) == 0))
                     ? curveHitT(e.getX(), e.getY()) : Double.NaN;
             hoverRawT = t;
@@ -1006,6 +2119,16 @@ class GraphEditor extends Region {
         });
 
         canvas.setOnMouseDragged(e -> {
+            if ((elDragBoundary >= 0 || elDragSmooth >= 1)
+                    && e.isPrimaryButtonDown()) {
+                commitGestureSnapshot();
+                lastDragX = e.getX();
+                lastDragY = e.getY();
+                lastDragSnap = e.isControlDown();
+                lastDragShift = app.slideKey;
+                scDragTo(e.getX(), e.isControlDown());
+                return;
+            }
             if (!Double.isNaN(boxX0) && e.isPrimaryButtonDown()) {
                 boxX1 = e.getX();
                 boxY1 = e.getY();
@@ -1014,12 +2137,14 @@ class GraphEditor extends Region {
             }
             if (!Double.isNaN(panLastX) && e.isSecondaryButtonDown()) {
                 if (Math.hypot(e.getX() - rPressX, e.getY() - rPressY) > 3) {
-                    rClickSeg = -1;   // it's a pan, not a segment click
+                    rClickSeg = -1;   // it's a pan, not a segment/element click
+                    rClickElem = -1;
                 }
                 double t0 = viewStart(), t1 = viewEnd();
                 if (t1 - t0 < domain()) {   // full view has nowhere to pan
                     double shift = (panLastX - e.getX()) * (t1 - t0) / plotWidth();
-                    double n0 = FvdDesigner.clamp(t0 + shift, 0, domain() - (t1 - t0));
+                    double n0 = FvdDesigner.clamp(t0 + shift,
+                        pieceT0(), pieceT0() + domain() - (t1 - t0));
                     viewT0 = n0;
                     viewT1 = n0 + (t1 - t0);
                     redraw();
@@ -1047,6 +2172,17 @@ class GraphEditor extends Region {
 
         canvas.setOnMouseReleased(e -> {
             dragGrowTimer.stop();
+            if (e.getButton() == MouseButton.SECONDARY && rClickElem >= 0
+                    && Math.hypot(e.getX() - rPressX, e.getY() - rPressY) <= 3) {
+                int el = rClickElem;
+                rClickElem = -1;
+                panLastX = Double.NaN;
+                showElementMenu(el, e.getScreenX(), e.getScreenY());
+                return;
+            }
+            rClickElem = -1;
+            elDragBoundary = -1;
+            elDragSmooth = -1;
             if (e.getButton() == MouseButton.SECONDARY && rClickSeg >= 0
                     && Math.hypot(e.getX() - rPressX, e.getY() - rPressY) <= 3) {
                 int seg = rClickSeg;
@@ -1099,6 +2235,16 @@ class GraphEditor extends Region {
 
         canvas.setOnMouseClicked(e -> {
             if (e.getClickCount() == 2 && e.getButton() == MouseButton.PRIMARY) {
+                StraightCurveSection sc = activeSc();
+                if (sc != null) {
+                    double gt = xToT(e.getX());
+                    if (gt >= tOff - 1e-9 && gt <= tOff + sectionEnd() + 1e-9
+                            && e.getY() >= MARGIN_TOP
+                            && e.getY() <= MARGIN_TOP + plotHeight()) {
+                        showElementDialog(elementAtT(sc, gt));
+                    }
+                    return;
+                }
                 int hit = hitNode(e.getX(), e.getY());
                 if (hit >= 0) showNodeEditor(hit);
             }
@@ -1151,13 +2297,42 @@ class GraphEditor extends Region {
     }
 
     /** Ctrl+click on the 3D track: insert at that RIDE time — the
-     *  containing section activates, then the insert runs locally
-     *  (same rules as clicking the graph curve). */
+     *  containing PIECE + section activate (v12.0: any piece's track
+     *  is clickable), then the insert runs locally (same rules as
+     *  clicking the graph curve). */
     void insertAtTime(double globalT) {
-        int k = sectionAt(globalT);
-        if (k < 0) return;
-        setActiveSection(k);
+        if (!activateGlobal(globalT)) return;
+        // s/c + bridge: activate only, no nodes to insert
+        if (activeSc() != null || activeBridge() != null) return;
         insertNodeOnCurve(globalT - tOff);
+    }
+
+    /** 3D plain-click: activate the piece + section at this ride time
+     *  (v13.1) — the graph follows what you click in the viewport. */
+    void activateAt(double globalT) {
+        activateGlobal(globalT);
+    }
+
+    /** Map a GLOBAL ride time to its piece + section via the compile
+     *  spans and activate both; false when unmapped (no compile yet). */
+    private boolean activateGlobal(double globalT) {
+        List<TrackCompiler.Span> spans = app.sectionSpans;
+        if (spans == null || spans.isEmpty()) return false;
+        int idx = -1;
+        for (int i = 0; i < spans.size(); i++) {
+            if (globalT <= spans.get(i).t1() + 1e-9) { idx = i; break; }
+        }
+        if (idx < 0) return false;
+        int p = 0, base = 0;
+        List<TrackPiece> pieces = app.coaster.pieces;
+        while (p < pieces.size() - 1
+                && base + pieces.get(p).sections.size() <= idx) {
+            base += pieces.get(p).sections.size();
+            p++;
+        }
+        setActivePiece(p);
+        setActiveSection(Math.min(idx - base, sections().size() - 1));
+        return true;
     }
 
     /** Shift pressed/released while hovering: toggle the slope readout
@@ -1193,6 +2368,16 @@ class GraphEditor extends Region {
      *  toggles); otherwise extend the ride end by 1 s — ACTIVE lane only
      *  (the others keep their dotted hold, no nodes added). */
     void appendAction() {
+        StraightCurveSection sc = activeSc();
+        if (sc != null) {   // A appends an element instead of a second
+            insertElement(elSel >= 0 ? elSel + 1 : sc.elements.size(), true);
+            return;
+        }
+        if (activeBridge() != null) {   // frozen: nothing to append to
+            app.statsLabel.setText(
+                "A bridge is frozen — extend the next piece instead.");
+            return;
+        }
         if (selIdx >= 0) insertHoldAfterSelected();
         else appendSecond();
     }
@@ -1289,8 +2474,8 @@ class GraphEditor extends Region {
         if (selIdx >= active().size()) selIdx = -1;
         selSet.removeIf(i -> i >= active().size());
         app.markDirty();
+        app.rebuildTrack();   // spans first: s/c strip layout needs them
         redraw();
-        app.rebuildTrack();
     }
 
     /** New document: history starts over. */
@@ -1411,12 +2596,13 @@ class GraphEditor extends Region {
      *  compiled RESULTING curves, slope by finite difference over
      *  ~0.05 s on the neighbor's side. Null = no data yet. */
     private double[] boundaryState(int k, boolean atStart, int laneIdx) {
-        List<LaneSection> secs = sections();
-        LaneSection nb = secs.get(k);
+        List<Section> secs = sections();
         // a REVERSED neighbor's authored lanes run against the chain
         // (values at the wrong end, roll/Gl signs flipped) — its
-        // boundary state comes from the compiled curves instead (D67)
-        if ((sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
+        // boundary state comes from the compiled curves instead (D67);
+        // a straight/curve neighbor has no lanes at all — likewise
+        if (secs.get(k) instanceof LaneSection nb
+                && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
                 && !nb.reversed) {
             List<BezierBaker.Node> ln = nb.lanes.get(laneIdx);
             if (atStart) {
@@ -1475,9 +2661,11 @@ class GraphEditor extends Region {
         return t - r[lo][0] <= r[hi][0] - t ? lo : hi;
     }
 
-    /** Same lane semantics (both force or both geo)? */
-    private static boolean sameMode(LaneSection a, LaneSection b) {
-        return (a instanceof GeoSection) == (b instanceof GeoSection);
+    /** Same lane semantics (both force or both geo)? A straight/curve
+     *  section is never same-mode with anything (no lanes). */
+    private static boolean sameMode(LaneSection a, Section b) {
+        return b instanceof LaneSection
+            && (a instanceof GeoSection) == (b instanceof GeoSection);
     }
 
     /** The horizontal WALL for a node drag (v10.2): the section end as
@@ -1507,10 +2695,12 @@ class GraphEditor extends Region {
     private double plotWidth() { return canvas.getWidth() - MARGIN_LEFT - marginRight(); }
 
     private double viewStart() {
-        return !Double.isNaN(dragWinT0) ? dragWinT0 : (viewT1 > 0 ? viewT0 : 0);
+        return !Double.isNaN(dragWinT0) ? dragWinT0
+             : (viewT1 > 0 ? viewT0 : pieceT0());
     }
     private double viewEnd() {
-        return !Double.isNaN(dragWinT0) ? dragWinT1 : (viewT1 > 0 ? viewT1 : domain());
+        return !Double.isNaN(dragWinT0) ? dragWinT1
+             : (viewT1 > 0 ? viewT1 : pieceT0() + domain());
     }
 
     private double tToX(double t) {
@@ -2015,6 +3205,10 @@ class GraphEditor extends Region {
     }
 
     void deleteSelected() {
+        if (activeSc() != null) {   // Delete removes the selected element
+            deleteElement(elSel);
+            return;
+        }
         if (selIdx < 0) return;
         if (selSet.isEmpty()) selSet.add(selIdx);
         List<BezierBaker.Node> lane = active();
@@ -2455,8 +3649,38 @@ class GraphEditor extends Region {
      *  outward to a nice step when the data pokes beyond it. Frozen
      *  during drags so the scale doesn't shift under the cursor. */
     private void updateScale() {
-        if (dragNodeIdx >= 0 || dragHandleIdx >= 0) return;
+        if (dragNodeIdx >= 0 || dragHandleIdx >= 0
+                || elDragBoundary >= 0 || elDragSmooth >= 1) return;
         double t0 = viewStart(), t1 = viewEnd();
+        if (activeSc() != null || activeBridge() != null) {
+            // no authored lanes (s/c widget or frozen bridge): fit the
+            // (force-view) scales to the DERIVED curves on show
+            double dur = sectionDur(activeSection);
+            for (int L = 0; L < LANES; L++) {
+                double lo = defMin(L), hi = defMax(L);
+                if (app.resultRates != null && app.lastSamples != null) {
+                    for (int i = 0; i < app.resultRates.length; i++) {
+                        double t = app.resultRates[i][0];
+                        if (t < Math.max(tOff + SEAM_TRIM, t0)
+                                || t > Math.min(tOff + dur - SEAM_TRIM, t1)) continue;
+                        double v = derivedAt(i, L);
+                        lo = Math.min(lo, v);
+                        hi = Math.max(hi, v);
+                    }
+                }
+                if (lo < defMin(L) || hi > defMax(L)) {
+                    double pad = (hi - lo) * 0.05;
+                    double step = niceStep((hi - lo) / 6);
+                    curMin[L] = Math.floor((lo - pad) / step) * step;
+                    curMax[L] = Math.ceil((hi + pad) / step) * step;
+                } else {
+                    curMin[L] = defMin(L);
+                    curMax[L] = defMax(L);
+                }
+            }
+            updateResScale();
+            return;
+        }
         for (int L = 0; L < LANES; L++) {
             double lo = defMin(L), hi = defMax(L);
             for (double[] p : BezierBaker.polyline(app.lanes.get(L))) {
@@ -2527,10 +3751,9 @@ class GraphEditor extends Region {
      *  SEAM_TRIM band around each (bodyRates smear discontinuities). */
     private List<Double> sectionBoundaries() {
         List<Double> out = new ArrayList<>();
-        List<LaneSection> secs = sections();
-        double off = 0;
-        for (int k = 0; k < secs.size() - 1; k++) {
-            off += BezierBaker.rideEnd(secs.get(k).lanes);
+        double off = pieceT0();
+        for (int k = 0; k < sections().size() - 1; k++) {
+            off += sectionDur(k);
             out.add(off);
         }
         return out;
@@ -2649,13 +3872,21 @@ class GraphEditor extends Region {
 
         drawInactiveSections(gc);
 
-        for (int lane = 0; lane < LANES; lane++) {
-            if (lane == activeLane) continue;
-            gc.setGlobalAlpha(INACTIVE_ALPHA);
-            strokeLaneCurve(gc, lane);
+        if (activeSc() != null) {
+            // a straight/curve section: the element widget IS the
+            // editing surface — no lanes to stroke (v11.0)
+            drawScStrip(gc);
+        } else if (activeBridge() != null) {
+            drawBridgeStrip(gc);   // frozen: derived curves + status
+        } else {
+            for (int lane = 0; lane < LANES; lane++) {
+                if (lane == activeLane) continue;
+                gc.setGlobalAlpha(INACTIVE_ALPHA);
+                strokeLaneCurve(gc, lane);
+            }
+            gc.setGlobalAlpha(1.0);
+            strokeLaneCurve(gc, activeLane);
         }
-        gc.setGlobalAlpha(1.0);
-        strokeLaneCurve(gc, activeLane);
 
         // read-only RESULTING curves (toolbar "Resulting" dropdown),
         // drawn across the WHOLE ride (v10.8 — was active-section only),

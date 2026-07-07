@@ -10,17 +10,45 @@ curves), geo lane palette, zero-line fills, section badges + delete,
 boundary return (value + slope, cross-mode, seam-safe), insert-then-
 drag, section-end snap + wall, snap axis toggles, purple time,
 mode-aware Resulting overlays; REVERSAL live (v10.9, D67 — badge-menu
-toggle, canonical generation + yaw placement, gated TESTING #13).
+toggle, canonical generation + yaw placement, gated TESTING #13);
+STRAIGHT/CURVE SECTIONS LIVE (v11.0, D68, gated TESTING #14): first
+non-lane mode, element list (straight | arc radius+angle+direction)
+with per-transition sine smoothing from day one, DISTANCE domain,
+ScIntegrator (breakpoint-aligned sub-stepping — analytic circles AND
+analytic sharp chains), the ELEMENT STRIP WIDGET replacing the lanes
+in the graph, `section sc`/`elem` in FVDD3, per-section Spans on the
+compile Result; s/c ROLL modes v11.1 (D69 — rate °/s or GLOBAL bank
+held vs the horizon); SPLIT/ATTACH/PIECE SELECTOR LIVE (v12.0, D70,
+gated TESTING #15): badge-menu split, '+'-menu attach, toolbar
+piece selector, Piece x/y/z + yaw spinners, global-timeline windows;
+v12.1 (D71): splits carry the FULL boundary orientation
+(TrackPiece.baseOrient — bitwise at any boundary, user rule) and
+REVERSAL became a whole-PIECE operation (Coaster menu; model
+transformation — track stays put; the §2 "yaw about vertical only"
+placement note now means the EDIT DELTA — baseOrient itself carries
+arbitrary orientation).
+BRIDGES LIVE (v13.0 D72, gated TESTING #16; reworked v13.1 D73 on
+user review): LIVE-FOLLOW quintic (re-captured every compile; frozen
+only when orphaned), G² ends (seam curvature continuity), bridge to
+ANY piece with timeline reorder, closed-form optimize-placement
+action, tangent dialog; viewport meshes break at piece gaps and
+plain-click activates a piece.
 Still to come in
-Phase 2: straight/curve mode, split/reconnect + placement
-gizmos, bridge sections + influence + "become real". One AMENDMENT to
+Phase 2: piece placement 3D gizmos (pitch editing user-approved if
+revertible), mid-section node-anchored split (user-confirmed),
+influence curves +
+"become real" (direct attach stays first-class beside bridges); then
+the TIME/DISTANCE domain toggle for force/geo
+lanes (user-confirmed roadmap item — the Domain slot has waited in
+the model since Phase 1). One AMENDMENT to
 §2 below: quaternions are the model-level
 orientation (poses, placements, exit poses) but the FORCE-section
 integrator keeps stepping T/U as vectors — §1's bit-for-bit gate
 outranks §2's "Pass G integrates orientation as a quaternion" (they
 conflict; re-discretizing would shift every float). Geo sections DO
 integrate quaternions natively (GeoIntegrator, as amended — the
-force/geo equivalence canary in TESTING #12d validates the pairing).
+force/geo equivalence canary in TESTING #12d validates the pairing),
+and so does ScIntegrator.
 Read PHYSICS.md first;
 this doc builds on its conventions (T/U/R frame, time-domain force
 equations, Y-flip is rendering-only and irrelevant here).
@@ -118,7 +146,21 @@ DISPLAY/readout convention only — never a second math path.
   IMPLEMENTED v10.0 (D58) in TIME domain (deg/s; DISTANCE arrives with
   the domain toggle): GeoIntegrator, quaternion-native, felt-G recorded
   at design speed; PHYSICS.md §2b has the equations.
-- **Straight/curve:** analytic; NL2-style node editing in the viewport.
+- **Straight/curve:** analytic; IMPLEMENTED v11.0 (D68). Element list
+  of straights (length) and arcs (radius + signed angle + direction:
+  0 = flat turn with +angle = rider-right, 90 = pull-up); per-element
+  ENTRY smoothing length — a sine curvature blend centered on the
+  boundary (total turn angle preserved exactly for straight↔arc;
+  halves clamp inside short elements). Always DISTANCE domain; shape
+  fully speed-independent. Authoring is the ELEMENT STRIP WIDGET in
+  the graph (user pick over dialog-first/viewport-first — the original
+  "node editing in the viewport" idea can still join with the
+  placement-gizmo work). ScIntegrator sub-steps at profile breakpoints
+  so sharp chains are analytic, not just per-element circles.
+  Per-element ROLL since v11.1 (D69): RATE °/s (roll-lane semantics)
+  or GLOBAL bank ° held against the horizon via a spine-preserving
+  T-roll projection (NL2-classic banking; global 0 = level rails
+  through anything — the station/brake default for new elements).
 - **Bridge (§4)** and **External:** produce/carry fixed geometry.
 
 **Reversal:** a geometry-level transform (run the centerline backward,
@@ -130,7 +172,12 @@ entry height) + yaw-only placement onto the entry's horizontal heading
 a pitched/banked seam shows its mismatch honestly). SIGN CORRECTION to
 the original note here: felt Gl negates, but the ROLL RATE is
 traversal-INVARIANT — T and the bank-change-per-second both flip and
-cancel (derived + gated, TESTING #13).
+cancel (derived + gated, TESTING #13). SCOPE CHANGE v12.1 (D71): the
+USER-FACING reversal is per PIECE (Coaster menu > Reverse piece) — a
+model transformation (train-ordered sections, toggled per-section
+flags, placement re-anchored at the old exit) so the track stays put;
+the per-section flag above is the mechanism and kept its exact D67
+semantics.
 
 ## 4. Bridge sections
 
@@ -139,14 +186,37 @@ orientation (quintic Hermite on position with end tangents ∝ T_A, T_B;
 orientation slerped with roll matched at both ends; length parameter
 user-adjustable). Two modes:
 - **Autocomplete:** both pieces stay put; the spline spans the gap as-is.
+  IMPLEMENTED v13.0 (D72), upgraded v13.1 (D73): BridgeSection.java —
+  quintic with p'' ends = the NEIGHBORS' curvature (G², beyond this
+  section's G¹ spec, user upgrade), rotation-minimizing frames + a
+  sine-eased twist instead of a literal slerp (roll matched both
+  ends), per-end tangent lengths in a badge dialog, bridge to ANY
+  piece (timeline reorder). Gated TESTING #16.
 - **Optimize placement:** solver may translate piece B and yaw it about
   vertical (ONLY those DOF, per spec) to minimize bridge strain
-  (curvature/torsion cost), then solve the spline.
+  (curvature/torsion cost), then solve the spline. IMPLEMENTED v13.1
+  as an explicit repeatable ACTION (closed form: with the gap distance
+  held, minimum strain = dead ahead with headings aligned — no numeric
+  solver needed).
 
-The solved bridge is **frozen**. Editing upstream track does NOT re-solve
-it (the user's feedback-loop concern is valid — a bridge that chases its
-endpoints oscillates with every drag). A dirty-marker shows when its
-endpoints have moved; an explicit "Re-solve bridge" button updates it.
+AMENDED v13.1 (D73, user decision): the bridge is NOT frozen — it
+LIVE-FOLLOWS its endpoints (the compiler re-captures poses + seam
+curvatures every compile). The original feedback-loop concern was
+real but belongs to §5 influence mode, where regeneration feeds its
+own inputs; a bridge's geometry never feeds its endpoints, so
+following is stable. Only a bridge whose target piece is GONE stays
+frozen at its last capture (badge "!").
+
+AMENDED v13.2 (D74, user: "no snap — slopes too"): the seams are
+smooth beyond G²: SEPTIC position ends (curvature derivative matched,
+⊥-projected — the tangential T'' term rings, D74), a speed profile
+eased onto the target's entry design speed (rates = κ·v, so v steps
+were rate steps), and a twist whose end slopes are the neighbors'
+roll rates. The rate/felt graphs are continuous in value AND slope
+across both seams; cramped geometry still legitimately produces
+fast-but-smooth interior transients (the gap spinner / tangents /
+optimize are the cure). A toolbar GAP spinner re-runs the placement
+optimization at the chosen distance on every change.
 
 ## 5. Design-vs-true editing, influence curves, "become real"
 
@@ -197,11 +267,12 @@ Phase 0, D44) and Pass D's speed ODE. v floor 0.5 m/s stays
   sections greyed (like inactive lanes today); click a greyed section to
   activate; section boundaries drawn. IMPLEMENTED v9.5 (D55) with the
   user's insertion gesture: a vertical line + circled '+' past the ride
-  end opens the add-section menu. USER ROADMAP for that menu (Phase 2+):
-  it will also list existing FLOATING PIECES to attach (a piece can hold
-  several sections); and the editor needs a PIECE SELECTOR — only one
-  floating piece is shown in the graph at a time. Insert-BETWEEN-two-
-  sections (splitting the strip) is also still to come.
+  end opens the add-section menu. The Phase-2+ roadmap items LANDED in
+  v12.0 (D70): the '+' menu lists FLOATING PIECES to attach, and the
+  toolbar PIECE SELECTOR shows one piece at a time (its global time
+  window; 3D Ctrl+click also activates a piece). Splitting a PIECE is
+  the badge menu's "Split piece before this section"; insert-BETWEEN-
+  two-sections (splitting a strip into two sections) is still to come.
 - **FvdDesigner split**: COMPLETE (GraphEditor v9.2 D52; Viewport3D +
   Dialogs v9.4 D54; DesignIO v9.0 D50 — round-trip tested at last);
   FvdDesigner is the ~1.1k-line shell. Pure core grew: Section types,

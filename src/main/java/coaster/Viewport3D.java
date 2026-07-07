@@ -101,6 +101,13 @@ class Viewport3D {
     static final double RAIL_RADIUS = 0.07; // 140 mm diameter
     static final int RAIL_SIDES = 8;
     static final int SAMPLE_STRIDE = 3;
+    // consecutive mesh rings further apart than this are a PIECE GAP,
+    // not track — no tube segment across (max legit ring spacing is
+    // SAMPLE_STRIDE × v·dt = 3 m at the 100 m/s speed cap)
+    static final double MESH_GAP_BREAK = 3.5;
+    // plain-click anchor: a clean primary release on the track
+    // activates its piece + section (v13.1)
+    private double clickX = Double.NaN, clickY;
 
     // ---------- 3D scene state ----------
     final Group trackGroup = new Group();
@@ -222,9 +229,27 @@ class Viewport3D {
                     // Shift+click or C+click = re-center the orbit on the
                     // track piece under the cursor
                     snapPivotToTrack(e.getScreenX(), e.getScreenY());
+                } else {
+                    // plain press: remember it — a CLEAN release on the
+                    // track activates that piece + section (v13.1); a
+                    // drag orbits as ever
+                    clickX = e.getSceneX();
+                    clickY = e.getSceneY();
                 }
             }
             lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
+        });
+        sub.setOnMouseReleased(e -> {
+            if (e.getButton() != MouseButton.PRIMARY || povActive || flyActive
+                    || Double.isNaN(clickX)
+                    || Math.hypot(e.getSceneX() - clickX,
+                                  e.getSceneY() - clickY) > 3) {
+                clickX = Double.NaN;
+                return;
+            }
+            clickX = Double.NaN;
+            FVDIntegrator.Sample hit = pickTrackSample(e.getScreenX(), e.getScreenY());
+            if (hit != null) app.editor.activateAt(hit.t());
         });
         sub.setOnMouseDragged(e -> {
             if (povActive || flyActive) return;
@@ -654,13 +679,33 @@ class Viewport3D {
         if (samples.size() < 2) return;
         app.lastSamples = samples;
         app.resultRates = compiled.rates();
+        app.sectionSpans = compiled.spans();
+        app.updateBridgeControls();   // gap spinner tracks live moves
 
-        // two rails + cross ties, offset from the heartline
-        MeshView leftRail = buildRailMesh(samples, -app.railGauge / 2);
-        MeshView rightRail = buildRailMesh(samples, app.railGauge / 2);
-        MeshView ties = buildTieMesh(samples);
-
-        List<javafx.scene.Node> parts = new ArrayList<>(List.of(leftRail, rightRail, ties));
+        // rails + cross ties PER PIECE (v13.2): meshes never span a
+        // piece boundary (detached ends stay visually detached — a
+        // clean bridge/attach seam abuts flush and reads as one track)
+        // and inactive pieces render DESATURATED so the edited one pops
+        List<javafx.scene.Node> parts = new ArrayList<>();
+        List<TrackCompiler.Span> spans = compiled.spans();
+        int activeP = app.editor != null ? app.editor.activePiece() : 0;
+        int base = 0;
+        for (int p = 0; p < app.coaster.pieces.size(); p++) {
+            int nSec = app.coaster.pieces.get(p).sections.size();
+            if (nSec == 0 || base + nSec > spans.size()) {
+                base += nSec;
+                continue;
+            }
+            int i0 = spans.get(base).i0();
+            int i1 = Math.min(spans.get(base + nSec - 1).i1(), samples.size() - 1);
+            base += nSec;
+            if (i1 - i0 < 1) continue;
+            List<FVDIntegrator.Sample> sub = samples.subList(i0, i1 + 1);
+            boolean act = p == activeP;
+            parts.add(buildRailMesh(sub, -app.railGauge / 2, act));
+            parts.add(buildRailMesh(sub, app.railGauge / 2, act));
+            parts.add(buildTieMesh(sub, act));
+        }
         heartMesh = app.settings.showHeartline() ? buildHeartlineMesh(samples) : null;
         if (heartMesh != null) {
             heartMesh.setVisible(!povActive);   // the camera rides ON it
@@ -701,9 +746,11 @@ class Viewport3D {
 
     /** A single rail tube: heartline offset down by heartOffset along U,
      *  sideways by `lateral` along R, radius 70 mm, colored by vertical G. */
-    MeshView buildRailMesh(List<FVDIntegrator.Sample> samples, double lateral) {
+    MeshView buildRailMesh(List<FVDIntegrator.Sample> samples, double lateral,
+                           boolean active) {
         TriangleMesh mesh = new TriangleMesh();
         int nRings = 0;
+        List<Vec3> ringPos = new ArrayList<>();
         for (int i = 0; i < samples.size(); i += SAMPLE_STRIDE) {
             FVDIntegrator.Sample sm = samples.get(i);
             Vec3 center = sm.pos()
@@ -718,9 +765,15 @@ class Viewport3D {
             }
             float u = (float) FvdDesigner.clamp((sm.Gv() - FvdDesigner.G_MIN) / (FvdDesigner.G_MAX - FvdDesigner.G_MIN), 0.001, 0.999);
             mesh.getTexCoords().addAll(u, 0.5f);
+            ringPos.add(sm.pos());
             nRings++;
         }
         for (int ring = 0; ring < nRings - 1; ring++) {
+            // consecutive samples further apart than any legit step are
+            // a PIECE GAP — no tube across it (the stretched-connector
+            // bug between detached pieces, v13.1)
+            if (ringPos.get(ring + 1).sub(ringPos.get(ring)).length()
+                    > MESH_GAP_BREAK) continue;
             int r0 = ring * RAIL_SIDES, r1 = (ring + 1) * RAIL_SIDES;
             for (int j = 0; j < RAIL_SIDES; j++) {
                 int jn = (j + 1) % RAIL_SIDES;
@@ -730,9 +783,14 @@ class Viewport3D {
             }
         }
         PhongMaterial mat = new PhongMaterial();
-        if (app.railSolid) mat.setDiffuseColor(app.railColor);
-        else mat.setDiffuseMap(buildGForceGradient());
-        mat.setSpecularColor(Color.rgb(200, 200, 200));
+        if (app.railSolid) {
+            mat.setDiffuseColor(active ? app.railColor
+                : app.railColor.deriveColor(0, 0.30, 0.80, 1));
+        } else {
+            mat.setDiffuseMap(buildGForceGradient(!active));
+        }
+        mat.setSpecularColor(active ? Color.rgb(200, 200, 200)
+                                    : Color.rgb(90, 90, 95));
         MeshView view = new MeshView(mesh);
         view.setMaterial(mat);
         view.setCullFace(CullFace.NONE);
@@ -749,6 +807,7 @@ class Viewport3D {
         TriangleMesh mesh = new TriangleMesh();
         mesh.getTexCoords().addAll(0, 0);
         int nRings = 0;
+        List<Vec3> ringPos = new ArrayList<>();
         for (int i = 0; i < samples.size(); i += SAMPLE_STRIDE) {
             FVDIntegrator.Sample sm = samples.get(i);
             for (int j = 0; j < SIDES; j++) {
@@ -758,9 +817,12 @@ class Viewport3D {
                 Vec3 p = sm.pos().add(off);
                 mesh.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
             }
+            ringPos.add(sm.pos());
             nRings++;
         }
         for (int ring = 0; ring < nRings - 1; ring++) {
+            if (ringPos.get(ring + 1).sub(ringPos.get(ring)).length()
+                    > MESH_GAP_BREAK) continue;   // piece gap: no strand
             int r0 = ring * SIDES, r1 = (ring + 1) * SIDES;
             for (int j = 0; j < SIDES; j++) {
                 int jn = (j + 1) % SIDES;
@@ -782,7 +844,7 @@ class Viewport3D {
     /** Cross ties: one thin box between the rails every `tieSpacing` metres
      *  of track (placed by arc length s, so spacing is uniform regardless of
      *  speed; positions quantize to the nearest integration sample). */
-    MeshView buildTieMesh(List<FVDIntegrator.Sample> samples) {
+    MeshView buildTieMesh(List<FVDIntegrator.Sample> samples, boolean active) {
         final double TIE_HALF_W = 0.045;  // along T (track direction)
         final double TIE_HALF_H = 0.03;   // along U
         TriangleMesh mesh = new TriangleMesh();
@@ -818,8 +880,10 @@ class Viewport3D {
             v += 8;
         }
         MeshView mv = new MeshView(mesh);
-        PhongMaterial mat = new PhongMaterial(Color.rgb(70, 74, 84));
-        mat.setSpecularColor(Color.rgb(90, 90, 90));
+        PhongMaterial mat = new PhongMaterial(active
+            ? Color.rgb(70, 74, 84) : Color.rgb(52, 55, 62));
+        mat.setSpecularColor(active
+            ? Color.rgb(90, 90, 90) : Color.rgb(60, 60, 64));
         mv.setMaterial(mat);
         mv.setCullFace(CullFace.NONE);
         return mv;
@@ -908,7 +972,7 @@ class Viewport3D {
         return v + 4;
     }
 
-    WritableImage buildGForceGradient() {
+    WritableImage buildGForceGradient(boolean muted) {
         int w = 256;
         WritableImage img = new WritableImage(w, 1);
         PixelWriter pw = img.getPixelWriter();
@@ -926,6 +990,9 @@ class Viewport3D {
                 c = span < 1e-9 ? app.gradColors[k + 1]
                     : lerpColor(app.gradColors[k], app.gradColors[k + 1], (g - app.gradStops[k]) / span);
             }
+            // inactive pieces wear the same gradient DESATURATED and a
+            // touch darker (v13.2) — the active piece pops
+            if (muted) c = c.deriveColor(0, 0.30, 0.80, 1);
             pw.setColor(i, 0, c);
         }
         return img;

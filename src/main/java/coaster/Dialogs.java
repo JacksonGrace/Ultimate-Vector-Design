@@ -180,7 +180,7 @@ class Dialogs {
             + "strips — click one to edit it. Boundaries show as vertical "
             + "lines. Each section integrates from the previous one's end, at "
             + "its own design speed frozen when it was created.");
-        helpText(box, "Two section kinds so far. FORCE sections are the classic "
+        helpText(box, "Three section kinds so far. FORCE sections are the classic "
             + "FVD model: vertical G, lateral G and roll rate lanes. GEO "
             + "sections specify the motion DIRECTLY: pitch (teal), yaw "
             + "(yellow) and roll rates (°/s) — gravity does not bend them, "
@@ -189,7 +189,8 @@ class Dialogs {
             + "geo section recolors and relabels the lane buttons and axes "
             + "(Pitch/Yaw/Roll, all °/s with the roll snap step); rail "
             + "colors and stats still show the forces the geometry produces "
-            + "at its design speed.");
+            + "at its design speed. STRAIGHT/CURVE sections have no lanes "
+            + "at all — see the next section of this help.");
         helpText(box, "The whole graph always shows ONE kind of quantity — "
             + "the active section's: editing a geo section, force strips "
             + "display their RESULTING pitch/yaw/roll rates; editing a "
@@ -200,8 +201,49 @@ class Dialogs {
             + "(exact for same-kind neighbors, from the resulting curves "
             + "across kinds; also a button in the node's double-click "
             + "dialog).");
-        helpKey(box, "Type badge", "the small force/geo tag at the top of each strip names its kind (a ◀ marks a reversed section); click it for per-section actions: REVERSED — the train runs the section's shape back-to-front (same shape, opposite direction; your lanes still read in the AUTHORED direction, and the faint strip shows the resulting train-direction picture; join it to a LEVEL upstream end — a pitched or banked seam can't fully match and shows honestly) — and Delete section (the ride keeps at least one; downstream sections re-chain from the new end).");
-        helpKey(box, "⊕ at the ride end", "click the circled + on the dashed line past the last section to add one (its own undo step): a 1 s FORCE or GEO section HOLDING the ride's end state (end forces / end rates), so the transition is seamless either way. Bridge/curve modes and attaching floating pieces come later in Phase 2. Any open menu dismisses on the next click, including on the graph.");
+        helpKey(box, "Type badge", "the small force/geo/s/c tag at the top of each strip names its kind; click it for per-section actions: Split piece before this section (see Pieces below) and Delete section (the document keeps at least one; downstream sections re-chain from the new end; a piece's last section deletes the piece). A ◀ on the badge marks a section that runs back-to-front — that happens when its PIECE is reversed (Coaster menu; see Pieces): the section's lanes still read in the AUTHORED direction while the faint strip shows the train-direction picture, and pitched/banked seams show honestly.");
+        helpKey(box, "⊕ at the ride end", "click the circled + on the dashed line past the last section to add one (its own undo step): a 1 s FORCE or GEO section HOLDING the piece's end state (end forces / end rates), or a STRAIGHT/CURVE section starting as a 10 m straight — all three continue seamlessly from whatever came before. ATTACH FLOATING PIECE appends another piece's whole section chain here (the floating placement is discarded — attaching means \"continue from this end\"). BRIDGE TO PIECE N spans the gap to the next piece with a smooth connector (see Pieces below). Any open menu dismisses on the next click, including on the graph.");
+
+        helpHead(box, "Pieces");
+        helpText(box, "A ride can be several PIECES — disconnected groups of "
+            + "sections, each with its own position and heading. The graph "
+            + "edits one piece at a time; a \"Piece k/n\" toolbar button "
+            + "appears when there is more than one (it lists them all — "
+            + "click to switch; the time axis shows each piece's stretch of "
+            + "the shared timeline). Plain-click (or Ctrl+click) any piece's "
+            + "track in 3D to jump straight to it. Detached pieces float "
+            + "separately — nothing is drawn between them until you attach "
+            + "or bridge.");
+        helpKey(box, "Split", "a section badge > \"Split piece before this section\" cuts the piece there: the later sections move to a new piece placed at the EXACT boundary pose — position and full orientation — so splitting NEVER moves or tilts the track, wherever you cut (mid-hill, banked, anywhere). Splitting at an arbitrary point INSIDE a section — likely by selecting a node — is on the roadmap.");
+        helpKey(box, "Attach", "⊕ menu > Attach floating piece: the chosen piece's sections continue this piece's chain (re-laid from its end; their shapes are untouched) and the empty piece disappears. Direct attach stays available alongside the future bridge sections.");
+        helpKey(box, "Move", "toolbar \"Placement ▾\" (next to the piece selector) > Piece x/y/z + Piece yaw edit the ACTIVE piece's placement — the whole piece slides/turns rigidly; other pieces never move. Yaw is a DELTA on top of the piece's natural orientation: set it back to 0 and the original heading returns exactly. The spinners re-sync when you switch pieces. The piece being edited renders FULL-COLOR in 3D; the others are desaturated. (3D drag gizmos are on the roadmap.)");
+        helpKey(box, "Reverse", "toolbar \"Placement ▾\" > \"Reverse piece (flip travel direction)\": the TRACK STAYS PUT and the train runs the piece the other way — the old exit becomes the entry. The strips reorder to train order and every section badge wears ◀; sections keep editing in their authored direction. Where a seam isn't level it re-joins with an honest kink; reversing again restores everything exactly. One undo step. (A piece containing a bridge refuses to reverse — delete the bridge first.)");
+        helpKey(box, "Bridge", "⊕ menu > \"Bridge to piece\" > pick ANY other piece: a smooth connector from this piece's end to that piece's entry — position, direction, roll, curvature, the RATE GRAPHS' slopes and even the SPEED all flow across both seams (the bridge's design speed eases onto the next piece's), so the joined pieces ride and read as ONE track. Picking a piece that isn't next on the timeline moves it there (connecting means \"this one follows\"). The bridge FOLLOWS LIVE: move either piece or edit the track and it re-joins as you drag. While a bridge is active, the toolbar \"Gap (m)\" spinner sets its target length — every click slides the next piece dead-ahead to that distance and re-solves (the placement optimization; also on the badge menu). Badge > \"Bridge tangents…\" sets how straight it leaves/arrives. A cramped bridge (big drop or clashing headings over a short gap) still swings hard INSIDE — smooth but fast; lengthen the gap or tangents to calm it. If the target piece is ever deleted, the bridge keeps its last shape and its badge shows \"bridge !\". A piece ending with a bridge can't be extended — its end is glued; extend the next piece instead.");
+        helpText(box, "Deleting a piece's only section deletes the piece. The POV "
+            + "camera rides pieces in timeline order, jumping the gap between "
+            + "them — bridge sections will close those gaps later in Phase 2.");
+
+        helpHead(box, "Straight/curve sections");
+        helpText(box, "A straight/curve section is built from ELEMENTS instead of "
+            + "lanes — straight pieces (length in meters) and circular arcs "
+            + "(radius + angle + direction) — the way you'd lay out a "
+            + "station, brake run or lift approach. Its shape ignores speed "
+            + "entirely (geometry is authored per METER of track); the "
+            + "design speed only decides how much ride TIME it covers. With "
+            + "one active, the strip shows a BAND per element (grey-blue = "
+            + "straight, rose = curve) with its measurements on a chip, and "
+            + "the felt G curves draw faintly behind (the lane buttons "
+            + "disable — there is nothing to hand-draw here).");
+        helpKey(box, "Click / double-click", "click a band to select its element; double-click (or right-click > Edit element…) opens its dialog: kind, length or radius/angle/direction, entry smoothing, roll. Direction is the curve plane: 0 = flat turn (positive angle = right), 90 = pull up, 180 = left, 270 = drop; a negative angle mirrors. The chip's arrow shows where the curve points.");
+        helpKey(box, "Drag a boundary", "the dashed separator between elements (or the section end) resizes the element LEFT of it — a straight changes length, a curve re-angles at its radius; drag past the current end to EXTEND. Ctrl snaps to the Options length step (default 1 m); the readout shows the live size; dragging past the plot edge grows the view.");
+        helpKey(box, "Roll", "each element rolls one of two ways (its dialog). GLOBAL BANK (°, the default at 0): the bank angle measured against the HORIZON is held — 0 keeps the rails level through slopes and turns (the track visibly twists to stay flat); a value banks a helix at a constant angle. Eased in over max(entry smoothing, 2 m), so bank never jumps. RATE (°/s): body roll like the roll lane — 0 here means the bank DRIFTS through pitched turns instead (and old v11.0-era saves load this way, keeping their shape). Positive matches the roll lane's direction; non-zero roll shows on the chip (∠ = bank, ↻ = rate). Note a rate element's total twist depends on the design speed.");
+        helpKey(box, "Smoothing ◇", "the diamond on each internal boundary controls TRANSITION SMOOTHING: drag it sideways to set the blend length (drag to the boundary to snap it shut; filled = blending, hollow = sharp), or type it in the element dialog as \"entry smoothing\". The blend eases curvature over that many meters, half into each neighbor — an arc's TOTAL turn angle is preserved exactly, only the corner softens (the shaded zone shows the blend). New elements arrive with 2 m of smoothing; the first element's entry is the section seam and stays sharp.");
+        helpKey(box, "Right-click a band", "Edit element… · insert straight/curve before/after · Delete element (a section keeps at least one). Right-drag still pans — the menu only opens on a clean click.");
+        helpKey(box, "A / Delete", "append a 10 m straight after the selection · delete the selected element.");
+        helpText(box, "Reversed straight/curve sections draw their elements in "
+            + "TRAIN order (element 1 at the right edge). Rail colors, "
+            + "stats, the Resulting overlays and the '+' hold all read the "
+            + "felt forces at design speed, like every other kind.");
 
         helpHead(box, "Nodes");
         helpKey(box, "Click curve", "insert a node exactly ON it — the shape does not change. Keep the button down to drag the new node away in the same motion (Ctrl snaps as usual; insert + drag = one undo step). Holding Ctrl while HOVERING snaps the insert dot in time (per the horizontal snap reference; its value keeps riding the curve) — the click inserts at that snapped spot.");
@@ -217,7 +259,7 @@ class Dialogs {
         helpKey(box, "B · H · F", "smooth/broken · level the selection onto the MAIN node (one node: flatten its handles) · straighten between two adjacent selected nodes. On a node at a SECTION EDGE, B instead returns it to the boundary — the neighboring section's value AND slope (also a button in its double-click dialog); Shift+B does that for ALL THREE lanes' edge nodes at once (one undo step).");
         helpKey(box, "Shift+H", "LEVEL-LOCK the selection (2+ nodes): they jump onto the main node's value and the segments BETWEEN the selected nodes lock HORIZONTAL — drawn as twin lines with a tinted band between them. The run stays level through any edit: drag EITHER END vertically to move the whole line, interior nodes are pinned to it, and nodes inserted on it stay on the line. Selecting all of a locked stretch's nodes and pressing Shift+H again unlocks it; a lone selected endpoint unlocks too. Same key swaps a straight-locked segment to level and vice versa.");
         helpKey(box, "Shift+F", "straight-LOCK the segments BETWEEN the selected nodes (2+ — three selected nodes lock two segments): drawn as twin thin lines (no fill — that's the level lock) and each STAYS a line — move an endpoint and its line follows. Facing handle knobs are hidden (they can't change a line). Locks merely NEIGHBORING the selection are never disturbed — the toggle only adds, converts or removes locking between the selected nodes (all already locked = unlock). A lone selected endpoint unlocks its segment(s); a node whose two sides ended up at DIFFERENT slopes comes out broken (matching slopes — e.g. a node inserted on the line — stay smooth). Inserting on a locked segment keeps both halves locked.");
-        helpKey(box, "A / Append", "+1 s at the ride end (active lane only; the others keep holding) — or a 1 s flat hold after the selected node (all lanes shift).");
+        helpKey(box, "A / Append", "+1 s at the ride end (active lane only; the others keep holding) — or a 1 s flat hold after the selected node (all lanes shift). On a straight/curve section the same button/key appends a 10 m straight element instead.");
         helpKey(box, "Ripple checks", "drags also shift every later node in time and/or value (toolbar).");
 
         helpHead(box, "Handles");
@@ -234,7 +276,7 @@ class Dialogs {
             + "the marker to expand the view; click elsewhere to restore.");
 
         helpHead(box, "Cameras");
-        helpKey(box, "Orbit", "drag or MIDDLE-drag = rotate · scroll = zoom · Shift+click (or hold C and click) the track = orbit around that spot · Ctrl+click the track = insert a node there.");
+        helpKey(box, "Orbit", "drag or MIDDLE-drag = rotate · scroll = zoom · plain CLICK the track = edit that piece + section in the graph · Shift+click (or hold C and click) the track = orbit around that spot · Ctrl+click the track = insert a node there.");
         helpKey(box, "T / Shift+T", "snap to a TOP or SIDE view with a near-orthographic lens (no perspective — for judging alignments). Top locks square to the grid; side centers on the selected node and aligns TANGENT to the track there (the track runs across the screen; nearest side kept — no selection = world-axis elevation). Shift+T AGAIN re-tangents to the current selection; T again in the top view returns to the previous perspective. Right-drag PANS without leaving the view; scroll zooms; orbiting away keeps the angle and brings perspective back.");
         helpKey(box, "Track markers", "small spheres on the track mark the active lane's nodes (selection shows white; Options toggle). Read-only for now — dragging them comes later.");
         helpKey(box, "Fly", "right-click the 3D view: WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits keeping the view.");
@@ -246,8 +288,8 @@ class Dialogs {
         helpHead(box, "Menus & app.settings");
         helpKey(box, "File > Export NL2 CSV", "(Ctrl+E) writes the track for NoLimits 2's CSV import. Choose heartline (default) or rail center (the spline NL2 builds its track around), plus the point spacing; both remembered per-user.");
         helpKey(box, "Edit > Shortcuts", "grouped by category (Graph editor · View · File · History): click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
-        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps (arrows walk the 1-2-5 series) · horizontal/vertical snap LOCAL vs GLOBAL (horizontal: local = Δt from the previous node, global = absolute ride time — default local; vertical: local = Δ value from the previous node, global = absolute values — default global) · neon heartline · 3D node markers · POV marker. Per-user.");
-        helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start point (y = height above the ground plane), start speed (also on the first node's double-click dialog), rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-app.coaster, saved in the .fvd.");
+        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps incl. the straight/curve element length (arrows walk the 1-2-5 series) · horizontal/vertical snap LOCAL vs GLOBAL (horizontal: local = Δt from the previous node, global = absolute ride time — default local; vertical: local = Δ value from the previous node, global = absolute values — default global) · neon heartline · 3D node markers · POV marker. Per-user.");
+        helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start speed (also on the first node's double-click dialog), rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-coaster, saved in the .fvd. (Piece placement + Reverse piece live in the toolbar's \"Placement ▾\" dropdown since v13.2 — y = height above the ground plane.)");
         helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it. Path-shaping values (heart, gauge, start, speed) ALSO land in the document history, so after closing, plain Ctrl+Z steps them back too.");
 
         ScrollPane scroll = new ScrollPane(box);
@@ -593,6 +635,8 @@ class Dialogs {
         wireOptionSpinner(snapGSp, app.settings::setSnapG);
         Spinner<Double> snapRollSp = snap125Spinner(0.5, 50, app.settings.snapRoll());
         wireOptionSpinner(snapRollSp, app.settings::setSnapRoll);
+        Spinner<Double> snapLenSp = snap125Spinner(0.1, 20, app.settings.snapLen());
+        wireOptionSpinner(snapLenSp, app.settings::setSnapLen);
 
         // snap axis references (v10.2; Local/Global wording v10.3):
         // HORIZONTAL (time) — Local = Δt from the previous node,
@@ -666,6 +710,9 @@ class Dialogs {
         grid.add(new Label("Snap: roll rate (°/s)"), 0, r);
         grid.add(snapRollSp, 1, r);
         grid.add(optionReset(() -> snapRollSp.getValueFactory().setValue(AppSettings.SNAP_ROLL_DEFAULT)), 3, r++);
+        grid.add(new Label("Snap: element length (m)"), 0, r);
+        grid.add(snapLenSp, 1, r);
+        grid.add(optionReset(() -> snapLenSp.getValueFactory().setValue(AppSettings.SNAP_LEN_DEFAULT)), 3, r++);
         grid.add(new Label("Horizontal snap (time)"), 0, r);
         grid.add(new HBox(12, hLocal, hGlobal), 1, r, 2, 1);
         grid.add(optionReset(() -> {
