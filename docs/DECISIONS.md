@@ -2249,3 +2249,72 @@ generation, wacky results.)
   bridges and the "two nodes + Shift+B + iterate yaw/position"
   workflow stay future options; "Bridge tangents…" and manual
   placement remain as overrides.
+
+## D78. The seam jolt's root cause + bridge placement modes + unfreeze (v13.5)
+
+Second bridge/seam round of the day (user: the ping-pong is gone but a
+jolt remains "exactly on the transition line"; picking works half the
+time; wants hover stats on bridges, placement modes, editable bridges).
+
+- **The seam jolt was the DESIGN-SPEED DRIFT, and B-matching now
+  fixes it**: the graphs' felt Gv/Gl are recorded at each section's
+  own design speed, so rate-matched seams still step by ω·Δv/g the
+  moment the two sections' design speeds drift apart (any upstream
+  edit does it — '+' freezes vDesign only at creation). At a banked
+  seam that value step reads as "the bank jumped" (the user's
+  instantaneous jump in absolute roll). B/Shift+B now RE-FREEZE the
+  downstream section's vDesign to the upstream design-end speed (the
+  same rule '+' applies) before matching; at a common seam speed,
+  rate continuity IS curvature continuity, so the felt lanes, the
+  rate graphs and the true ride all join. Probed (SeamJolt): felt
+  step 0.06–0.10 g before, 0.002–0.004 g after (bake-grid noise),
+  rates still continuous, both mode orders, idempotent. Bridge
+  neighbors are skipped (their speed profile already blends, D74).
+  JUDGMENT: a boundary match now deliberately overwrites the
+  downstream section's design speed — that's what "make this seam
+  seamless" means; force sections reshape accordingly.
+- **Track picking fixed twice** (user: "works half the time"): the
+  behind-camera filter used the ORBIT rig's eye/forward even while
+  the POV camera rendered (half the scene misclassified), and the
+  25 px disc was tested against every 5th SAMPLE — near track
+  projects those hundreds of px apart, so clicks between the dots
+  missed. Now the ACTIVE camera's own localToScene supplies
+  eye/forward and distance is measured to the SEGMENTS between
+  consecutive strided projections (piece gaps > 6 m skipped so empty
+  space between detached pieces stays unclickable).
+- **Derived-curve hover** (user request): a bridge/s-c strip's felt
+  Gv/Gl + roll curves give the lane hover's readout — value on
+  hover, slope while Shift is held — in the lane's color, off the
+  compiled samples (rateIdxAt + derivedAt), trimmed a SEAM_TRIM from
+  the strip edges; drag handles (end line, separators, diamonds)
+  keep priority via the H_RESIZE cursor check.
+- **Bridge placement MODES** (user spec, three-way): BridgeSection.
+  optMode — "Optimize position and yaw" (default, the full
+  continuation march), "Optimize position" (the march places, the
+  user owns the target's yaw), "No optimization" (fully manual).
+  Lives in the toolbar Placement dropdown, which is now CONTEXTUAL:
+  with a live bridge active it shows the mode radios + Length
+  (optimize modes), next-piece Yaw (position-only + manual) and
+  next-piece x/y/z (manual), all editing the NEXT piece through the
+  bridge; otherwise the usual active-piece rows. The toolbar Length
+  spinner moved inside. Length/yaw edits re-run the march per mode;
+  switching INTO an optimize mode applies it immediately; the badge
+  action follows the mode and the end-line drag disables in manual
+  mode. Persisted as blen's 3rd field (missing = 0 = the default).
+  JUDGMENT: while a bridge is active the dropdown shows ONLY the
+  bridge panel (the active piece's own placement is one strip-click
+  away).
+- **UNFREEZE** (user request, "Make Editable"): badge > "Unfreeze
+  (edit as geo section)" replaces the bridge with a GeoSection that
+  re-authors its shape — per-METER rates measured straight off the
+  bridge's samples (frame change per arc), re-timed onto the geo
+  energy profile (the bridge's speed blend is not energy), fitted as
+  slope-matched nodes every 0.1 s. One undo step returns the live
+  bridge; the run splits (no more bridge); the next piece stays put.
+  HONEST LIMITS (probed, UnfreezeProbe): the dt-grid cadence
+  quantizes lane-section durations, so the unfrozen end sits within
+  ~a cadence quantum of the old seam (1.5 mm position on a tame
+  continuation bridge; 21 cm on a deliberately violent whipsaw
+  fixture) and the exit heading carries ~one integration step of
+  rate (~0.5°); felt G tracks within 0.07 g. Realistic (optimized)
+  bridges unfreeze essentially exactly.

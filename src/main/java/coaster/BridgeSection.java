@@ -71,6 +71,16 @@ public final class BridgeSection implements Section {
                                        // (≤ 0 = pure energy, no blend)
     public double lenA, lenB;          // tangent lengths, m
 
+    /** Placement-optimization mode (v13.5): what the length/yaw
+     *  controls re-run when edited. POS_YAW = the full continuation
+     *  march (position + heading, the default); POS = position only,
+     *  the user owns the target's yaw; NONE = fully manual — the
+     *  target piece is placed by hand and the bridge just follows. */
+    public static final int OPT_POS_YAW = 0;
+    public static final int OPT_POS = 1;
+    public static final int OPT_NONE = 2;
+    public int optMode = OPT_POS_YAW;
+
     public BridgeSection(TrackPose entry, TrackPose target,
                          double lenA, double lenB, double vDesign) {
         this.solvedEntry = new TrackPose(entry.pos(), entry.orient());
@@ -106,6 +116,7 @@ public final class BridgeSection implements Section {
         b.rollAccA = rollAccA;
         b.rollAccB = rollAccB;
         b.vB = vB;
+        b.optMode = optMode;
         return b;
     }
 

@@ -316,6 +316,19 @@
     is exactly what level force/geo constant turns are. Also passed
     2026-07-07.
 
+20. **v13.5 probes (scratch SeamJolt + UnfreezeProbe; D78).**
+    SeamJolt: geo|force seams with DRIFTED design speeds (26 vs 20),
+    banked + rolling, both orders — without the re-freeze the felt
+    Gv/Gl display steps 0.06–0.10 g exactly at the boundary with the
+    rates already continuous (the user's jolt); with B-matching's
+    vDesign re-freeze the step collapses to 0.002–0.004 g and rates
+    stay continuous. UnfreezeProbe: a violent whipsaw bridge
+    (27.5 m) unfreezes to a 14-node/lane geo section within 21 cm /
+    0.6° / 0.07 g; a tame continuation bridge (split turn) lands
+    1.5 mm / 0.46° — the residuals are the dt-grid cadence quantum
+    plus ~one integration step of rate on the exit pose. All passed
+    2026-07-07.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.
@@ -1040,6 +1053,24 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     keep circling (undoable). Straight track still optimizes to
     dead-ahead. A bridge created right after a split (zero gap) then
     lengthened gets a sane full-length sweep, not blown-up tangents.
+60. v13.5 round: (a) SEAM JOLT — make a geo|force seam, change the
+    start speed or an upstream hill so the seam design speeds drift,
+    Shift+B once per side: the felt-G curves now JOIN at the line
+    (the jolt is gone) and the downstream section's design speed
+    re-freezes to match (visible in its badge info). (b) Plain-click
+    track selection now lands reliably in orbit AND hands-off POV,
+    including on close-up track between sample dots; empty space
+    between detached pieces still misses. (c) Hover a bridge or s/c
+    strip's curves: value readout in the lane color; hold Shift for
+    the slope — exactly like lane hover. (d) With a bridge active,
+    the toolbar Placement ▾ shows the three placement modes:
+    position+yaw (default) re-optimizes on every Length change;
+    position-only obeys your typed next-piece yaw; no-optimization
+    frees x/y/z + yaw and disables the Length box and end-line drag.
+    Modes persist through save/load. (e) Badge > "Unfreeze (edit as
+    geo section)": the bridge becomes ordinary editable geo lanes,
+    the run splits there, the seam stays visually tight (tame
+    bridges essentially exact); Ctrl+Z brings the live bridge back.
 58. v13.4 round: (a) BRIDGED RUN — bridge piece 1 to piece 2: the
     graph now shows BOTH pieces' strips plus the bridge as one
     timeline; click any strip or badge on the far side — it

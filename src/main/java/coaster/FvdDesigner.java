@@ -289,6 +289,28 @@ public class FvdDesigner extends Application {
         updatePieceButton();
     }
 
+    /** Numeric-only editor filter allowing a leading minus (v13.5 —
+     *  same rationale as the length spinner's: focused editors still
+     *  receive ride keys' KEY_TYPED characters). */
+    private static javafx.scene.control.TextFormatter<String> signedNumFormatter() {
+        return new javafx.scene.control.TextFormatter<>(ch ->
+            ch.getControlNewText().matches("-?\\d*\\.?\\d*") ? ch : null);
+    }
+
+    /** One axis of the bridge target's manual x/y/z (mode: none). */
+    private Spinner<Double> bridgePosSpinner(int axis) {
+        Spinner<Double> sp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                -100000, 100000, 0, 1));
+        sp.setPrefWidth(86);
+        sp.setEditable(true);
+        sp.getEditor().setTextFormatter(signedNumFormatter());
+        sp.valueProperty().addListener((obs, o, v) -> {
+            if (!docApplying) editor.setBridgeTargetPos(axis, v);
+        });
+        return sp;
+    }
+
     /** Point the placement spinners at the ACTIVE piece's values
      *  (listener-safe: docApplying suppresses the undo push). */
     void syncPlacementSpinners() {
@@ -341,21 +363,40 @@ public class FvdDesigner extends Application {
      *  syncing never re-runs the optimization. */
     void updateBridgeControls() {
         if (bridgeGapSpinner == null || editor == null) return;
-        boolean show = editor.activeBridgeWithTarget();
-        bridgeGapLbl.setVisible(show);
-        bridgeGapLbl.setManaged(show);
-        bridgeGapSpinner.setVisible(show);
-        bridgeGapSpinner.setManaged(show);
-        if (show) {
-            double gap = Math.max(1, editor.activeBridgeGap());
-            if (Math.abs(bridgeGapSpinner.getValue() - gap) > 0.05) {
-                boolean was = docApplying;
-                docApplying = true;
-                bridgeGapSpinner.getValueFactory().setValue(
-                    Math.round(gap * 10) / 10.0);
-                docApplying = was;
-            }
+        if (!editor.activeBridgeWithTarget()) return;
+        boolean was = docApplying;
+        docApplying = true;
+        setIfOff(bridgeGapSpinner, Math.max(1, editor.activeBridgeGap()), 0.05);
+        setIfOff(bridgeYawSpinner, editor.bridgeTargetYaw(), 0.01);
+        setIfOff(bridgeXSpinner, editor.bridgeTargetPos(0), 0.005);
+        setIfOff(bridgeYSpinner, editor.bridgeTargetPos(1), 0.005);
+        setIfOff(bridgeZSpinner, editor.bridgeTargetPos(2), 0.005);
+        int m = editor.bridgeOptMode();
+        (m == BridgeSection.OPT_POS ? bridgeModeP
+            : m == BridgeSection.OPT_NONE ? bridgeModeN
+            : bridgeModePY).setSelected(true);
+        docApplying = was;
+        refreshBridgeRows();
+    }
+
+    /** Write a synced value into a spinner only when it genuinely
+     *  differs — re-syncs fire on every compile, and rewriting the
+     *  editor mid-typing fights the caret. */
+    private void setIfOff(Spinner<Double> sp, double v, double eps) {
+        if (Math.abs(sp.getValue() - v) > eps) {
+            sp.getValueFactory().setValue(Math.round(v * 100) / 100.0);
         }
+    }
+
+    /** Per-mode enabling of the bridge placement rows (v13.5):
+     *  length drives the march in the optimize modes; yaw is the
+     *  user's in position-only and manual; x/y/z manual only. */
+    private void refreshBridgeRows() {
+        if (bridgeLenRow == null || editor == null) return;
+        int m = editor.bridgeOptMode();
+        bridgeLenRow.setDisable(m == BridgeSection.OPT_NONE);
+        bridgeYawRow.setDisable(m == BridgeSection.OPT_POS_YAW);
+        bridgePosRow.setDisable(m != BridgeSection.OPT_NONE);
     }
 
     /** Refresh the piece selector: label = the active piece, hidden
@@ -464,8 +505,16 @@ public class FvdDesigner extends Application {
     // (user: piece settings belong by the graph, not the Coaster menu)
     private HBox placementRow, yawPlacementRow;
     private MenuItem reverseItem;
-    private Label bridgeGapLbl;           // bridge gap spinner (v13.2):
-    private Spinner<Double> bridgeGapSpinner;   // shown for active bridges
+    private Label bridgeGapLbl;           // bridge LENGTH spinner (v13.2;
+    private Spinner<Double> bridgeGapSpinner;   // in the Placement dropdown
+                                                // since v13.5)
+    // bridge placement modes (v13.5): the Placement dropdown edits the
+    // NEXT piece through the bridge — mode radios + per-mode spinners
+    private VBox bridgeModeRow;
+    private HBox bridgeLenRow, bridgeYawRow, bridgePosRow;
+    private RadioButton bridgeModePY, bridgeModeP, bridgeModeN;
+    private Spinner<Double> bridgeYawSpinner,
+        bridgeXSpinner, bridgeYSpinner, bridgeZSpinner;
     private SplitPane mainSplit;           // 3D view over graph panel
     private double lastDividerPos = 0.6;   // restore point for the collapse toggle
     RadioMenuItem gradientModeItem, solidModeItem;
@@ -646,20 +695,38 @@ public class FvdDesigner extends Application {
         placementBtn.setStyle(btnStyle);
         placementBtn.setOnAction(e -> {
             ContextMenu cm = new ContextMenu();
-            cm.getItems().addAll(
-                new CustomMenuItem(placementRow, false),
-                new CustomMenuItem(yawPlacementRow, false),
-                reverseItem);
+            javafx.scene.Node sceneRow;
+            if (editor.activeBridgeWithTarget()) {
+                // a live bridge is active: place the NEXT piece through
+                // it (v13.5 — mode + the controls that mode leaves free)
+                updateBridgeControls();
+                cm.getItems().addAll(
+                    new CustomMenuItem(bridgeModeRow, false),
+                    new CustomMenuItem(bridgeLenRow, false),
+                    new CustomMenuItem(bridgeYawRow, false),
+                    new CustomMenuItem(bridgePosRow, false));
+                sceneRow = bridgeModeRow;
+            } else {
+                cm.getItems().addAll(
+                    new CustomMenuItem(placementRow, false),
+                    new CustomMenuItem(yawPlacementRow, false),
+                    reverseItem);
+                sceneRow = placementRow;
+            }
+            final javafx.scene.Node row = sceneRow;
             cm.setOnShown(ev -> {
                 beginMenuSession();
-                installMenuUndoKeys(placementRow.getScene());
+                installMenuUndoKeys(row.getScene());
             });
             cm.setOnHidden(ev -> endMenuSession());
             cm.show(placementBtn, javafx.geometry.Side.BOTTOM, 0, 0);
         });
         Tooltip.install(placementBtn, new Tooltip(
             "The ACTIVE piece's placement: x/y/z, yaw (a delta on its\n"
-            + "natural orientation — 0 reverts), and Reverse piece."));
+            + "natural orientation — 0 reverts), and Reverse piece.\n"
+            + "With a BRIDGE active it places the NEXT piece instead:\n"
+            + "optimize position+yaw (default), position only (you\n"
+            + "set the yaw), or fully manual."));
 
         // bridge LENGTH spinner (v13.2, length semantics v13.4): shown
         // while a bridge with a live target is active; every change
@@ -711,7 +778,6 @@ public class FvdDesigner extends Application {
         toolbar.setAlignment(Pos.CENTER_LEFT);
         toolbar.getChildren().addAll(rippleLbl, rippleTCheck, rippleVCheck,
                                      resBtn, pieceBtn, placementBtn,
-                                     bridgeGapLbl, bridgeGapSpinner,
                                      spacer, povBtn, appendBtn);
 
         MenuBar menuBar = buildMenuBar();
@@ -1100,6 +1166,52 @@ public class FvdDesigner extends Application {
         placementRow.setAlignment(Pos.CENTER_LEFT);
         yawPlacementRow = new HBox(8, yawLbl, yawSpinner);
         yawPlacementRow.setAlignment(Pos.CENTER_LEFT);
+
+        // bridge placement panel (v13.5): while a live bridge is
+        // active, the Placement dropdown edits the NEXT piece through
+        // it — a mode choice plus the controls each mode leaves free
+        Label bridgeModeLbl = new Label("Next piece placement");
+        bridgeModeLbl.setTextFill(Color.BLACK);
+        ToggleGroup modeGroup = new ToggleGroup();
+        bridgeModePY = new RadioButton("Optimize position and yaw");
+        bridgeModeP = new RadioButton("Optimize position");
+        bridgeModeN = new RadioButton("No optimization");
+        RadioButton[] modeBtns = { bridgeModePY, bridgeModeP, bridgeModeN };
+        for (int m = 0; m < 3; m++) {
+            final int mode = m;
+            modeBtns[m].setToggleGroup(modeGroup);
+            modeBtns[m].setOnAction(e -> {
+                if (docApplying) return;
+                editor.setBridgeOptMode(mode);
+                refreshBridgeRows();
+            });
+        }
+        bridgeModeRow = new VBox(4, bridgeModeLbl,
+            bridgeModePY, bridgeModeP, bridgeModeN);
+        bridgeGapLbl.setStyle("");   // popup is light; the toolbar
+        bridgeGapLbl.setTextFill(Color.BLACK);   // styling was for dark
+        bridgeLenRow = new HBox(8, bridgeGapLbl, bridgeGapSpinner);
+        bridgeLenRow.setAlignment(Pos.CENTER_LEFT);
+        Label bYawLbl = new Label("Next piece yaw (°)");
+        bYawLbl.setTextFill(Color.BLACK);
+        bridgeYawSpinner = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, 0, 5));
+        bridgeYawSpinner.setPrefWidth(90);
+        bridgeYawSpinner.setEditable(true);
+        bridgeYawSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        bridgeYawSpinner.valueProperty().addListener((obs, o, v) -> {
+            if (!docApplying) editor.setBridgeTargetYaw(v);
+        });
+        bridgeYawRow = new HBox(8, bYawLbl, bridgeYawSpinner);
+        bridgeYawRow.setAlignment(Pos.CENTER_LEFT);
+        Label bPosLbl = new Label("Next piece x/y/z (m)");
+        bPosLbl.setTextFill(Color.BLACK);
+        bridgeXSpinner = bridgePosSpinner(0);
+        bridgeYSpinner = bridgePosSpinner(1);
+        bridgeZSpinner = bridgePosSpinner(2);
+        bridgePosRow = new HBox(8, bPosLbl,
+            bridgeXSpinner, bridgeYSpinner, bridgeZSpinner);
+        bridgePosRow.setAlignment(Pos.CENTER_LEFT);
         HBox speedRow = new HBox(8, speedLbl, startSpeedSpinner);
         speedRow.setAlignment(Pos.CENTER_LEFT);
 

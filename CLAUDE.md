@@ -339,7 +339,9 @@ source tree — they won't compile against the current time-domain API.
   straight len smooth [rollmode rollval]` / `elem curve radius angle
   dir smooth [rollmode rollval]` lines (straight/curve, v11.0; roll
   fields v11.1 — missing = rate 0, the v11.0 geometry), or `bpose`
-  (two pos+quat poses, %.10f) + `blen lenA lenB` + `bacc` (two seam
+  (two pos+quat poses, %.10f) + `blen lenA lenB [optMode]` (3rd
+  field v13.5 — placement mode, missing = 0 = optimize position +
+  yaw) + `bacc` (two seam
   curvature vectors, v13.1 — missing = zero, the v13.0 G¹) + `bdyn`
   (seam jerk vectors + roll rates + target entry speed, v13.2 —
   missing = zeros, the v13.1 shape; + two seam roll ACCELERATIONS,
@@ -494,8 +496,15 @@ bias — probed, D76). Only s/c, bridge and reversed neighbors still
 sample the compiled curves (~3 samples inside via rateIdxAt —
 bodyRates smear boundary jumps across ±2 samples, same reason
 derived strips and overlays trim SEAM_TRIM = 2.5·dt — extrapolated
-back to the compiled boundary time). The felt-G DISPLAY still steps
-honestly at seams whose design speeds differ; rates join.
+back to the compiled boundary time). B/Shift+B FIRST re-freeze the
+DOWNSTREAM section's vDesign to the upstream design-end speed
+(v13.5 D78 — the '+' creation rule re-applied; bridge neighbors
+skipped, they blend already): felt Gv/Gl are recorded at each
+section's own design speed, so with drifted speeds a rate-matched
+seam still stepped by ω·Δv/g in the felt lanes — the user's "jolt
+exactly on the transition line". At a common seam speed rate
+continuity IS curvature continuity: felt display, rate graphs and
+the true ride all join (probed: 0.06–0.10 g → 0.002–0.004 g).
 Cross-mode matching
 against the NEXT section stays
 mildly iterative: our exit pose moves its felt values. Clicking a
@@ -594,7 +603,24 @@ collecting w/s letters while riding);
 a piece ending with a bridge refuses add/attach ("extend the NEXT
 piece") and refuses piece reversal; the bridge strip itself is
 read-only derived curves (lane buttons off, mode 2) apart from that
-end line. 3D meshes are
+end line. Bridge/s-c derived curves take HOVER readouts like lanes
+(v13.5: value, Shift = slope, lane color; drag handles keep priority
+via the H_RESIZE cursor). PLACEMENT MODES (v13.5 D78,
+BridgeSection.optMode, blen's 3rd field, missing = 0): the toolbar
+Placement ▾ goes CONTEXTUAL over a live bridge — mode radios
+"Optimize position and yaw" (default; Length re-runs the full march)
+| "Optimize position" (march places, the user owns the next piece's
+yaw) | "No optimization" (manual next-piece x/y/z + yaw; Length +
+end-line drag disabled) — plus the Length spinner (moved off the
+toolbar), next-piece Yaw and x/y/z rows, each enabled per mode, all
+editing the NEXT piece through the bridge; switching into an
+optimize mode applies it immediately; the badge optimize action
+follows the mode. Badge > "Unfreeze (edit as geo section)" (v13.5)
+replaces the bridge with a GeoSection re-authoring its shape
+(Coaster.unfreezeBridge: per-meter rates off the samples, re-timed
+onto the geo energy profile, slope-matched nodes every 0.1 s) — one
+undo step back; the run splits; end error = the dt-cadence quantum
+(~mm on tame bridges, ~20 cm + ~0.5° on violent ones, probed). 3D meshes are
 PER PIECE (v13.2): inactive pieces render DESATURATED (gradient
 texture or solid color), meshes never span a piece boundary — a
 clean bridge/attach seam abuts flush and reads as one track, a fresh
@@ -790,9 +816,16 @@ marker), Help
 graphic on an empty Menu; there is deliberately NO View menu, tried and
 merged back into Options in v7.5). Shift+click
 OR C+click the track in orbit mode re-centers the pivot on it
-(screen-space nearest sample within 25 px via pickTrackSample,
-BEHIND-CAMERA samples filtered — localToScreen
-projects them mirrored, which made sky clicks teleport the pivot; a miss
+(screen-space nearest track point within 25 px via pickTrackSample:
+distance to the SEGMENTS between strided sample projections — near
+track projects the dots hundreds of px apart, clicks between them
+used to miss (v13.5) — with the eye/forward taken from the ACTIVE
+camera's localToScene (the orbit-rig math misclassified half the
+scene as behind while the POV camera rendered: picks failed half the
+time); BEHIND-CAMERA points filtered — localToScreen
+projects them mirrored, which made sky clicks teleport the pivot;
+segments spanning a > 6 m piece gap skipped so the space between
+detached pieces stays unclickable; a miss
 moves nothing and the drag orbits normally; C tracked like the S slide
 key). Ctrl+click the track = INSERT a node in the active lane at that
 ride time (same pick, feeds insertNodeOnCurve — identical semantics to

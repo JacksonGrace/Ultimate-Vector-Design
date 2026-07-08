@@ -168,6 +168,14 @@ public class Coaster {
      *  ≤ 0 = keep the current chord. */
     public void alignPieceForBridge(BridgeSection bs, int targetIdx,
                                     double dist) {
+        alignPieceForBridge(bs, targetIdx, dist, true);
+    }
+
+    /** alignYaw = false (v13.5, the "optimize position" mode): the
+     *  target keeps its user-set yaw — only its position lands on the
+     *  march's endpoint; the bridge absorbs the heading difference. */
+    public void alignPieceForBridge(BridgeSection bs, int targetIdx,
+                                    double dist, boolean alignYaw) {
         TrackPiece t = pieces.get(targetIdx);
         Vec3 pA = bs.solvedEntry.pos();
         Vec3 tA = bs.solvedEntry.T(), uA = bs.solvedEntry.U();
@@ -192,7 +200,7 @@ public class Coaster {
         Vec3 endT = st[1];
         double ha2 = endT.x() * endT.x() + endT.z() * endT.z();
         double hb2 = tB.x() * tB.x() + tB.z() * tB.z();
-        if (ha2 > 1e-12 && hb2 > 1e-12) {   // both headings defined
+        if (alignYaw && ha2 > 1e-12 && hb2 > 1e-12) {   // headings defined
             double delta = Math.atan2(-endT.z(), endT.x())
                          - Math.atan2(-tB.z(), tB.x());
             double yaw = t.yawDeg + Math.toDegrees(delta);
@@ -239,6 +247,104 @@ public class Coaster {
             st[2] = st[2].sub(st[1].scale(st[2].dot(st[1]))).normalize();
         }
         return st;
+    }
+
+    /** UNFREEZE a bridge (v13.5): re-author its geometry as an
+     *  editable GEO section. The bridge's compiled body rates become
+     *  per-meter curvature and are re-timed onto the geo section's own
+     *  ENERGY speed profile (the bridge's profile blends onto the
+     *  target's design speed — not energy — so copying rates verbatim
+     *  would bend the shape), then fitted as sparse slope-matched
+     *  nodes (~0.2 s apart). The result compiles to the same track to
+     *  within the fit residual (probed sub-cm over typical bridges);
+     *  the next piece keeps its own placement, so the seam keeps only
+     *  that residual. */
+    public static GeoSection unfreezeBridge(BridgeSection bs, double dt) {
+        List<FVDIntegrator.Sample> s = bs.integrate(dt).samples();
+        int n = s.size();
+        double vD = Math.max(1, bs.vDesign);
+        double y0 = bs.solvedEntry.pos().y();
+        double[] tG = new double[n];
+        double[][] rate = new double[n][3];
+        double prevVG = Math.max(0.5, vD);
+        for (int i = 0; i < n; i++) {
+            FVDIntegrator.Sample sm = s.get(i);
+            double vG = Math.max(0.5,
+                FVDIntegrator.speedAt(sm.pos(), vD, y0));
+            if (i > 0) {
+                double ds = sm.s() - s.get(i - 1).s();
+                tG[i] = tG[i - 1] + ds / Math.max(0.5, (vG + prevVG) / 2);
+            }
+            prevVG = vG;
+            // per-METER rates straight from frame-change per arc (the
+            // shape's own quantity — no time axis, no speed profile),
+            // then scaled onto the geo section's clock
+            FVDIntegrator.Sample a = s.get(Math.max(0, i - 2));
+            FVDIntegrator.Sample b = s.get(Math.min(n - 1, i + 2));
+            double ds = b.s() - a.s();
+            if (ds < 1e-9) {
+                if (i > 0) System.arraycopy(rate[i - 1], 0, rate[i], 0, 3);
+                continue;
+            }
+            Vec3 dT = b.T().sub(a.T());
+            Vec3 dU = b.U().sub(a.U());
+            rate[i][0] = Math.toDegrees(dT.dot(sm.U()) / ds) * vG;
+            rate[i][1] = Math.toDegrees(dT.dot(sm.R()) / ds) * vG;
+            rate[i][2] = Math.toDegrees(-dU.dot(sm.R()) / ds) * vG;
+        }
+        // lane sections integrate on WHOLE dt steps (while t <= end —
+        // the D50 cadence), silently dropping a fractional tail: up to
+        // 10 ms ≈ a quarter meter of track at speed, which was the
+        // entire end error of the first fit. Land the duration ON the
+        // grid (nearest, so ≤ 5 ms of shape is cut or held — the
+        // unavoidable quantum every lane section shares), nudged up a
+        // hair so the accumulated t <= end comparison keeps the final
+        // step.
+        double dur = Math.max(dt,
+            Math.round(Math.max(0.1, tG[n - 1]) / dt) * dt) * (1 + 1e-9);
+        // 0.1 s node spacing: the cubic fit's error scales with the
+        // spacing⁴, and bridge rate curves can swing fast inside.
+        // Delete nodes to taste after.
+        int nNodes = Math.max(4, (int) Math.round(dur / 0.1) + 1);
+        List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
+        for (int c = 0; c < 3; c++) {
+            List<BezierBaker.Node> lane = new ArrayList<>(nNodes);
+            for (int k = 0; k < nNodes; k++) {
+                double t = dur * k / (nNodes - 1);
+                lane.add(new BezierBaker.Node(t,
+                    rate[idxAtTime(tG, t)][c]));
+            }
+            BezierBaker.applyDefaultHandles(lane);
+            // C1 fit: each node's handles take the curve's local slope
+            for (int k = 0; k < nNodes; k++) {
+                double t = dur * k / (nNodes - 1);
+                int i = idxAtTime(tG, t);
+                int i0 = Math.max(0, i - 2), i1 = Math.min(n - 1, i + 2);
+                double span = tG[i1] - tG[i0];
+                double slope = span < 1e-9 ? 0
+                    : (rate[i1][c] - rate[i0][c]) / span;
+                BezierBaker.Node nd = lane.get(k);
+                if (k < nNodes - 1) {
+                    nd.outDv = slope
+                        * BezierBaker.effOutDt(nd, lane.get(k + 1));
+                }
+                if (k > 0) {
+                    nd.inDv = slope
+                        * BezierBaker.effInDt(lane.get(k - 1), nd);
+                }
+            }
+            lanes.add(lane);
+        }
+        return new GeoSection(lanes, vD);
+    }
+
+    private static int idxAtTime(double[] tG, double t) {
+        int lo = 0, hi = tG.length - 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (tG[mid] <= t) lo = mid; else hi = mid;
+        }
+        return t - tG[lo] <= tG[hi] - t ? lo : hi;
     }
 
     /** st + k·h, componentwise (RK4 stage state). */

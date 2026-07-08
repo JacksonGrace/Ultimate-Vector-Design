@@ -582,6 +582,32 @@ class GraphEditor extends Region {
         redraw();
     }
 
+    /** UNFREEZE bridge k (v13.5): replace it with an editable GEO
+     *  section re-authoring its shape (Coaster.unfreezeBridge). The
+     *  piece no longer ends with a bridge, so the run splits here;
+     *  the next piece keeps its placement and the seam keeps only the
+     *  conversion residual (probed sub-cm). One undo step returns the
+     *  live bridge. */
+    private void unfreezeBridge(int k) {
+        if (k < 0 || k >= sections().size()
+                || !(sections().get(k) instanceof BridgeSection bs)) return;
+        pushUndoSnapshot();
+        GeoSection g = Coaster.unfreezeBridge(bs, FvdDesigner.INTEGRATE_DT);
+        sections().set(k, g);
+        activeSection = k;
+        app.lanes = lanesFor(g);
+        selIdx = -1;
+        selSet.clear();
+        elSel = -1;
+        axisLock = 0;
+        handleViewExpand = false;
+        syncLaneButtons();
+        app.rebuildTrack();
+        app.updatePieceButton();
+        refreshOffset();
+        redraw();
+    }
+
     /** The bridge lost its target piece (deleted/attached): it stays
      *  frozen at its last capture — the badge's warning state. */
     private boolean bridgeOrphan(BridgeSection bs) {
@@ -617,7 +643,8 @@ class GraphEditor extends Region {
      *  Arrow bursts coalesce into one undo step. */
     void setBridgeGap(double dist) {
         BridgeSection bs = activeBridge();
-        if (bs == null || bridgeOrphan(bs) || dist <= 0) return;
+        if (bs == null || bridgeOrphan(bs) || dist <= 0
+                || bs.optMode == BridgeSection.OPT_NONE) return;
         long now = System.nanoTime();
         if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
         lastGapNanos = now;
@@ -643,7 +670,79 @@ class GraphEditor extends Region {
             bs.lenA = dist;
             bs.lenB = dist;
         }
-        app.coaster.alignPieceForBridge(bs, activePiece + 1, dist);
+        app.coaster.alignPieceForBridge(bs, activePiece + 1, dist,
+            bs.optMode == BridgeSection.OPT_POS_YAW);
+        app.rebuildTrack();
+        refreshOffset();
+        redraw();
+    }
+
+    // ---------- bridge placement modes (v13.5) ----------
+    // the Placement dropdown edits the NEXT piece through the bridge:
+    // mode 0 = length re-runs the full continuation march, 1 = the
+    // march places position only (the user owns yaw), 2 = fully
+    // manual x/y/z + yaw. Spinner bursts coalesce into one undo step
+    // via the shared lastGapNanos clock.
+
+    int bridgeOptMode() {
+        BridgeSection bs = activeBridge();
+        return bs == null ? BridgeSection.OPT_POS_YAW : bs.optMode;
+    }
+
+    void setBridgeOptMode(int mode) {
+        BridgeSection bs = activeBridge();
+        if (bs == null || bs.optMode == mode) return;
+        pushUndoSnapshot();
+        bs.optMode = mode;
+        app.markDirty();
+        if (mode != BridgeSection.OPT_NONE && !bridgeOrphan(bs)) {
+            // switching INTO an optimize mode applies it right away
+            applyBridgeGap(bs, Math.max(1, activeBridgeGap()));
+        } else {
+            redraw();
+        }
+        app.updateBridgeControls();
+    }
+
+    double bridgeTargetYaw() {
+        return activeBridgeWithTarget()
+            ? app.coaster.pieces.get(activePiece + 1).yawDeg : 0;
+    }
+
+    void setBridgeTargetYaw(double deg) {
+        BridgeSection bs = activeBridge();
+        if (bs == null || bridgeOrphan(bs)
+                || bs.optMode == BridgeSection.OPT_POS_YAW) return;
+        long now = System.nanoTime();
+        if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
+        lastGapNanos = now;
+        app.coaster.pieces.get(activePiece + 1).yawDeg = deg;
+        if (bs.optMode == BridgeSection.OPT_POS) {
+            applyBridgeGap(bs, Math.max(1, activeBridgeGap()));
+        } else {
+            app.rebuildTrack();
+            refreshOffset();
+            redraw();
+        }
+    }
+
+    double bridgeTargetPos(int axis) {
+        if (!activeBridgeWithTarget()) return 0;
+        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+        return axis == 0 ? t.x : axis == 1 ? t.y : t.z;
+    }
+
+    void setBridgeTargetPos(int axis, double v) {
+        BridgeSection bs = activeBridge();
+        if (bs == null || bridgeOrphan(bs)
+                || bs.optMode != BridgeSection.OPT_NONE) return;
+        long now = System.nanoTime();
+        if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
+        lastGapNanos = now;
+        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+        if (axis == 0) t.x = v;
+        else if (axis == 1) t.y = v;
+        else t.z = v;
         app.rebuildTrack();
         refreshOffset();
         redraw();
@@ -653,7 +752,10 @@ class GraphEditor extends Region {
      *  end)? Grab range mirrors the s/c separators; only a bridge with
      *  a live target resizes (v13.3 — the draggable gap). */
     private boolean hitBridgeEnd(double x, double y) {
-        if (!activeBridgeWithTarget()) return false;
+        if (!activeBridgeWithTarget()
+                || activeBridge().optMode == BridgeSection.OPT_NONE) {
+            return false;   // manual mode: nothing to drag against
+        }
         if (y < MARGIN_TOP || y > MARGIN_TOP + plotHeight()) return false;
         return Math.abs(x - tToX(tOff + sectionDur(activeSection))) <= 5;
     }
@@ -873,18 +975,27 @@ class GraphEditor extends Region {
             // current bridge length (v13.4 — a split turn re-joins its
             // own circle; straight seams reduce to dead ahead)
             MenuItem align = new MenuItem(String.format(Locale.US,
-                "Optimize placement of piece %d (continue the turn)",
+                bs.optMode == BridgeSection.OPT_POS
+                    ? "Optimize position of piece %d (keep its yaw)"
+                    : "Optimize placement of piece %d (continue the turn)",
                 activePiece + 2));
-            align.setDisable(bridgeOrphan(bs));
+            align.setDisable(bridgeOrphan(bs)
+                || bs.optMode == BridgeSection.OPT_NONE);
             align.setOnAction(ev -> {
                 pushUndoSnapshot();
                 app.coaster.alignPieceForBridge(bs,
-                    activePiece + 1, activeBridgeGap());
+                    activePiece + 1, activeBridgeGap(),
+                    bs.optMode == BridgeSection.OPT_POS_YAW);
                 app.rebuildTrack();
                 refreshOffset();
                 redraw();
             });
-            cm.getItems().addAll(tangents, align);
+            // v13.5: the one-way door out of frozen-ness — the bridge
+            // becomes an ordinary editable geo section (Ctrl+Z undoes)
+            MenuItem unfreeze = new MenuItem(
+                "Unfreeze (edit as geo section)");
+            unfreeze.setOnAction(ev -> unfreezeBridge(k));
+            cm.getItems().addAll(tangents, align, unfreeze);
         }
         showMenu(cm, screenX, screenY);
     }
@@ -1911,6 +2022,11 @@ class GraphEditor extends Region {
     // pitch-or-Gv / yaw-or-Gl overlay under the cursor
     private int hoverResComp = 0;
     private double hoverResT, hoverResVal;
+    // hover readout on a DERIVED strip curve (v13.5): a bridge/s-c
+    // section's felt-G/roll curves answer like lanes — value, or the
+    // slope while Shift is held. -1 = none.
+    private int hoverDerLane = -1;
+    private double hoverDerT, hoverDerVal;
     private static final double MARGIN_TOP = 8, MARGIN_BOTTOM = 32;
     private static final double NODE_RADIUS = 5, NODE_HIT = 9;
     private static final double KNOB_RADIUS = 4.5, KNOB_HIT = 9;
@@ -2068,6 +2184,7 @@ class GraphEditor extends Region {
             hoverT = Double.NaN;   // no hover previews while interacting
             hoverRawT = Double.NaN;
             hoverResComp = 0;
+            hoverDerLane = -1;
             // an open '+'/badge menu: this press just dismisses it (JavaFX
             // auto-hides on clicks anywhere EXCEPT this canvas — v10.1)
             if (openMenu != null && openMenu.isShowing()) {
@@ -2344,19 +2461,52 @@ class GraphEditor extends Region {
                     }
                 }
             }
-            boolean was = !Double.isNaN(hoverT) || hoverResComp != 0;
-            boolean is = !Double.isNaN(t) || rc != 0;
+            // a bridge/s-c strip's DERIVED curves take hover readouts
+            // too (v13.5) — unless the cursor owns a drag handle there
+            int dl = -1;
+            double dlt = 0, dlv = 0;
+            if ((activeSc() != null || activeBridge() != null)
+                    && canvas.getCursor() != Cursor.H_RESIZE
+                    && app.resultRates != null && app.lastSamples != null
+                    && app.resultRates.length > 0
+                    && e.getY() >= MARGIN_TOP
+                    && e.getY() <= MARGIN_TOP + plotHeight()) {
+                double gt = xToT(e.getX());
+                double dur = sectionDur(activeSection);
+                if (gt > tOff + SEAM_TRIM && gt < tOff + dur - SEAM_TRIM) {
+                    int i = rateIdxAt(gt);
+                    double bestPx = 8;
+                    for (int L = 0; L < LANES; L++) {
+                        double v = derivedAt(i, L);
+                        double d = Math.abs(e.getY() - valToY(L, v));
+                        if (d < bestPx) {
+                            bestPx = d;
+                            dl = L;
+                            dlt = gt;
+                            dlv = v;
+                        }
+                    }
+                }
+            }
+            boolean was = !Double.isNaN(hoverT) || hoverResComp != 0
+                || hoverDerLane >= 0;
+            boolean is = !Double.isNaN(t) || rc != 0 || dl >= 0;
             hoverT = t;
             hoverResComp = rc;
             hoverResT = rt;
             hoverResVal = rv;
+            hoverDerLane = dl;
+            hoverDerT = dlt;
+            hoverDerVal = dlv;
             if (was || is) redraw();
         });
         canvas.setOnMouseExited(e -> {
-            if (!Double.isNaN(hoverT) || hoverResComp != 0) {
+            if (!Double.isNaN(hoverT) || hoverResComp != 0
+                    || hoverDerLane >= 0) {
                 hoverT = Double.NaN;
                 hoverRawT = Double.NaN;
                 hoverResComp = 0;
+                hoverDerLane = -1;
                 redraw();
             }
         });
@@ -2591,7 +2741,8 @@ class GraphEditor extends Region {
     void shiftHover(boolean on) {
         if (hoverSlope == on) return;
         hoverSlope = on;
-        if (!Double.isNaN(hoverT) || hoverResComp != 0) redraw();
+        if (!Double.isNaN(hoverT) || hoverResComp != 0
+                || hoverDerLane >= 0) redraw();
     }
 
     void clearSelection() {
@@ -2800,9 +2951,45 @@ class GraphEditor extends Region {
         if (boundaryState(start ? activeSection - 1 : activeSection + 1,
                 !start, activeLane) == null) return;
         pushUndoSnapshot();
+        refreezeSeamSpeed(start);
         applyBoundaryMatch(activeLane, start);
         redraw();
         app.rebuildTrack();
+    }
+
+    /** Boundary matching first makes the seam's DESIGN SPEEDS agree
+     *  (v13.5, the seam-jolt root cause): the DOWNSTREAM section's
+     *  vDesign re-freezes to the upstream side's design-end speed —
+     *  the same rule '+' applies at creation, re-applied after edits
+     *  drift the chain. Rates matched at a COMMON seam speed are also
+     *  CURVATURE-matched, so the felt-G lanes, the rate graphs and
+     *  the true ride all join; with drifted speeds, rate-only
+     *  matching left the felt Gv/Gl display (and the rider) a value
+     *  step by ω·Δv/g exactly on the boundary line. Bridge neighbors
+     *  are skipped — a bridge's speed profile already blends onto its
+     *  target's design speed (D74), so there is nothing to re-freeze
+     *  and chasing its tail-end speed would loop through our own. */
+    private void refreezeSeamSpeed(boolean startEdge) {
+        if (app.lastSamples == null || app.lastSamples.isEmpty()) return;
+        Section down;
+        TrackCompiler.Span upSpan;
+        if (startEdge) {   // upstream = previous section, downstream = US
+            int k = activeSection - 1;
+            Section up = k >= 0 ? sections().get(k)
+                : null;   // cross-piece: the previous piece's bridge
+            if (up == null || up instanceof BridgeSection) return;
+            down = sections().get(activeSection);
+            upSpan = spanOf(k);
+        } else {           // downstream = the NEXT section
+            if (activeSection + 1 >= sections().size()) return;
+            down = sections().get(activeSection + 1);
+            if (down instanceof BridgeSection) return;   // auto-captures
+            upSpan = spanOf(activeSection);
+        }
+        if (upSpan == null) return;
+        int i1 = Math.min(upSpan.i1(), app.lastSamples.size() - 1);
+        double v = FvdDesigner.clamp(app.lastSamples.get(i1).v(), 1, 100);
+        if (Math.abs(v - down.vDesign()) > 1e-9) down.vDesign(v);
     }
 
     /** Shift+B with a section-EDGE node selected: the boundary return
@@ -2822,6 +3009,7 @@ class GraphEditor extends Region {
         if (boundaryState(start ? activeSection - 1 : activeSection + 1,
                 !start, 0) == null) return;
         pushUndoSnapshot();
+        refreezeSeamSpeed(start);
         for (int L = 0; L < LANES; L++) applyBoundaryMatch(L, start);
         redraw();
         app.rebuildTrack();
@@ -4427,6 +4615,39 @@ class GraphEditor extends Region {
                 txt = String.format("%s %.2f %s/s", name, slope, unit);
             } else {
                 txt = String.format("%s %.2f %s", name, hoverResVal, unit);
+            }
+            gc.fillText(txt, hx + 8, hy - 6);
+            gc.setGlobalAlpha(1.0);
+        }
+
+        // hover readout on the active DERIVED strip (bridge/s-c,
+        // v13.5): value in the curve's lane color, slope with Shift —
+        // the lane hover's read-only sibling for frozen curves
+        if (hoverDerLane >= 0 && app.resultRates != null
+                && app.resultRates.length > 0) {
+            double hx = tToX(hoverDerT);
+            double hy = valToY(hoverDerLane, hoverDerVal);
+            gc.setGlobalAlpha(0.55);
+            gc.setFill(laneColor(hoverDerLane));
+            gc.fillOval(hx - 4, hy - 4, 8, 8);
+            gc.setGlobalAlpha(0.9);
+            gc.setFont(Font.font(10));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.BOTTOM);
+            String txt;
+            if (hoverSlope) {
+                double hdt = FvdDesigner.INTEGRATE_DT;
+                int i0 = rateIdxAt(hoverDerT - 2 * hdt);
+                int i1 = rateIdxAt(hoverDerT + 2 * hdt);
+                double span = app.resultRates[i1][0] - app.resultRates[i0][0];
+                double slope = span < 1e-9 ? 0
+                    : (derivedAt(i1, hoverDerLane)
+                        - derivedAt(i0, hoverDerLane)) / span;
+                txt = String.format("%.2f %s/s", slope,
+                    laneUnit(hoverDerLane).trim());
+            } else {
+                txt = String.format("%.2f%s", hoverDerVal,
+                    laneUnit(hoverDerLane));
             }
             gc.fillText(txt, hx + 8, hy - 6);
             gc.setGlobalAlpha(1.0);

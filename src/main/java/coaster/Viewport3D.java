@@ -410,29 +410,63 @@ class Viewport3D {
         }
     }
 
-    /** Nearest track sample within ~25 px of a screen point (a cheap
+    /** Nearest track point within ~25 px of a screen point (a cheap
      *  screen-space "tube" around the heartline — no mesh picking), or
      *  null on a miss. Samples BEHIND the camera are rejected:
      *  localToScreen happily projects those mirrored, which made clicks
-     *  on empty sky hit invisible track. */
+     *  on empty sky hit invisible track. v13.5 fixes two half-the-time
+     *  misses: the eye/forward now come from the ACTIVE camera's own
+     *  transform (the old orbit-rig math misclassified the scene while
+     *  the POV camera was rendering), and the distance is measured to
+     *  the SEGMENTS between consecutive strided projections (near
+     *  track projects them hundreds of px apart — clicks between the
+     *  dots fell through the 25 px disc). */
     FVDIntegrator.Sample pickTrackSample(double screenX, double screenY) {
         if (app.lastSamples == null || app.lastSamples.isEmpty()) return null;
-        double yaw = camYaw.getAngle(), pitch = camPitch.getAngle();
-        Point3D fwd = new Rotate(yaw, Rotate.Y_AXIS).transform(
-                      new Rotate(pitch, Rotate.X_AXIS).transform(new Point3D(0, 0, 1)));
-        Point3D camPos = new Point3D(camPivot.getX(), camPivot.getY(), camPivot.getZ())
-                .subtract(fwd.multiply(-camZoom.getZ()));
+        javafx.scene.Camera cam = sub.getCamera();
+        Point3D eye = cam.localToScene(0, 0, 0);
+        Point3D fwd = cam.localToScene(0, 0, 1).subtract(eye).normalize();
         double best = 25 * 25;
         FVDIntegrator.Sample bestSample = null;
+        FVDIntegrator.Sample prev = null;
+        double px = 0, py = 0;
+        boolean prevOk = false;
         for (int i = 0; i < app.lastSamples.size(); i += 5) {
-            Vec3 p = app.lastSamples.get(i).pos();
+            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+            Vec3 p = sm.pos();
             Point3D sceneP = world.localToScene(p.x(), -p.y(), p.z());
-            if (sceneP.subtract(camPos).dotProduct(fwd) <= 0) continue;  // behind
-            Point2D s = world.localToScreen(p.x(), -p.y(), p.z());
-            if (s == null) continue;
-            double dx = s.getX() - screenX, dy = s.getY() - screenY;
-            double d2 = dx * dx + dy * dy;
-            if (d2 < best) { best = d2; bestSample = app.lastSamples.get(i); }
+            Point2D s = sceneP.subtract(eye).dotProduct(fwd) > 0
+                ? world.localToScreen(p.x(), -p.y(), p.z()) : null;
+            if (s != null) {
+                double dx = s.getX() - screenX, dy = s.getY() - screenY;
+                double d2 = dx * dx + dy * dy;
+                if (d2 < best) { best = d2; bestSample = sm; }
+                // segment to the previous strided projection — skipped
+                // across piece gaps (a phantom segment between detached
+                // pieces would make empty space clickable)
+                if (prevOk && prev != null
+                        && sm.pos().sub(prev.pos()).length() < 6.0) {
+                    double segX = s.getX() - px, segY = s.getY() - py;
+                    double len2 = segX * segX + segY * segY;
+                    if (len2 > 1e-9) {
+                        double u = ((screenX - px) * segX
+                            + (screenY - py) * segY) / len2;
+                        if (u > 0 && u < 1) {
+                            double qx = px + segX * u - screenX;
+                            double qy = py + segY * u - screenY;
+                            double d2s = qx * qx + qy * qy;
+                            if (d2s < best) {
+                                best = d2s;
+                                bestSample = u < 0.5 ? prev : sm;
+                            }
+                        }
+                    }
+                }
+                px = s.getX();
+                py = s.getY();
+            }
+            prevOk = s != null;
+            prev = sm;
         }
         return bestSample;
     }
