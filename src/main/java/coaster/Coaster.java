@@ -144,37 +144,135 @@ public class Coaster {
         pieces.add(to, p);
     }
 
-    /** "Optimize placement" (v13.1, D73; SECTIONS-DISTANCE spinner
-     *  v13.2; SECTIONS-DESIGN §4's second
-     *  mode, closed-form): translate + yaw the TARGET piece (only
-     *  those DOF, per spec) so it sits dead ahead of the chain end
-     *  with its heading aligned — for level
-     *  ends that is the zero-curvature (minimum strain) placement, and
-     *  the live-follow bridge straightens accordingly. Pitched ends
-     *  keep their honest vertical curvature (yaw cannot tilt).
-     *  dist > 0 = the requested gap length (the toolbar spinner);
-     *  dist ≤ 0 = keep the current gap distance. */
-    public void alignPieceForBridge(TrackPose chainEnd, int targetIdx,
+    /** "Optimize placement" (v13.1 D73 dead-ahead; v13.4 D76 bisector;
+     *  CONTINUATION MARCH v13.4 D77 — SECTIONS-DESIGN §4's second mode
+     *  grown up): translate + yaw the TARGET piece (only those DOF,
+     *  per spec) so its head sits where the LEAST-GRAPH-CHANGE path
+     *  out of the chain end lands after `dist` meters of track. That
+     *  path holds the seams' BODY-frame curvature and roll-per-meter,
+     *  linearly blended entry→target over the length — matched seam
+     *  states (a split banked turn) blend to a CONSTANT: the same
+     *  circle, so the re-solved bridge continues the turn and a longer
+     *  bridge just slides the piece further around it; zero-curvature
+     *  seams reduce to dead-ahead exactly. The target's head PITCH is
+     *  a hard constraint yaw cannot fix, so a second pass adds the
+     *  smallest smooth vertical-rate hump (parabolic, zero at the
+     *  seams) that turns the leftover pitch gap — a straight dive
+     *  into a level head lands on a symmetric arc instead of forcing
+     *  a dip-and-recover downstream. Yaw then aligns the target's
+     *  ACTUAL head heading (solvedTarget — the live capture) to the
+     *  march's end heading. Deterministic fixed-step RK4 at ~5 cm,
+     *  hard step cap — no solver, no iteration, no failure mode: an
+     *  absurd length on a tight turn just loops the circle, honestly
+     *  and undoably. dist > 0 = requested length along the track;
+     *  ≤ 0 = keep the current chord. */
+    public void alignPieceForBridge(BridgeSection bs, int targetIdx,
                                     double dist) {
         TrackPiece t = pieces.get(targetIdx);
-        TrackPose cur = t.entryPose();
+        Vec3 pA = bs.solvedEntry.pos();
+        Vec3 tA = bs.solvedEntry.T(), uA = bs.solvedEntry.U();
+        Vec3 tB = bs.solvedTarget.T(), uB = bs.solvedTarget.U();
         double d = dist > 0 ? dist
-            : Math.max(1, cur.pos().sub(chainEnd.pos()).length());
-        Vec3 p = chainEnd.pos().add(chainEnd.T().scale(d));
-        t.x = p.x();
-        t.y = p.y();
-        t.z = p.z();
-        Vec3 ta = chainEnd.T(), tb = cur.T();
-        double ha2 = ta.x() * ta.x() + ta.z() * ta.z();
-        double hb2 = tb.x() * tb.x() + tb.z() * tb.z();
+            : Math.max(1, bs.solvedTarget.pos().sub(pA).length());
+        // seam states as BODY components (position/yaw-invariant)
+        Vec3 rA = uA.cross(tA), rB = uB.cross(tB);
+        double kuA = bs.accA.dot(uA), krA = bs.accA.dot(rA);
+        double kuB = bs.accB.dot(uB), krB = bs.accB.dot(rB);
+        double rmA = bs.rollA / Math.max(0.5, bs.vDesign);
+        double rmB = bs.vB > 0 ? bs.rollB / Math.max(0.5, bs.vB) : 0;
+        // pass 1: the pure blend, to see what pitch it naturally ends
+        // at; pass 2 re-marches with the correction hump included
+        Vec3[] st = march(pA, tA, uA, d, kuA, krA, kuB, krB, rmA, rmB, 0);
+        double residual = Math.asin(Math.max(-1, Math.min(1, tB.y())))
+                        - Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+        if (Math.abs(residual) > 1e-9) {
+            st = march(pA, tA, uA, d, kuA, krA, kuB, krB, rmA, rmB,
+                residual);
+        }
+        Vec3 endT = st[1];
+        double ha2 = endT.x() * endT.x() + endT.z() * endT.z();
+        double hb2 = tB.x() * tB.x() + tB.z() * tB.z();
         if (ha2 > 1e-12 && hb2 > 1e-12) {   // both headings defined
-            double delta = Math.toDegrees(
-                Math.atan2(-ta.z(), ta.x()) - Math.atan2(-tb.z(), tb.x()));
-            double yaw = t.yawDeg + delta;
+            double delta = Math.atan2(-endT.z(), endT.x())
+                         - Math.atan2(-tB.z(), tB.x());
+            double yaw = t.yawDeg + Math.toDegrees(delta);
             // wrap into the spinner's range, same orientation
             while (yaw > 360) yaw -= 360;
             while (yaw < -360) yaw += 360;
             t.yawDeg = yaw;
         }
+        t.x = st[0].x();
+        t.y = st[0].y();
+        t.z = st[0].z();
+    }
+
+    /** Fixed-step RK4 march of the blended continuation: state
+     *  {pos, T, U}, body curvature (ku, kr) and roll-per-meter lerped
+     *  A→B over the length, plus a parabolic WORLD-vertical curvature
+     *  hump integrating to `residual` radians of pitch (0 = pure
+     *  blend). Returns the end state. */
+    private static Vec3[] march(Vec3 pos, Vec3 T, Vec3 U, double d,
+                                double kuA, double krA,
+                                double kuB, double krB,
+                                double rmA, double rmB, double residual) {
+        int n = (int) Math.min(40_000, Math.max(8, Math.ceil(d / 0.05)));
+        double h = d / n;
+        Vec3[] st = { pos, T.normalize(),
+            U.sub(T.scale(U.dot(T))).normalize() };
+        for (int i = 0; i < n; i++) {
+            double u0 = (double) i / n;
+            double uh = (i + 0.5) / n;
+            double u1 = (double) (i + 1) / n;
+            Vec3[] k1 = contDeriv(st, u0, kuA, krA, kuB, krB, rmA, rmB, residual, d);
+            Vec3[] s2 = stepped(st, k1, h / 2);
+            Vec3[] k2 = contDeriv(s2, uh, kuA, krA, kuB, krB, rmA, rmB, residual, d);
+            Vec3[] s3 = stepped(st, k2, h / 2);
+            Vec3[] k3 = contDeriv(s3, uh, kuA, krA, kuB, krB, rmA, rmB, residual, d);
+            Vec3[] s4 = stepped(st, k3, h);
+            Vec3[] k4 = contDeriv(s4, u1, kuA, krA, kuB, krB, rmA, rmB, residual, d);
+            for (int j = 0; j < 3; j++) {
+                st[j] = st[j].add(k1[j]
+                    .add(k2[j].scale(2)).add(k3[j].scale(2)).add(k4[j])
+                    .scale(h / 6));
+            }
+            st[1] = st[1].normalize();
+            st[2] = st[2].sub(st[1].scale(st[2].dot(st[1]))).normalize();
+        }
+        return st;
+    }
+
+    /** st + k·h, componentwise (RK4 stage state). */
+    private static Vec3[] stepped(Vec3[] st, Vec3[] k, double h) {
+        return new Vec3[]{ st[0].add(k[0].scale(h)),
+            st[1].add(k[1].scale(h)), st[2].add(k[2].scale(h)) };
+    }
+
+    /** d/ds of {pos, T, U} on the blended continuation at fraction u:
+     *  pos' = T; T' = κ(u) rebuilt in the LOCAL frame + the vertical
+     *  correction hump; U' = Ω×U with Ω = T×κ + roll·T. */
+    private static Vec3[] contDeriv(Vec3[] st, double u,
+                                    double kuA, double krA,
+                                    double kuB, double krB,
+                                    double rmA, double rmB,
+                                    double residual, double d) {
+        Vec3 T = st[1].normalize();
+        Vec3 U = st[2].sub(T.scale(st[2].dot(T))).normalize();
+        Vec3 R = U.cross(T);
+        double ku = kuA + (kuB - kuA) * u;
+        double kr = krA + (krB - krA) * u;
+        double rm = rmA + (rmB - rmA) * u;
+        Vec3 kap = U.scale(ku).add(R.scale(kr));
+        if (residual != 0) {
+            // world-vertical direction ⊥ T: rotating T toward it raises
+            // pitch; 6u(1−u)/d integrates to exactly `residual`
+            Vec3 vup = new Vec3(0, 1, 0).sub(T.scale(T.y()));
+            double len = vup.length();
+            if (len > 1e-9) {
+                kap = kap.add(vup.scale(
+                    residual * 6 * u * (1 - u) / d / len));
+            }
+        }
+        return new Vec3[]{ T, kap,
+            T.scale(-kap.dot(U)).sub(R.scale(rm)) };
     }
 }

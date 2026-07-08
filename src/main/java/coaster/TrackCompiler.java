@@ -80,10 +80,12 @@ public final class TrackCompiler {
                         bs.accA = kj[0];
                         bs.jerkA = kj[1];
                         bs.rollA = seamRollRate(all, e, -1);
+                        bs.rollAccA = seamRollAcc(all, e, -1);
                     } else {
                         bs.accA = Vec3.ZERO;
                         bs.jerkA = Vec3.ZERO;
                         bs.rollA = 0;
+                        bs.rollAccA = 0;
                     }
                     if (p + 1 < c.pieces.size()) {
                         TrackPiece next = c.pieces.get(p + 1);
@@ -92,6 +94,7 @@ public final class TrackCompiler {
                         bs.accB = Vec3.ZERO;
                         bs.jerkB = Vec3.ZERO;
                         bs.rollB = 0;
+                        bs.rollAccB = 0;
                         bs.vB = 0;
                         if (!next.sections.isEmpty()) {
                             // pre-integrate the target's FIRST section
@@ -99,13 +102,28 @@ public final class TrackCompiler {
                             // agnostic (reversed sections included)
                             List<FVDIntegrator.Sample> head =
                                 passG(next.sections.get(0), tgt, dt).samples();
+                            if (!head.isEmpty()) {
+                                bs.vB = head.get(0).v();
+                                // aim at the ACTUAL first-sample frame,
+                                // not the piece's nominal entry pose
+                                // (v13.4): a REVERSED first section
+                                // yaw-places itself — pitch/bank of the
+                                // entry pose are NOT honored — and the
+                                // bridge aiming at the nominal pose put
+                                // a hard kink at the reversed entrance.
+                                // Same position either way; for normal
+                                // sections the frame IS the entry pose.
+                                FVDIntegrator.Sample h0 = head.get(0);
+                                bs.solvedTarget = new TrackPose(tgt.pos(),
+                                    Quat.fromFrame(h0.T(), h0.U()));
+                            }
                             if (head.size() >= 9) {
                                 Vec3[] kj = seamDerivs(head, 0, 1);
                                 bs.accB = kj[0];
                                 bs.jerkB = kj[1];
                                 bs.rollB = seamRollRate(head, 0, 1);
+                                bs.rollAccB = seamRollAcc(head, 0, 1);
                             }
-                            if (!head.isEmpty()) bs.vB = head.get(0).v();
                         }
                     }
                 }
@@ -158,8 +176,16 @@ public final class TrackCompiler {
      *  its neighbor in direction dir: transport the earlier U across
      *  the tangent change, the residual angle about T over dt is roll. */
     static double seamRollRate(List<FVDIntegrator.Sample> s, int at, int dir) {
-        FVDIntegrator.Sample a = s.get(Math.min(at, at + dir));
-        FVDIntegrator.Sample b = s.get(Math.max(at, at + dir));
+        return rollRateBetween(s, at, at + dir);
+    }
+
+    /** Roll rate (rad/s) measured between two samples: transport i's U
+     *  across the tangent change to j, the residual angle about T over
+     *  their time gap is roll. */
+    private static double rollRateBetween(List<FVDIntegrator.Sample> s,
+                                          int i, int j) {
+        FVDIntegrator.Sample a = s.get(Math.min(i, j));
+        FVDIntegrator.Sample b = s.get(Math.max(i, j));
         double dt = b.t() - a.t();
         if (dt < 1e-9) return 0;
         Vec3 axis = a.T().cross(b.T());
@@ -169,6 +195,19 @@ public final class TrackCompiler {
             ? a.U().rotate(axis.scale(1 / sin), Math.atan2(sin, cos)) : a.U();
         u = u.sub(b.T().scale(u.dot(b.T()))).normalize();
         return Math.atan2(u.cross(b.U()).dot(b.T()), u.dot(b.U())) / dt;
+    }
+
+    /** d(roll rate)/dt (rad/s², chain time) at sample `at`, one-sided
+     *  toward dir (v13.4 — the bridge twist matches the roll-rate
+     *  graph's SLOPE at the seams): two short roll-rate reads centered
+     *  ~1 and ~3 samples inside, differenced at their midpoints. The
+     *  signed midpoint times make the derivative direction-correct for
+     *  both the chain tail (dir −1) and a section head (dir +1). */
+    static double seamRollAcc(List<FVDIntegrator.Sample> s, int at, int dir) {
+        double rNear = rollRateBetween(s, at, at + 2 * dir);
+        double rFar = rollRateBetween(s, at + 2 * dir, at + 4 * dir);
+        double dt = s.get(at + 3 * dir).t() - s.get(at + dir).t();
+        return Math.abs(dt) < 1e-9 ? 0 : (rFar - rNear) / dt;
     }
 
     /** Pass G for one section at its DESIGN speed. Force sections are

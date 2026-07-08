@@ -2008,3 +2008,244 @@ Six user calls on v13.1.
   ends (a fresh split) are distinguished by the desaturation change
   rather than a fake physical gap — the geometry genuinely coincides.
   MESH_GAP_BREAK stays as an in-piece safety net.
+
+## D75. Seam-consistent B-matching, bridge tangent defaults + gap drag, view sanitizing (v13.3)
+
+User bug list after hand-testing v13.2. Four independent fixes, one
+interaction move.
+
+- **Stale manual zoom windows caused BOTH "insert landed at the
+  section start" and "the graph disappeared"** (user: adding a
+  section while zoomed out, first click misplaced a node; plot
+  sometimes went blank/ghost). A manual [viewT0, viewT1] window
+  survives structural edits, so the piece's stretch moves out from
+  under it: after '+' the new ACTIVE section sat beyond the window's
+  right edge (clicks clamped into its first sliver — "the beginning
+  of the section" — and the active curve drew entirely off-view, so
+  the plot showed nothing but 0.20-alpha ghost strips); after
+  delete/undo the window could sit wholly outside the piece (blank
+  plot). Fixes: (1) sanitizeView() runs at the top of every redraw —
+  a manual window slides back inside [pieceT0, pieceT0+domain]
+  keeping its width, and resumes auto-fit when at least piece-wide;
+  (2) addSection/addBridgeTo reset to auto-fit outright (they
+  ACTIVATE the piece-end section, so the view must show it — same
+  rule setActivePiece already followed). Attach/split/delete rely on
+  the sanitizer alone (no gratuitous view jumps while zoomed into an
+  area that still exists).
+- **Shift+B ping-pong at cross-mode seams: rate-consistent targets**
+  (user: "you can continuously shift+B on one side and then the
+  other and the graphs will always change", plus a residual instant
+  step at geo→force seams). Two defects in boundaryState's compiled
+  branch. (a) BIAS: it returned the derived value ~3 samples INSIDE
+  the neighbor verbatim — matching landed 3·dt·slope off the seam,
+  so a sloped neighbor left a small step and every press nudged
+  again. Now the value linearly EXTRAPOLATES back to the compiled
+  boundary time (span t0/t1, not the authored tOff — authored ends
+  truncate to the sample grid). (b) DIVERGENCE: force-side targets
+  copied the neighbor's FELT G, which is recorded at the NEIGHBOR'S
+  design speed, while geo-side targets read resulting rates — two
+  different invariants. Once the seam design speeds differ (any
+  height edit upstream of a frozen vDesign), alternating Shift+B
+  multiplied the seam rate by vA/vB per round trip: probed 12 →
+  42 °/s in 8 rounds (ratio 23.4/19.9). Force-view cross-mode
+  targets are now built FROM the resulting rate, converted at the
+  ACTIVE side's own seam design speed (G = ω·v_seam/g + axis.y,
+  slope with the ω·v' and Ω×axis terms; v_seam = vDesign exactly at
+  a start edge, the compiled end sample at an end edge) — both
+  directions then enforce the same invariant (body-rate continuity,
+  what the unified graph shows) and the probe settles at 12.00 with
+  <0.01 °/s drift per press. Same-mode + roll-lane matching stays
+  the exact authored copy. KNOWN HONEST RESIDUAL: with mismatched
+  seam design speeds the felt-G DISPLAY still steps at the seam in
+  force view (each section's felt G is recorded at its own design
+  speed — the step is the broken speed chain showing, not a match
+  failure); rates join exactly.
+- **Tie density after a split** (user: "tie density dramatically
+  increases"): buildTieMesh anchored its arc-length grid at s = 0,
+  but per-piece meshes (v13.2) hand it subLists starting mid-ride —
+  every sample tripped the guard until nextS caught up, so later
+  pieces opened with a tie on EVERY integration sample. The grid now
+  anchors at the sublist's own first s (and catch-up is a loop, so a
+  fast sample can't outrun the increment permanently).
+- **Bridge tangent default = ONE FULL GAP, was gap/2** (user: "very
+  spiky ends and flat middles... would this require G6?"). Not a
+  continuity-order problem — the ends already match through jerk.
+  |p'| at a septic end EQUALS the tangent length, so short tangents
+  pack the turning into the seam regions: probed end rates 12-55×
+  the interior at gap/2, ~1× at a full gap, max |dRate/dt| down
+  3-7×, curvature-change-per-meter down ~3.5×. Above ~1.15·gap the
+  interior bulge takes over (and short gaps between curved
+  neighbors suffer from the acc·len²/jerk·len³ amplification), so
+  the default is 1.0·gap; the tangents dialog still overrides.
+  Existing saves keep their stored lengths (blen is data, not a
+  default). Gap changes (spinner or drag) now RESCALE lenA/lenB
+  proportionally — stored meters otherwise degraded back toward the
+  spiky regime as the gap grew.
+- **Bridge end line drags the gap** (user: "move the ability to
+  change the size of the bridge section to dragging the vertical
+  line at the end"). The active bridge's end boundary (the piece
+  end) wears the H_RESIZE cursor; dragging it re-runs the same
+  placement optimization as the Gap spinner at the cursor-mapped
+  distance (cursor fraction of the current strip × current gap —
+  the live recompile re-maps each event, s/c-boundary style), with
+  Ctrl snapping by the Options element-length step, a live "gap
+  … m" readout, one undo step per gesture, and the spinner
+  re-syncing live. The toolbar spinner STAYS for typed/precise
+  input.
+
+## D76. Bridged RUNS, analytic B-matching, bridge polish round (v13.4)
+
+User re-test of v13.3 (seven items). The headline model change: pieces
+chained by bridges now read and edit as ONE track.
+
+- **Bridged pieces edit as one RUN** (user: "when connecting two
+  tracks, they should merge into one track with ability to see and
+  edit everything before and after the bridge"). A RUN = consecutive
+  pieces linked by trailing BridgeSections. The graph lays out EVERY
+  section of the run as strips (runLayout: piece+section+global t0),
+  the view window/auto-fit/zoom clamps span the run (runT0/runDur
+  replaced pieceT0/pieceDur in all view code), clicking any strip or
+  badge activates that piece+section WITHOUT resetting the zoom
+  (activateRunSec — the run is one editing surface; the toolbar
+  selector still does a full reset), the '+' sits at the RUN's end
+  and appends to its last piece (activating it first), boundary
+  matching works across the bridged piece boundary (the neighbor is
+  the bridge: spanOf's flattened index already reaches the adjacent
+  piece's spans, so the sampled path just works; k outside the piece
+  resolves to no Section = never the authored/analytic branches),
+  and the 3D viewport renders the WHOLE run full-color (desaturation
+  now marks detached pieces only — "bridged = one track" was the
+  user's mental model). Deleting the bridge splits the run again,
+  which also makes the delete semantics visually obvious (their
+  item 5: the pieces were always detached correctly — probed
+  placements bit-identical, gap real — but nothing SHOWED it).
+  A single unbridged piece is a run of one: behavior identical to
+  v13.3 by construction. Piece-scoped ops (placement spinners, split,
+  reverse) still target the ACTIVE piece.
+- **Cross-mode B-matching went ANALYTIC** (user: the v13.3 fix didn't
+  hold — "still seems to be shift+B ping ponging ... when the handles
+  in/out of the sections are banked", lateral G + yaw drifting).
+  Probed: the v13.3 sampled targets (resulting rates ~3 samples
+  inside, LINEARLY extrapolated to the seam) creep ~0.1 °/s per
+  Shift+B round-trip at a banked rolling seam — the rate curves are
+  strongly CURVED there, so the linear extrapolation re-injects a
+  bias every press and the seam frame walks with it (R.y 0.6157 →
+  0.6028 over 10 rounds), equally with matched design speeds. Fix:
+  for a non-reversed LANE-section neighbor the boundary state needs
+  no sampling at all — a geo neighbor's edge rates ARE its authored
+  lane values (+ handle slopes); a force neighbor's rates invert its
+  authored targets at the exact seam frame and ITS OWN seam design
+  speed (ω = g(G − axis·y)/v, ω' = g(G' − (Ω×axis)·y)/v + ω·g·T.y/v);
+  conversion to the active mode's units is v13.3's formula. Exact
+  both directions ⇒ alternating Shift+B is IDEMPOTENT once matched
+  (probe: values and seam frame bit-stable from round 1). The
+  sampled+extrapolated path remains for s/c, bridge and reversed
+  neighbors.
+- **Bridge aims at the target's ACTUAL head** (user: reversing +
+  bridge = "extremely sharp angle at the entrance to the reversed
+  section"). A reversed first section yaw-places itself (D67: entry
+  pitch/bank not honored), and editing after a reversal drifts the
+  stored baseOrient further from the regenerated shape — the bridge
+  aimed at the nominal entry pose and kinked. The compiler's live
+  capture now takes solvedTarget's ORIENTATION from the
+  pre-integrated head's first sample (position is identical by the
+  reverseAndPlace anchor; for normal sections the head frame IS the
+  entry pose). Probed: nominal pitch −44° vs actual −11° and the
+  seam still lands T/U-exact. "Optimize placement" aligns the ACTUAL
+  head tangent for the same reason.
+- **Optimize placement: bisector chord** (user: "aligning dead ahead
+  won't quite cut it ... some math without any iteration ... purely
+  adjust the position and yaw"). Dead-ahead along the chain tangent
+  forces the whole pitch mismatch to be absorbed downstream (the
+  dip-and-recover "bouncing"). Now the target's head is placed along
+  the 3D ANGLE BISECTOR of the two end tangents (after yaw-align):
+  both ends bend equally toward the chord — the circular-arc chord
+  for matched ends. Closed-form, position+yaw only. Level matched
+  ends reduce to dead-ahead exactly (gated). Probed on a −22° dive
+  into a level head: max |dRate/dt| 1106 → 529 °/s².
+- **Bridge roll-rate SLOPE continuity** (user: "roll rate could use
+  one more derivative ... staying flat on the edges"). The twist
+  quintic's end second derivatives were hardcoded zero; they are now
+  the neighbors' MEASURED roll accelerations (seamRollAcc: one-sided
+  differenced roll-rate reads; captured live per compile; persisted
+  as two new bdyn fields, missing = 0). Mapping to x-space includes
+  the q'·dv/dt term (dv/dt = −g·T.y at the ends). A min-∫(q'')²
+  septic was probed and REJECTED — strain-optimal rushes q'' away
+  from the pinned ends (near-seam slope got WORSE, −312 vs −179);
+  the quintic through six conditions is the minimum-JERK interpolant,
+  so where the residual twist demands a fast swing it still swings
+  (D74 honesty), but it now leaves each seam ON the neighbor's slope
+  (probed: entry slope −90 → −68 toward the chain's +29 on a nasty
+  fixture; tame fixtures track closely).
+- **Gap spinner input hardening** (user: letters typed while
+  navigating). Scene-level key FILTERS run the ride/fly bindings,
+  but consuming KEY_PRESSED does not suppress KEY_TYPED — a focused
+  editor kept receiving the characters. The editor now has a
+  numeric-only TextFormatter, the spinner is not focus-traversable,
+  and both the 3D subscene and the graph canvas pull focus on press.
+- **POV hands-off click selects track** (user request): uncaptured
+  POV keeps the mouse, so a clean primary click now activates the
+  piece+section under it, exactly like orbit (capture/fly still own
+  the mouse; drag-to-orbit unaffected since POV has no orbit drag).
+
+## D77. Bridge deep-dive: placement = the CONTINUATION MARCH (v13.4)
+
+User dig-in on bridges with a crisp acceptance principle: optimal
+placement should position the other piece so THE GRAPHS CHANGE AS
+LITTLE AS POSSIBLE — canonically, splitting a banked constant turn
+and re-bridging it must reproduce THE SAME TURN, and lengthening the
+bridge must simply carry it further around the circle. The v13.4
+bisector produced "a straight line with transitions at either end"
+there. (Iteration was explicitly allowed but feared — crashes, slow
+generation, wacky results.)
+
+- **Placement is now a CONTINUATION MARCH** (Coaster.
+  alignPieceForBridge, signature now takes the BridgeSection — it
+  needs the live-captured seam states): hold the seams' BODY-frame
+  curvature components and roll-per-meter, LINEARLY BLENDED entry →
+  target over the requested length, and march that path from the
+  chain end (fixed-step RK4 at 5 cm, hard 40k-step cap —
+  deterministic, no solver, no iteration, no failure mode; an absurd
+  length on a tight turn just loops the circle, honestly and
+  undoably). The target's head lands at the march's end, yawed to
+  its end heading. Matched seam states blend to a CONSTANT = the
+  seam's own circle/helix (the split-turn case, exactly); straight
+  seams reduce to dead-ahead EXACTLY (gated at 1e-12). Because the
+  target's head PITCH is a constraint yaw cannot fix, a second pass
+  adds the smallest smooth vertical-rate hump (parabolic, zero at
+  both seams, integrating to the leftover pitch gap) — the
+  dive-into-level stress case improves 1106 → 533 °/s² max rate
+  slope vs dead-ahead (BridgeProbe2).
+- **D74 amendment — the septic's end jerk gets its ANALYTIC
+  tangential part back**: bpose jerk stays stored/measured ⊥ T, but
+  integrate() now adds −|κ|²·T (rebuilt from the stored curvature)
+  before building the septic. A turning curvature vector HAS a
+  tangential derivative; zeroing it made the septic sag off a
+  continued circle (probed: 4.9 °/s yaw ripple + 0.28 m radial sag
+  over a 103° sweep). D74's ringing came from MEASURING the
+  tangential part (finite-difference noise); the analytic rebuild is
+  exact, and all 125 gates (incl. every D74 seam-smoothness gate)
+  pass unchanged. With it, SplitTurnProbe lands the acceptance test
+  outright: flat s/c circle AND the banked LEVEL force turn (the
+  example layout's kind) re-join with rate deviation ≤ 0.11 °/s and
+  ≤ 7 mm radial sag at 34°/69°/103° sweeps — the graphs are flat and
+  the bridge IS the turn.
+- **The gap became LENGTH**: the toolbar spinner (relabeled
+  "Length (m)"), the badge action ("Optimize placement … (continue
+  the turn)") and the end-line drag all speak bridge length along
+  the track; activeBridgeGap() reads back the compiled span's arc
+  extent (chord only pre-compile). A curved bridge's number now
+  means what it says, and requesting more of it extends the turn.
+  Readback can drift a few percent from the request on mismatched
+  seams (the septic's length ≠ the march's) — accepted, the spinner
+  tracks reality.
+- **applyBridgeGap degenerate-start fix**: a bridge created across a
+  ~zero gap (right after a split) has no meaningful sweep to scale —
+  the proportional lenA/lenB rescale blew 1 m tangents up by
+  dist/ε. Old gap ≤ 0.5 m now takes the default full-length sweep
+  instead.
+- NOT changed, per user: the bridge stays a septic with matched end
+  states (they like the transition behavior); Bezier-editable
+  bridges and the "two nodes + Shift+B + iterate yaw/position"
+  workflow stay future options; "Bridge tangents…" and manual
+  placement remain as overrides.

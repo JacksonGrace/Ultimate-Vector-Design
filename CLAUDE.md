@@ -134,13 +134,28 @@ BridgeSection.java  Phase 2 (v13.0 D72; live-follow v13.1 D73; seam
                     (p/p'/p''/p''' both ends — rate graphs continuous
                     in VALUE and SLOPE at the seams; zero seam data =
                     the older shapes, how old files load; the jerk
-                    vectors MUST stay ⊥ T — the raw −κ²·T term rings,
-                    D74); RMF frames + a quintic twist whose end
-                    slopes are the neighbors' ROLL RATES; the speed
+                    vectors are STORED ⊥ T — measuring the tangential
+                    part rang (D74) — and integrate() re-adds the
+                    ANALYTIC −|κ|²·T at solve time (v13.4 D77: a
+                    turning κ vector has one; without it the septic
+                    sagged off a continued circle); RMF frames + a quintic twist whose end
+                    slopes are the neighbors' ROLL RATES and end
+                    second derivatives their roll ACCELERATIONS
+                    (v13.4 D76 — min-jerk; a min-strain septic was
+                    probed and REJECTED); solvedTarget's orientation
+                    comes from the target's pre-integrated HEAD
+                    frame, not its nominal entry pose (v13.4 —
+                    reversed heads kinked); the speed
                     profile eases onto vB (no far-seam v step; dv/dt
                     continuous); felt G from analytic curvature;
-                    tangent lengths user-adjustable + the toolbar GAP
-                    spinner re-optimizes placement per tick. Collinear
+                    tangent lengths user-adjustable, DEFAULT ONE FULL
+                    GAP (v13.3 D75 — gap/2 packed the turning into the
+                    seam regions: end rates 12-55× the interior,
+                    "spiky ends flat middles"; NOT a continuity-order
+                    problem) + the toolbar GAP spinner AND dragging
+                    the strip's END LINE re-optimize placement per
+                    tick/event (both rescale lenA/lenB with the gap).
+                    Collinear
                     ends = exact straight line (gated). Cramped
                     geometry still needs fast-but-smooth interior
                     transients — that is the geometry's demand (D74).
@@ -327,7 +342,8 @@ source tree — they won't compile against the current time-domain API.
   (two pos+quat poses, %.10f) + `blen lenA lenB` + `bacc` (two seam
   curvature vectors, v13.1 — missing = zero, the v13.0 G¹) + `bdyn`
   (seam jerk vectors + roll rates + target entry speed, v13.2 —
-  missing = zeros, the v13.1 shape) lines
+  missing = zeros, the v13.1 shape; + two seam roll ACCELERATIONS,
+  v13.4 — missing = zeros, the v13.2/13.3 twist) lines
   (bridge — the LAST-CAPTURE solve inputs; live compiles re-capture,
   they matter alone for orphaned bridges). READS FVDD3,
   FVDD2 and
@@ -463,19 +479,44 @@ roll step, defaults the scales to ±60 °/s (roll ±150) and drops the
 (action "matchAll") does it for ALL THREE lanes' edge nodes as one
 undo step: value AND
 slope from the neighbor — exact from authored lanes same-mode (a lane
-holding past its last node is FLAT there), from the resulting curves
-cross-mode (v10.2: sampled ~3 samples INSIDE the neighbor via
-rateIdxAt — bodyRates smear boundary jumps across ±2 samples and the
-seam index shifts with the integrator cadence; sampling the smear made
-B converge over several presses. Same reason derived strips and
-overlays trim SEAM_TRIM = 2.5·dt off their ends — no tiny angled
-connector at seams. Cross-mode matching against the NEXT section stays
-mildly iterative: our exit pose moves its felt values). Clicking a
+holding past its last node is FLAT there); cross-mode against a
+non-reversed LANE-section neighbor it is ANALYTIC (v13.4 D76): a geo
+neighbor's edge rates ARE its authored lane values, a force
+neighbor's rates invert its authored targets at the exact seam frame
+and ITS OWN seam design speed (ω = g(G−axis.y)/v, slope with the
+Ω×axis and v' = −g·T.y terms), converted to the active mode at the
+ACTIVE side's seam design speed (G = ω·v_seam/g + axis.y, v13.3 D75)
+— both directions enforce rate continuity EXACTLY, so alternating
+B/Shift+B is idempotent once matched (v13.3's sampled targets, and
+v10.2's before them, crept ~0.1 °/s per press at banked rolling
+seams: linear extrapolation of curved rate profiles re-injects a
+bias — probed, D76). Only s/c, bridge and reversed neighbors still
+sample the compiled curves (~3 samples inside via rateIdxAt —
+bodyRates smear boundary jumps across ±2 samples, same reason
+derived strips and overlays trim SEAM_TRIM = 2.5·dt — extrapolated
+back to the compiled boundary time). The felt-G DISPLAY still steps
+honestly at seams whose design speeds differ; rates join.
+Cross-mode matching
+against the NEXT section stays
+mildly iterative: our exit pose moves its felt values. Clicking a
 greyed strip ALWAYS activates it — checked BEFORE the dimmed-lane test
 (v10.2: held end-values used to steal those clicks as lane switches).
-PIECES (v12.0 D70, exact-split + piece reversal v12.1 D71): the graph
-shows ONE piece at a
-time in its GLOBAL time window (axis continues across pieces; POV
+PIECES (v12.0 D70, exact-split + piece reversal v12.1 D71; bridged
+RUNS v13.4 D76): the graph
+shows ONE bridged RUN at a time in its GLOBAL time window — a run =
+consecutive pieces linked by trailing bridges, laid out strip by
+strip via runLayout (piece+section+t0); a lone piece is a run of one
+(the pre-v13.4 behavior exactly). Clicking any strip/badge in the
+run activates that piece+section WITHOUT resetting the zoom
+(activateRunSec; the toolbar selector still resets); the '+' sits at
+the RUN's end and appends to its last piece (activating it first);
+boundary matching crosses bridged piece boundaries (the neighbor is
+the bridge — spanOf's flattened index reaches adjacent pieces'
+spans, k outside the piece resolves to no Section = sampled path);
+view clamps/auto-fit use runT0/runDur; the 3D viewport renders the
+WHOLE run full-color (desaturation = detached pieces only). Piece-
+scoped ops (placement, split, reverse) still target the ACTIVE
+piece. (Axis continues across pieces; POV
 rides them in order, jumping the gaps until bridges); a toolbar
 "Piece k/n ▾" selector (hidden when single-piece) switches; badge
 menu "Split piece before this section" cuts at the compiled boundary
@@ -499,7 +540,9 @@ gated; others re-join with D67's yaw-only per-section honesty);
 applying twice restores the model exactly. Deleting a piece's last
 section deletes the piece; 3D
 Ctrl+click activates piece + section under the cursor; a clean PLAIN
-click on any piece's track does too (v13.1 — drag still orbits).
+click on any piece's track does too (v13.1 — drag still orbits), and
+the same plain-click works in HANDS-OFF POV (v13.4: uncaptured POV
+keeps the mouse; captured POV/fly still own it).
 BRIDGES
 (v13.0 D72, reworked v13.1 D73): '+' menu "Bridge to piece ▸" lists
 EVERY other piece — a non-adjacent pick REORDERS it to come next on
@@ -510,18 +553,48 @@ dynamics every compile, so moving either side re-joins instantly;
 only a bridge whose target piece is GONE freezes at its last shape
 (badge "bridge !", strip hint). Seams are SMOOTH in the rate graphs
 (v13.2 D74: septic + speed blend onto the target's design speed +
-roll-rate-matched twist — value AND slope continuity; cramped
-geometry still legitimately swings fast INSIDE the bridge). Badge
+roll-rate-matched twist — value AND slope continuity; v13.4 D76: the
+twist quintic also pins the neighbors' measured roll ACCELERATIONS
+(seamRollAcc, two extra bdyn fields, missing = 0) so the roll-rate
+graph leaves each seam on the neighbor's slope, not a flat shelf;
+cramped
+geometry still legitimately swings fast INSIDE the bridge). The
+compiler aims solvedTarget at the target's ACTUAL first-sample frame
+(pre-integrated head, v13.4) — a reversed-then-edited first section
+used to kink hard at its entrance. Badge
 menu: "Bridge tangents…"
-adjusts the sweep; "Optimize placement of piece N" moves the target
-dead ahead at its gap distance with headings aligned (closed-form §4
-mode 2; repeatable; the live bridge straightens with it); the
-toolbar "Gap (m)" spinner (visible while a live bridge is active)
-re-runs that optimization at the typed/clicked distance per change
-(arrow bursts = one undo step);
+adjusts the sweep; "Optimize placement of piece N (continue the
+turn)" runs the CONTINUATION MARCH (v13.4 D77 — the acceptance
+principle is "the graphs change as little as possible"): the seams'
+body-frame curvature + roll-per-meter, linearly blended entry →
+target, marched from the chain end for the requested LENGTH
+(fixed-step RK4, hard cap, no iteration), the target's head placed
+at the march's end and yawed to its heading, plus the smallest
+parabolic vertical-rate hump for the pitch gap yaw can't fix — a
+SPLIT CONSTANT TURN re-joins as the SAME turn (gated ≤ 0.11 °/s
+rate ripple, ≤ 7 mm off the circle through 103°) and longer bridges
+just carry it further around; straight seams reduce to dead-ahead
+exactly (1e-12, gated); position + yaw only. The
+toolbar "Length (m)" spinner (visible while a live bridge is
+active; reads back the compiled span's ARC length, chord only
+pre-compile) re-runs that optimization at the typed/clicked length
+per change
+(arrow bursts = one undo step), and DRAGGING the active bridge
+strip's END LINE does the same per event (v13.3 D75: H_RESIZE
+cursor, live "length … m" readout, Ctrl snaps by the element-length
+step, one undo step per gesture, spinner re-syncs; both paths scale
+lenA/lenB with the length so the sweep keeps its shape — except
+from a DEGENERATE ≤ 0.5 m start (bridge created right after a
+split), which takes the default full-length sweep instead of
+scaling noise, v13.4). The
+spinner's editor is numeric-only and non-focus-traversable, and 3D/
+graph presses pull focus (v13.4: scene key FILTERS consume ride
+keys' KEY_PRESSED but not KEY_TYPED — a focused editor kept
+collecting w/s letters while riding);
 a piece ending with a bridge refuses add/attach ("extend the NEXT
 piece") and refuses piece reversal; the bridge strip itself is
-read-only derived curves (lane buttons off, mode 2). 3D meshes are
+read-only derived curves (lane buttons off, mode 2) apart from that
+end line. 3D meshes are
 PER PIECE (v13.2): inactive pieces render DESATURATED (gradient
 texture or solid color), meshes never span a piece boundary — a
 clean bridge/attach seam abuts flush and reads as one track, a fresh
@@ -562,7 +635,13 @@ tinted with the curve colors. The graph auto-fit time window FREEZES
 during drags (fixes runaway end-node dragging); dragging past ANY plot edge
 grows that axis at a RATE proportional to the overshoot (dragGrowTimer,
 an AnimationTimer — grows even with the mouse held still; view re-fits on
-release). The S-slide axis constraint anchors to the node's GESTURE-START
+release). A MANUAL zoom window is SANITIZED at every redraw (v13.3
+D75: slid back inside the piece's stretch, auto-fit resumed when at
+least piece-wide — structural edits used to leave the window where
+the strips no longer were: inserts landed "at the beginning of the
+section" and the plot went ghost/blank), and '+' add-section /
+add-bridge reset to auto-fit outright (they activate the piece-end
+section, which must be on screen). The S-slide axis constraint anchors to the node's GESTURE-START
 position (snaps back onto the original row/column). After click-inserting a node, the first press prioritizes the node
 body over its own knobs (freshInsertPriority). `subHolder.setMinSize(0,0)` is
 load-bearing: without it the SubScene's min size stops the window/divider
@@ -794,7 +873,9 @@ non-obvious behavior. Do not ship a feature without touching it.
   settings.
 - Rails + cross ties but no spine box yet; tie positions quantize to the
   nearest integration sample (up to ~0.13 m jitter at speed — invisible at
-  normal tie spacing).
+  normal tie spacing). The tie grid anchors at each PIECE's starting arc
+  length (v13.3 — per-piece meshes start mid-ride; a zero anchor put a
+  tie on every sample until it caught up).
 - Undo/redo exclude tie spacing and rail colors (cosmetics; menu-local
   Ctrl+Z only — but they do mark the file dirty).
 - Friction is hardcoded (0), not in the UI. (v0 became the per-coaster

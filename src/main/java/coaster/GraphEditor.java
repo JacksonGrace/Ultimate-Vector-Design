@@ -123,18 +123,26 @@ class GraphEditor extends Region {
         return app.coaster.pieces.get(activePiece).sections;
     }
 
-    /** Flattened span index of the active piece's first section. */
-    private int spanBase() {
+    /** Flattened span index of piece p's first section. */
+    private int pieceBase(int p) {
         int n = 0;
-        for (int p = 0; p < activePiece && p < app.coaster.pieces.size(); p++) {
-            n += app.coaster.pieces.get(p).sections.size();
+        for (int q = 0; q < p && q < app.coaster.pieces.size(); q++) {
+            n += app.coaster.pieces.get(q).sections.size();
         }
         return n;
     }
 
+    /** Flattened span index of the active piece's first section. */
+    private int spanBase() {
+        return pieceBase(activePiece);
+    }
+
     /** Span of the active piece's section k, or null (pre-compile /
      *  stale). Structural edits rebuild BEFORE relayout, so live use
-     *  always sees fresh spans. */
+     *  always sees fresh spans. k may reach past the piece (negative /
+     *  ≥ size): the flattened index lands on the neighboring piece's
+     *  spans — cross-piece boundary matching inside a run rides on
+     *  this. */
     private TrackCompiler.Span spanOf(int k) {
         List<TrackCompiler.Span> spans = app.sectionSpans;
         int idx = spanBase() + k;
@@ -142,11 +150,143 @@ class GraphEditor extends Region {
             ? spans.get(idx) : null;
     }
 
+    /** Span of piece p's section k, or null. */
+    private TrackCompiler.Span spanAt(int p, int k) {
+        List<TrackCompiler.Span> spans = app.sectionSpans;
+        if (spans == null) return null;
+        int idx = pieceBase(p) + k;
+        return idx >= 0 && idx < spans.size() ? spans.get(idx) : null;
+    }
+
     /** Global ride time where the active piece begins. */
     private double pieceT0() {
         if (activePiece == 0) return 0;
         TrackCompiler.Span sp = spanOf(0);
         return sp != null ? sp.t0() : 0;
+    }
+
+    // ---------- bridged RUNS (v13.4) ----------
+    // pieces chained by trailing bridges read and edit as ONE track:
+    // the graph shows every section of the run containing the active
+    // piece — strips, badges, boundary matching and the '+' all span
+    // it. A single unbridged piece is a run of one (bit-identical to
+    // the old behavior).
+
+    private boolean endsWithBridge(int p) {
+        List<Section> s = app.coaster.pieces.get(p).sections;
+        return !s.isEmpty() && s.get(s.size() - 1) instanceof BridgeSection;
+    }
+
+    /** First piece of the bridged run containing the active piece. */
+    private int runStart() {
+        int p = activePiece;
+        while (p > 0 && endsWithBridge(p - 1)) p--;
+        return p;
+    }
+
+    /** Last piece of the bridged run containing the active piece. */
+    private int runEnd() {
+        int p = activePiece;
+        while (p < app.coaster.pieces.size() - 1 && endsWithBridge(p)) p++;
+        return p;
+    }
+
+    /** Run bounds for the viewport (v13.4): the WHOLE bridged run
+     *  renders full-color — it reads as one track. */
+    int runStartPiece() { return runStart(); }
+
+    int runEndPiece() { return runEnd(); }
+
+    /** Duration of piece p's section k (the sectionDur recipe, any
+     *  piece). */
+    private double durOf(int p, int k) {
+        Section s = app.coaster.pieces.get(p).sections.get(k);
+        if (s instanceof LaneSection ls) return BezierBaker.rideEnd(ls.lanes);
+        TrackCompiler.Span sp = spanAt(p, k);
+        if (sp != null) return sp.t1() - sp.t0();
+        if (s instanceof StraightCurveSection sc) return sc.estDuration();
+        BridgeSection bs = (BridgeSection) s;   // pre-compile estimate
+        return Math.max(0.1,
+            bs.solvedTarget.pos().sub(bs.solvedEntry.pos()).length()
+                / Math.max(0.5, bs.vDesign));
+    }
+
+    /** Global ride time where the RUN begins. */
+    private double runT0() {
+        int rs = runStart();
+        if (rs == 0) return 0;
+        TrackCompiler.Span sp = spanAt(rs, 0);
+        return sp != null ? sp.t0() : 0;
+    }
+
+    /** Total duration of the run (the graph window's width basis). */
+    private double runDur() {
+        double d = 0;
+        for (int p = runStart(); p <= runEnd(); p++) {
+            for (int k = 0; k < app.coaster.pieces.get(p).sections.size(); k++) {
+                d += durOf(p, k);
+            }
+        }
+        return d;
+    }
+
+    /** One strip of the run's flattened layout. */
+    private record RunSec(int piece, int section, Section sec,
+                          double t0, double dur) {}
+
+    /** The run's sections in timeline order with their global starts —
+     *  the strip/badge/hit layer iterates this. */
+    private List<RunSec> runLayout() {
+        List<RunSec> out = new ArrayList<>();
+        double off = runT0();
+        for (int p = runStart(); p <= runEnd(); p++) {
+            List<Section> secs = app.coaster.pieces.get(p).sections;
+            for (int k = 0; k < secs.size(); k++) {
+                double d = durOf(p, k);
+                out.add(new RunSec(p, k, secs.get(k), off, d));
+                off += d;
+            }
+        }
+        return out;
+    }
+
+    /** The run strip under global time t, or null. */
+    private RunSec runSecAt(double globalT) {
+        for (RunSec rs : runLayout()) {
+            if (globalT >= rs.t0() - 1e-9
+                    && globalT <= rs.t0() + rs.dur() + 1e-9) return rs;
+        }
+        return null;
+    }
+
+    /** Activate a section anywhere in the CURRENT run without resetting
+     *  the zoom (the run is one continuous editing surface); falls back
+     *  to the full piece switch for out-of-run targets. */
+    private void activateRunSec(int p, int k) {
+        if (p == activePiece) {
+            setActiveSection(k);
+            return;
+        }
+        if (p < runStart() || p > runEnd()) {
+            setActivePiece(p);
+            setActiveSection(k);
+            return;
+        }
+        activePiece = p;
+        activeSection = (int) FvdDesigner.clamp(k, 0, sections().size() - 1);
+        app.lanes = lanesFor(sections().get(activeSection));
+        selIdx = -1;
+        selSet.clear();
+        elSel = -1;
+        axisLock = 0;
+        handleViewExpand = false;
+        canvas.setCursor(Cursor.DEFAULT);
+        syncLaneButtons();
+        app.updatePieceButton();
+        app.syncPlacementSpinners();
+        app.rebuildTrack();   // inactive-piece desaturation follows
+        refreshOffset();
+        redraw();
     }
 
     void setActivePiece(int p) {
@@ -249,22 +389,7 @@ class GraphEditor extends Region {
      *  domain section's duration exists only after compilation — read
      *  it from the last compile's span (estimate before the first). */
     private double sectionDur(int k) {
-        Section s = sections().get(k);
-        if (s instanceof LaneSection ls) return BezierBaker.rideEnd(ls.lanes);
-        TrackCompiler.Span sp = spanOf(k);
-        if (sp != null) return sp.t1() - sp.t0();
-        if (s instanceof StraightCurveSection sc) return sc.estDuration();
-        BridgeSection bs = (BridgeSection) s;   // pre-compile estimate
-        return Math.max(0.1,
-            bs.solvedTarget.pos().sub(bs.solvedEntry.pos()).length()
-                / Math.max(0.5, bs.vDesign));
-    }
-
-    /** Duration of the ACTIVE piece (its window width, not the ride). */
-    private double pieceDur() {
-        double d = 0;
-        for (int k = 0; k < sections().size(); k++) d += sectionDur(k);
-        return d;
+        return durOf(activePiece, k);
     }
 
     private void refreshOffset() {
@@ -285,19 +410,6 @@ class GraphEditor extends Region {
     private double ltToX(double localT) { return tToX(tOff + localT); }
 
     private double xToLt(double x) { return xToT(x) - tOff; }
-
-    /** Which ACTIVE-PIECE section contains this global time; -1 when
-     *  outside the piece's stretch (other pieces aren't drawn here). */
-    private int sectionAt(double globalT) {
-        double o = pieceT0();
-        if (globalT < o - 1e-9) return -1;
-        for (int k = 0; k < sections().size(); k++) {
-            double d = sectionDur(k);
-            if (globalT <= o + d + 1e-9) return k;
-            o += d;
-        }
-        return -1;
-    }
 
     void setActiveSection(int k) {
         List<Section> secs = sections();
@@ -376,16 +488,21 @@ class GraphEditor extends Region {
         sc.setDisable(endsBridge);
         cm.getItems().addAll(force, geo, sc);
         List<TrackPiece> pieces = app.coaster.pieces;
+        // pieces already INSIDE this bridged run are not bridge/attach
+        // targets (v13.4): they're connected — reordering or dissolving
+        // one would tear the chain apart
+        int rs = runStart(), re = runEnd();
+        boolean hasOutside = pieces.size() > re - rs + 1;
         if (endsBridge) {
             MenuItem hint = new MenuItem("Piece ends with a bridge — extend the NEXT piece");
             hint.setDisable(true);
             cm.getItems().add(hint);
-        } else if (pieces.size() > 1) {
-            // ANY piece (v13.1): the chosen one reorders to come next
-            // on the timeline — connecting MEANS "this one follows"
+        } else if (hasOutside) {
+            // ANY outside piece (v13.1): the chosen one reorders to come
+            // next on the timeline — connecting MEANS "this one follows"
             Menu bridge = new Menu("Bridge to piece");
             for (int p = 0; p < pieces.size(); p++) {
-                if (p == activePiece) continue;
+                if (p >= rs && p <= re) continue;
                 TrackPiece tp = pieces.get(p);
                 MenuItem it = new MenuItem(String.format(Locale.US,
                     "Piece %d — %d section%s%s", p + 1, tp.sections.size(),
@@ -401,7 +518,7 @@ class GraphEditor extends Region {
             bridge.setDisable(true);
             cm.getItems().add(bridge);
         }
-        if (pieces.size() <= 1) {
+        if (!hasOutside) {
             MenuItem none = new MenuItem("Attach floating piece — none to attach");
             none.setDisable(true);
             cm.getItems().add(none);
@@ -412,7 +529,7 @@ class GraphEditor extends Region {
             Menu attach = new Menu("Attach floating piece");
             attach.setDisable(endsBridge);
             for (int p = 0; p < pieces.size(); p++) {
-                if (p == activePiece) continue;
+                if (p >= rs && p <= re) continue;
                 TrackPiece tp = pieces.get(p);
                 MenuItem it = new MenuItem(String.format(Locale.US,
                     "Piece %d — %d section%s", p + 1, tp.sections.size(),
@@ -456,6 +573,8 @@ class GraphEditor extends Region {
         elSel = -1;
         axisLock = 0;
         handleViewExpand = false;
+        viewT0 = 0;
+        viewT1 = -1;          // auto-fit — same rule as addSection
         syncLaneButtons();
         app.rebuildTrack();   // the compile live-captures poses + G² acc
         app.updatePieceButton();
@@ -476,30 +595,88 @@ class GraphEditor extends Region {
         return bs != null && !bridgeOrphan(bs);
     }
 
-    /** Current straight-line gap the bridge spans (the spinner value). */
+    /** The active bridge's LENGTH along the track (the spinner value,
+     *  v13.4 — was the straight-line chord): the compiled span's arc
+     *  extent, so a bridge that curves around a turn reads its real
+     *  length; chord fallback before the first compile. */
     double activeBridgeGap() {
         BridgeSection bs = activeBridge();
         if (bs == null || bridgeOrphan(bs)) return 0;
+        TrackCompiler.Span sp = spanOf(activeSection);
+        if (sp != null && sp.sLen() > 1e-6) return sp.sLen();
         return app.coaster.pieces.get(activePiece + 1).entryPose().pos()
             .sub(bs.solvedEntry.pos()).length();
     }
 
     private long lastGapNanos = 0;   // coalesces spinner-arrow undo steps
 
-    /** The gap spinner's write path (v13.2): every change RE-RUNS the
-     *  placement optimization at the requested distance — the target
-     *  piece slides along the chain end's tangent and the live bridge
-     *  follows. Arrow bursts coalesce into one undo step. */
+    /** The length spinner's write path (v13.2): every change RE-RUNS
+     *  the placement optimization at the requested length — the target
+     *  piece slides along the seams' natural continuation (v13.4:
+     *  around a split turn's own circle) and the live bridge follows.
+     *  Arrow bursts coalesce into one undo step. */
     void setBridgeGap(double dist) {
         BridgeSection bs = activeBridge();
         if (bs == null || bridgeOrphan(bs) || dist <= 0) return;
         long now = System.nanoTime();
         if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
         lastGapNanos = now;
-        app.coaster.alignPieceForBridge(bs.solvedEntry, activePiece + 1, dist);
+        applyBridgeGap(bs, dist);
+    }
+
+    /** Re-run the placement optimization at length `dist` (no undo
+     *  push — the spinner and the end-line drag each manage their
+     *  own). */
+    private void applyBridgeGap(BridgeSection bs, double dist) {
+        // tangent lengths ride along proportionally (v13.3): they are
+        // stored meters, so a resized gap kept the OLD sweep and the
+        // shape degraded toward the spiky-ends regime as the gap grew.
+        // A DEGENERATE start (a bridge created across a ~zero gap —
+        // e.g. right after a split) has nothing meaningful to scale:
+        // take the default full-length sweep instead (v13.4 — the
+        // ratio path blew 1 m tangents up by dist/ε).
+        double oldGap = activeBridgeGap();
+        if (oldGap > 0.5) {
+            bs.lenA *= dist / oldGap;
+            bs.lenB *= dist / oldGap;
+        } else {
+            bs.lenA = dist;
+            bs.lenB = dist;
+        }
+        app.coaster.alignPieceForBridge(bs, activePiece + 1, dist);
         app.rebuildTrack();
         refreshOffset();
         redraw();
+    }
+
+    /** Is (x, y) on the ACTIVE bridge's end boundary line (the piece
+     *  end)? Grab range mirrors the s/c separators; only a bridge with
+     *  a live target resizes (v13.3 — the draggable gap). */
+    private boolean hitBridgeEnd(double x, double y) {
+        if (!activeBridgeWithTarget()) return false;
+        if (y < MARGIN_TOP || y > MARGIN_TOP + plotHeight()) return false;
+        return Math.abs(x - tToX(tOff + sectionDur(activeSection))) <= 5;
+    }
+
+    /** The running bridge end-line drag (v13.3): the cursor's fraction
+     *  of the current strip maps to a new GAP distance and re-runs the
+     *  same placement optimization as the toolbar spinner — the next
+     *  piece slides along the chain end's tangent, the live bridge
+     *  follows, and the recompile re-maps the cursor each event (the
+     *  s/c boundary-drag pattern). Ctrl snaps the gap by the Options
+     *  element-length step. */
+    private void bridgeDragTo(double x, boolean snap) {
+        BridgeSection bs = activeBridge();
+        if (bs == null || bridgeOrphan(bs)) return;
+        double dur = Math.max(sectionDur(activeSection), 1e-6);
+        double frac = Math.max(0.05, (xToT(x) - tOff) / dur);
+        double gap = activeBridgeGap() * frac;
+        if (snap) {
+            double step = app.settings.snapLen();
+            gap = Math.round(gap / step) * step;
+        }
+        gap = FvdDesigner.clamp(gap, 1, 1000);   // the spinner's range
+        applyBridgeGap(bs, gap);
     }
 
     /** The bridge's tangent-length dialog ("how straight it leaves /
@@ -619,6 +796,31 @@ class GraphEditor extends Region {
              : s instanceof BridgeSection ? "Bridge" : "Force";
     }
 
+    /** Badge press anywhere in the run: a badge on ANOTHER piece's
+     *  strip activates that section first (its menu actions — split,
+     *  delete, bridge tools — operate on the active piece), then the
+     *  ordinary per-section menu opens (v13.4). */
+    private void showRunBadgeMenu(int runIdx, double screenX, double screenY) {
+        List<RunSec> rl = runLayout();
+        if (runIdx < 0 || runIdx >= rl.size()) return;
+        RunSec rs = rl.get(runIdx);
+        if (rs.piece() != activePiece) {
+            activateRunSec(rs.piece(), rs.section());
+        }
+        showSectionMenu(rs.section(), screenX, screenY);
+    }
+
+    /** '+' press: the menu appends to the RUN's end — activate its
+     *  last piece first when the editor is parked upstream (v13.4). */
+    private void plusPressed(double screenX, double screenY) {
+        int re = runEnd();
+        if (re != activePiece) {
+            activateRunSec(re,
+                app.coaster.pieces.get(re).sections.size() - 1);
+        }
+        showAddSectionMenu(screenX, screenY);
+    }
+
     /** The section BADGE menu (the strip's type tag doubles as its
      *  per-section actions handle — reverse + delete, plus append
      *  element on a straight/curve section). */
@@ -666,17 +868,18 @@ class GraphEditor extends Region {
             }
             MenuItem tangents = new MenuItem("Bridge tangents…");
             tangents.setOnAction(ev -> showBridgeDialog(k));
-            // §4's second mode as an explicit, repeatable ACTION: move
-            // the target dead ahead + align headings (min-strain for
-            // level ends); the live bridge straightens with it
+            // §4's second mode as an explicit, repeatable ACTION: the
+            // target follows the seams' natural CONTINUATION at the
+            // current bridge length (v13.4 — a split turn re-joins its
+            // own circle; straight seams reduce to dead ahead)
             MenuItem align = new MenuItem(String.format(Locale.US,
-                "Optimize placement of piece %d (align dead ahead)",
+                "Optimize placement of piece %d (continue the turn)",
                 activePiece + 2));
             align.setDisable(bridgeOrphan(bs));
             align.setOnAction(ev -> {
                 pushUndoSnapshot();
-                app.coaster.alignPieceForBridge(bs.solvedEntry,
-                    activePiece + 1, 0);
+                app.coaster.alignPieceForBridge(bs,
+                    activePiece + 1, activeBridgeGap());
                 app.rebuildTrack();
                 refreshOffset();
                 redraw();
@@ -778,6 +981,10 @@ class GraphEditor extends Region {
         elSel = mode == 2 ? 0 : -1;
         axisLock = 0;
         handleViewExpand = false;
+        viewT0 = 0;
+        viewT1 = -1;          // auto-fit: the new ACTIVE section must be
+                              // on screen, or the next click maps through
+                              // a window that ends before it
         syncLaneButtons();
         app.rebuildTrack();   // spans before layout: s/c widths need them
         refreshOffset();
@@ -797,33 +1004,31 @@ class GraphEditor extends Region {
      *  Everything shares the active value scales, so curves join up
      *  visually across every boundary. */
     private void drawInactiveSections(GraphicsContext gc) {
-        List<Section> secs = sections();
+        List<RunSec> rl = runLayout();   // the whole bridged run (v13.4)
         boolean actGeo = activeGeo();
-        double off = pieceT0();
-        for (int k = 0; k < secs.size(); k++) {
-            double dur = sectionDur(k);
-            if (k != activeSection) {
+        for (int i = 0; i < rl.size(); i++) {
+            RunSec rs = rl.get(i);
+            if (rs.piece() != activePiece || rs.section() != activeSection) {
                 gc.setGlobalAlpha(INACTIVE_SECTION_ALPHA);
                 gc.setLineWidth(1.5);
                 // REVERSED strips draw derived too: their authored lanes
                 // read back-to-front against the chain (D67); a
                 // straight/curve strip has no lanes — always derived,
                 // plus its faint element separators
-                if (secs.get(k) instanceof LaneSection ls
+                if (rs.sec() instanceof LaneSection ls
                         && (ls instanceof GeoSection) == actGeo
                         && !ls.reversed) {
-                    drawAuthoredStrip(gc, ls, off, dur);
+                    drawAuthoredStrip(gc, ls, rs.t0(), rs.dur());
                 } else {
-                    drawDerivedStrip(gc, off, dur);
-                    if (secs.get(k) instanceof StraightCurveSection sc) {
-                        drawScSeparators(gc, sc, k);
+                    drawDerivedStrip(gc, rs.t0(), rs.dur());
+                    if (rs.sec() instanceof StraightCurveSection sc) {
+                        drawScSeparators(gc, sc, spanAt(rs.piece(), rs.section()));
                     }
                 }
                 gc.setGlobalAlpha(1.0);
             }
-            off += dur;
-            if (k < secs.size() - 1) {   // boundary between sections
-                double bx = tToX(off);
+            if (i < rl.size() - 1) {   // boundary between sections
+                double bx = tToX(rs.t0() + rs.dur());
                 gc.setGlobalAlpha(0.55);
                 gc.setStroke(Color.rgb(150, 156, 175));
                 gc.setLineWidth(1);
@@ -941,7 +1146,7 @@ class GraphEditor extends Region {
     /** The vertical line + circled '+' at the ACTIVE PIECE's end (user
      *  spec): click opens the add-section menu. */
     private void drawAddButton(GraphicsContext gc, double w) {
-        double x = tToX(pieceT0() + pieceDur());
+        double x = tToX(runT0() + runDur());   // the RUN's end (v13.4)
         if (x < MARGIN_LEFT - 1 || x > w - marginRight() + 1) {
             addBtnX = -999;
             return;
@@ -988,26 +1193,29 @@ class GraphEditor extends Region {
 
     private void drawSectionBadges(GraphicsContext gc, double w) {
         badgeRects.clear();
-        List<Section> secs = sections();
-        double off = pieceT0();
+        List<RunSec> rl = runLayout();   // badges across the run (v13.4)
         gc.setFont(Font.font(10));
         gc.setTextAlign(TextAlignment.CENTER);
         gc.setTextBaseline(VPos.CENTER);
-        for (int k = 0; k < secs.size(); k++) {
-            double dur = sectionDur(k);
-            boolean dirty = secs.get(k) instanceof BridgeSection bs
-                && bridgeOrphan(bs);
-            String label = (secs.get(k) instanceof GeoSection ? "geo"
-                    : secs.get(k) instanceof StraightCurveSection ? "s/c"
-                    : secs.get(k) instanceof BridgeSection
+        for (int k = 0; k < rl.size(); k++) {
+            RunSec rs = rl.get(k);
+            double off = rs.t0();
+            double dur = rs.dur();
+            boolean dirty = rs.sec() instanceof BridgeSection bs
+                && rs.piece() + 1 >= app.coaster.pieces.size();
+            String label = (rs.sec() instanceof GeoSection ? "geo"
+                    : rs.sec() instanceof StraightCurveSection ? "s/c"
+                    : rs.sec() instanceof BridgeSection
                         ? (dirty ? "bridge !" : "bridge") : "force")
-                + (secs.get(k).reversed() ? " ◀" : "");
+                + (rs.sec().reversed() ? " ◀" : "");
             double bw = label.length() * 6 + 10;
             double x0 = Math.max(tToX(off), MARGIN_LEFT);
             double x1 = Math.min(tToX(off + dur), w - marginRight());
             if (x1 - x0 >= bw + 8) {   // strip too narrow on screen = no badge
                 double bx = x0 + 4, by = MARGIN_TOP + 4;
-                gc.setGlobalAlpha(k == activeSection ? 0.85 : 0.45);
+                boolean isActive = rs.piece() == activePiece
+                    && rs.section() == activeSection;
+                gc.setGlobalAlpha(isActive ? 0.85 : 0.45);
                 gc.setFill(Color.rgb(45, 50, 62));
                 gc.fillRoundRect(bx, by, bw, 15, 7, 7);
                 // a dirty bridge wears the warning color (v13.0)
@@ -1020,14 +1228,14 @@ class GraphEditor extends Region {
                 gc.fillText(label, bx + bw / 2, by + 8);
                 badgeRects.add(new double[]{ bx, by, bw, 15, k });
             }
-            off += dur;
         }
         gc.setGlobalAlpha(1.0);
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setTextBaseline(VPos.TOP);
     }
 
-    /** Which section's badge is under this point; -1 for none. */
+    /** Which RUN strip's badge is under this point; -1 for none (the
+     *  stored index is into runLayout(), v13.4). */
     private int hitBadge(double x, double y) {
         for (double[] r : badgeRects) {
             if (x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]) {
@@ -1049,6 +1257,7 @@ class GraphEditor extends Region {
     private int elSel = -1;            // selected element of the active s/c
     private int elDragBoundary = -1;   // element whose LENGTH is dragging
     private int elDragSmooth = -1;     // element whose ENTRY blend is dragging
+    private boolean bridgeDragGap = false;   // bridge end line = gap drag (v13.3)
     private int rClickElem = -1;       // deferred right-click menu (pan-safe)
 
     private static final double SC_CURVE_ALPHA = 0.45;
@@ -1319,9 +1528,9 @@ class GraphEditor extends Region {
     }
 
     /** The active BRIDGE strip (v13.0): the felt-G derived curves at
-     *  s/c-widget alpha — there is nothing to edit here (frozen
-     *  geometry; the badge menu re-solves / re-tangents) — plus a
-     *  centered status line when the endpoints have drifted. */
+     *  s/c-widget alpha — the geometry itself is solver-owned (the
+     *  badge menu re-tangents; the END LINE drags the gap, v13.3) —
+     *  plus a centered status line when the endpoints have drifted. */
     private void drawBridgeStrip(GraphicsContext gc) {
         BridgeSection bs = activeBridge();
         if (bs == null) return;
@@ -1330,6 +1539,19 @@ class GraphEditor extends Region {
         gc.setLineWidth(1.5);
         drawDerivedStrip(gc, tOff, dur);
         gc.setGlobalAlpha(1.0);
+        if (bridgeDragGap) {   // live readout, element-drag style
+            String readout = String.format(Locale.US, "length %.1f m",
+                activeBridgeGap());
+            gc.setFill(Color.WHITE);
+            gc.setFont(Font.font(11));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.TOP);
+            double tw = readout.length() * 6.5;
+            gc.fillText(readout,
+                FvdDesigner.clamp(tToX(tOff + dur) + 8, MARGIN_LEFT + 4,
+                    canvas.getWidth() - marginRight() - tw - 4),
+                MARGIN_TOP + plotHeight() * 0.5);
+        }
         if (bridgeOrphan(bs)) {
             gc.setFill(Color.rgb(255, 170, 130));
             gc.setFont(Font.font(11));
@@ -1345,9 +1567,9 @@ class GraphEditor extends Region {
     }
 
     /** Faint element separators over an INACTIVE s/c strip (inherits
-     *  the caller's strip alpha). k is active-piece-local. */
-    private void drawScSeparators(GraphicsContext gc, StraightCurveSection sc, int k) {
-        TrackCompiler.Span sp = spanOf(k);
+     *  the caller's strip alpha). */
+    private void drawScSeparators(GraphicsContext gc, StraightCurveSection sc,
+                                  TrackCompiler.Span sp) {
         if (sp == null || app.lastSamples == null
                 || sp.i0() >= app.lastSamples.size()) return;
         double[] b = scBoundsS(sc);
@@ -1379,12 +1601,12 @@ class GraphEditor extends Region {
             return;
         }
         if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
-            showAddSectionMenu(e.getScreenX(), e.getScreenY());
+            plusPressed(e.getScreenX(), e.getScreenY());
             return;
         }
         int badge = hitBadge(e.getX(), e.getY());
         if (badge >= 0) {
-            showSectionMenu(badge, e.getScreenX(), e.getScreenY());
+            showRunBadgeMenu(badge, e.getScreenX(), e.getScreenY());
             return;
         }
         int bIdx = hitScBoundary(e.getX(), e.getY());
@@ -1408,9 +1630,10 @@ class GraphEditor extends Region {
             }
             return;
         }
-        int k = sectionAt(gt);
-        if (k >= 0 && k != activeSection) {
-            setActiveSection(k);
+        RunSec rs = runSecAt(gt);
+        if (rs != null && (rs.piece() != activePiece
+                || rs.section() != activeSection)) {
+            activateRunSec(rs.piece(), rs.section());
             return;
         }
         if (elSel != -1) {
@@ -1764,7 +1987,8 @@ class GraphEditor extends Region {
             double dt = Math.min((now - dragTimerLast) / 1e9, 0.05);
             dragTimerLast = now;
             if (dragNodeIdx < 0 && dragHandleIdx < 0
-                    && elDragBoundary < 0 && elDragSmooth < 1) return;
+                    && elDragBoundary < 0 && elDragSmooth < 1
+                    && !bridgeDragGap) return;
             double plotRight = MARGIN_LEFT + plotWidth();
             double plotBottom = MARGIN_TOP + plotHeight();
             double winW = dragWinT1 - dragWinT0;
@@ -1773,8 +1997,8 @@ class GraphEditor extends Region {
             if (lastDragX > plotRight) {
                 dragWinT1 += (lastDragX - plotRight) * 3 * dt * winW / plotWidth();
                 grew = true;
-            } else if (lastDragX < MARGIN_LEFT && dragWinT0 > pieceT0()) {
-                dragWinT0 = Math.max(pieceT0(),
+            } else if (lastDragX < MARGIN_LEFT && dragWinT0 > runT0()) {
+                dragWinT0 = Math.max(runT0(),
                     dragWinT0 - (MARGIN_LEFT - lastDragX) * 3 * dt * winW / plotWidth());
                 grew = true;
             }
@@ -1791,6 +2015,8 @@ class GraphEditor extends Region {
                     dragNodeTo(lastDragX, lastDragY, lastDragSnap, lastDragShift);
                 } else if (dragHandleIdx >= 0) {
                     dragHandleTo(lastDragX, lastDragY, lastDragShift, lastDragSnap);
+                } else if (bridgeDragGap) {
+                    bridgeDragTo(lastDragX, lastDragSnap);
                 } else {
                     scDragTo(lastDragX, lastDragSnap);
                 }
@@ -1838,6 +2064,7 @@ class GraphEditor extends Region {
         getChildren().add(canvas);
 
         canvas.setOnMousePressed(e -> {
+            canvas.requestFocus();   // pull focus off toolbar editors
             hoverT = Double.NaN;   // no hover previews while interacting
             hoverRawT = Double.NaN;
             hoverResComp = 0;
@@ -1854,21 +2081,33 @@ class GraphEditor extends Region {
                     scPrimaryPressed(e);
                     return;
                 }
-                // a bridge has NO surface (frozen): '+', badges and
-                // strip switches only (v13.0)
+                // a bridge has no node surface: '+', badges, the
+                // draggable END LINE (gap, v13.3) and strip switches
                 if (activeBridge() != null) {
                     if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
-                        showAddSectionMenu(e.getScreenX(), e.getScreenY());
+                        plusPressed(e.getScreenX(), e.getScreenY());
                         return;
                     }
                     int badge = hitBadge(e.getX(), e.getY());
                     if (badge >= 0) {
-                        showSectionMenu(badge, e.getScreenX(), e.getScreenY());
+                        showRunBadgeMenu(badge, e.getScreenX(), e.getScreenY());
                         return;
                     }
-                    double gt = xToT(e.getX());
-                    int k = sectionAt(gt);
-                    if (k >= 0 && k != activeSection) setActiveSection(k);
+                    if (hitBridgeEnd(e.getX(), e.getY())) {
+                        beginGesture();
+                        bridgeDragGap = true;
+                        lastDragX = e.getX();
+                        lastDragY = e.getY();
+                        lastDragSnap = e.isControlDown();
+                        dragTimerLast = 0;
+                        dragGrowTimer.start();
+                        return;
+                    }
+                    RunSec rs = runSecAt(xToT(e.getX()));
+                    if (rs != null && (rs.piece() != activePiece
+                            || rs.section() != activeSection)) {
+                        activateRunSec(rs.piece(), rs.section());
+                    }
                     return;
                 }
                 int hit = hitNode(e.getX(), e.getY());
@@ -1928,13 +2167,13 @@ class GraphEditor extends Region {
                     // grabbable (D57); the button's exposed edge still
                     // opens the menu
                     if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
-                        showAddSectionMenu(e.getScreenX(), e.getScreenY());
+                        plusPressed(e.getScreenX(), e.getScreenY());
                         return;
                     }
                     // section type badges (same press rank as the '+')
                     int badge = hitBadge(e.getX(), e.getY());
                     if (badge >= 0) {
-                        showSectionMenu(badge, e.getScreenX(), e.getScreenY());
+                        showRunBadgeMenu(badge, e.getScreenX(), e.getScreenY());
                         return;
                     }
                     // a click ON the active curve inserts a node there —
@@ -1979,9 +2218,10 @@ class GraphEditor extends Region {
                     // lane switch whenever it lined up with a held value
                     double gt = xToT(e.getX());
                     if (gt < tOff - 1e-9 || gt > tOff + sectionEnd() + 1e-9) {
-                        int k = sectionAt(gt);
-                        if (k >= 0 && k != activeSection) {
-                            setActiveSection(k);
+                        RunSec rs = runSecAt(gt);
+                        if (rs != null && (rs.piece() != activePiece
+                                || rs.section() != activeSection)) {
+                            activateRunSec(rs.piece(), rs.section());
                             return;
                         }
                     }
@@ -2060,7 +2300,7 @@ class GraphEditor extends Region {
             newW = Math.max(0.1, newW);
             double tm = xToT(e.getX());
             double n0 = FvdDesigner.clamp(tm - (tm - t0) / width * newW,
-                pieceT0(), pieceT0() + domain() - newW);
+                runT0(), runT0() + domain() - newW);
             viewT0 = n0;
             viewT1 = n0 + newW;
             redraw();
@@ -2073,6 +2313,9 @@ class GraphEditor extends Region {
                 boolean grab = hitScBoundary(e.getX(), e.getY()) >= 1
                     || hitScDiamond(e.getX(), e.getY()) >= 1;
                 canvas.setCursor(grab ? Cursor.H_RESIZE : Cursor.DEFAULT);
+            } else if (activeBridge() != null) {   // the end line drags
+                canvas.setCursor(hitBridgeEnd(e.getX(), e.getY())
+                    ? Cursor.H_RESIZE : Cursor.DEFAULT);
             }
             double t = (activeSc() == null && activeBridge() == null
                     && hitNode(e.getX(), e.getY()) < 0
@@ -2119,14 +2362,15 @@ class GraphEditor extends Region {
         });
 
         canvas.setOnMouseDragged(e -> {
-            if ((elDragBoundary >= 0 || elDragSmooth >= 1)
+            if ((elDragBoundary >= 0 || elDragSmooth >= 1 || bridgeDragGap)
                     && e.isPrimaryButtonDown()) {
                 commitGestureSnapshot();
                 lastDragX = e.getX();
                 lastDragY = e.getY();
                 lastDragSnap = e.isControlDown();
                 lastDragShift = app.slideKey;
-                scDragTo(e.getX(), e.isControlDown());
+                if (bridgeDragGap) bridgeDragTo(e.getX(), e.isControlDown());
+                else scDragTo(e.getX(), e.isControlDown());
                 return;
             }
             if (!Double.isNaN(boxX0) && e.isPrimaryButtonDown()) {
@@ -2144,7 +2388,7 @@ class GraphEditor extends Region {
                 if (t1 - t0 < domain()) {   // full view has nowhere to pan
                     double shift = (panLastX - e.getX()) * (t1 - t0) / plotWidth();
                     double n0 = FvdDesigner.clamp(t0 + shift,
-                        pieceT0(), pieceT0() + domain() - (t1 - t0));
+                        runT0(), runT0() + domain() - (t1 - t0));
                     viewT0 = n0;
                     viewT1 = n0 + (t1 - t0);
                     redraw();
@@ -2183,6 +2427,7 @@ class GraphEditor extends Region {
             rClickElem = -1;
             elDragBoundary = -1;
             elDragSmooth = -1;
+            bridgeDragGap = false;
             if (e.getButton() == MouseButton.SECONDARY && rClickSeg >= 0
                     && Math.hypot(e.getX() - rPressX, e.getY() - rPressY) <= 3) {
                 int seg = rClickSeg;
@@ -2330,8 +2575,14 @@ class GraphEditor extends Region {
             base += pieces.get(p).sections.size();
             p++;
         }
-        setActivePiece(p);
-        setActiveSection(Math.min(idx - base, sections().size() - 1));
+        int sec = Math.min(idx - base, pieces.get(p).sections.size() - 1);
+        if (p >= runStart() && p <= runEnd()) {
+            // same bridged run: keep the zoom (one editing surface)
+            activateRunSec(p, sec);
+        } else {
+            setActivePiece(p);
+            setActiveSection(sec);
+        }
         return true;
     }
 
@@ -2526,11 +2777,24 @@ class GraphEditor extends Region {
      *  RESULTING curve in the active units (boundaryState). A one-time
      *  move, not a lock (a straight-locked segment re-chords over it);
      *  no adjacent section = no-op. */
+    /** Does the active section have a boundary neighbor on this side —
+     *  in its own piece, or across a bridged piece boundary within the
+     *  run (v13.4: the neighbor is then the bridge itself, matched from
+     *  its compiled curves)? */
+    private boolean hasNeighborBefore() {
+        return activeSection > 0 || activePiece > runStart();
+    }
+
+    private boolean hasNeighborAfter() {
+        return activeSection < sections().size() - 1
+            || activePiece < runEnd();
+    }
+
     void matchBoundary(int idx) {
         List<BezierBaker.Node> lane = active();
-        boolean start = idx == 0 && activeSection > 0 && lane.size() >= 2;
+        boolean start = idx == 0 && hasNeighborBefore() && lane.size() >= 2;
         boolean end = idx == lane.size() - 1 && idx > 0
-            && activeSection < sections().size() - 1;
+            && hasNeighborAfter();
         if (!start && !end) return;
         refreshOffset();
         if (boundaryState(start ? activeSection - 1 : activeSection + 1,
@@ -2548,9 +2812,9 @@ class GraphEditor extends Region {
     void matchBoundaryAll() {
         List<BezierBaker.Node> lane = active();
         if (selIdx < 0) return;
-        boolean start = selIdx == 0 && activeSection > 0;
+        boolean start = selIdx == 0 && hasNeighborBefore();
         boolean end = selIdx == active().size() - 1 && selIdx > 0
-            && activeSection < sections().size() - 1;
+            && hasNeighborAfter();
         if (!start && !end) return;
         refreshOffset();
         // nullity is uniform across lanes (it only means "no compiled
@@ -2570,7 +2834,7 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> ln = app.lanes.get(laneIdx);
         if (ln.size() < 2) return false;
         if (startEdge) {
-            if (activeSection <= 0) return false;
+            if (!hasNeighborBefore()) return false;
             double[] vs = boundaryState(activeSection - 1, false, laneIdx);
             if (vs == null) return false;
             BezierBaker.Node n = ln.get(0);
@@ -2578,7 +2842,7 @@ class GraphEditor extends Region {
             n.outDv = vs[1] * BezierBaker.effOutDt(n, ln.get(1));
             return true;
         }
-        if (activeSection >= sections().size() - 1) return false;
+        if (!hasNeighborAfter()) return false;
         double[] vs = boundaryState(activeSection + 1, true, laneIdx);
         if (vs == null) return false;
         BezierBaker.Node n = ln.get(ln.size() - 1);
@@ -2597,11 +2861,17 @@ class GraphEditor extends Region {
      *  ~0.05 s on the neighbor's side. Null = no data yet. */
     private double[] boundaryState(int k, boolean atStart, int laneIdx) {
         List<Section> secs = sections();
+        // k may fall OUTSIDE the active piece (v13.4: matching across a
+        // bridged piece boundary) — the neighbor is then the bridge,
+        // which has no lanes: only the sampled path below applies, and
+        // it needs no Section object (spanOf's flattened index already
+        // reaches the neighboring piece's spans)
+        Section nbSec = k >= 0 && k < secs.size() ? secs.get(k) : null;
         // a REVERSED neighbor's authored lanes run against the chain
         // (values at the wrong end, roll/Gl signs flipped) — its
         // boundary state comes from the compiled curves instead (D67);
         // a straight/curve neighbor has no lanes at all — likewise
-        if (secs.get(k) instanceof LaneSection nb
+        if (nbSec instanceof LaneSection nb
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
                 && !nb.reversed) {
             List<BezierBaker.Node> ln = nb.lanes.get(laneIdx);
@@ -2622,15 +2892,36 @@ class GraphEditor extends Region {
         }
         if (app.resultRates == null || app.lastSamples == null
                 || app.resultRates.length < 12) return null;
+        // a CROSS-MODE lane-section neighbor is matched ANALYTICALLY
+        // (v13.4): its boundary rates are its authored lane values (geo)
+        // or the exact force inversion ω = g(G − axis.y)/v at the seam
+        // frame (force) — no bodyRates sampling at all. The sampled path
+        // below extrapolates LINEARLY, and at a banked rolling seam the
+        // rate curves are strongly curved, so every press re-injected a
+        // small bias: the values (and the seam frame with them) crept
+        // ~0.1 °/s per Shift+B round-trip without ever settling.
+        // Analytic targets are exact AT the fixed point, so a re-press
+        // changes nothing and the seam stays put.
+        if (laneIdx < 2 && nbSec instanceof LaneSection nbl
+                && !nbl.reversed) {
+            return crossModeFromLanes(nbl, k, atStart, laneIdx);
+        }
         // sample CLEAR of the seam (v10.2): bodyRates' central
         // differences SMEAR a boundary discontinuity across ±2 samples
         // (the short angled connector once visible at seams), and the
         // seam's sample index shifts with the integrator's cadence — so
-        // read the neighbor ~3 samples inside and slope over the next 5.
-        // Sampling the smear made B converge over several presses
-        // instead of landing in one.
+        // read the neighbor ~3 samples inside and slope over the next 5,
+        // then EXTRAPOLATE the value back to the seam itself (v13.3:
+        // returning the inside sample verbatim left a 3·dt·slope bias —
+        // every B press moved the node again and the seam kept a small
+        // step wherever the neighbor's curve had slope). Reversed, s/c
+        // and bridge neighbors still come through here.
         double dt = FvdDesigner.INTEGRATE_DT;
-        double tB = atStart ? tOff + sectionEnd() : tOff;
+        TrackCompiler.Span act = spanOf(activeSection);
+        if (act == null) return null;
+        // the COMPILED boundary time (authored section ends truncate to
+        // the sample grid; tOff accumulates authored durations)
+        double tB = atStart ? act.t1() : act.t0();
         int n = app.resultRates.length;
         int i0, i1;
         if (atStart) {   // just inside the next section
@@ -2640,10 +2931,167 @@ class GraphEditor extends Region {
             i1 = rateIdxAt(tB - 3 * dt);
             i0 = Math.max(i1 - 5, 0);
         }
-        double val = derivedAt(atStart ? i0 : i1, laneIdx);
+        int at = atStart ? i0 : i1;
+        if (!activeGeo() && laneIdx < 2) {
+            return forceTargetFromRates(laneIdx, atStart, tB, i0, i1, at);
+        }
         double span = app.resultRates[i1][0] - app.resultRates[i0][0];
         double slope = span < 1e-9 ? 0
             : (derivedAt(i1, laneIdx) - derivedAt(i0, laneIdx)) / span;
+        double val = derivedAt(at, laneIdx)
+            - slope * (app.resultRates[at][0] - tB);
+        return new double[]{ val, slope };
+    }
+
+    /** {value, slope} of one lane at its start or end, with the
+     *  hold-flat rule (a lane ending before the section end holds its
+     *  final value — slope 0 at the boundary). */
+    private static double[] laneEdge(List<BezierBaker.Node> ln,
+                                     double laneSetEnd, boolean atStart) {
+        if (atStart) {
+            BezierBaker.Node n0 = ln.get(0);
+            double outDt = ln.size() >= 2
+                ? BezierBaker.effOutDt(n0, ln.get(1)) : 0;
+            return new double[]{ n0.val,
+                Math.abs(outDt) < 1e-9 ? 0 : n0.outDv / outDt };
+        }
+        BezierBaker.Node last = ln.get(ln.size() - 1);
+        if (ln.size() < 2 || last.t < laneSetEnd - 1e-9) {
+            return new double[]{ last.val, 0 };
+        }
+        double inDt = BezierBaker.effInDt(ln.get(ln.size() - 2), last);
+        return new double[]{ last.val,
+            Math.abs(inDt) < 1e-9 ? 0 : last.inDv / inDt };
+    }
+
+    /** ANALYTIC cross-mode boundary state (v13.4): the neighbor's edge
+     *  body rates + slopes, exactly, from its authored lanes — a geo
+     *  neighbor's lanes ARE the rates; a force neighbor's rates invert
+     *  its authored targets at the seam frame and ITS OWN seam design
+     *  speed (ω = g(G − axis.y)/v, ω' = g(G' − (Ω×axis).y)/v + ω·g·T.y/v)
+     *  — then converted to the ACTIVE mode's units (identity for a geo
+     *  view; G = ω·v_act/g + axis.y for a force view, v13.3's formula).
+     *  Exact both directions, so alternating B/Shift+B is idempotent
+     *  once matched. */
+    private double[] crossModeFromLanes(LaneSection nb, int k,
+                                        boolean atStart, int laneIdx) {
+        TrackCompiler.Span act = spanOf(activeSection);
+        TrackCompiler.Span seamSp = atStart ? act
+            : activeSection > 0 ? spanOf(activeSection - 1) : null;
+        if (act == null || seamSp == null) return null;
+        TrackPose seam = seamSp.exit();
+        Vec3 T = seam.T(), U = seam.U();
+        Vec3 R = U.cross(T);
+        boolean nbStarts = atStart;   // neighbor is NEXT ⇒ its start is the seam
+        double nbEnd = BezierBaker.rideEnd(nb.lanes);
+        double[][] edge = new double[3][];
+        for (int L = 0; L < 3; L++) {
+            edge[L] = laneEdge(nb.lanes.get(L), nbEnd, nbStarts);
+        }
+        double rate, rateSlope;   // the neighbor's laneIdx rate, °/s + °/s²
+        double pitchDeg, yawDeg;
+        if (nb instanceof GeoSection) {
+            pitchDeg = edge[0][0];
+            yawDeg = edge[1][0];
+            rate = edge[laneIdx][0];
+            rateSlope = edge[laneIdx][1];
+        } else {
+            // force neighbor: design speed at ITS side of the seam —
+            // exactly vDesign at its start, the compiled end sample at
+            // its end
+            TrackCompiler.Span nbSp = spanOf(k);
+            if (nbSp == null) return null;
+            double vNb = nbStarts ? nb.vDesign
+                : app.lastSamples.get(Math.min(nbSp.i1(),
+                    app.lastSamples.size() - 1)).v();
+            vNb = Math.max(0.5, vNb);
+            pitchDeg = Math.toDegrees(
+                FVDIntegrator.G0 * (edge[0][0] - U.y()) / vNb);
+            yawDeg = Math.toDegrees(
+                FVDIntegrator.G0 * (edge[1][0] - R.y()) / vNb);
+            double rateRad = Math.toRadians(laneIdx == 0 ? pitchDeg : yawDeg);
+            Vec3 omega = omegaAt(T, U, R, pitchDeg, yawDeg, edge[2][0]);
+            Vec3 axis = laneIdx == 0 ? U : R;
+            double slopeRad = FVDIntegrator.G0 / vNb
+                * (edge[laneIdx][1] - omega.cross(axis).y())
+                + rateRad * FVDIntegrator.G0 * T.y() / vNb;
+            rate = Math.toDegrees(rateRad);
+            rateSlope = Math.toDegrees(slopeRad);
+        }
+        if (activeGeo()) return new double[]{ rate, rateSlope };
+        // force view: v13.3's rate→G conversion at the ACTIVE side's
+        // seam design speed
+        double vAct = atStart
+            ? app.lastSamples.get(Math.min(act.i1(),
+                app.lastSamples.size() - 1)).v()
+            : sections().get(activeSection).vDesign();
+        double w = Math.toRadians(rate);
+        Vec3 axis = laneIdx == 0 ? U : R;
+        Vec3 omega = omegaAt(T, U, R, pitchDeg, yawDeg, edge[2][0]);
+        double val = w * vAct / FVDIntegrator.G0 + axis.y();
+        double slope = Math.toRadians(rateSlope) * vAct / FVDIntegrator.G0
+            - w * T.y() + omega.cross(axis).y();
+        return new double[]{ val, slope };
+    }
+
+    /** Ω from a body-rate triple (°/s) in the given frame — the shared
+     *  integrator convention Ω = yaw·U − pitch·R + roll·T. */
+    private static Vec3 omegaAt(Vec3 T, Vec3 U, Vec3 R,
+                                double pitchDeg, double yawDeg, double rollDeg) {
+        return U.scale(Math.toRadians(yawDeg))
+            .add(R.scale(-Math.toRadians(pitchDeg)))
+            .add(T.scale(Math.toRadians(rollDeg)));
+    }
+
+    /** FORCE-view cross-mode boundary target for Gv/Gl (v13.3): the
+     *  neighbor's resulting RATE at the seam, converted to a G target
+     *  at the ACTIVE side's own seam design speed —
+     *      G = ω·v_seam/g + axis.y
+     *  Both edges of the seam then enforce the SAME invariant (body-
+     *  rate continuity in ride time, what the unified graph shows), so
+     *  alternating Shift+B has a fixed point. The old behavior copied
+     *  the neighbor's FELT G — recorded at the NEIGHBOR'S design
+     *  speed — which multiplied the seam rate by the design-speed
+     *  ratio on every alternate press: once the two sections' design
+     *  speeds drifted apart (any height edit upstream of a frozen
+     *  vDesign), the B/Shift+B ping-pong never converged. Slope
+     *  carries the same conversion (dG/dt = ω'·v/g + ω·v'/g + axis'ʸ,
+     *  with v' = −g·T.y from the design energy profile and
+     *  axis' = Ω×axis). */
+    private double[] forceTargetFromRates(int laneIdx, boolean atStart,
+                                          double tB, int i0, int i1, int at) {
+        int comp = laneIdx + 1;   // resultRates rows: {t, pitch, yaw, roll}
+        double[][] rr = app.resultRates;
+        double span = rr[i1][0] - rr[i0][0];
+        double slopeR = span < 1e-9 ? 0
+            : (rr[i1][comp] - rr[i0][comp]) / span;
+        double rateDeg = rr[at][comp] - slopeR * (rr[at][0] - tB);
+        // the ACTIVE side's design state at the seam: the entry is
+        // exactly vDesign on the chained entry pose; the end is the
+        // compiled end sample (both move as the section reshapes — the
+        // documented mild iteration, now convergent)
+        TrackCompiler.Span sp = spanOf(atStart ? activeSection
+                                               : activeSection - 1);
+        if (sp == null) return null;
+        double vSeam;
+        if (atStart) {
+            int ie = Math.min(sp.i1(), app.lastSamples.size() - 1);
+            vSeam = app.lastSamples.get(ie).v();
+        } else {
+            vSeam = sections().get(activeSection).vDesign();
+        }
+        TrackPose seam = sp.exit();   // exact seam frame either way
+        Vec3 T = seam.T(), U = seam.U();
+        Vec3 R = U.cross(T);
+        double w = Math.toRadians(rateDeg);
+        double val = w * vSeam / FVDIntegrator.G0
+            + (laneIdx == 0 ? U.y() : R.y());
+        Vec3 omega = U.scale(Math.toRadians(rr[at][2]))
+            .add(R.scale(-Math.toRadians(rr[at][1])))
+            .add(T.scale(Math.toRadians(rr[at][3])));
+        Vec3 axis = laneIdx == 0 ? U : R;
+        double slope = Math.toRadians(slopeR) * vSeam / FVDIntegrator.G0
+            - w * T.y() + omega.cross(axis).y();
         return new double[]{ val, slope };
     }
 
@@ -2689,18 +3137,40 @@ class GraphEditor extends Region {
 
     // ---------- coordinate mapping ----------
 
-    private double maxT() { return Math.max(0.5, pieceDur()); }
+    private double maxT() { return Math.max(0.5, runDur()); }
     private double domain() { return maxT() * 1.08; }
     private double plotHeight() { return canvas.getHeight() - MARGIN_TOP - MARGIN_BOTTOM; }
     private double plotWidth() { return canvas.getWidth() - MARGIN_LEFT - marginRight(); }
 
     private double viewStart() {
         return !Double.isNaN(dragWinT0) ? dragWinT0
-             : (viewT1 > 0 ? viewT0 : pieceT0());
+             : (viewT1 > 0 ? viewT0 : runT0());
     }
     private double viewEnd() {
         return !Double.isNaN(dragWinT0) ? dragWinT1
-             : (viewT1 > 0 ? viewT1 : pieceT0() + domain());
+             : (viewT1 > 0 ? viewT1 : runT0() + domain());
+    }
+
+    /** A MANUAL zoom window survives structural edits, so the piece's
+     *  stretch can move out from under it (add/delete section, attach,
+     *  split, undo…): every click then maps through a window the strips
+     *  have left — inserts land in the wrong place and the plot shows
+     *  nothing but ghost strips ("the graph disappeared"). Run before
+     *  any mapping: slide the window back into the piece's stretch,
+     *  keeping its width; a window at least as wide as the stretch
+     *  resumes auto-fit. */
+    private void sanitizeView() {
+        if (viewT1 <= 0) return;   // auto-fit follows the run already
+        double width = viewT1 - viewT0;
+        if (width >= domain() - 1e-9) {
+            viewT0 = 0;
+            viewT1 = -1;
+            return;
+        }
+        double n0 = FvdDesigner.clamp(viewT0,
+            runT0(), runT0() + domain() - width);
+        viewT0 = n0;
+        viewT1 = n0 + width;
     }
 
     private double tToX(double t) {
@@ -3650,7 +4120,8 @@ class GraphEditor extends Region {
      *  during drags so the scale doesn't shift under the cursor. */
     private void updateScale() {
         if (dragNodeIdx >= 0 || dragHandleIdx >= 0
-                || elDragBoundary >= 0 || elDragSmooth >= 1) return;
+                || elDragBoundary >= 0 || elDragSmooth >= 1
+                || bridgeDragGap) return;
         double t0 = viewStart(), t1 = viewEnd();
         if (activeSc() != null || activeBridge() != null) {
             // no authored lanes (s/c widget or frozen bridge): fit the
@@ -3747,15 +4218,13 @@ class GraphEditor extends Region {
         resHi = Math.ceil((hi + pad) / step) * step;
     }
 
-    /** Interior section-boundary times (global) — the overlays skip a
-     *  SEAM_TRIM band around each (bodyRates smear discontinuities). */
+    /** Interior section-boundary times (global) across the whole RUN —
+     *  the overlays skip a SEAM_TRIM band around each (bodyRates smear
+     *  discontinuities). */
     private List<Double> sectionBoundaries() {
         List<Double> out = new ArrayList<>();
-        double off = pieceT0();
-        for (int k = 0; k < sections().size() - 1; k++) {
-            off += sectionDur(k);
-            out.add(off);
-        }
+        List<RunSec> rl = runLayout();
+        for (int i = 1; i < rl.size(); i++) out.add(rl.get(i).t0());
         return out;
     }
 
@@ -3815,6 +4284,7 @@ class GraphEditor extends Region {
         if (w <= 0 || h <= 0 || plotWidth() <= 0 || plotHeight() <= 0) return;
         enforceLocks();           // before updateScale sees the handles
         refreshOffset();          // section offsets before any t mapping
+        sanitizeView();           // stale manual windows follow the piece
         updateScale();
         refreshMarkers();         // 3D markers follow lane + selection
         gc.setGlobalAlpha(1.0);

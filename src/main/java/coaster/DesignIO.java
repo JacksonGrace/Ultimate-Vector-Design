@@ -112,12 +112,14 @@ public final class DesignIO {
                         bs.accA.x(), bs.accA.y(), bs.accA.z(),
                         bs.accB.x(), bs.accB.y(), bs.accB.z());
                     // seam jerk vectors + roll rates + target entry
-                    // speed (v13.2 — rate-slope/speed continuity)
+                    // speed (v13.2 — rate-slope/speed continuity) +
+                    // roll accelerations (v13.4 — roll-rate slope)
                     out.printf(Locale.US, "bdyn %.10f %.10f %.10f %.10f %.10f %.10f"
-                        + " %.10f %.10f %.10f%n",
+                        + " %.10f %.10f %.10f %.10f %.10f%n",
                         bs.jerkA.x(), bs.jerkA.y(), bs.jerkA.z(),
                         bs.jerkB.x(), bs.jerkB.y(), bs.jerkB.z(),
-                        bs.rollA, bs.rollB, bs.vB);
+                        bs.rollA, bs.rollB, bs.vB,
+                        bs.rollAccA, bs.rollAccB);
                     out.println("endsection");
                     continue;
                 }
@@ -317,6 +319,10 @@ public final class DesignIO {
                     bs.rollA = Double.parseDouble(parts[7]);
                     bs.rollB = Double.parseDouble(parts[8]);
                     bs.vB = Double.parseDouble(parts[9]);
+                    if (parts.length > 11) {   // v13.4 roll accelerations
+                        bs.rollAccA = Double.parseDouble(parts[10]);
+                        bs.rollAccB = Double.parseDouble(parts[11]);
+                    }
                 }
                 case "elem" -> {
                     if (!(curSection instanceof StraightCurveSection sc))

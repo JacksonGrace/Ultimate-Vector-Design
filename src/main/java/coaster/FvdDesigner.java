@@ -661,23 +661,31 @@ public class FvdDesigner extends Application {
             "The ACTIVE piece's placement: x/y/z, yaw (a delta on its\n"
             + "natural orientation — 0 reverts), and Reverse piece."));
 
-        // bridge GAP spinner (v13.2): shown while a bridge with a live
-        // target is active; every change re-runs the placement
-        // optimization at that distance
-        bridgeGapLbl = new Label("Gap (m)");
+        // bridge LENGTH spinner (v13.2, length semantics v13.4): shown
+        // while a bridge with a live target is active; every change
+        // re-runs the placement optimization at that length
+        bridgeGapLbl = new Label("Length (m)");
         bridgeGapLbl.setStyle("-fx-text-fill: rgb(200,205,215);");
         bridgeGapSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 1000, 20, 5));
         bridgeGapSpinner.setPrefWidth(80);
         bridgeGapSpinner.setEditable(true);
+        bridgeGapSpinner.setFocusTraversable(false);
+        // numeric-only editor (v13.4): ride/fly movement keys are handled
+        // by scene FILTERS, but the focused editor still received their
+        // KEY_TYPED characters — letters kept appearing in the box
+        bridgeGapSpinner.getEditor().setTextFormatter(
+            new javafx.scene.control.TextFormatter<String>(ch ->
+                ch.getControlNewText().matches("\\d*\\.?\\d*") ? ch : null));
         bridgeGapSpinner.valueProperty().addListener((obs, o, v) -> {
             if (docApplying) return;
             editor.setBridgeGap(v);
         });
         Tooltip.install(bridgeGapSpinner, new Tooltip(
-            "Target length of this bridge: each change moves the next\n"
-            + "piece dead ahead at this distance (placement optimization)\n"
-            + "and the bridge re-solves to it."));
+            "Length of this bridge along the track: each change slides\n"
+            + "the next piece along the seams' natural continuation —\n"
+            + "a split turn re-joins around its own circle — and the\n"
+            + "bridge re-solves to it (placement optimization)."));
         updateBridgeControls();
 
         Region spacer = new Region();

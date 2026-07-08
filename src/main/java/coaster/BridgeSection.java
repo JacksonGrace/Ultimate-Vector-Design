@@ -36,8 +36,10 @@ import java.util.List;
  * ORIENTATION: rotation-minimizing frame transport along the spline
  * (double-reflection-free small-step version: rotate each step by the
  * minimal rotation taking T_i to T_i+1), then the residual roll
- * mismatch against the target's U is distributed as a sine-eased
- * TWIST about T — roll matched at both ends, zero roll rate at the
+ * mismatch against the target's U is distributed as a QUINTIC twist
+ * about T whose end slopes are the neighbors' roll RATES (v13.2) and
+ * end second derivatives their roll ACCELERATIONS (v13.4) — the roll
+ * angle, the roll-rate graph AND its slope all flow through both
  * seams.
  *
  * SAMPLING: the spline is presampled geometrically (PRESAMPLE_STEP
@@ -62,6 +64,9 @@ public final class BridgeSection implements Section {
     public Vec3 jerkA = Vec3.ZERO;     // seam d²T/ds² (1/m² — v13.2:
     public Vec3 jerkB = Vec3.ZERO;     // rate-SLOPE continuity)
     public double rollA, rollB;        // seam roll rates (rad/s)
+    public double rollAccA, rollAccB;  // seam d(roll rate)/dt (rad/s² —
+                                       // v13.4: the roll-rate GRAPH's
+                                       // slope flows through the seams)
     public double vB;                  // target's entry design speed
                                        // (≤ 0 = pure energy, no blend)
     public double lenA, lenB;          // tangent lengths, m
@@ -76,11 +81,16 @@ public final class BridgeSection implements Section {
     }
 
     /** Fresh bridge between two poses with the default tangent length
-     *  (half the gap, floored — a sane first shape for feel passes). */
+     *  of ONE FULL GAP (v13.3 — was gap/2): |p'| at the ends equals the
+     *  tangent length, so short tangents pack the turning into the seam
+     *  regions — rate profiles spiked at the ends and went flat in the
+     *  middle (probed: end rates 12-55x the interior at gap/2, ~1x at
+     *  the full gap, with max |dRate/dt| down 3-7x). Longer still and
+     *  the interior bulge takes over. */
     public static BridgeSection solve(TrackPose entry, TrackPose target,
                                       double vDesign) {
         double gap = target.pos().sub(entry.pos()).length();
-        double len = Math.max(1, gap * 0.5);
+        double len = Math.max(1, gap);
         return new BridgeSection(entry, target, len, len, vDesign);
     }
 
@@ -93,6 +103,8 @@ public final class BridgeSection implements Section {
         b.jerkB = jerkB;
         b.rollA = rollA;
         b.rollB = rollB;
+        b.rollAccA = rollAccA;
+        b.rollAccB = rollAccB;
         b.vB = vB;
         return b;
     }
@@ -126,11 +138,19 @@ public final class BridgeSection implements Section {
         Vec3 m0 = solvedEntry.T().scale(la);
         Vec3 m1 = solvedTarget.T().scale(lb);
         // arc-length seam derivatives map to u-parameter ends with
-        // |p'| = len there: p'' = κ·len², p''' = (d²T/ds²)·len³
-        // (zero seam data = the v13.0/13.1 shapes — old files)
+        // |p'| = len there: p'' = κ·len², p''' = (dκ/ds)·len³
+        // (zero seam data = the v13.0/13.1 shapes — old files).
+        // dκ/ds = the MEASURED ⊥ part (jerkA/B, D74) plus the ANALYTIC
+        // tangential −|κ|²·T (v13.4): a constant turn's curvature
+        // vector rotates, and dropping that rotation made the septic
+        // sag off a continued circle (probed: 4.9 °/s of yaw ripple
+        // over a 103° sweep with it zeroed). D74's ringing came from
+        // MEASURING the tangential part — rebuilt from κ it is exact.
+        Vec3 j0 = jerkA.sub(solvedEntry.T().scale(accA.dot(accA)));
+        Vec3 j1 = jerkB.sub(solvedTarget.T().scale(accB.dot(accB)));
         Vec3[] cs = septic(p0, p1, m0, m1,
             accA.scale(la * la), accB.scale(lb * lb),
-            jerkA.scale(la * la * la), jerkB.scale(lb * lb * lb));
+            j0.scale(la * la * la), j1.scale(lb * lb * lb));
 
         // --- geometric presample with rotation-minimizing frames ---
         double chord = Math.max(p1.sub(p0).length(), 1e-3);
@@ -175,8 +195,21 @@ public final class BridgeSection implements Section {
         double dv = vB > 0 ? vB - vEnd : 0;
 
         // --- residual roll vs the target, distributed as a QUINTIC
-        // twist whose end slopes are the neighbors' roll rates (v13.2:
-        // roll-rate continuity; zero rates reproduce the old ease) ---
+        // twist whose end slopes are the neighbors' roll RATES (v13.2)
+        // AND whose end second derivatives are their roll ACCELERATIONS
+        // (v13.4: the roll-rate graph's SLOPE flows through the seams —
+        // the hardcoded-zero q'' left it entering/leaving flat). The
+        // quintic through these six conditions is the MINIMUM-JERK
+        // interpolant: where the residual twist demands a fast rate
+        // swing it still swings (that is the geometry's demand, D74),
+        // but it now LEAVES each seam on the neighbor's slope instead
+        // of a flat shelf. (A min-∫(q'')² septic was probed and
+        // REJECTED: strain-optimal rushes q'' away from the pinned end
+        // values — the near-seam slope got worse, −312 vs −179 °/s² on
+        // the nasty fixture.) In x = s/total: roll rate = q'·v/total,
+        // its slope = q''·v²/total² + q'·(dv/dt)/total with dv/dt =
+        // −g·T.y at the ends (the speed blend has zero end slope).
+        // Zero rates + accs on level ends reproduce the older ease. ---
         Geo end = geo.get(n);
         Vec3 wantU = solvedTarget.U()
             .sub(end.T().scale(solvedTarget.U().dot(end.T()))).normalize();
@@ -186,12 +219,19 @@ public final class BridgeSection implements Section {
         double v1b = blendedV(total, total, geo, dv, y0);
         double tw0 = total * rollA / v0b;   // dtwist/dx at the ends
         double tw1 = total * rollB / v1b;
-        double q1 = twist - tw0;            // quintic scalar Hermite,
-        double q2 = tw1 - tw0;              // second derivatives zero
-        double twD = 10 * q1 - 4 * q2;
-        double twE = -15 * q1 + 7 * q2;
-        double twF = 6 * q1 - 3 * q2;
-        double[] tw = { tw0, twD, twE, twF };
+        double dvdt0 = -FVDIntegrator.G0 * solvedEntry.T().y();
+        double dvdt1 = -FVDIntegrator.G0 * solvedTarget.T().y();
+        double c0 = (rollAccA - tw0 * dvdt0 / total)
+            * (total / v0b) * (total / v0b);
+        double c1 = (rollAccB - tw1 * dvdt1 / total)
+            * (total / v1b) * (total / v1b);
+        double qA = twist - tw0 - c0 / 2;   // general quintic Hermite
+        double qB = tw1 - tw0 - c0;
+        double qC = c1 - c0;
+        double[] tw = { tw0, c0 / 2,
+            10 * qA - 4 * qB + qC / 2,
+            -15 * qA + 7 * qB - qC,
+            6 * qA - 3 * qB + qC / 2, 0, 0 };
 
         // --- time-domain resample (uniform dt, exact landing) ---
         List<FVDIntegrator.Sample> out = new ArrayList<>();
@@ -295,10 +335,14 @@ public final class BridgeSection implements Section {
         Vec3 U = a.U().add(b.U().sub(a.U()).scale(u));
         U = U.sub(T.scale(U.dot(T))).normalize();
         Vec3 kappa = a.kappa().add(b.kappa().sub(a.kappa()).scale(u));
-        // quintic twist: roll RATE matches the neighbors at both seams
+        // septic twist: roll rate AND its slope match the neighbors at
+        // both seams; interior strain-minimal (tw = coefficients a1..a7)
         double x = total < 1e-9 ? 0 : s / total;
-        double w = tw[0] * x + tw[1] * x * x * x
-            + tw[2] * x * x * x * x + tw[3] * x * x * x * x * x;
+        double w = 0, xp = x;
+        for (int p = 1; p <= 7; p++) {
+            w += tw[p - 1] * xp;
+            xp *= x;
+        }
         if (Math.abs(w) > 1e-15) U = U.rotate(T, w);
         Vec3 R = U.cross(T);
         double v = blendedV(s, total, geo, dv, y0);

@@ -200,6 +200,10 @@ class Viewport3D {
         sub.setCamera(orbitCam);
 
         sub.setOnMousePressed(e -> {
+            // pull focus off toolbar editors (the gap spinner): scene
+            // key filters work regardless, but a focused TextField kept
+            // receiving KEY_TYPED characters while riding/flying (v13.4)
+            sub.requestFocus();
             if (e.getButton() == MouseButton.SECONDARY) {
                 if (orthoView) {
                     // in a snapped ortho view, right-DRAG pans (handled in
@@ -236,11 +240,18 @@ class Viewport3D {
                     clickX = e.getSceneX();
                     clickY = e.getSceneY();
                 }
+            } else if (e.getButton() == MouseButton.PRIMARY
+                    && povActive && !povCaptured) {
+                // hands-off POV keeps the mouse: a clean click selects
+                // the piece + section under it, same as orbit (v13.4)
+                clickX = e.getSceneX();
+                clickY = e.getSceneY();
             }
             lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
         });
         sub.setOnMouseReleased(e -> {
-            if (e.getButton() != MouseButton.PRIMARY || povActive || flyActive
+            if (e.getButton() != MouseButton.PRIMARY || flyActive
+                    || (povActive && povCaptured)
                     || Double.isNaN(clickX)
                     || Math.hypot(e.getSceneX() - clickX,
                                   e.getSceneY() - clickY) > 3) {
@@ -688,7 +699,10 @@ class Viewport3D {
         // and inactive pieces render DESATURATED so the edited one pops
         List<javafx.scene.Node> parts = new ArrayList<>();
         List<TrackCompiler.Span> spans = compiled.spans();
-        int activeP = app.editor != null ? app.editor.activePiece() : 0;
+        // the ACTIVE run renders full-color (v13.4: bridged pieces are
+        // one track); detached pieces stay desaturated
+        int runS = app.editor != null ? app.editor.runStartPiece() : 0;
+        int runE = app.editor != null ? app.editor.runEndPiece() : 0;
         int base = 0;
         for (int p = 0; p < app.coaster.pieces.size(); p++) {
             int nSec = app.coaster.pieces.get(p).sections.size();
@@ -701,7 +715,7 @@ class Viewport3D {
             base += nSec;
             if (i1 - i0 < 1) continue;
             List<FVDIntegrator.Sample> sub = samples.subList(i0, i1 + 1);
-            boolean act = p == activeP;
+            boolean act = p >= runS && p <= runE;
             parts.add(buildRailMesh(sub, -app.railGauge / 2, act));
             parts.add(buildRailMesh(sub, app.railGauge / 2, act));
             parts.add(buildTieMesh(sub, act));
@@ -850,13 +864,17 @@ class Viewport3D {
         TriangleMesh mesh = new TriangleMesh();
         mesh.getTexCoords().addAll(0, 0);
         int v = 0;
-        double nextS = 0;
+        double spacing = Math.max(0.1, app.tieSpacing);
+        // sample s is GLOBAL arc length — per-piece meshes (v13.2) start
+        // mid-ride, so the tie grid must anchor at the sublist's own
+        // start (nextS = 0 put a tie on EVERY sample until it caught up)
+        double nextS = samples.isEmpty() ? 0 : samples.get(0).s();
         // ties end exactly at the rail centerlines: the tie cross-section
         // (0.09 x 0.06 m) hides inside the 0.07 m-radius tubes, nothing pokes out
         double halfLen = app.railGauge / 2;
         for (FVDIntegrator.Sample sm : samples) {
             if (sm.s() < nextS) continue;
-            nextS += Math.max(0.1, app.tieSpacing);
+            do { nextS += spacing; } while (nextS <= sm.s());
             Vec3 spine = sm.pos().sub(sm.U().scale(app.heartOffset));
             Vec3 a = spine.sub(sm.R().scale(halfLen));
             Vec3 b = spine.add(sm.R().scale(halfLen));

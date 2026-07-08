@@ -265,6 +265,57 @@
     heading) legitimately need violent-but-smooth transients — that
     is the geometry, not the seams. All passed 2026-07-07.
 
+17. **v13.3 probes (scratch SeamProbe + BridgeSmooth; findings in
+    D75).** SeamProbe: a geo section (pitch ending 12 °/s) into a
+    force hold with a DELIBERATELY mismatched vDesign (26 vs 20),
+    replicating the editor's B-matching on alternating sides. OLD
+    felt-G-copy matching multiplies the seam pitch rate by the
+    design-speed ratio every round: 12 → 42 °/s over 8 rounds, never
+    converging (the user's Shift+B ping-pong). NEW rate-consistent
+    matching settles at 12.00 °/s with < 0.01 °/s residual per press
+    while the roll lane's authored copy stays fixed. BridgeSmooth:
+    four bridge scenarios (drop-ahead, lateral S, 60° turnaround,
+    short level gap) × tangent lengths 0.5-1.3 × gap — at 0.5·gap the
+    end rates run 12-55× the interior (the "spiky ends, flat middle"
+    report); at 1.0·gap the ratio is ~0.5-1.7 with max |dRate/dt|
+    down 3-7×; above ~1.15·gap the interior bulge takes over. Basis
+    for the 1.0·gap default. Both passed 2026-07-07.
+
+18. **v13.4 probes (scratch SeamProbe2 + BridgeProbe2; findings in
+    D76).** SeamProbe2: a geo section ending BANKED (40°) with sloped
+    pitch/yaw at the seam into a force hold, alternating full
+    three-lane Shift+B replication. v13.3 sampled matching: the
+    values AND the seam frame creep every round (yaw 8.0 → 8.9,
+    R.y 0.6157 → 0.6028 over 10 rounds; same with equal design
+    speeds) — the linear extrapolation bias. v13.4 analytic matching:
+    bit-stable from round 1, both speed cases. BridgeProbe2:
+    (a) bridge into a REVERSED-then-EDITED piece — nominal entry
+    pitch −44° vs actual head −11°, seam tangent/up still land at
+    0.0000°; (b) deleting the bridge keeps two pieces, placements
+    bit-identical, a real 45 m gap, all samples finite; (c) bisector
+    placement on a −22° dive into a level head: max |dRate/dt| 1106
+    → 529 °/s² vs dead-ahead; (d) captured roll accelerations pull
+    the bridge's entry roll-rate slope from −90 toward the chain's
+    +29 °/s² (zeroed accs = the old flat shelf). All passed
+    2026-07-07.
+
+19. **v13.4 continuation placement (scratch SplitTurnProbe; D77).**
+    The user's acceptance test, headless: split a CONSTANT turn
+    between two sections, bridge the pieces back, optimize at
+    L = 15/30/45 m (34°–103° sweeps). Flat s/c circle (rails level)
+    AND a banked LEVEL force turn (entry frame banked 30°,
+    Gv = 1/cos 30°): the bridge continues THE SAME circle — rate
+    deviation ≤ 0.11 °/s (banked case ≤ 0.01), radial sag ≤ 7 mm,
+    height flat, compiled length within 5 % of the request; a
+    straight chain reduces to dead-ahead to 1e-12 m. Notable dead
+    ends hit on the way (kept for honesty): an s/c GLOBAL-bank arc
+    is NOT a body-constant fixture (bank is held vs the horizon —
+    the "turn" is a tilted circle that climbs), and a geo coning
+    turn isn't per-meter constant either (v changes with height, so
+    κ = ω/v drifts) — the march models body-state-per-meter, which
+    is exactly what level force/geo constant turns are. Also passed
+    2026-07-07.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.
@@ -956,6 +1007,62 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     deleting the bridge separates them again; a fresh split shows its
     boundary via the saturation change (the tubes genuinely
     coincide).
+57. v13.3 fix round: (a) zoom into part of the ride (not fully out),
+    '+' → add a section — the view jumps to auto-fit with the new
+    strip visible and ACTIVE; the first click on its curve inserts
+    exactly under the cursor (no node at the strip's left edge, no
+    ghost-only plot). Zoom in near the ride end, delete the last
+    section — the window slides back inside the piece instead of
+    going blank. (b) Build geo → force, edit the geo section's
+    heights (so the design speeds drift), then alternate Shift+B on
+    the two edge nodes: the values settle after ~one press per side
+    and STAY (pre-v13.3 they grew every press); the rate overlays
+    join at the seam. A felt-G step remaining in FORCE view means
+    the seam design speeds differ — that's the honest display, not
+    a match failure. (c) Split a piece mid-ride: tie spacing on the
+    SECOND piece stays identical to the first (was: a tie on every
+    sample for the first stretch). (d) Fresh bridges leave/arrive
+    with the turning spread through the middle (rate curves rounded,
+    not end-spiked); the tangents dialog still sharpens ends on
+    demand. (e) Hover the ACTIVE bridge's end line — H_RESIZE
+    cursor; drag left/right — the gap follows the cursor with a
+    live "gap … m" readout, the NEXT piece slides dead-ahead, the
+    Gap spinner tracks, Ctrl snaps whole meters, one Ctrl+Z undoes
+    the whole drag, and the tangent sweep scales with the gap.
+59. v13.4 bridge deep-dive: split the example layout's banked turn
+    (badge > Split piece before this section, mid-turn), then ⊕ >
+    Bridge to piece 2 and badge > "Optimize placement … (continue
+    the turn)": the bridge continues the SAME turn — all three rate
+    graphs stay flat through it, no straight-line-with-transitions.
+    Type in the toolbar "Length (m)" box (was "Gap") or drag the
+    bridge strip's end line: the second piece slides AROUND the
+    turn's own circle, the bridge staying on it; absurd lengths just
+    keep circling (undoable). Straight track still optimizes to
+    dead-ahead. A bridge created right after a split (zero gap) then
+    lengthened gets a sane full-length sweep, not blown-up tangents.
+58. v13.4 round: (a) BRIDGED RUN — bridge piece 1 to piece 2: the
+    graph now shows BOTH pieces' strips plus the bridge as one
+    timeline; click any strip or badge on the far side — it
+    activates without the zoom jumping; the '+' sits past the LAST
+    piece's end and appends there even while editing upstream; in 3D
+    the whole bridged run is full-color (only detached pieces
+    desaturate). Delete the bridge — the graph splits back to the
+    single piece's window and the other piece keeps its position
+    exactly. (b) Shift+B at a BANKED geo↔force seam (roll ramped
+    through the transition, sloped handles): alternate sides
+    repeatedly — after the first press per side NOTHING changes
+    anymore, in both mode orders. (c) Reverse a piece, EDIT its
+    lanes afterwards, then bridge into it: the bridge meets the
+    reversed entrance smoothly (no sharp elbow). "Optimize placement
+    of piece N" on ends with different pitches now sets the chord
+    between the slopes (no dip-and-recover bounce); repeat-clicking
+    it is stable. (d) A bridge between rolling track: the roll-rate
+    curve now LEAVES the seam on the neighbor's slope instead of a
+    flat shelf (cramped bridges still swing fast inside — that's the
+    demanded geometry). (e) The Gap box refuses letters entirely,
+    and riding/flying with W/A/S/D never types into it. (f) In POV
+    with the mouse visible (uncaptured), plain-click any track —
+    that piece+section activates like in orbit view.
 15. Ripple checks (filled square = on, no checkmark glyph): with only
     "time" on, dragging a middle Gv node right 1 s moves every later node
     of that lane right 1 s (later transition times unchanged, shapes
