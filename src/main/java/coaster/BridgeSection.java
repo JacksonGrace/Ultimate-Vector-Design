@@ -81,6 +81,14 @@ public final class BridgeSection implements Section {
     public static final int OPT_NONE = 2;
     public int optMode = OPT_POS_YAW;
 
+    /** "Optimize length" (v13.8, D82): while set (and an optimize
+     *  mode is active) the LENGTH is chosen by
+     *  Coaster.optimalBridgeLength — the Length spinner and end-line
+     *  drag disable. Switching INTO an optimize mode turns it on
+     *  (user spec: the switch itself should land at the optimal
+     *  distance). blen's 4th field; missing = off (old files). */
+    public boolean optLen = false;
+
     public BridgeSection(TrackPose entry, TrackPose target,
                          double lenA, double lenB, double vDesign) {
         this.solvedEntry = new TrackPose(entry.pos(), entry.orient());
@@ -117,6 +125,7 @@ public final class BridgeSection implements Section {
         b.rollAccB = rollAccB;
         b.vB = vB;
         b.optMode = optMode;
+        b.optLen = optLen;
         return b;
     }
 

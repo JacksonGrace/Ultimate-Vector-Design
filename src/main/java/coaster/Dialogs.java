@@ -166,8 +166,9 @@ class Dialogs {
         helpHead(box, "Graph view");
         helpKey(box, "Scroll", "zoom the time axis around the cursor; fully zoomed out = auto-fit.");
         helpKey(box, "Right-drag", "pan while zoomed in.");
-        helpKey(box, "Hover curve", "white dot + the value there; hold Shift for the slope instead.");
+        helpKey(box, "Hover curve", "white dot + the value there; hold Shift for the slope instead. Where a thin TRUE stroke has split off (see True speed), the readout adds the true value in parentheses.");
         helpKey(box, "Resulting (toolbar)", "read-only derived curves across the WHOLE ride (thin dashed; a small gap at each section boundary is deliberate): with a force section active, pitch/yaw rates (°/s, geo colors); with a geo section active, felt vertical/lateral G (force colors). The picks live in a menu that stays open while you toggle them and closes when the mouse leaves it (or the button). Enabled curves get their OWN axis on the RIGHT edge of the plot — fitted to the visible view like the lanes — and hovering a curve shows its value there (Shift for its slope). No roll entry: the resulting roll rate IS the roll lane. These overlays are the one thing without a zero-line tint.");
+        helpKey(box, "True speed", "a THIN solid line splitting off a curve is the TRUE ride — the same quantity at the speed the train ACTUALLY arrives with, instead of the section's design speed. The curves separate only where those speeds have drifted apart (an upstream edit changed what reaches the section, or a bridge is quietly adjusting speed to meet the next piece); where they split, the thin line is what you'd really feel — smooth where the track is truly smooth, stepping where it truly kinks, even when the design curves say otherwise. Re-matching the seam (B/Shift+B) re-freezes the design speed and the strokes rejoin. The drifted section's badge wears ≠v and its badge menu names both speeds; the stats bar's top speed and the POV camera already ride the true speed.");
         helpText(box, "Value axes auto-scale to the curves; every lane curve is "
             + "tinted toward its zero line. The dotted line after a "
             + "lane's last node is its held final value — click it to add a real node. "
@@ -179,7 +180,11 @@ class Dialogs {
             + "section you are editing draws normally; the others are faint "
             + "strips — click one to edit it. Boundaries show as vertical "
             + "lines. Each section integrates from the previous one's end, at "
-            + "its own design speed frozen when it was created.");
+            + "its own design speed frozen when it was created. If later "
+            + "edits change the speed that actually ARRIVES there, the "
+            + "section has DRIFTED: its badge wears ≠v, thin TRUE strokes "
+            + "split off its curves (see Graph view), and boundary-matching "
+            + "(B/Shift+B) re-freezes the seam and clears it.");
         helpText(box, "Three section kinds so far. FORCE sections are the classic "
             + "FVD model: vertical G, lateral G and roll rate lanes. GEO "
             + "sections specify the motion DIRECTLY: pitch (teal), yaw "
@@ -203,6 +208,7 @@ class Dialogs {
             + "dialog).");
         helpKey(box, "Type badge", "the small force/geo/s/c tag at the top of each strip names its kind; click it for per-section actions: Split piece before this section (see Pieces below) and Delete section (the document keeps at least one; downstream sections re-chain from the new end; a piece's last section deletes the piece). A ◀ on the badge marks a section that runs back-to-front — that happens when its PIECE is reversed (Coaster menu; see Pieces): the section's lanes still read in the AUTHORED direction while the faint strip shows the train-direction picture, and pitched/banked seams show honestly.");
         helpKey(box, "⊕ at the ride end", "click the circled + on the dashed line past the last section to add one (its own undo step): a 1 s FORCE or GEO section HOLDING the piece's end state (end forces / end rates), or a STRAIGHT/CURVE section starting as a 10 m straight — all three continue seamlessly from whatever came before. Adding zooms the graph back out to the whole piece so the new (now active) section is under your cursor, wherever you were zoomed. ATTACH FLOATING PIECE appends another piece's whole section chain here (the floating placement is discarded — attaching means \"continue from this end\"). BRIDGE TO PIECE N spans the gap to the next piece with a smooth connector (see Pieces below). Any open menu dismisses on the next click, including on the graph.");
+        helpKey(box, "Convert", "every section's badge menu ends with CONVERT — re-author this exact shape as the OTHER kind of section: a force section as geo rates, a geo section as forces, a straight/curve or bridge as either. The track stays put (within a small re-fit residual) and you get ordinary editable lanes: a dense node carpet tracing the old shape — delete nodes to taste. Roll is the same lane in both kinds, so it passes through unchanged. A converted bridge becomes real track (it stops following its pieces). Reversed sections can't convert — their lanes read in the authored direction, opposite the train. One Ctrl+Z returns the original. (Convert changes REPRESENTATION at the same design speed; it's not the drift-reconciliation tool — that's coming as \"become real\".)");
 
         helpHead(box, "Pieces");
         helpText(box, "A ride can be several PIECES — disconnected groups of "
@@ -225,7 +231,7 @@ class Dialogs {
         helpKey(box, "Attach", "⊕ menu > Attach floating piece: the chosen piece's sections continue this piece's chain (re-laid from its end; their shapes are untouched) and the empty piece disappears. Direct attach stays available alongside the future bridge sections.");
         helpKey(box, "Move", "toolbar \"Placement ▾\" (next to the piece selector) > Piece x/y/z + Piece yaw edit the ACTIVE piece's placement — the whole piece slides/turns rigidly; other pieces never move. Yaw is a DELTA on top of the piece's natural orientation: set it back to 0 and the original heading returns exactly. The spinners re-sync when you switch pieces. The piece being edited renders FULL-COLOR in 3D; the others are desaturated. (3D drag gizmos are on the roadmap.)");
         helpKey(box, "Reverse", "toolbar \"Placement ▾\" > \"Reverse piece (flip travel direction)\": the TRACK STAYS PUT and the train runs the piece the other way — the old exit becomes the entry. The strips reorder to train order and every section badge wears ◀; sections keep editing in their authored direction. Where a seam isn't level it re-joins with an honest kink; reversing again restores everything exactly. One undo step. (A piece containing a bridge refuses to reverse — delete the bridge first.)");
-        helpKey(box, "Bridge", "⊕ menu > \"Bridge to piece\" > pick ANY other piece: a smooth connector from this piece's end to that piece's entry — position, direction, roll (its rate AND how fast that rate is changing), curvature, the RATE GRAPHS' slopes and even the SPEED all flow across both seams (the bridge's design speed eases onto the next piece's), so the joined pieces ride, read and EDIT as ONE track (see Pieces above). A reversed section on the far side is aimed at exactly as it really starts. Picking a piece that isn't next on the timeline moves it there (connecting means \"this one follows\"). The bridge FOLLOWS LIVE: move either piece or edit the track and it re-joins as you drag. RESIZE it by DRAGGING the vertical line at the END of its strip (the cursor becomes ↔ there): the next piece slides along and the bridge re-solves live — Ctrl snaps whole meters (the element-length step), a readout shows the length, and one Ctrl+Z undoes the whole drag. With a bridge active, the toolbar PLACEMENT ▾ turns into the bridge's placement panel: pick \"Optimize position and yaw\" (default — the Length box places the next piece where the track would NATURALLY go: the seams' turn and roll carried forward, blended across the bridge, so the graphs change as little as possible — split a constant turn and re-bridge it and the bridge IS that same turn, longer lengths simply carry the piece further around the circle, straight track continues dead ahead), \"Optimize position\" (same march for position, but YOU set the next piece's yaw and the bridge absorbs the heading), or \"No optimization\" (place the next piece fully by hand: x/y/z + yaw). Hovering the bridge's curves reads their values like any lane (Shift = slope). The tangent sweep scales with the length so the bridge keeps its character. And when you want to sculpt the bridge directly, badge > \"Unfreeze (edit as geo section)\" converts it into ordinary editable geo lanes reproducing its shape (the connection stops following — it's real track now; tame bridges convert essentially exactly, wild ones within ~a couple dozen cm at the far seam; Ctrl+Z brings the live bridge back). Badge > \"Bridge tangents…\" sets how straight it leaves/arrives (fresh bridges default to a full-gap sweep, which spreads the turning through the middle instead of spiking at the seams). A cramped bridge (big drop or clashing headings over a short gap) still swings hard INSIDE — smooth but fast; lengthen the gap or tangents to calm it. If the target piece is ever deleted, the bridge keeps its last shape and its badge shows \"bridge !\". A piece ending with a bridge can't be extended — its end is glued; extend the next piece instead. Deleting the bridge just disconnects: both pieces stay exactly where they are.");
+        helpKey(box, "Bridge", "⊕ menu > \"Bridge to piece\" > pick ANY other piece: a smooth connector from this piece's end to that piece's entry — position, direction, roll (its rate AND how fast that rate is changing), curvature, the RATE GRAPHS' slopes and even the SPEED all flow across both seams (the bridge's design speed eases onto the next piece's), so the joined pieces ride, read and EDIT as ONE track (see Pieces above). A reversed section on the far side is aimed at exactly as it really starts. Picking a piece that isn't next on the timeline moves it there (connecting means \"this one follows\"). The bridge FOLLOWS LIVE: move either piece or edit the track and it re-joins as you drag. RESIZE it by DRAGGING the vertical line at the END of its strip (the cursor becomes ↔ there): the next piece slides along and the bridge re-solves live — Ctrl snaps whole meters (the element-length step), a readout shows the length, and one Ctrl+Z undoes the whole drag (disabled while Optimize length is checked). OPTIMIZE LENGTH (checked automatically when you switch into an optimize mode) picks the length itself: the shortest bridge whose transition is as smooth as any longer one would be — one exact answer for a given pair of seams, no matter where the next piece currently sits or how it's yawed; uncheck it to set the length by hand. When the seams continue each other perfectly — a split piece bridged back together, even after its second half was dragged and spun anywhere — the optimum collapses to zero and the app offers to CONNECT THE PIECES DIRECTLY instead (the next piece snaps back into the seamless join). With a bridge active, the toolbar PLACEMENT ▾ turns into the bridge's placement panel. A FRESH bridge starts in \"No optimization\" — it hasn't moved anything and the panel says so (place the next piece fully by hand: x/y/z + yaw). Pick \"Optimize position and yaw\" to have the Length box place the next piece where the track would NATURALLY go (the seams' turn and roll carried forward, blended across the bridge, so the graphs change as little as possible — split a constant turn and re-bridge it and the bridge IS that same turn, longer lengths simply carry the piece further around the circle, straight track continues dead ahead), or \"Optimize position\" (same march for position, but YOU set the next piece's yaw and the bridge absorbs the heading); switching into an optimize mode applies it immediately. Hovering the bridge's curves reads their values like any lane (Shift = slope). Every optimize re-picks the tangent sweep from a fixed grid — the candidate closest to the natural continuation wins — so the same geometry at the same length gives THE same bridge, every time (grow the length and bring it back: identical; manual \"Bridge tangents…\" values last until the next optimize). And when you want to sculpt the bridge directly, badge > \"Convert to geo section\" (or \"Convert to force section\") re-authors it as ordinary editable lanes reproducing its shape — see Convert under Sections (the connection stops following — it's real track now; tame bridges convert essentially exactly, wild ones within ~a couple dozen cm at the far seam; Ctrl+Z brings the live bridge back). Badge > \"Bridge tangents…\" sets how straight it leaves/arrives (fresh bridges default to a full-gap sweep, which spreads the turning through the middle instead of spiking at the seams). A cramped bridge (big drop or clashing headings over a short gap) still swings hard INSIDE — smooth but fast; lengthen the gap or tangents to calm it. Advanced: Edit > Options has three BRIDGE OPTIMIZER preferences (tangent sweep, length tolerance, slope weight) that tune how future optimize actions shape their bridges. If the target piece is ever deleted, the bridge keeps its last shape and its badge shows \"bridge !\". A piece ending with a bridge can't be extended — its end is glued; extend the next piece instead. Deleting the bridge just disconnects: both pieces stay exactly where they are.");
         helpText(box, "Deleting a piece's only section deletes the piece. The POV "
             + "camera rides pieces in timeline order, jumping the gap between "
             + "them — bridge sections will close those gaps later in Phase 2.");
@@ -287,7 +293,7 @@ class Dialogs {
         helpKey(box, "T / Shift+T", "snap to a TOP or SIDE view with a near-orthographic lens (no perspective — for judging alignments). Top locks square to the grid; side centers on the selected node and aligns TANGENT to the track there (the track runs across the screen; nearest side kept — no selection = world-axis elevation). Shift+T AGAIN re-tangents to the current selection; T again in the top view returns to the previous perspective. Right-drag PANS without leaving the view; scroll zooms; orbiting away keeps the angle and brings perspective back.");
         helpKey(box, "Track markers", "small spheres on the track mark the active lane's nodes (selection shows white; Options toggle). Read-only for now — dragging them comes later.");
         helpKey(box, "Fly", "right-click the 3D view: WASD + mouse look, Shift fast, Ctrl slow, scroll = burst; right-click exits keeping the view.");
-        helpKey(box, "POV", "Space. Starts hands-off: the camera sits on the track (following edits) while W/S and the S key stay with the graph — and a plain click on any track selects that piece + section for editing, just like orbit view. Right-click CAPTURES: mouse hides, W/S ride at simulated speed (Shift/Ctrl faster/slower), no mouse look; right-click releases. Scroll jumps along the track either way.");
+        helpKey(box, "POV", "Space. Starts hands-off: the camera sits on the track (following edits) while W/S and the S key stay with the graph — and a plain click on any track selects that piece + section for editing, just like orbit view. Right-click CAPTURES: mouse hides, W/S ride at the TRUE simulated speed (Shift/Ctrl faster/slower), no mouse look; right-click releases. Scroll jumps along the track either way.");
         helpKey(box, "Space (captured)", "flips between fly (WASD) and POV (W/S) with the mouse still hidden.");
         helpText(box, "The light-purple line on the graph marks the POV camera "
             + "(Options toggle). The neon heartline hides itself while riding POV.");
@@ -295,7 +301,7 @@ class Dialogs {
         helpHead(box, "Menus & app.settings");
         helpKey(box, "File > Export NL2 CSV", "(Ctrl+E) writes the track for NoLimits 2's CSV import. Choose heartline (default) or rail center (the spline NL2 builds its track around), plus the point spacing; both remembered per-user.");
         helpKey(box, "Edit > Shortcuts", "grouped by category (Graph editor · View · File · History): click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
-        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps incl. the straight/curve element length (arrows walk the 1-2-5 series) · horizontal/vertical snap LOCAL vs GLOBAL (horizontal: local = Δt from the previous node, global = absolute ride time — default local; vertical: local = Δ value from the previous node, global = absolute values — default global) · neon heartline · 3D node markers · POV marker. Per-user.");
+        helpKey(box, "Edit > Options", "POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit) · snap steps incl. the straight/curve element length (arrows walk the 1-2-5 series) · horizontal/vertical snap LOCAL vs GLOBAL (horizontal: local = Δt from the previous node, global = absolute ride time — default local; vertical: local = Δ value from the previous node, global = absolute values — default global) · BRIDGE OPTIMIZER preferences — tangent sweep × (bigger = the bridge leaves/arrives straighter, turning mid-span), length tolerance % (how much smoothness \"Optimize length\" trades for a shorter bridge) and slope weight (how heavily violent rate ramps count against a length); these shape future optimize ACTIONS only — the chosen shape is saved in the file, so designs open identically anywhere · neon heartline · 3D node markers · POV marker. Per-user.");
         helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start speed (also on the first node's double-click dialog), rail colors — incl. the four G-force gradient stops, each a COLOR + G VALUE (defaults 0/1/3/5 g). Per-coaster, saved in the .fvd. (Piece placement + Reverse piece live in the toolbar's \"Placement ▾\" dropdown since v13.2 — y = height above the ground plane.)");
         helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it. Path-shaping values (heart, gauge, start, speed) ALSO land in the document history, so after closing, plain Ctrl+Z steps them back too.");
 
@@ -645,6 +651,44 @@ class Dialogs {
         Spinner<Double> snapLenSp = snap125Spinner(0.1, 20, app.settings.snapLen());
         wireOptionSpinner(snapLenSp, app.settings::setSnapLen);
 
+        // bridge optimizer (v13.9, D83): these shape OPTIMIZE ACTIONS
+        // only — the results (tangents, placement, length) are stored
+        // in the .fvd, so saved files compile the same everywhere
+        // regardless of these settings
+        Spinner<Double> bSweepSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0.6, 2.0, app.settings.bridgeSweep(), 0.05));
+        bSweepSp.setPrefWidth(80);
+        bSweepSp.setEditable(true);
+        wireOptionSpinner(bSweepSp, app.settings::setBridgeSweep);
+        Tooltip.install(bSweepSp, new Tooltip(
+            "Scales the tangent-length candidates the bridge optimizer\n"
+            + "chooses from. Bigger = the bridge leaves and arrives\n"
+            + "straighter, doing its turning mid-span; smaller = tighter\n"
+            + "sweeps that hug the seams. Applies to future optimize\n"
+            + "actions (the chosen shape is saved in the file)."));
+        Spinner<Double> bKneeSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                2, 30, app.settings.bridgeKneeTol() * 100, 1));
+        bKneeSp.setPrefWidth(80);
+        bKneeSp.setEditable(true);
+        wireOptionSpinner(bKneeSp, v -> app.settings.setBridgeKneeTol(v / 100));
+        Tooltip.install(bKneeSp, new Tooltip(
+            "\"Optimize length\": how much smoothness a SHORTER bridge\n"
+            + "may cost before the longer one wins. Higher = shorter,\n"
+            + "punchier bridges; lower = longer, gentler ones."));
+        Spinner<Double> bSlopeSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0, 0.5, app.settings.bridgeSlopeW(), 0.05));
+        bSlopeSp.setPrefWidth(80);
+        bSlopeSp.setEditable(true);
+        wireOptionSpinner(bSlopeSp, app.settings::setBridgeSlopeW);
+        Tooltip.install(bSlopeSp, new Tooltip(
+            "\"Optimize length\": how heavily fast rate RAMPS (°/s²)\n"
+            + "count against a candidate length, next to the peak rate\n"
+            + "itself. Higher = the search buys more length to calm\n"
+            + "violent transitions."));
+
         // snap axis references (v10.2; Local/Global wording v10.3):
         // HORIZONTAL (time) — Local = Δt from the previous node,
         // Global = the absolute ride-time grid; VERTICAL (value) —
@@ -730,6 +774,18 @@ class Dialogs {
         grid.add(optionReset(() -> {
             if (!vGlobal.isSelected()) { vGlobal.setSelected(true); vApply.run(); }
         }), 3, r++);
+        grid.add(new Label("Bridge: tangent sweep (×)"), 0, r);
+        grid.add(bSweepSp, 1, r);
+        grid.add(optionReset(() -> bSweepSp.getValueFactory()
+            .setValue(Coaster.SWEEP_DEFAULT)), 3, r++);
+        grid.add(new Label("Bridge: length tolerance (%)"), 0, r);
+        grid.add(bKneeSp, 1, r);
+        grid.add(optionReset(() -> bKneeSp.getValueFactory()
+            .setValue(Coaster.KNEE_TOL_DEFAULT * 100)), 3, r++);
+        grid.add(new Label("Bridge: slope weight"), 0, r);
+        grid.add(bSlopeSp, 1, r);
+        grid.add(optionReset(() -> bSlopeSp.getValueFactory()
+            .setValue(Coaster.SLOPE_W_DEFAULT)), 3, r++);
         grid.add(heartCheck, 0, r++, 3, 1);
         grid.add(markCheck, 0, r++, 3, 1);
         grid.add(povMark, 0, r, 3, 1);

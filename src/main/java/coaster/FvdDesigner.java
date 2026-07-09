@@ -375,6 +375,9 @@ public class FvdDesigner extends Application {
         (m == BridgeSection.OPT_POS ? bridgeModeP
             : m == BridgeSection.OPT_NONE ? bridgeModeN
             : bridgeModePY).setSelected(true);
+        if (bridgeOptLenCheck != null) {
+            bridgeOptLenCheck.setSelected(editor.bridgeOptLen());
+        }
         docApplying = was;
         refreshBridgeRows();
     }
@@ -395,6 +398,8 @@ public class FvdDesigner extends Application {
         if (bridgeLenRow == null || editor == null) return;
         int m = editor.bridgeOptMode();
         bridgeLenRow.setDisable(m == BridgeSection.OPT_NONE);
+        // auto length owns the spinner, the check stays clickable
+        bridgeGapSpinner.setDisable(editor.bridgeOptLen());
         bridgeYawRow.setDisable(m == BridgeSection.OPT_POS_YAW);
         bridgePosRow.setDisable(m != BridgeSection.OPT_NONE);
     }
@@ -489,6 +494,12 @@ public class FvdDesigner extends Application {
     // compiled track shared by the editor, viewport and exporter
     List<FVDIntegrator.Sample> lastSamples;
     double[][] resultRates;   // {t, pitch, yaw, roll} deg/s per sample
+    // Pass D/A true-speed results (round A, SECTIONS-DESIGN §5.1):
+    // aligned with lastSamples; equal to the design values wherever
+    // no design speed has drifted
+    double[] trueV;           // true speed m/s per sample
+    double[][] trueFelt;      // {GvTrue, GlTrue} per sample
+    double[][] trueRates;     // {t, pitch, yaw, roll} deg/s at true speed
     // per-section sample spans from the last compile (v11.0): the
     // editor lays out DISTANCE-domain strips from these
     List<TrackCompiler.Span> sectionSpans;
@@ -513,6 +524,7 @@ public class FvdDesigner extends Application {
     private VBox bridgeModeRow;
     private HBox bridgeLenRow, bridgeYawRow, bridgePosRow;
     private RadioButton bridgeModePY, bridgeModeP, bridgeModeN;
+    private CheckBox bridgeOptLenCheck;   // v13.8: auto length (D82)
     private Spinner<Double> bridgeYawSpinner,
         bridgeXSpinner, bridgeYSpinner, bridgeZSpinner;
     private SplitPane mainSplit;           // 3D view over graph panel
@@ -1190,7 +1202,25 @@ public class FvdDesigner extends Application {
             bridgeModePY, bridgeModeP, bridgeModeN);
         bridgeGapLbl.setStyle("");   // popup is light; the toolbar
         bridgeGapLbl.setTextFill(Color.BLACK);   // styling was for dark
-        bridgeLenRow = new HBox(8, bridgeGapLbl, bridgeGapSpinner);
+        // "Optimize length" (v13.8, D82): the length becomes the knee
+        // of the smoothness curve — the shortest length at which the
+        // transition stops improving; the spinner disables while on.
+        // Switching INTO an optimize mode turns it on (user spec).
+        bridgeOptLenCheck = new CheckBox("Optimize length");
+        bridgeOptLenCheck.setTextFill(Color.BLACK);
+        bridgeOptLenCheck.setFocusTraversable(false);
+        bridgeOptLenCheck.setOnAction(e -> {
+            if (docApplying) return;
+            editor.setBridgeOptLen(bridgeOptLenCheck.isSelected());
+            refreshBridgeRows();
+        });
+        Tooltip.install(bridgeOptLenCheck, new Tooltip(
+            "Pick the length automatically: the shortest bridge whose\n"
+            + "transition is (near-)as smooth as any longer one. Pieces\n"
+            + "split at a smooth spot collapse to zero — the app then\n"
+            + "offers to connect them directly."));
+        bridgeLenRow = new HBox(8, bridgeGapLbl, bridgeGapSpinner,
+            bridgeOptLenCheck);
         bridgeLenRow.setAlignment(Pos.CENTER_LEFT);
         Label bYawLbl = new Label("Next piece yaw (°)");
         bYawLbl.setTextFill(Color.BLACK);

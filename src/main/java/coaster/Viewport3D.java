@@ -345,7 +345,16 @@ class Viewport3D {
                     double mult = 1;
                     if (moveKeys.contains(KeyCode.SHIFT))   mult = 4;
                     if (moveKeys.contains(KeyCode.CONTROL)) mult = 0.25;
-                    povTime = ((povTime + dir * dt * mult) % rideTime + rideTime) % rideTime;
+                    // ride at the TRUE speed (round A, §5.1): the time
+                    // axis is design time, so covering true meters per
+                    // wall second means advancing it by v_true/v_design
+                    // at the current sample (ratio 1 until drift)
+                    int at = (int) FvdDesigner.clamp(
+                        povTime / FvdDesigner.INTEGRATE_DT, 0,
+                        app.lastSamples.size() - 1);
+                    double ratio = app.trueV == null ? 1
+                        : app.trueV[at] / Math.max(0.1, app.lastSamples.get(at).v());
+                    povTime = ((povTime + dir * dt * mult * ratio) % rideTime + rideTime) % rideTime;
                     if (app.settings.povMarker()) app.editor.refresh();   // marker follows
                 }
                 int idx = (int) FvdDesigner.clamp(povTime / FvdDesigner.INTEGRATE_DT, 0, app.lastSamples.size() - 1);
@@ -724,6 +733,9 @@ class Viewport3D {
         if (samples.size() < 2) return;
         app.lastSamples = samples;
         app.resultRates = compiled.rates();
+        app.trueV = compiled.trueV();
+        app.trueFelt = compiled.trueFelt();
+        app.trueRates = compiled.trueRates();
         app.sectionSpans = compiled.spans();
         app.updateBridgeControls();   // gap spinner tracks live moves
 
@@ -781,10 +793,13 @@ class Viewport3D {
         }
 
         double maxGv = -99, minGv = 99, maxY = -1e9, minY = 1e9, maxV = 0;
-        for (FVDIntegrator.Sample sm : samples) {
+        for (int i = 0; i < samples.size(); i++) {
+            FVDIntegrator.Sample sm = samples.get(i);
             maxGv = Math.max(maxGv, sm.Gv()); minGv = Math.min(minGv, sm.Gv());
             maxY = Math.max(maxY, sm.pos().y()); minY = Math.min(minY, sm.pos().y());
-            maxV = Math.max(maxV, sm.v());
+            // top speed is the TRUE speed (round A, §5.1) — identical
+            // to Sample.v until a design speed drifts
+            maxV = Math.max(maxV, app.trueV[i]);
         }
         FVDIntegrator.Sample last = samples.get(samples.size() - 1);
         app.statsLabel.setText(String.format(

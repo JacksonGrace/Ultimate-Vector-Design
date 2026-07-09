@@ -40,7 +40,15 @@ public final class GeoIntegrator {
     private GeoIntegrator() {}
 
     /** Samples plus the section's exact exit orientation (the natively
-     *  integrated quaternion — not re-derived from the frame). */
+     *  integrated quaternion — not re-derived from the frame). qEnd is
+     *  the quaternion AT THE LAST RECORDED SAMPLE (v13.6, D80): the
+     *  loop's post-exit state is one RK4 step PAST that sample, and
+     *  handing it out rotated everything downstream by a PHANTOM STEP
+     *  of end-rate × dt — the user's "roll jumps in value at geo→force
+     *  seams" (0.44° at 15/10/40 °/s end rates; zero end rates showed
+     *  none, which is why it was intermittent). Exit pose == last
+     *  drawn sample is the contract force sections and ScIntegrator
+     *  already keep. */
     public record Result(List<FVDIntegrator.Sample> samples, Quat qEnd) {}
 
     /** RK4 state: position + orientation quaternion. */
@@ -80,6 +88,7 @@ public final class GeoIntegrator {
         List<FVDIntegrator.Sample> samples = new ArrayList<>();
 
         double t = 0;
+        Quat qEnd = q;
         while (t <= totalTime) {   // same sampling cadence as the force path
             Vec3 T = q.T();
             Vec3 U = q.U();
@@ -92,6 +101,8 @@ public final class GeoIntegrator {
             double gl = Math.toRadians(kf.Gl()) * v / FVDIntegrator.G0 + R.y();
             samples.add(new FVDIntegrator.Sample(t, s, pos, T, U, R,
                 Math.max(0.1, v), gv, gl));
+            qEnd = q;   // the exit contract: the LAST SAMPLE's orientation
+                        // (the loop's own q ends one step PAST it, D80)
 
             State y = new State(pos, q);
             Deriv k1 = deriv(y, t, keyframes, vDesign, y0);
@@ -111,6 +122,6 @@ public final class GeoIntegrator {
             t += dt;
         }
 
-        return new Result(samples, q);
+        return new Result(samples, qEnd);
     }
 }

@@ -37,7 +37,10 @@ Still to come in
 Phase 2: piece placement 3D gizmos (pitch editing user-approved if
 revertible), mid-section node-anchored split (user-confirmed),
 influence curves +
-"become real" (direct attach stays first-class beside bridges); then
+"become real" (direct attach stays first-class beside bridges —
+§5 spec'd in full 2026-07-07, user-approved; ROUND A live v13.6
+D79: per-run Pass D + true Pass A + drift display; rounds B/C to
+come); then
 the TIME/DISTANCE domain toggle for force/geo
 lanes (user-confirmed roadmap item — the Domain slot has waited in
 the model since Phase 1). One AMENDMENT to
@@ -197,7 +200,14 @@ user-adjustable). Two modes:
   (curvature/torsion cost), then solve the spline. IMPLEMENTED v13.1
   as an explicit repeatable ACTION (closed form: with the gap distance
   held, minimum strain = dead ahead with headings aligned — no numeric
-  solver needed).
+  solver needed); GREW into the continuation march (v13.4 D77) and
+  then march v2 + deterministic lens + "Optimize length" (v13.8
+  D82): the march blends the seam states as jerk-slope-matched cubic
+  Hermites, the tangent lengths come from a fixed deviation-
+  minimizing grid against the march path (same geometry = the one
+  same bridge — the old rescale drifted per round trip), and an
+  optional length knee search collapses matched seams toward zero
+  (the "connect directly?" prompt).
 
 AMENDED v13.1 (D73, user decision): the bridge is NOT frozen — it
 LIVE-FOLLOWS its endpoints (the compiler re-captures poses + seam
@@ -218,21 +228,296 @@ fast-but-smooth interior transients (the gap spinner / tangents /
 optimize are the cure). A toolbar GAP spinner re-runs the placement
 optimization at the chosen distance on every change.
 
-## 5. Design-vs-true editing, influence curves, "become real"
+## 5. Design vs TRUE speed: display, "become real", influence curves
 
-A section entered at trueV ≠ vDesign keeps its shape; its TRUE forces
-differ from the authored lanes. The designer can:
-1. **Edit at design speed** (default): lanes mean what they always meant;
-   the resulting graphs (Pass A) show the true forces alongside.
-2. **Influence mode:** author delta curves on top of the *resulting*
-   curves: `effectiveTarget(t) = resulting(t) + delta(t)`, re-integrated
-   at the true entry speed to REGENERATE the section's geometry. (This is
-   still Pass G — just with a different control parametrization; vDesign
-   for such a section is defined as the true entry speed at last apply.)
-3. **"Become real" button:** sets vDesign := current true entry speed,
-   bakes the resulting curves (+deltas) into ordinary editable lanes
-   (first node forced to match the bridge/upstream exit state), clears
-   influence mode. One-way, undoable via document snapshot.
+STATUS: designed in full 2026-07-07 (user-approved); ROUND A LIVE
+(v13.6, D79 — true speed exists and shows; 5.1/5.2 implemented);
+CONVERT LIVE (v13.7, D81 — 5.3b, user-spec'd during round A and
+landed early); 5.3/5.4 (become-real, re-freeze, influence) are not
+yet built. The original three-point sketch's semantics survive as
+5.3/5.4. Ships in rounds (5.7).
+
+### 5.0 The problem, and the property that shapes the design
+
+Each section's geometry integrates at its own design-speed profile
+v_d(s) (energy from vDesign at the section's entry height, §0). The
+TRUE speed is what a train actually carries there. They drift apart
+whenever upstream edits change the energy reaching a seam — '+'
+freezes vDesign only at creation, B/Shift+B re-freeze only at match
+time (D78) — and every felt/rate curve the app shows is recorded at
+DESIGN speed, so drift makes the graphs lie about the ride (D78's
+"jolt exactly on the transition line" was this, at one seam, fixed
+seam-locally). §5 makes drift first-class:
+
+- SHOW it: finish Pass D/A so true curves exist and draw (5.1-5.2).
+  Result.trueV has been WRITE-ONLY since Phase 1 — nothing consumes
+  it today; POV, stats and all felt curves ride design speed.
+- FIX it: two explicit per-section reconciliation ops (5.3) — one
+  keeps the lanes and reshapes, one keeps the shape and re-authors
+  the lanes ("become real").
+- SCULPT on it: influence mode (5.4) — sparse delta lanes over a
+  self-computed reference, for adjusting a section at its true
+  entry speed without abandoning the authored lanes.
+
+The property doing most of the work (CORRECTED during round A — the
+design pass overclaimed "seamless by construction"): TRUE curves
+tell the GEOMETRIC truth. True speed is continuous along connected
+geometry (energy never steps), and true felt/rates are pure
+functions of (κ, v_true) — so they are continuous exactly where the
+track's CURVATURE is, and step exactly where it physically kinks,
+independent of all design-speed bookkeeping. Both directions
+matter, and both are gated (TESTING #21 b/b2): a felt-matched force seam
+whose design speeds drifted LOOKS smooth in the design lanes while
+the ride physically kinks — the true curve steps and exposes it
+(D78's jolt, made visible); a stale-vDesign s/c (or bridge) seam
+STEPS in the design felt while the ride is actually smooth — the
+true curve stays joined and calls off the false alarm. Design
+curves need the freeze rules and the D74 speed blend to stay
+honest; true curves never do. The blend in particular is a
+design-side device: Pass D rides a bridge as plain geometry, so the
+true curves show the ride WITHOUT the blend's "invisible
+brake/boost" (Phase 3 makes speed real and subsumes this honestly).
+
+### 5.1 Finish Pass D and Pass A (round A)
+
+Pass D becomes per-RUN (run = maximal chain of pieces linked by
+trailing bridges — the same structure GraphEditor.runLayout walks,
+re-derived model-side from "last section is a BridgeSection"):
+
+    vRun = the run's FIRST section's vDesign (run 0: == v0, the
+           Start-speed coupling unchanged)
+    yRun = the run's first sample height
+    v_true(s) = sqrt(vRun² + 2g(yRun − y(s)))    within the run
+
+A detached piece is its own run — its trueV references its own
+entry, not the ride start (today's passD referenced sample 0 of
+the whole document, meaningless for floating pieces; harmless only
+because nothing consumed it).
+
+Pass A grows true-value arrays alongside rates[][]. NO differencing
+— the recorded design felt already encodes curvature exactly:
+
+    κ_U = g(Gv_d − U.y)/v_d²            (per sample; Gl/R.y alike)
+    Gv_true = κ_U·v_true²/g + U.y
+            = (v_true²/v_d²)·(Gv_d − U.y) + U.y
+    true rates = design rates · (v_true/v_d)      (roll included)
+
+Exact per sample, uniform across ALL modes (force, geo, s/c,
+bridge — each records felt at design speed). Graphs keep plotting
+over the design time axis (the shared axis); true values plot at
+their sample's position on it. POV advance and the stats-bar top
+speed switch from Sample.v to trueV (identical when nothing has
+drifted; ride-time stat stays the axis duration).
+
+### 5.2 Display (round A)
+
+- TRUE STROKES: wherever |true − design| exceeds a pixel threshold,
+  the lane/derived felt curve gains a THIN solid companion stroke
+  in the same lane color (design keeps the full-weight stroke). No
+  new toggle: the strokes splitting IS the drift indicator; they
+  rejoin when reconciled. (Reserve alternative if this reads noisy
+  in feel-testing: a "True" pick in the Resulting popup on the
+  right-edge axis.)
+- BADGE hint: a drifted section's badge wears "≠v"; its badge
+  MENU's info line spells it out ("… — design 20.0 m/s · entered
+  26.4 m/s"; canvas badges have no native tooltips, the menu is one
+  click and already the reconcile-op home). Threshold DRIFT_EPS
+  0.2 m/s, tunable.
+- HOVER: the lane hover readout appends the true value when
+  drifted ("2.50 g (true 2.91)"); Shift/slope likewise.
+
+### 5.3 Reconciliation ops (round B — badge menu, one undo step)
+
+Two ops with opposite contracts:
+
+- "SET DESIGN SPEED TO ENTRY (reshape)": vDesign := trueV at the
+  section's first sample; lanes/elements untouched. Force/geo
+  geometry regenerates at the new speed (the §0-sanctioned way
+  shape changes: an edit to THIS section); an s/c SPINE is
+  untouched by construction and its felt re-times — but RATE-mode
+  roll is per-second by design (D69), so RATE-roll banking DOES
+  re-shape with the speed; GLOBAL-roll s/c is fully stable.
+  Disabled on bridges
+  (their vDesign is live-captured). This promotes D78's B-matching
+  side effect to an explicit op — with one deliberate difference:
+  B-matching freezes to the UPSTREAM DESIGN-END speed (seam-local
+  agreement even under compound drift); this op freezes to TRUE
+  (global honesty). On a clean chain they coincide. A chain-wide
+  convenience ("Re-freeze all design speeds") sweeps upstream-
+  first with a recompile per section — each section's true entry
+  depends only on already-frozen upstream, so one sweep converges
+  exactly; afterwards design == true everywhere in the run.
+- "BECOME REAL (keep shape, re-author lanes)": vDesign := trueV at
+  entry; the lanes are REWRITTEN as a fit of the TRUE felt/rate
+  curves on the true time axis; influence state (if any) clears.
+  Why shape is preserved (closure): the true curves are exactly
+  the targets that, integrated at true speed, turn at the existing
+  curvature — g(G_true − U.y)/v_true = κ·v_true. The only error is
+  fit residual + the dt cadence quantum (the unfreezeBridge story,
+  D78, which is this op's proven mechanism). FIT RULE: nodes at
+  the AUTHORED nodes' time-mapped positions (t_d ↦ s ↦ t_true) —
+  the author's node structure carries intent and survives — with
+  values + slope-matched handles from the true curves (effOutDt/
+  effInDt, as unfreeze); if the baked shape residual exceeds
+  BECOME_REAL_TOL (~0.05 m, tunable) the worst segments midpoint-
+  subdivide up to a cap. The sketch's "first node forced to match
+  upstream" happens BY CONSTRUCTION: at vDesign == true entry the
+  first fitted value IS the upstream true exit felt.
+
+Round-1 refusals (menu-disabled with tooltip): REVERSED sections
+(lanes author the opposite direction, and a yaw-placed mismatched
+seam is unrepresentable as a forward section's entry — becoming
+real there needs an auto-split-at-the-seam story first; splits are
+bitwise, so this is a natural round-2), BRIDGES (Convert, 5.3b, IS
+their become-real), s/c (shape cannot drift; re-freeze only). Geo
+sections get both ops — same formulas on rates.
+
+### 5.3b CONVERT — mode re-authoring (v13.7, D81 — LANDED early)
+
+USER SPEC during round A: "two modes to edit geo on a force
+section and vice versa: influence and Convert", presented unified
+and simple. CONVERT re-authors a section's compiled shape as the
+OTHER lane mode at its own design speed — a REPRESENTATION change,
+orthogonal to 5.3's speed reconciliation (§5.1 drift, if any,
+survives conversion; the ops compose freely). Directions:
+force↔geo, s/c→either, bridge→either — v13.5's bridge-only
+"Unfreeze (edit as geo section)" renamed and generalized into it
+(a converted bridge still stops following and splits its run).
+Engine: Coaster.convertToLanes, the unfreeze recipe generalized —
+per-meter rates measured off the samples, re-timed onto the
+target's energy profile (identity for force/geo/s-c profiles, real
+work for bridge blends), fitted as a 0.1 s slope-matched node
+carpet ("delete nodes to taste", D78); geo lanes = the rates,
+force lanes = the felt targets ω·v/g + axis.y at that profile,
+and BOTH keep the same roll-rate third lane. UI: a "Convert to
+geo/force section" group at the bottom of EVERY badge menu, only
+the other mode(s) offered; reversed sections refuse (5.3's rule).
+vDesign carries over. Gated TESTING #23 (mm–2 cm on geo/s-c
+fixtures; 0.3% relative across the whole default layout). Round
+B's become-real shares this machinery — the authored-node-times
+fit (5.3) upgrades both when it lands.
+
+### 5.4 Influence mode (round C) — the reference/base construction
+
+The sketch's `effectiveTarget = resulting + delta` is kept, with
+"resulting" pinned down so regeneration can NEVER feed itself (the
+feedback loop D72 originally guarded against, relocated here by
+D73): the base is computed fresh every compile from the section's
+OWN authored data — never from its own output.
+
+    ref      = integrate(authored lanes, authoredVDesign, entry
+               pose)                    — the section's old shape
+    v*(s)    = sqrt(vApply² + 2g(y_entry − y_ref(s)))
+    base(t*) = true curves along ref at the v* profile (5.1's
+               formulas), resampled onto the bake grid over
+               t*(s) = ∫ ds/v*
+    geometry = integrate(base + bake(deltaLanes), vApply, entry
+               pose)                    — passG runs TWICE
+
+vApply is captured := the section's true entry speed when the mode
+is ENTERED (that instant's reconciliation) and stored; it does NOT
+live-follow upstream (that would violate §0 — shape changing on
+upstream edits). base is a pure function of (authored lanes,
+authoredVDesign, vApply, entry pose): deterministic, exact across
+save/load (no dense snapshot persisted), and upstream edits move
+it only as they move any force section — through the entry pose
+(height translations cancel in y_entry − y_ref: shape is
+translation-invariant, same as today). delta ≡ 0 reproduces the
+authored shape exactly up to discretization (5.3's closure), gated.
+
+Mode rules:
+- LaneSection only (force + geo). Reversed sections refused in
+  round 1 (5.3's reason). s/c and bridges have nothing to gain.
+- MODAL: while influenced, the authored lanes are dormant (not
+  directly editable — one editing surface per section); the strip
+  edits the DELTA lanes. Exit paths, one undo step each: "Become
+  real" (fits the EFFECTIVE curves, clears influence) or "Discard
+  influence" (deltas + vApply dropped, authored lanes govern —
+  the shape snaps back).
+- The section's DURATION becomes t*_end (true traversal time);
+  strips re-lay out via the spans as usual.
+- vDesign()/vDesign(v) — the interface, and everything through it
+  ('+' vDesign freezing, bridge vB capture, B-matching's D78
+  seam-speed re-freeze) — reads AND writes vApply while
+  influenced: the active generator's speed. The authored field
+  stays bound to the dormant lanes; DesignIO writes it explicitly.
+- B/Shift+B on an influence section write the DELTA edge nodes:
+  delta = neighbor's target effective value − base at the edge
+  (slope likewise) — the existing matching machinery minus base.
+- '+' after an influence section holds the effective end values
+  (base end + delta end): Coaster.continuation reads effective.
+- The future TIME/DISTANCE domain toggle applies to delta lanes
+  the same way it applies to lanes (they live on the section's
+  axis, whatever unit it is).
+
+### 5.5 Influence UX (round C; §10's open question, decided)
+
+EFFECTIVE-VIEW editing: the strip draws the EFFECTIVE curves
+(base + delta) as the lane curves — the graph keeps showing real
+ride quantities, per the unified-view rule — with the BASE as a
+dashed guide underneath (lane color, low alpha). Delta nodes RIDE
+the effective curve: a node plots at (t, base(t) + delta); a drag
+writes delta = y − base(t); a zero-delta node sits exactly ON the
+guide (a fresh influence section is all guide — grab anywhere and
+sculpt). Handles shape the DEVIATION — the drawn segment is
+base + deltaBezier, so a "flat" handle follows the guide, not the
+horizontal; knobs plot base-offset like nodes. Zero-line fills
+reference the guide, so the tint shows exactly what the delta
+adds/removes. (Reserve alternative if effective-view editing
+confuses in feel-testing: delta lanes drawn around zero in their
+own band, effective as a derived overlay — one redraw-path switch;
+both share the same delta model.)
+
+Badges: influenced sections wear an "fx" mark + the two exit menu
+entries; the ≠v drift hint (5.2) stacks on top (vApply itself can
+go stale against later upstream edits).
+
+### 5.6 Persistence + undo
+
+FVDD3, inside a lane-section block (unknown-line rules cover old
+readers; missing = no influence):
+
+    infl vApply                  (presence = influence mode on)
+    dlane i  +  dn ...           (delta nodes, exact `n` grammar)
+
+The `section` line's vDesign field stays the AUTHORED speed.
+Rounds A/B change NO format (become-real writes ordinary lanes).
+Undo: DocState already deep-copies sections; it grows the two
+fields. base/ref are derived and never stored anywhere.
+
+### 5.7 Rounds and gates (round A gated in TESTING #21)
+
+Round A — true speed exists and shows: per-run Pass D, true Pass A
+arrays, true strokes + badge hint + hover, POV/stats on trueV.
+IMPLEMENTED (see D79). Gates (live in Phase2Gate.trueSpeed):
+(a) a clean '+'-frozen chain keeps trueV == design v to float
+noise, and a detached piece's trueV references its own entry;
+(b) BOTH seam truth directions — a felt-matched force seam with a
+drifted downstream design speed reads smooth in design felt while
+the TRUE felt steps (the hidden kink, D78's jolt made visible),
+and a stale-vDesign s/c seam steps in design felt while the TRUE
+felt stays continuous (the false alarm suppressed); a bridged run
+carries ONE energy body (no trueV step at bridge seams; the blend
+honestly diverges inside); (c) the single-force bit-for-bit gate
+untouched, trueV == Sample.v bitwise there (Pass D/A additions are
+read-only).
+
+Round B — reconciliation: the two badge ops + chain re-freeze.
+Gates: (d) become-real shape preservation ≤ tol on tame + violent
+fixtures (UnfreezeProbe pattern) and felt honesty — recompiled
+design felt == previous true felt ≤ fit residual; (e) idempotence
+— a second become-real is ~a no-op, re-freeze after become-real is
+an exact no-op; (f) after the chain sweep, design == true along
+the whole run.
+
+Round C — influence: model + IO + two-pass passG + strip UX +
+B-matching + '+'. Gates: (g) delta-0 closure — shape == authored
+shape ≤ fit tol; (h) §0 invariance — an upstream translation
+leaves an influence section's local shape bitwise (pose tilts
+affect it exactly as they affect a plain force section);
+(i) infl/dn round-trip byte-identical, old files load
+uninfluenced; (j) delta-space B-matching idempotent at a drifted
+seam.
 
 ## 6. Speed regions (Phase 3, but the model lands in Phase 1)
 
@@ -298,6 +583,9 @@ Phase 0, D44) and Pass D's speed ODE. v floor 0.5 m/s stays
 - Design-speed profile vs constant vDesign inside a section (spec above
   says profile-by-energy; revisit if sections get long).
 - Bridge cost function weights (curvature vs torsion vs length).
-- Influence-mode UX: where the delta lanes live in the graph strip.
+- ~~Influence-mode UX: where the delta lanes live in the graph
+  strip~~ decided in the 2026-07-07 design pass (5.5):
+  effective-view delta editing, base as a dashed guide (the
+  around-zero band kept as the reserve alternative).
 - Speed-region overlap policy vs auto-trim.
 - DISTANCE-domain force sections: exact ds-grid bake spacing.

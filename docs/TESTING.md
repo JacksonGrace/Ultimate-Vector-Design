@@ -329,6 +329,101 @@
     plus ~one integration step of rate on the exit pose. All passed
     2026-07-07.
 
+21. **TRUE-speed pass gates (§5 round A, v13.6 D79 — canonical, in
+    Phase2Gate.trueSpeed).** (a) No-drift identity: a '+'-style
+    chain frozen at the exact design-end speed keeps trueV == design
+    v to 3.6e-15 m/s; the single-force bit-for-bit gate additionally
+    pins trueV == Sample.v BITWISE. (b) Both seam truth directions:
+    a felt-matched force→force seam whose downstream vDesign is
+    drifted −6 m/s reads 0.0000 g in the design felt while the TRUE
+    felt steps 4.7 g (the hidden kink D78 chased); a stale-vDesign
+    s/c→s/c seam continuing the same R20 arc steps 1.31 g in design
+    felt while the TRUE felt stays smooth to 0.018 g (the false
+    alarm suppressed); inside the staled section |true − design|
+    reaches 1.30 g (the companion-stroke trigger). (c) A DETACHED
+    piece is its own run: its trueV starts at its OWN first
+    section's vDesign (24.000, not the 17.4 that ride-start energy
+    would give). (d) A bridged run is ONE energy body: max
+    trueV step between adjacent samples 0.018 m/s across both bridge
+    seams, while inside the bridge trueV honestly diverges 6.8 m/s
+    from the design speed blend and the target piece keeps run
+    energy (24.8 m/s, not its stale 18). All passed 2026-07-08.
+
+22. **Geo exit-pose contract (v13.6 D80 — canonical gate
+    Phase2Gate.geoExitPose + scratch SeamOrient).** The user's
+    "instant roll jump at geo→force seams": GeoIntegrator handed out
+    its POST-LOOP quaternion — one RK4 step past the last recorded
+    sample — as the exit orientation, rotating everything downstream
+    by end-rate × dt (0.4387° on a 15/10/40 °/s fixture = |Ω|·dt
+    exactly; the seam sample-gap twisted 0.80° of roll vs the
+    interior's 0.40°/sample; zero end rates ⇒ ~0.0002°, the
+    intermittency the user described). Post-fix: exit == the last
+    sample's frame to 0.0°, seam rotation == the interior cadence
+    (0.4000° roll / 0.4392° total), zero-rate and force-section
+    controls clean. Gate: constant 15/10/40 geo section,
+    angle(qEnd, fromFrame(last sample)) < 1e-4°. Passed 2026-07-08.
+
+23. **CONVERT gates (v13.7 D81 — canonical, Phase2Gate.convertGates;
+    UnfreezeProbe re-pointed at Coaster.convertToLanes).** Shape
+    preservation, compile-before vs compile-after, measured at
+    matched arc lengths (interior probes at 10%..90% + the end
+    position): geo→force (constant 15/10/40 °/s, 2 s) 6.7 mm
+    interior / 4.4 mm end; s/c→geo and s/c→force (straight + R20
+    60° smoothed + straight) 16.7 mm / 12.2 cm; bridge→force
+    9.8 cm interior (the document end is pinned by the next piece's
+    own placement — the seam-residual story is #20's); force→geo
+    across the WHOLE 407 m default layout 0.94 m interior / 1.30 m
+    end = 0.23%/0.32%, the 0.1 s node carpet rounding the layout's
+    ±50 °/s roll spikes and 0.2 s Gv steps (better relative error
+    than #20's accepted 0.8%; "delete nodes to taste" applies).
+    vDesign carries over; converted sections are the requested
+    mode. All passed 2026-07-08.
+
+24. **Bridge double-bump + determinism + optimal length (v13.8 D82 —
+    scratch BridgeBump; SplitTurnProbe re-pointed at
+    Coaster.optimizeBridge).** BridgeBump: a turn→straight optimize
+    (R25 flat turn ending mid-arc, straight target, P+Y at 30 m)
+    peaks INSIDE at x1.00 of the seam's own rate (pre-fix x2.20 —
+    stale chord lens + linear-blend march); a roll 35→0 °/s blend
+    peaks x1.12 at a fixed 35 m (the residual-bank twist demand) and
+    x1.00 at the knee's optimal 56 m; OPTIMAL LENGTH is a pure
+    function of the seam states (absolute candidate ladder — the
+    chord-anchored first attempt wandered under mode ping-pong):
+    P+Y → pos-only → P+Y returns 56.000 → 56.000 m exactly, a
+    smooth split MOVED 51 m away and yawed 137° collapses to the
+    1 m floor, and a SLOPED-seam geo split (all lanes ramping
+    through the cut, matched values and slopes) moved anywhere
+    collapses too — the floor IS the zero-distance attach cue;
+    30→90→30 length round trips return lens AND shape
+    to exactly 0.000 drift (pre-fix: 3.8 m lens, 4.3 cm shape per
+    trip, compounding). SplitTurnProbe THROUGH the new optimize:
+    better than the D77 baseline — flat s/c circle re-joins at
+    0.06-0.12 °/s ripple with 0-8 mm radial (L = 15/30/45), the
+    banked level force turn at 0.00-0.01 °/s with 0-1 mm; straight
+    seams still dead-ahead to 1e-12. Dead ends kept for honesty:
+    peak-rate lens cost corner-cut the circle (10-30 cm sag);
+    arc-fraction deviation drowned in tangential offset; virtual
+    candidates needed the B-side seam vectors YAW-ROTATED and the
+    march's d-scaled jerk slopes needed a 2%-of-κ deadband (fit
+    noise moved placements 10 cm). All passed 2026-07-08.
+
+25. **Quintic march onset + optimizer settings (v13.9 D83 — scratch
+    BridgeBump gained the onset pin).** The march blend's upgrade
+    from cubic to QUINTIC Hermite (zero end second-derivative)
+    softens how hard the rate graphs bend right after a seam: onset
+    ratio (peak |rate slope| in the outer 8% of the span over the
+    overall peak) 0.11 on the turn→straight fixture vs ~0.4 with
+    the cubic, gated < 0.3; overshoot stays x1.00 and EVERY prior
+    bridge gate passes unchanged (constant/zero seam states reduce
+    the quintic to the same constant blend — floor collapse, mode
+    ping-pong purity 56.000 → 56.000 m, zero length-round-trip
+    drift). The three new Options settings (tangent sweep ×, length
+    tolerance %, slope weight) enter the core as PARAMETERS with the
+    old signatures kept as default-overloads, so all probes/gates
+    run the same defaults byte-stably; the settings shape optimize
+    ACTIONS only and the results are stored in the .fvd (files
+    compile identically anywhere). Passed 2026-07-08.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

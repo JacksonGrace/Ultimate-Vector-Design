@@ -32,11 +32,14 @@ public final class TrackCompiler {
     private TrackCompiler() {}
 
     /** Global samples plus per-sample analysis, aligned by index.
-     *  trueV duplicates Sample.v while every section runs at its design
-     *  speed (single-section today) — it EXISTS so Phase 3 has the
-     *  seam to diverge them. */
+     *  trueV is Pass D's TRUE speed (per-RUN energy, §5.1 round A);
+     *  it equals Sample.v exactly wherever nothing has drifted.
+     *  trueFelt {GvT, GlT} and trueRates {t, pitch, yaw, roll} are
+     *  Pass A at the true speed — the §5 "true curves". */
     public record Result(List<FVDIntegrator.Sample> samples,
-                         double[] trueV, double[][] rates, List<Span> spans) {}
+                         double[] trueV, double[][] rates,
+                         double[][] trueFelt, double[][] trueRates,
+                         List<Span> spans) {}
 
     /** One section's slice of the assembled ride (v11.0): sample index
      *  range [i0..i1] plus its global time/arc-length extent, plus the
@@ -57,10 +60,24 @@ public final class TrackCompiler {
     public static Result compile(Coaster c, double dt) {
         List<FVDIntegrator.Sample> all = new ArrayList<>();
         List<Span> spans = new ArrayList<>();
+        // Pass D's run table (§5.1, round A): a RUN starts at every
+        // piece not preceded by a trailing bridge; rows are
+        // {first sample index, entry speed = first section's vDesign}
+        // (run 0's equals v0 through the Start-speed coupling).
+        List<double[]> runs = new ArrayList<>();
+        boolean prevEndsBridge = false;
         for (int p = 0; p < c.pieces.size(); p++) {
             TrackPiece piece = c.pieces.get(p);
             TrackPose pose = piece.entryPose();
             int pieceStart = all.size();
+            if (!piece.sections.isEmpty() && !prevEndsBridge) {
+                runs.add(new double[]{ pieceStart,
+                    piece.sections.get(0).vDesign() });
+            }
+            if (!piece.sections.isEmpty()) {
+                prevEndsBridge = piece.sections
+                    .get(piece.sections.size() - 1) instanceof BridgeSection;
+            }
             boolean continuation = false;   // false for each piece's FIRST section
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
@@ -139,9 +156,10 @@ public final class TrackCompiler {
                 continuation = true;
             }
         }
-        double[] trueV = passD(all, c.v0);
+        double[] trueV = passD(all, runs);
         double[][] rates = passA(all);
-        return new Result(all, trueV, rates, spans);
+        return new Result(all, trueV, rates,
+            trueFelt(all, trueV), trueRates(all, rates, trueV), spans);
     }
 
     /** {curvature dT/ds, its derivative d²T/ds²} at sample `at`, from
@@ -348,25 +366,73 @@ public final class TrackCompiler {
         }
     }
 
-    /** Pass D: true speed along the assembled track from energy vs the
-     *  global start height — the same formula the integrator records,
-     *  so with one section at vDesign == v0 this reproduces Sample.v
-     *  exactly. Friction and speed regions are Phase 3. */
-    public static double[] passD(List<FVDIntegrator.Sample> samples, double v0) {
+    /** Pass D (round A, §5.1): TRUE speed per sample — energy per RUN
+     *  (runs = pieces chained by trailing bridges; rows from compile:
+     *  {first sample index, entry speed}), referenced to each run's
+     *  first sample height. Same expression the integrator records, so
+     *  a clean undrifted chain reproduces Sample.v (the single-force
+     *  document: bitwise — the D50 gate rides on that). Bridges are
+     *  pure GEOMETRY here: their design-side speed blend (D74) is
+     *  deliberately not applied — the true curves show the ride
+     *  without the blend's invisible brake/boost. A detached piece is
+     *  its own run (its trueV references its own entry, not the ride
+     *  start). Friction and speed regions are Phase 3. */
+    public static double[] passD(List<FVDIntegrator.Sample> samples,
+                                 List<double[]> runs) {
         double[] v = new double[samples.size()];
-        if (samples.isEmpty()) return v;
-        double y0 = samples.get(0).pos().y();
-        for (int i = 0; i < samples.size(); i++) {
-            double vh = Math.sqrt(Math.max(
-                v0 * v0 + 2 * FVDIntegrator.G0 * (y0 - samples.get(i).pos().y()), 0));
-            v[i] = Math.max(0.1, vh);
+        for (int r = 0; r < runs.size(); r++) {
+            int i0 = (int) runs.get(r)[0];
+            int i1 = r + 1 < runs.size()
+                ? (int) runs.get(r + 1)[0] : samples.size();
+            if (i0 >= i1) continue;
+            double v0 = runs.get(r)[1];
+            double y0 = samples.get(i0).pos().y();
+            for (int i = i0; i < i1; i++) {
+                double vh = Math.sqrt(Math.max(v0 * v0
+                    + 2 * FVDIntegrator.G0 * (y0 - samples.get(i).pos().y()), 0));
+                v[i] = Math.max(0.1, vh);
+            }
         }
         return v;
     }
 
-    /** Pass A: resulting body rates from the geometry (true forces join
-     *  when true speed can differ from design speed). */
+    /** Pass A: resulting body rates from the geometry. */
     public static double[][] passA(List<FVDIntegrator.Sample> samples) {
         return FVDIntegrator.bodyRates(samples);
+    }
+
+    /** Pass A extension (round A, §5.1): TRUE felt G per sample. No
+     *  differencing — the recorded design felt already encodes the
+     *  geometry exactly: κ_U = g(Gv_d − U.y)/v_d², so at the true
+     *  speed Gv_true = (v_t²/v_d²)(Gv_d − U.y) + U.y (Gl against R.y
+     *  alike). Holds for every mode — force, geo, s/c and bridge all
+     *  record felt at their design-speed profile. Rows {GvT, GlT}. */
+    public static double[][] trueFelt(List<FVDIntegrator.Sample> samples,
+                                      double[] trueV) {
+        double[][] out = new double[samples.size()][2];
+        for (int i = 0; i < samples.size(); i++) {
+            FVDIntegrator.Sample sm = samples.get(i);
+            double vd = Math.max(0.1, sm.v());
+            double r2 = (trueV[i] * trueV[i]) / (vd * vd);
+            out[i][0] = r2 * (sm.Gv() - sm.U().y()) + sm.U().y();
+            out[i][1] = r2 * (sm.Gl() - sm.R().y()) + sm.R().y();
+        }
+        return out;
+    }
+
+    /** TRUE body rates: the design rates scaled onto the true clock
+     *  (ω = κ·v, so rates scale by v_t/v_d). Same {t, pitch, yaw,
+     *  roll} °/s layout as rates — drop-in for the overlay code. */
+    public static double[][] trueRates(List<FVDIntegrator.Sample> samples,
+                                       double[][] rates, double[] trueV) {
+        double[][] out = new double[rates.length][4];
+        for (int i = 0; i < rates.length; i++) {
+            double r = trueV[i] / Math.max(0.1, samples.get(i).v());
+            out[i][0] = rates[i][0];
+            out[i][1] = rates[i][1] * r;
+            out[i][2] = rates[i][2] * r;
+            out[i][3] = rates[i][3] * r;
+        }
+        return out;
     }
 }

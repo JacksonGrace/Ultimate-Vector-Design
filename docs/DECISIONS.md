@@ -2318,3 +2318,265 @@ time; wants hover stats on bridges, placement modes, editable bridges).
   fixture) and the exit heading carries ~one integration step of
   rate (~0.5°); felt G tracks within 0.07 g. Realistic (optimized)
   bridges unfreeze essentially exactly.
+
+## D79. §5 round A: TRUE speed exists and shows (v13.6)
+
+The influence-curves/"become real" roadmap item got a full DESIGN
+PASS first (user request; SECTIONS-DESIGN §5 grew from a three-line
+sketch into the spec — display → reconcile → sculpt, rounds A/B/C,
+user-approved). Round A ships the foundation: drift between each
+section's DESIGN speed and the TRUE speed becomes computed, visible,
+and honest. No model or save-format change.
+
+- **Pass D was write-only since Phase 1** — Result.trueV existed,
+  nothing consumed it, and it referenced the whole document's first
+  sample (meaningless for floating pieces). It is now PER-RUN (a
+  run = pieces chained by trailing bridges, the same structure the
+  editor's runLayout walks, re-derived model-side): each run's
+  energy references its own first sample height at its first
+  section's vDesign (run 0's == v0 through the Start-speed
+  coupling). Bridges are pure GEOMETRY for Pass D — the D74 speed
+  blend is a design-side device, so trueV shows the ride WITHOUT
+  the blend's invisible brake/boost (gated: a bridged run is one
+  energy body, no trueV step at either seam, honest divergence
+  inside the bridge).
+- **Pass A finished with NO differencing**: the recorded design
+  felt already encodes curvature exactly — κ_U = g(Gv_d − U.y)/v_d²
+  — so Gv_true = (v_t²/v_d²)(Gv_d − U.y) + U.y per sample, Gl
+  against R.y alike, rates scaled by v_t/v_d (trueFelt + trueRates
+  arrays on the compile Result, uniform across all four modes).
+- **The §5.0 claim CORRECTED while gating it** (the design pass
+  said "true curves are seamless by construction" — half right):
+  true curves tell the GEOMETRIC truth, continuous exactly where
+  curvature is, stepping where the track physically kinks. Gated in
+  BOTH directions (Phase2Gate.trueSpeed): a felt-matched force seam
+  with a drifted downstream vDesign reads SMOOTH in design felt
+  while the true felt steps 4.7 g (D78's hidden jolt, now visible);
+  a stale-vDesign s/c seam steps 1.3 g in design felt while the
+  true felt stays smooth to 0.02 g (false alarm suppressed).
+- **Display — the strokes ARE the indicator** (no toggle): wherever
+  |true − design| exceeds TRUE_SPLIT_PX (1.5 px) on a lane's scale,
+  a THIN solid companion stroke draws in the lane color across the
+  whole run (design keeps the full-weight stroke); they rejoin when
+  reconciled. Felt components draw straight through seams;
+  rate-sourced ones (roll, and all geo-view lanes) trim the
+  SEAM_TRIM band like every bodyRates consumer. Drifted sections'
+  badges wear "≠v" (DRIFT_EPS 0.2 m/s) and their badge-menu info
+  line gains "· entered X m/s" (canvas badges have no tooltips; the
+  menu is one click and will be the reconcile-op home in round B).
+  Lane + derived hover readouts append " (true …)" — value and
+  Shift-slope both — once the curves visibly split.
+- **POV rides and stats report TRUE speed**: the POV advance scales
+  its design-time step by v_true/v_design at the current sample
+  (W/S now cover true meters per wall second); the stats bar's top
+  speed reads Pass D. Identical to before until something drifts.
+  The stats ride TIME deliberately stays the design/axis duration.
+- Tunables named for feel-testing: TRUE_SPLIT_PX 1.5, DRIFT_EPS
+  0.2 m/s, TRUE_STROKE_ALPHA 0.85 (GraphEditor).
+
+## D80. The geo-seam "instant roll jump": a PHANTOM exit step (v13.6)
+
+User report on v13.6: geo↔force transitions STILL show a small
+INSTANT change — roll ANGLE for sure (not rate), maybe pitch/yaw,
+"often but not always", same feel as the old jolt. The deep-dive
+found a real orientation discontinuity, orthogonal to all the
+D74/D76/D78 rate-and-felt smoothness work:
+
+- **GeoIntegrator returned the wrong exit quaternion.** Its loop
+  records each sample at the TOP of the iteration and then steps —
+  so when the loop exits, q sits one full RK4 step PAST the last
+  recorded sample. passG built the geo exit pose from (the last
+  sample's POSITION, that post-loop ORIENTATION): every section
+  downstream of a geo section started rotated by a PHANTOM STEP of
+  end-rate × dt — roll·dt of instant extra bank (0.40° at 40 °/s),
+  pitch·dt, yaw·dt — with position continuous. Probed (SeamOrient):
+  phantom 0.4387° = |Ω_end|·dt EXACTLY on a 15/10/40 °/s fixture;
+  the seam sample-gap twisted 0.80° of roll where the interior
+  twists 0.40°/sample. ZERO end rates ⇒ no phantom — the user's
+  "sometimes there isn't one". Force sections (fromFrame of the
+  last sample) and ScIntegrator (Newton-lands, samples the landed
+  state) already kept exit == last sample; only geo mismatched.
+- **Why nothing caught it**: bodyRates smears the extra rotation
+  across its ±2-sample window — exactly the SEAM_TRIM band every
+  display, overlay and probe deliberately trims; and the split
+  gates compile both sides from the SAME (phantom) pose, so splits
+  stayed bitwise while the seam itself jumped.
+- **Fix**: qEnd = the quaternion AT the last recorded sample (the
+  exit contract all other modes keep). Downstream-of-geo geometry
+  shifts by up to the phantom angle — that shift IS the fix. All
+  gates and probes pass; the contract is now pinned canonically
+  (Phase2Gate.geoExitPose, TESTING #22). Bridges captured off geo
+  chain ends and the analytic B-matching seam frames aim at the
+  true frame now too.
+
+## D81. Fresh-bridge placement default + CONVERT unification (v13.7)
+
+Two user notes after D80 ("that fixed it completely"):
+
+- **Fresh bridges start in "No optimization"** (user: the Placement
+  dropdown claimed "Optimize position and yaw" while the just-added
+  bridge had deliberately moved nothing — and the unmoved track is
+  the behavior he wants). addBridgeTo sets optMode = OPT_NONE at
+  creation, so the dropdown, the Length row and the end-line drag
+  all agree with reality (fully manual until the user picks an
+  optimize mode, which applies immediately per D78). The FVDD3
+  missing-field default deliberately stays 0 = OPT_POS_YAW — old
+  files keep their documented semantics; only NEW bridges changed.
+- **CONVERT: one unified mode re-authoring feature** (user spec:
+  "two modes to edit geo on a force section and vice versa:
+  influence … and Convert", s/c and bridges convertible to either
+  lane mode, the bridge's "make editable" renamed — "it all should
+  be unified"). Coaster.unfreezeBridge generalized into
+  Coaster.convertToLanes(samples, vDesign, toGeo, dt): per-meter
+  rates measured off the samples, re-timed onto the target's ENERGY
+  profile (identity for force/geo/s-c, real work for bridge
+  blends), fitted as the 0.1 s slope-matched carpet; geo lanes =
+  the rates, FORCE lanes = the felt targets ω·v/g + axis.y at that
+  profile, and both keep the SAME roll-rate third lane (roll is
+  shared by the two modes — it passes through conversions
+  unchanged). Every badge menu now ENDS with "Convert to geo
+  section" / "Convert to force section" (only the OTHER modes
+  offered; a separator groups them): force↔geo, s/c→either,
+  bridge→either — the bridge entries replace "Unfreeze (edit as
+  geo section)" with the same run-split semantics. REVERSED
+  sections refuse (§5.3's round-1 rule: their lanes author the
+  opposite direction). vDesign carries over: conversion is a
+  REPRESENTATION change — §5.1 drift survives it, and round B's
+  become-real remains the separate speed reconciliation (the ops
+  compose). Gated TESTING #23: geo→force 7 mm, s/c→either 2 cm
+  interior, bridge→force 10 cm interior; force→geo across the
+  whole 407 m default layout 0.94/1.30 m = 0.3% (the carpet
+  rounding ±50 °/s roll spikes — better RELATIVE error than
+  TESTING #20's accepted unfreeze bound). JUDGMENT: the node
+  carpet stays a uniform 0.1 s for every conversion; §5.3's
+  authored-node-times fit upgrades force↔geo when round B lands
+  (shared machinery). Influence mode (the user's other cross-mode
+  editing mode) stays round C, designed in §5.4.
+
+## D82. Bridge double-bump root causes, deterministic lens, "Optimize length" (v13.8)
+
+User revisit: bridges still bump at their ends in all graphs — "at
+least for optimizing placement and yaw this should not occur" — and
+the optimized shape differs after a length round trip ("in theory
+there should just be one best smoothest track"); plus an "Optimize
+length" check spec. Deep-dive (scratch BridgeBump) found THREE
+stacked mechanisms and fixed all of them in Coaster:
+
+- **Lens compounding (the non-determinism)**: applyBridgeGap rescaled
+  lens ×= requested/REALIZED arc — a ratio that never inverts across
+  steps. One 30→90→30 round trip drifted the tangents 3.8 m and the
+  shape 4.3 cm, compounding forever. Worse, a fresh bridge's lens =
+  the pre-optimization CHORD (44 m on a 30 m bridge in the probe) —
+  deep in D75's interior-bulge regime: x2.20 rate spikes. Now every
+  optimize apply picks the tangent PAIR from a FIXED grid
+  (LENS_GRID × dist, Coaster.optimizeBridge) — a pure function of
+  (geometry, dist). Gated: L→3L→L returns lens AND shape to 0.000.
+- **March-vs-septic misalignment (the true double bump)**: the
+  continuation march blended curvature/roll LINEARLY, ignoring the
+  measured seam jerks — while the septic is FORCED to leave the
+  seams at exactly those jerks. Placement and end constraints
+  disagreed; the polynomial overshot near both seams to reconcile
+  them. The march blend is now a cubic HERMITE per body component
+  with the measured jerks as end slopes (zero-jerk seams reduce to
+  the old blend — the D77 gates keep). Turn→straight fixture:
+  overshoot x2.20 → x1.00 (peak inside == the seam's own rate, the
+  monotone ideal).
+- **Lens cost function (three tries, two rejected — kept for
+  honesty)**: peak-rotation-rate REWARDED corner-cutting a continued
+  circle (lower peak curvature than the circle: 10-30 cm radial
+  sag); arc-fraction-matched deviation drowned in TANGENTIAL
+  parameterization offset (~0.1% arc mismatch = cm of along-track
+  shift vs mm of real signal). The kept cost: LATERAL deviation
+  only — max point-to-polyline distance from the march path ("the
+  bridge should BE the continuation the march promised"). Also
+  fixed on the way: candidate solves must ROTATE the B-side seam
+  vectors (accB/jerkB, world-frame) by the virtual yaw before
+  evaluating — evaluating a ~70°-yawed placement against stale
+  vectors chose lens for a bridge that never exists. And the
+  march's d-scaled Hermite slopes DEADBAND below 2% of the seam
+  curvature scale: on an exact circle the measured ⊥-jerk is
+  ~1e-4/m² of quadratic-fit noise, which d-scaling turned into
+  10 cm of placement error. NET RESULT on the D77 split-turn gates:
+  BETTER than ever — circle re-join ripple 0.06-0.12 °/s with
+  radial 0-8 mm (flat s/c), 0.00-0.01 °/s and 0-1 mm (banked force
+  turn), vs the old ≤0.11 °/s / ≤7 mm.
+- **"Optimize length"** (user spec; REDESIGNED in a second round on
+  his report "not deterministic at all — mode switches change the
+  distance dramatically"): BridgeSection.optLen (blen's 4th field,
+  missing = off) + a check beside the Length spinner. Checked:
+  length := Coaster.optimalBridgeLength — the SHORTEST length whose
+  rate cost (peak frame rate + KNEE_SLOPE_WEIGHT 0.1 × peak slope)
+  sits within 10% + 0.5 of the best achievable over an ABSOLUTE
+  candidate ladder {1, 2, 4 … 128 m}, bisection-refined between
+  neighbors. The FIRST attempt anchored the candidates to the
+  CURRENT chord — every application moved the piece, which moved
+  the chord, which re-anchored the next search: the fixed point
+  wandered (his mode ping-pong), and a far-away piece never even
+  EXAMINED short lengths. With absolute candidates the whole cost
+  is a pure function of the SEAM STATES (body components + target
+  pitch/bank — all invariant under moving/yawing the piece), so the
+  optimum is ONE answer wherever the piece sits: gated ping-pong
+  P+Y → pos-only → P+Y returns 56.000 → 56.000 m exactly. The
+  user's invariant holds NATURALLY: split a smooth piece (constant
+  seams OR ramps — matched values AND slopes; an ideal connector
+  between identical states with equal nonzero slopes must WIGGLE,
+  and the wiggle grows with length, so the cost curve itself
+  prefers short), MOVE the piece anywhere + yaw it, optimize —
+  the ladder bottoms out at its 1 m floor (gated: 51 m away,
+  yawed 137° → 1.00 m; sloped geo seams → 1.00 m). Bottoming out
+  IS the zero-distance signal (no proximity check): the prompt
+  "zero-distance bridge — connect directly?" fires (YES = bridge
+  deletes + direct attach, which discards the stray placement and
+  re-joins seamlessly; NO = check off, nothing moves). Switching
+  INTO an optimize mode checks it and applies immediately (user
+  spec); the spinner and end-line drag disable while checked; yaw
+  edits in position-only mode re-run it. The roll fixture's honest
+  residual (x1.12 at a fixed 35 m — the twist demand) relaxes to
+  x1.00 at the knee's 56 m.
+- JUDGMENT calls: manual "Bridge tangents…" values survive until
+  the next optimize apply (the optimizer owns lens in optimize
+  modes — that's what optimizing means); the zero-distance NO
+  answer unchecks rather than re-prompting forever; the knee's
+  10% + 0.5 tolerance and KNEE_SLOPE_WEIGHT 0.1 are named
+  feel-tunables; optimize actions cost ~25 coarse solves (the
+  pairs grid) — per click/tick, not per compile.
+
+## D83. Quintic march blend + bridge-optimizer user settings (v13.9)
+
+User, after feel-testing v13.8 ("shaping up really well"): what ARE
+the optimizer's numeric settings, could they be user-adjustable, and
+could the rate graphs' ONSET at the seams be softer by default —
+"slopes at the beginning and end can have a bit high of an onset,
+as in a high curvature on the graph".
+
+- **The onset had a precise cause: the march blend was a CUBIC
+  Hermite**, whose second derivative at the ends is nonzero — the
+  rate graphs started bending the instant they left a seam. The
+  blend is now the QUINTIC Hermite pinning value + measured-jerk
+  slope at both ends AND zero end second-derivative: the graphs
+  leave each seam along their own slope and do their bending
+  mid-blend — exactly the user's earlier "make edges less curved,
+  middle more curved". Since the lens search pulls the septic
+  toward the march path, the softening propagates to the real
+  bridge. Gated (BridgeBump onset ratio = peak |rate slope| in the
+  outer 8% over the overall peak): 0.11 vs the cubic's ~0.4 on the
+  turn→straight fixture, overshoot still x1.00, and the constant/
+  zero cases are IDENTICAL (equal ends + zero slopes reduce the
+  quintic to a constant — every D77/D82 gate passes unchanged:
+  floor collapse, ping-pong purity, zero hysteresis).
+- **Three per-user settings, Options ▸ "Bridge:" rows** (AppSettings
+  keys bridgeSweep/bridgeKneeTol/bridgeSlopeW; defaults live with
+  the optimizer as Coaster.SWEEP_DEFAULT 1.0 / KNEE_TOL_DEFAULT
+  0.10 / SLOPE_W_DEFAULT 0.1; spinners with ↺ resets + tooltips):
+  TANGENT SWEEP × (0.6–2) scales the LENS_GRID candidates — bigger
+  = straighter departure/arrival, turning mid-span; LENGTH
+  TOLERANCE % (2–30) = how much smoothness "Optimize length" trades
+  for a shorter bridge; SLOPE WEIGHT (0–0.5) = how heavily violent
+  rate ramps count against a candidate length. JUDGMENT — per-USER
+  on purpose: the settings shape optimize ACTIONS only, and the
+  results (tangents, placement, length) are stored in the .fvd, so
+  a saved file compiles identically on any machine/settings; the
+  core takes them as parameters (the old signatures remain as
+  default-overloads, keeping every probe and gate byte-stable).
+- NOT exposed: the LENS_GRID/LEN_LADDER candidate sets, the 2%
+  jerk deadband, the 1 m floor — structural, not taste.

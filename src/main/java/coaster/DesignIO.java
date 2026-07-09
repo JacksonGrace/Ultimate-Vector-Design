@@ -105,9 +105,10 @@ public final class DesignIO {
                         bs.solvedTarget.orient().w(), bs.solvedTarget.orient().x(),
                         bs.solvedTarget.orient().y(), bs.solvedTarget.orient().z());
                     // 3rd field: placement-optimization mode (v13.5;
-                    // missing = 0, optimize position + yaw)
-                    out.printf(Locale.US, "blen %.4f %.4f %d%n",
-                        bs.lenA, bs.lenB, bs.optMode);
+                    // missing = 0, optimize position + yaw); 4th:
+                    // optimize-length check (v13.8; missing = off)
+                    out.printf(Locale.US, "blen %.4f %.4f %d %d%n",
+                        bs.lenA, bs.lenB, bs.optMode, bs.optLen ? 1 : 0);
                     // seam curvature vectors (v13.1 — G² ends; only the
                     // orphaned-bridge fallback ever reads them back,
                     // live compiles re-capture)
@@ -307,6 +308,8 @@ public final class DesignIO {
                         bs.optMode = Math.max(0, Math.min(2,
                             Integer.parseInt(parts[3])));
                     }
+                    // v13.8 optimize-length check; missing = off
+                    bs.optLen = parts.length > 4 && parts[4].equals("1");
                 }
                 case "bacc" -> {   // v13.1; missing = zero (v13.0 = G¹)
                     if (!(curSection instanceof BridgeSection bs))

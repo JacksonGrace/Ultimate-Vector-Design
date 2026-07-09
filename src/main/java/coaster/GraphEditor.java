@@ -565,6 +565,13 @@ class GraphEditor extends Region {
             app.coaster.movePiece(pieces.indexOf(tp), activePiece + 1);
         }
         BridgeSection br = BridgeSection.solve(end, tp.entryPose(), vEnd);
+        // a FRESH bridge moves nothing, so its placement mode says so
+        // (v13.7 user rule — the dropdown used to claim "optimize
+        // position and yaw" over a deliberately unoptimized track);
+        // switching to an optimize mode stays the explicit action and
+        // applies immediately. Old files keep the documented
+        // missing-field default (OPT_POS_YAW).
+        br.optMode = BridgeSection.OPT_NONE;
         sections().add(br);
         activeSection = sections().size() - 1;
         app.lanes = lanesFor(br);
@@ -582,20 +589,40 @@ class GraphEditor extends Region {
         redraw();
     }
 
-    /** UNFREEZE bridge k (v13.5): replace it with an editable GEO
-     *  section re-authoring its shape (Coaster.unfreezeBridge). The
-     *  piece no longer ends with a bridge, so the run splits here;
-     *  the next piece keeps its placement and the seam keeps only the
-     *  conversion residual (probed sub-cm). One undo step returns the
-     *  live bridge. */
-    private void unfreezeBridge(int k) {
-        if (k < 0 || k >= sections().size()
-                || !(sections().get(k) instanceof BridgeSection bs)) return;
+    /** CONVERT section k of the active piece into an editable force or
+     *  geo section re-authoring its compiled shape (v13.7, D81 — the
+     *  v13.5 bridge "unfreeze" unified: force↔geo, s/c→either,
+     *  bridge→either, one feature, one engine). A bridge converts its
+     *  solved geometry — the piece then no longer ends with a bridge,
+     *  so the run splits and the next piece keeps its placement (the
+     *  seam keeps only the fit residual, TESTING #20/#23). Other
+     *  sections re-run their own passG locally from their entry pose.
+     *  Reversed sections refuse (their lanes author the opposite
+     *  direction — same round-1 rule as §5.3). One undo step returns
+     *  the original. */
+    private void convertSection(int k, boolean toGeo) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()) return;
+        Section sec = secs.get(k);
+        List<FVDIntegrator.Sample> local;
+        if (sec instanceof BridgeSection bs) {
+            local = bs.integrate(FvdDesigner.INTEGRATE_DT).samples();
+        } else {
+            if (sec.reversed()) return;
+            TrackPose entry = k == 0
+                ? app.coaster.pieces.get(activePiece).entryPose()
+                : spanOf(k - 1) != null ? spanOf(k - 1).exit() : null;
+            if (entry == null) return;
+            local = TrackCompiler.passG(sec, entry,
+                FvdDesigner.INTEGRATE_DT).samples();
+        }
+        if (local.size() < 5) return;   // too short to measure rates
         pushUndoSnapshot();
-        GeoSection g = Coaster.unfreezeBridge(bs, FvdDesigner.INTEGRATE_DT);
-        sections().set(k, g);
+        LaneSection conv = Coaster.convertToLanes(local, sec.vDesign(),
+            toGeo, FvdDesigner.INTEGRATE_DT);
+        secs.set(k, conv);
         activeSection = k;
-        app.lanes = lanesFor(g);
+        app.lanes = lanesFor(conv);
         selIdx = -1;
         selSet.clear();
         elSel = -1;
@@ -644,7 +671,8 @@ class GraphEditor extends Region {
     void setBridgeGap(double dist) {
         BridgeSection bs = activeBridge();
         if (bs == null || bridgeOrphan(bs) || dist <= 0
-                || bs.optMode == BridgeSection.OPT_NONE) return;
+                || bs.optMode == BridgeSection.OPT_NONE
+                || bs.optLen) return;   // auto length owns the spinner
         long now = System.nanoTime();
         if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
         lastGapNanos = now;
@@ -653,26 +681,95 @@ class GraphEditor extends Region {
 
     /** Re-run the placement optimization at length `dist` (no undo
      *  push — the spinner and the end-line drag each manage their
-     *  own). */
+     *  own). v13.8 (D82): the tangent lengths come from
+     *  Coaster.optimizeBridge's FIXED grid — deterministic per
+     *  (geometry, dist). The old multiplicative rescale
+     *  (lens ×= requested/realized arc) compounded a non-inverting
+     *  ratio: every length round trip drifted the sweep a little and
+     *  the shape got rougher — the user's "different each time". */
     private void applyBridgeGap(BridgeSection bs, double dist) {
-        // tangent lengths ride along proportionally (v13.3): they are
-        // stored meters, so a resized gap kept the OLD sweep and the
-        // shape degraded toward the spiky-ends regime as the gap grew.
-        // A DEGENERATE start (a bridge created across a ~zero gap —
-        // e.g. right after a split) has nothing meaningful to scale:
-        // take the default full-length sweep instead (v13.4 — the
-        // ratio path blew 1 m tangents up by dist/ε).
-        double oldGap = activeBridgeGap();
-        if (oldGap > 0.5) {
-            bs.lenA *= dist / oldGap;
-            bs.lenB *= dist / oldGap;
-        } else {
-            bs.lenA = dist;
-            bs.lenB = dist;
-        }
-        app.coaster.alignPieceForBridge(bs, activePiece + 1, dist,
-            bs.optMode == BridgeSection.OPT_POS_YAW);
+        app.coaster.optimizeBridge(bs, activePiece + 1, dist,
+            bs.optMode == BridgeSection.OPT_POS_YAW,
+            app.settings.bridgeSweep());
         app.rebuildTrack();
+        refreshOffset();
+        redraw();
+    }
+
+    boolean bridgeOptLen() {
+        BridgeSection bs = activeBridge();
+        return bs != null && bs.optLen;
+    }
+
+    /** The "Optimize length" check (v13.8, D82): on = the length is
+     *  Coaster.optimalBridgeLength's knee — the spinner and end-line
+     *  drag disable; off = the length is the user's again. */
+    void setBridgeOptLen(boolean on) {
+        BridgeSection bs = activeBridge();
+        if (bs == null || bs.optLen == on) return;
+        pushUndoSnapshot();
+        bs.optLen = on;
+        app.markDirty();
+        if (on && !bridgeOrphan(bs)
+                && bs.optMode != BridgeSection.OPT_NONE) {
+            applyOptimalLength(bs);
+        } else {
+            redraw();
+        }
+        app.updateBridgeControls();
+    }
+
+    /** Apply the optimal length. The search bottoming out at its 1 m
+     *  floor means the seams continue each other smoothly and ZERO is
+     *  the natural optimum (v13.8 second round — purely the
+     *  calculation's verdict, wherever the piece currently sits, not
+     *  a proximity check): offer the direct attach; "No" keeps
+     *  everything as it is with the length check off. */
+    private void applyOptimalLength(BridgeSection bs) {
+        double dOpt = app.coaster.optimalBridgeLength(bs,
+            bs.optMode == BridgeSection.OPT_POS_YAW,
+            app.settings.bridgeKneeTol(), app.settings.bridgeSlopeW(),
+            app.settings.bridgeSweep());
+        if (dOpt <= 1 + 1e-9) {
+            javafx.scene.control.Alert a = new javafx.scene.control.Alert(
+                javafx.scene.control.Alert.AlertType.CONFIRMATION,
+                "This would create a zero-distance bridge section.\n"
+                + "Connect the pieces directly instead?",
+                javafx.scene.control.ButtonType.YES,
+                javafx.scene.control.ButtonType.NO);
+            a.setHeaderText(null);
+            java.util.Optional<javafx.scene.control.ButtonType> r =
+                a.showAndWait();
+            if (r.isPresent() && r.get() == javafx.scene.control.ButtonType.YES) {
+                attachThroughBridge();
+                return;
+            }
+            bs.optLen = false;
+            app.updateBridgeControls();
+            redraw();
+            return;
+        }
+        applyBridgeGap(bs, dOpt);
+    }
+
+    /** Replace the active piece's trailing bridge with a DIRECT attach
+     *  of the next piece (the zero-distance answer): the bridge goes,
+     *  the next piece's sections continue this chain. */
+    private void attachThroughBridge() {
+        List<Section> secs = sections();
+        int k = secs.size() - 1;
+        if (!(secs.get(k) instanceof BridgeSection)
+                || activePiece + 1 >= app.coaster.pieces.size()) return;
+        secs.remove(k);
+        app.coaster.attachPiece(activePiece, activePiece + 1);
+        activeSection = Math.min(k, sections().size() - 1);
+        app.lanes = lanesFor(sections().get(activeSection));
+        selIdx = -1;
+        selSet.clear();
+        elSel = -1;
+        syncLaneButtons();
+        app.rebuildTrack();
+        app.updatePieceButton();
         refreshOffset();
         redraw();
     }
@@ -696,8 +793,12 @@ class GraphEditor extends Region {
         bs.optMode = mode;
         app.markDirty();
         if (mode != BridgeSection.OPT_NONE && !bridgeOrphan(bs)) {
-            // switching INTO an optimize mode applies it right away
-            applyBridgeGap(bs, Math.max(1, activeBridgeGap()));
+            // switching INTO an optimize mode applies it right away —
+            // at the OPTIMAL length (v13.8, user spec: the switch
+            // itself should land at the optimal distance); the length
+            // check turns on with it
+            bs.optLen = true;
+            applyOptimalLength(bs);
         } else {
             redraw();
         }
@@ -718,7 +819,8 @@ class GraphEditor extends Region {
         lastGapNanos = now;
         app.coaster.pieces.get(activePiece + 1).yawDeg = deg;
         if (bs.optMode == BridgeSection.OPT_POS) {
-            applyBridgeGap(bs, Math.max(1, activeBridgeGap()));
+            if (bs.optLen) applyOptimalLength(bs);
+            else applyBridgeGap(bs, Math.max(1, activeBridgeGap()));
         } else {
             app.rebuildTrack();
             refreshOffset();
@@ -753,8 +855,9 @@ class GraphEditor extends Region {
      *  a live target resizes (v13.3 — the draggable gap). */
     private boolean hitBridgeEnd(double x, double y) {
         if (!activeBridgeWithTarget()
-                || activeBridge().optMode == BridgeSection.OPT_NONE) {
-            return false;   // manual mode: nothing to drag against
+                || activeBridge().optMode == BridgeSection.OPT_NONE
+                || activeBridge().optLen) {
+            return false;   // manual mode / auto length: nothing to drag
         }
         if (y < MARGIN_TOP || y > MARGIN_TOP + plotHeight()) return false;
         return Math.abs(x - tToX(tOff + sectionDur(activeSection))) <= 5;
@@ -933,9 +1036,15 @@ class GraphEditor extends Region {
             ? String.format(Locale.US, " · %.0f m, %d elem",
                 s.totalLen(), s.elements.size())
             : "";
+        // §5.2: a drifted section's info line carries the TRUE entry
+        // speed next to the design speed (the badge's ≠v, spelled out)
+        double[] es = entrySpeeds(activePiece, k);
+        String drift = es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
+            ? String.format(Locale.US, " · entered %.1f m/s", es[1])
+            : "";
         MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s%s",
-            modeName(sec), k + 1, sec.vDesign(), extra));
+            "%s section %d — design %.1f m/s%s%s",
+            modeName(sec), k + 1, sec.vDesign(), drift, extra));
         info.setDisable(true);
         // the per-section Reversed check moved to piece scope in v12.1
         // (Coaster menu > Reverse piece, D71); the ◀ badge still marks
@@ -983,19 +1092,34 @@ class GraphEditor extends Region {
                 || bs.optMode == BridgeSection.OPT_NONE);
             align.setOnAction(ev -> {
                 pushUndoSnapshot();
-                app.coaster.alignPieceForBridge(bs,
-                    activePiece + 1, activeBridgeGap(),
-                    bs.optMode == BridgeSection.OPT_POS_YAW);
-                app.rebuildTrack();
-                refreshOffset();
-                redraw();
+                if (bs.optLen) {
+                    applyOptimalLength(bs);
+                } else {
+                    applyBridgeGap(bs, activeBridgeGap());
+                }
             });
-            // v13.5: the one-way door out of frozen-ness — the bridge
-            // becomes an ordinary editable geo section (Ctrl+Z undoes)
-            MenuItem unfreeze = new MenuItem(
-                "Unfreeze (edit as geo section)");
-            unfreeze.setOnAction(ev -> unfreezeBridge(k));
-            cm.getItems().addAll(tangents, align, unfreeze);
+            cm.getItems().addAll(tangents, align);
+        }
+        // CONVERT (v13.7, D81): ONE unified re-authoring feature at
+        // the bottom of every badge menu — the other lane mode(s)
+        // this section's shape can become. The v13.5 bridge
+        // "Unfreeze (edit as geo section)" renamed and extended:
+        // force↔geo, s/c→either, bridge→either (a converted bridge
+        // stops following — it's real track; the run splits).
+        // Reversed sections refuse: their lanes author the opposite
+        // direction (the §5.3 round-1 rule).
+        cm.getItems().add(new SeparatorMenuItem());
+        if (!(sec instanceof GeoSection)) {
+            MenuItem cg = new MenuItem("Convert to geo section");
+            cg.setDisable(sec.reversed());
+            cg.setOnAction(ev -> convertSection(k, true));
+            cm.getItems().add(cg);
+        }
+        if (!(sec instanceof ForceSection)) {
+            MenuItem cf = new MenuItem("Convert to force section");
+            cf.setDisable(sec.reversed());
+            cf.setOnAction(ev -> convertSection(k, false));
+            cm.getItems().add(cf);
         }
         showMenu(cm, screenX, screenY);
     }
@@ -1222,6 +1346,105 @@ class GraphEditor extends Region {
         return app.resultRates[i][3];
     }
 
+    // ---------- TRUE-speed display (round A, SECTIONS-DESIGN §5) ----
+    // design-vs-true drift made visible: wherever the Pass-A true
+    // curve visibly leaves the design curve, a THIN solid companion
+    // stroke draws in the lane color — the strokes splitting IS the
+    // drift indicator, and they rejoin when a seam is reconciled.
+
+    /** Entry drift (m/s) worth flagging on a badge. */
+    static final double DRIFT_EPS = 0.2;
+    /** Pixel gap where the true stroke starts drawing. */
+    private static final double TRUE_SPLIT_PX = 1.5;
+    private static final double TRUE_STROKE_ALPHA = 0.85;
+
+    /** derivedAt's sibling on the TRUE arrays: the active mode's
+     *  lane-L value at compiled sample i, at the Pass-D true speed. */
+    private double trueAt(int i, int L) {
+        if (activeGeo()) return app.trueRates[i][L + 1];
+        if (L == 0) return app.trueFelt[i][0];
+        if (L == 1) return app.trueFelt[i][1];
+        return app.trueRates[i][3];
+    }
+
+    private boolean trueArraysReady() {
+        return app.trueFelt != null && app.trueRates != null
+            && app.resultRates != null && app.lastSamples != null
+            && !app.lastSamples.isEmpty()
+            && app.trueFelt.length == app.lastSamples.size();
+    }
+
+    /** {design v, true v} at piece p section k's first compiled
+     *  sample, or null before a compile. The two differing is the §5
+     *  DRIFT: the section's design speed no longer matches the energy
+     *  actually reaching it. */
+    private double[] entrySpeeds(int p, int k) {
+        TrackCompiler.Span sp = spanAt(p, k);
+        if (sp == null || app.trueV == null || app.lastSamples == null
+                || sp.i0() >= app.trueV.length) return null;
+        return new double[]{ app.lastSamples.get(sp.i0()).v(),
+                             app.trueV[sp.i0()] };
+    }
+
+    /** The thin TRUE companion strokes over the whole run — one per
+     *  lane, drawn only where the true value visibly splits off the
+     *  design curve (> TRUE_SPLIT_PX on the lane's scale). Felt
+     *  components draw straight through seams (no differencing — true
+     *  curves are seamless by construction, §5.0); rate-sourced ones
+     *  (roll, and all lanes in geo view) trim the SEAM_TRIM band like
+     *  every bodyRates consumer. */
+    private void drawTrueStrokes(GraphicsContext gc) {
+        if (!trueArraysReady()) return;
+        List<Double> seams = sectionBoundaries();
+        double rideT = app.resultRates[app.resultRates.length - 1][0];
+        double vt0 = viewStart(), vt1 = viewEnd();
+        gc.setLineWidth(1);
+        gc.setGlobalAlpha(TRUE_STROKE_ALPHA);
+        for (int L = 0; L < LANES; L++) {
+            boolean rateSrc = activeGeo() || L == 2;
+            gc.setStroke(laneColor(L));
+            gc.beginPath();
+            boolean started = false;
+            for (int i = 0; i < app.resultRates.length; i++) {
+                double t = app.resultRates[i][0];
+                if (t < vt0 || t > vt1
+                        || (rateSrc && (t < SEAM_TRIM || t > rideT - SEAM_TRIM
+                                        || nearSeam(t, seams)))) {
+                    started = false;
+                    continue;
+                }
+                double dy = valToY(L, derivedAt(i, L));
+                double ty = valToY(L, trueAt(i, L));
+                if (Math.abs(ty - dy) <= TRUE_SPLIT_PX) {
+                    started = false;
+                    continue;
+                }
+                double x = tToX(t);
+                if (!started) { gc.moveTo(x, ty); started = true; }
+                else gc.lineTo(x, ty);
+            }
+            gc.stroke();
+        }
+        gc.setGlobalAlpha(1.0);
+        gc.setLineWidth(2);
+    }
+
+    /** " (true …)" hover suffix at global time gt on lane L — empty
+     *  until the true curve visibly splits from the design curve
+     *  there (round A, §5.2). slope = the Shift readout. */
+    private String trueSuffix(double gt, int L, boolean slope) {
+        if (!trueArraysReady()) return "";
+        int i = rateIdxAt(gt);
+        double dv = derivedAt(i, L), tv = trueAt(i, L);
+        if (Math.abs(valToY(L, tv) - valToY(L, dv)) <= TRUE_SPLIT_PX) return "";
+        if (!slope) return String.format(" (true %.2f)", tv);
+        double dt = FvdDesigner.INTEGRATE_DT;
+        int i0 = rateIdxAt(gt - 2 * dt), i1 = rateIdxAt(gt + 2 * dt);
+        double span = app.resultRates[i1][0] - app.resultRates[i0][0];
+        double sl = span < 1e-9 ? 0 : (trueAt(i1, L) - trueAt(i0, L)) / span;
+        return String.format(" (true %.2f)", sl);
+    }
+
     // zero-line fill under every drawn lane curve (v10.1 visual pass;
     // the read-only "Resulting" overlays deliberately stay unfilled)
     private static final double LANE_FILL_ALPHA = 0.13;
@@ -1314,11 +1537,16 @@ class GraphEditor extends Region {
             double dur = rs.dur();
             boolean dirty = rs.sec() instanceof BridgeSection bs
                 && rs.piece() + 1 >= app.coaster.pieces.size();
+            double[] es = entrySpeeds(rs.piece(), rs.section());
             String label = (rs.sec() instanceof GeoSection ? "geo"
                     : rs.sec() instanceof StraightCurveSection ? "s/c"
                     : rs.sec() instanceof BridgeSection
                         ? (dirty ? "bridge !" : "bridge") : "force")
-                + (rs.sec().reversed() ? " ◀" : "");
+                + (rs.sec().reversed() ? " ◀" : "")
+                // §5.2 drift hint: entered at a different speed than
+                // it was designed for (badge menu shows the numbers)
+                + (es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
+                    ? " ≠v" : "");
             double bw = label.length() * 6 + 10;
             double x0 = Math.max(tToX(off), MARGIN_LEFT);
             double x1 = Math.min(tToX(off + dur), w - marginRight());
@@ -4546,6 +4774,12 @@ class GraphEditor extends Region {
             strokeLaneCurve(gc, activeLane);
         }
 
+        // TRUE companion strokes (round A, §5.2): thin solid lines in
+        // the lane colors wherever the Pass-D/A true curves visibly
+        // leave the design curves — drift made visible; nothing draws
+        // while design == true
+        drawTrueStrokes(gc);
+
         // read-only RESULTING curves (toolbar "Resulting" dropdown),
         // drawn across the WHOLE ride (v10.8 — was active-section only),
         // with the path broken over a SEAM_TRIM band at each section
@@ -4644,10 +4878,12 @@ class GraphEditor extends Region {
                     : (derivedAt(i1, hoverDerLane)
                         - derivedAt(i0, hoverDerLane)) / span;
                 txt = String.format("%.2f %s/s", slope,
-                    laneUnit(hoverDerLane).trim());
+                    laneUnit(hoverDerLane).trim())
+                    + trueSuffix(hoverDerT, hoverDerLane, true);
             } else {
                 txt = String.format("%.2f%s", hoverDerVal,
-                    laneUnit(hoverDerLane));
+                    laneUnit(hoverDerLane))
+                    + trueSuffix(hoverDerT, hoverDerLane, false);
             }
             gc.fillText(txt, hx + 8, hy - 6);
             gc.setGlobalAlpha(1.0);
@@ -4711,6 +4947,8 @@ class GraphEditor extends Region {
             } else {
                 hoverTxt = String.format("%.2f%s", hv, laneUnit(activeLane));
             }
+            // §5.2: the true value rides along once it visibly differs
+            hoverTxt += trueSuffix(tOff + hoverT, activeLane, hoverSlope);
             gc.fillText(hoverTxt, hx + 8, hy - 6);
             gc.setGlobalAlpha(1.0);
         }
