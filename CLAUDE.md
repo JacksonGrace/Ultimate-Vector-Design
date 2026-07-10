@@ -739,7 +739,9 @@ as Options rows in v13.9 and per-bridge rows in v13.10-dev, both
 pulled on user verdict: confusing, effects unpredictable; the
 tuned constants ARE the behavior, and stale AppSettings keys or
 dev `bopt` lines are ignored). AUTO
-RE-OPTIMIZE (v13.10 D84, user rule): after every compile each live
+RE-OPTIMIZE (v13.10 D84, user rule; the pass lives on
+Coaster.autoReoptimizeBridges since v13.14 — moved off the shell
+so the headless gates drive the real thing): after every compile each live
 optimize-mode bridge whose signature changed re-runs at its last
 requested length (the knee when Optimize length is on; the
 zero-distance prompt never fires on the automatic path) — editing
@@ -751,7 +753,9 @@ by themselves (their explicit handlers own that), and
 Coaster.optimizeBridge STAMPS it on apply so explicit actions
 never double-fire the auto pass; optimizing never changes its own
 signature → ONE recompile settles, no loop (optSig transient,
-lastOptDist persisted since v13.12). The march also closes the HEADING
+lastOptDist persisted since v13.12; optSig null = first sight,
+record only — loads never move pieces — vs SIG_STALE, v13.14 D88:
+partial convert's deliberate "re-place on the next compile"). The march also closes the HEADING
 gap in position-only mode (v13.10 D84: a rotation-about-world-Y
 hump, the pitch hump's twin, heading rate exactly c rad/m at any
 pitch — the yaw-blind placement left the septic absorbing the
@@ -784,12 +788,27 @@ target piece, re-anchored at the exact cut pose — its own sections
 chain on after them, the track stays CONNECTED end to end (v13.13
 D87 — the v13.11 new-piece split stranded everything downstream;
 orphaned bridges keep that fallback).
-Both leave optSig null (first-sight — auto re-optimize records
-without moving anything) and PIN the surviving bridge's length:
+Both PIN the surviving bridge's length:
 optLen off + lastOptDist = that side's share of the cut (v13.12 —
 an inherited Optimize-length check re-kneed the remainder on the
 first upstream edit, and the RIGHT side kept a stale full-length
-request); the mode cancels on any activation
+request). A MARCH-RENDERING bridge gets optSig = SIG_STALE
+(v13.14 D88): the first rebuild's auto pass re-places it at the
+pinned length off freshly captured seams — the cut nudges by the
+former landing miss (~0.1 m hump cases, 0 hump-free; gated
+TESTING #30) and the march keeps rendering. Before, both sides
+left optSig null (record-only) with the placement NOT on the
+fresh sub-march — which cannot reproduce a hump-carrying march's
+sub-arc (the hump was a FULL-length parabola; its mid-span
+curvature is baked into the measured cut state and the sub-march
+re-plans its own) — so integrate()'s 2 cm/0.3° landing gate
+failed and the graph silently fell to the SEPTIC: the "partial
+convert reshapes the bridge graph" bug, mode ping-pong = the
+accidental hand re-place. Septic-rendering bridges (never
+optimized, manual mode, hand-moved target) keep the record-only
+null: nothing moves, v13.13 behavior exactly. The LEFT remainder
+also keeps the lock flags (they silently reset before);
+the mode cancels on any activation
 change; the editor follows the converted lanes (right: onto the
 new piece, the split precedent). For NON-bridge sections:
 Coaster.convertToLanes re-authors the compiled shape as editable

@@ -494,6 +494,33 @@
     ~93 °/s head roll), so orientation-holding fixtures use
     zero-rate GEO sections. All passed 2026-07-09.
 
+30. **v13.14 gates (Phase2Gate.partialConvertMarch; D88).** Partial
+    convert honors the march claim: on an OPTIMIZED bridge with a
+    pitch hump (pitched+turning geo entry, 30 m POS_YAW march —
+    pre-fix, its fresh sub-march missed the unmoved cut by
+    0.09/0.17 m > the 2 cm/0.3° landing gate and the graph silently
+    fell to the septic; a placement-mode ping-pong re-placed it by
+    hand), converting RIGHT and LEFT at 50% now plants SIG_STALE:
+    the auto pass fires exactly ONCE on the first compile, one
+    recompile settles, the re-place nudge is bounded (0.093/0.168 m
+    — the former miss), and the placement sits ON the fresh march
+    (a same-mode re-optimize moves 0.00000 m = marchSpine's landing
+    condition, so the march renders — pre-fix this moved by the
+    miss). Whole track holds ≤ 0.34 m (fit residual + nudge). A
+    never-optimized (septic) bridge's convert stays record-only —
+    the auto pass does NOT act and the cut piece does not move
+    (v13.13 byte-behavior). The LEFT remainder keeps customized
+    lockYaw/lockPitch/lockRoll (they silently reset before).
+    autoReoptimizeBridges itself moved FvdDesigner → Coaster so the
+    gate drives the REAL pass. Diagnostic numbers (scratch
+    ScratchPartialConvert): post-convert graph delta vs the pre-cut
+    sub-arc drops from 2–4.3 °/s (septic) to the ~3 °/s hump-replan
+    residual on hump fixtures and 0 on hump-free ones; mode
+    ping-pong now moves ≤ 6 mm and reproduces the same graph per
+    mode. Full Phase2Gate + BridgeBump/SplitTurnProbe/SeamPause/
+    SeamJolt/UnfreezeProbe/SeamOrient/BridgeProbe2 re-run clean.
+    All passed 2026-07-09.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

@@ -758,11 +758,12 @@ class Viewport3D {
         // single-force-section document this reproduces the old direct
         // integrator call bit-for-bit (gated headlessly, D50).
         TrackCompiler.Result compiled = TrackCompiler.compile(app.coaster, FvdDesigner.INTEGRATE_DT);
-        // AUTO RE-OPTIMIZE (v13.10, D84): upstream edits re-place
-        // optimize-mode bridges; the signature check makes this a
-        // no-op on every compile that didn't change a bridge's inputs,
-        // and ONE recompile settles the moved pieces (no loop)
-        if (app.autoReoptimizeBridges(compiled)) {
+        // AUTO RE-OPTIMIZE (v13.10, D84; on Coaster since v13.14):
+        // upstream edits re-place optimize-mode bridges; the signature
+        // check makes this a no-op on every compile that didn't change
+        // a bridge's inputs, and ONE recompile settles the moved
+        // pieces (no loop)
+        if (app.coaster.autoReoptimizeBridges(compiled)) {
             compiled = TrackCompiler.compile(app.coaster, FvdDesigner.INTEGRATE_DT);
         }
         List<FVDIntegrator.Sample> samples = compiled.samples();

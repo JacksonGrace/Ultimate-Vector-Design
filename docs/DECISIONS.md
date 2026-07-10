@@ -2834,3 +2834,67 @@ session by agreement):
   (the mode radios apply on switch, the Length/orientation
   controls re-run per edit, and auto re-optimize covers upstream
   changes). The orphan "!" status line stays.
+
+## D88. Partial convert honors the march claim (stale signature);
+##      LEFT remainder keeps the locks (v13.14)
+
+User bug: "partially converting a bridge often significantly alters
+the bridge's graph shape, even though it should be near-identical —
+and switching placement modes fixes it, despite the settings being
+deterministic."
+
+- **Root cause**: partial convert PINNED lastOptDist (v13.12) but
+  deliberately moved nothing and left optSig null (record-only), so
+  the surviving bridge CLAIMED march-spine geometry its placement
+  no longer satisfied. A fresh march over the sub-length cannot
+  reproduce a hump-carrying march's sub-arc — the pitch/yaw humps
+  are FULL-length parabolas: their mid-span curvature is baked into
+  the seam state measured at the cut, and the sub-march re-plans
+  its own hump over the shorter run (in orientation mode the
+  render-time march also never closes heading — resYaw belongs to
+  the piece alignment). So integrate()'s 2 cm/0.3° landing gate
+  failed (measured 0.09–0.17 m / 0.33–0.50° on pitched+turning
+  fixtures) and the graph silently fell to the SEPTIC — the
+  end-concentrated shape D86 replaced (2–4.3 °/s off the sub-arc).
+  The mode ping-pong "fix" worked because every optimize-mode
+  switch runs optimizeBridge, which MOVES the piece onto the fresh
+  march — the hidden state behind "deterministic settings,
+  different graphs". Hump-free bridges reproduced within the gate,
+  which is why the bug struck "often", not always.
+- **Fix**: partialConvertBridge plants optSig = SIG_STALE (empty
+  array, matches nothing) on a surviving bridge that was RENDERING
+  the march — the first rebuild's auto pass then re-places it at
+  the pinned length off the seams that compile just captured (the
+  real converted-lane measurements, which is why the convert
+  doesn't call optimizeBridge itself: the LEFT remainder's entry
+  states don't exist until a compile runs). The cut NUDGES by the
+  former miss — 0.09/0.17 m on the hump fixtures, 1 cm on a level
+  turn, 0.000 on straight track — the same order as the conversion
+  fit residual the feature already accepts, and the march keeps
+  rendering: graph delta vs the pre-cut sub-arc drops to the
+  hump-replan residual (~3 °/s there, 0 hump-free), mode
+  ping-pong now moves ≤ 6 mm and returns the same graph. The
+  pre-cut sub-arc itself is NOT recoverable under live-follow (the
+  full-length hump profile is information the seams don't carry) —
+  accepted; the fresh sub-march IS the smooth-family shape for the
+  new configuration, and it's exactly what the ping-pong produced
+  by hand. Septic-rendering bridges (never optimized, manual mode,
+  hand-moved target — decided by the same marchSpine test
+  integrate() uses, on the pre-cut state) keep the record-only
+  null: nothing moves, v13.13 behavior byte-for-byte. optSig null
+  keeps meaning "first sight, record only" — file loads still
+  never move pieces.
+- **autoReoptimizeBridges moved FvdDesigner → Coaster** (public):
+  it was pure model logic stranded on the JavaFX shell, which
+  forced gates to replicate it; Phase2Gate.partialConvertMarch now
+  drives the real pass (Viewport3D calls
+  app.coaster.autoReoptimizeBridges — same one compile settles).
+- **LEFT remainder keeps lockYaw/lockPitch/lockRoll**: the v13.11
+  remainder constructor never copied the v13.13 flags, silently
+  resetting a customized bridge to yaw-unlocked/pitch+roll-locked.
+- Gated (TESTING #30): stale sig fires exactly once, one recompile
+  settles, placement lands ON the march (same-mode re-optimize
+  moves 0.00000 m — pre-fix it moved by the miss), nudge bounded,
+  whole track holds, septic convert byte-still, locks preserved;
+  full Phase2Gate + BridgeBump/SplitTurnProbe/SeamPause/SeamJolt/
+  UnfreezeProbe/SeamOrient/BridgeProbe2 all pass unchanged.

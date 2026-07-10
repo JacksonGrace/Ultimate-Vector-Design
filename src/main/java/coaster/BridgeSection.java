@@ -118,6 +118,18 @@ public final class BridgeSection implements Section {
     public double[] optSig;
     public double lastOptDist;
 
+    /** Deliberately-STALE signature (v13.14, D88): partial convert
+     *  plants this on a surviving bridge that was RENDERING the march,
+     *  so the first rebuild's auto re-optimize pass re-places it at
+     *  the pinned length with freshly captured seam states — without
+     *  it the pinned march claim went unhonored (a fresh sub-march
+     *  cannot reproduce a hump-carrying march's sub-arc), the landing
+     *  gate failed and the graph silently dropped to the septic. An
+     *  empty array never equals a real signature; null keeps meaning
+     *  "first sight: record only" — file loads must never move
+     *  pieces. */
+    public static final double[] SIG_STALE = new double[0];
+
     /** The PLACEMENT-INVARIANT optimization inputs (v13.12, D86 —
      *  moved here so Coaster.optimizeBridge can STAMP it right after
      *  applying: explicit actions then never re-trigger the auto

@@ -404,60 +404,6 @@ public class FvdDesigner extends Application {
         }
     }
 
-    /** AUTO RE-OPTIMIZE (v13.10, D84 — user rule: editing the track
-     *  BEFORE a bridge updates its optimization automatically while
-     *  an optimize mode is on): after a compile, every live
-     *  optimize-mode bridge whose PLACEMENT-INVARIANT seam signature
-     *  changed re-runs its optimization — at its last requested
-     *  length (the knee when "Optimize length" is checked; no
-     *  zero-distance prompt on the automatic path). The signature
-     *  (BridgeSection.optSignature, v13.12 D86) is pure SEAM GEOMETRY
-     *  — no mode flags, no target heading: flag flips and mode
-     *  switches must never re-place anything by themselves (their
-     *  explicit handlers own that), and Coaster.optimizeBridge STAMPS
-     *  the signature when it applies, so explicit actions never
-     *  double-fire this path. Optimizing moves/yaws the piece without
-     *  changing its own signature, so ONE extra compile settles — no
-     *  feedback loop. Returns true when the caller must recompile. */
-    boolean autoReoptimizeBridges(TrackCompiler.Result r) {
-        boolean changed = false;
-        int spanIdx = 0;
-        for (int p = 0; p < coaster.pieces.size(); p++) {
-            java.util.List<Section> secs = coaster.pieces.get(p).sections;
-            for (int k = 0; k < secs.size(); k++, spanIdx++) {
-                if (!(secs.get(k) instanceof BridgeSection bs)) continue;
-                if (bs.optMode == BridgeSection.OPT_NONE
-                        || p + 1 >= coaster.pieces.size()) continue;
-                double[] sig = bs.optSignature();
-                if (bs.optSig == null) {
-                    // FIRST SIGHT (load / fresh bridge): record only.
-                    // Loading a file must never move its pieces — the
-                    // auto path acts on CHANGES from here on.
-                    bs.optSig = sig;
-                    continue;
-                }
-                if (sigEq(sig, bs.optSig)) continue;
-                boolean py = bs.optMode == BridgeSection.OPT_POS_YAW;
-                double dist = bs.optLen
-                    ? coaster.optimalBridgeLength(bs, py)
-                    : bs.lastOptDist > 0 ? bs.lastOptDist
-                    : Math.max(1, spanIdx < r.spans().size()
-                        ? r.spans().get(spanIdx).sLen() : 1);
-                coaster.optimizeBridge(bs, p + 1, dist, py);
-                changed = true;
-            }
-        }
-        return changed;
-    }
-
-    private static boolean sigEq(double[] a, double[] b) {
-        if (b == null || a.length != b.length) return false;
-        for (int i = 0; i < a.length; i++) {
-            if (Math.abs(a[i] - b[i]) > 1e-9) return false;
-        }
-        return true;
-    }
-
     /** Per-mode enabling of the bridge placement rows (v13.5):
      *  length drives the march in the optimize modes; yaw is the
      *  user's in position-only and manual; x/y/z manual only. */

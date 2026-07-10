@@ -495,6 +495,66 @@ public class Coaster {
         bs.optSig = bs.optSignature();
     }
 
+    /** AUTO RE-OPTIMIZE (v13.10, D84 — user rule: editing the track
+     *  BEFORE a bridge updates its optimization automatically while
+     *  an optimize mode is on; lived on the shell until v13.14 —
+     *  moved here so the headless gates drive the real pass): after
+     *  a compile, every live optimize-mode bridge whose
+     *  PLACEMENT-INVARIANT seam signature changed re-runs its
+     *  optimization — at its last requested length (the knee when
+     *  "Optimize length" is checked; no zero-distance prompt on the
+     *  automatic path). The signature (BridgeSection.optSignature,
+     *  v13.12 D86) is pure SEAM GEOMETRY — no mode flags, no target
+     *  heading: flag flips and mode switches must never re-place
+     *  anything by themselves (their explicit handlers own that),
+     *  and optimizeBridge STAMPS the signature when it applies, so
+     *  explicit actions never double-fire this path. Optimizing
+     *  moves/yaws the piece without changing its own signature, so
+     *  ONE extra compile settles — no feedback loop. Returns true
+     *  when the caller must recompile. */
+    public boolean autoReoptimizeBridges(TrackCompiler.Result r) {
+        boolean changed = false;
+        int spanIdx = 0;
+        for (int p = 0; p < pieces.size(); p++) {
+            List<Section> secs = pieces.get(p).sections;
+            for (int k = 0; k < secs.size(); k++, spanIdx++) {
+                if (!(secs.get(k) instanceof BridgeSection bs)) continue;
+                if (bs.optMode == BridgeSection.OPT_NONE
+                        || p + 1 >= pieces.size()) continue;
+                double[] sig = bs.optSignature();
+                if (bs.optSig == null) {
+                    // FIRST SIGHT (load / fresh bridge): record only.
+                    // Loading a file must never move its pieces — the
+                    // auto path acts on CHANGES from here on. (A
+                    // partial convert on a march-rendering bridge
+                    // plants SIG_STALE instead, which can never match:
+                    // its pinned re-place happens right here, off the
+                    // seams this compile just captured — v13.14, D88.)
+                    bs.optSig = sig;
+                    continue;
+                }
+                if (sigEq(sig, bs.optSig)) continue;
+                boolean py = bs.optMode == BridgeSection.OPT_POS_YAW;
+                double dist = bs.optLen
+                    ? optimalBridgeLength(bs, py)
+                    : bs.lastOptDist > 0 ? bs.lastOptDist
+                    : Math.max(1, spanIdx < r.spans().size()
+                        ? r.spans().get(spanIdx).sLen() : 1);
+                optimizeBridge(bs, p + 1, dist, py);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    private static boolean sigEq(double[] a, double[] b) {
+        if (b == null || a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) {
+            if (Math.abs(a[i] - b[i]) > 1e-9) return false;
+        }
+        return true;
+    }
+
     /** The rate cost of a virtually-marched candidate at length d —
      *  the probe's lastOptDist is the candidate length, so its
      *  integrate() runs the MARCH SPINE against the virtual pose (it
@@ -745,15 +805,25 @@ public class Coaster {
      *  lanes; the kept bridge's next piece is now that converted
      *  piece and follows it live; the converted lanes end at the old
      *  target's entry, where the run splits (a converted stretch is
-     *  real track — the full-convert rule). Both directions leave
-     *  optSig null (first-sight: auto re-optimize records without
-     *  acting — a partial convert must not move anything) and PIN
+     *  real track — the full-convert rule). Both directions PIN
      *  each surviving bridge's LENGTH: optLen off + lastOptDist =
      *  that side's share of the cut arc (v13.12 fix — an inherited
      *  Optimize-length check re-ran the knee ladder on the first
      *  upstream edit and re-lengthed the bridge the user just cut;
      *  a stale full-length lastOptDist did the same on the RIGHT
-     *  side). frac clamps to 5–95% with rate-fit margins. */
+     *  side). optSig (v13.14, D88): a bridge that was RENDERING the
+     *  march gets SIG_STALE — the first rebuild's auto pass then
+     *  re-places it at the pinned length off freshly captured seams
+     *  (the cut nudges by the former landing miss; fit-residual
+     *  order, zero for hump-free marches). Without that, the pinned
+     *  march claim went unhonored — a fresh sub-march cannot
+     *  reproduce a hump-carrying march's sub-arc, so the landing
+     *  gate failed and the graph silently fell to the SEPTIC (the
+     *  "partial convert reshapes the bridge graph" bug, which a
+     *  placement-mode ping-pong "fixed" by doing this same re-place
+     *  by hand). Septic-rendering bridges (never optimized, manual
+     *  mode, hand-moved target) keep the old record-only null:
+     *  nothing moves. frac clamps to 5–95% with rate-fit margins. */
     public boolean partialConvertBridge(int pieceIdx, int secIdx,
                                         double frac, boolean left,
                                         boolean toGeo, double dt) {
@@ -772,6 +842,10 @@ public class Coaster {
         FVDIntegrator.Sample cs = s.get(cut);
         Quat cq = Quat.fromFrame(cs.T(), cs.U());
         double vCut = cs.v();       // the blend's design speed there
+        // was the cut bridge rendering the MARCH? decided from the
+        // pre-cut state, exactly like the integrate() above (D88)
+        boolean wasMarch = bs.optMode != BridgeSection.OPT_NONE
+            && marchSpine(bs, bs.optMode == BridgeSection.OPT_POS_YAW) != null;
         if (left) {
             LaneSection conv = convertToLanes(s.subList(0, cut + 1),
                 bs.vDesign, toGeo, dt);
@@ -786,6 +860,9 @@ public class Coaster {
             rem.rollAccB = bs.rollAccB;
             rem.vB = bs.vB;
             rem.optMode = bs.optMode;
+            rem.lockYaw = bs.lockYaw;      // v13.14: the remainder keeps
+            rem.lockPitch = bs.lockPitch;  // the orientation locks (they
+            rem.lockRoll = bs.lockRoll;    // silently reset before)
             // PIN the remainder's length (v13.12 fix): it keeps the
             // mode but NOT an inherited Optimize-length check — the
             // first upstream edit re-ran the knee ladder for the new
@@ -797,6 +874,9 @@ public class Coaster {
             rem.optLen = false;
             rem.lastOptDist = Math.max(1,
                 s.get(n - 1).s() - cs.s());
+            // march-rendering bridge: honor the pinned claim on the
+            // first rebuild (v13.14, D88 — see the method doc)
+            rem.optSig = wasMarch ? BridgeSection.SIG_STALE : null;
             piece.sections.set(secIdx, conv);
             piece.sections.add(secIdx + 1, rem);
         } else {
@@ -814,7 +894,9 @@ public class Coaster {
             bs.vB = vCut;
             bs.lenA = Math.max(0.01, bs.lenA * frac);
             bs.lenB = Math.max(0.01, bs.lenB * frac);
-            bs.optSig = null;
+            // march-rendering bridge: honor the pinned claim on the
+            // first rebuild (v13.14, D88 — see the method doc)
+            bs.optSig = wasMarch ? BridgeSection.SIG_STALE : null;
             // PIN the kept bridge's length too (v13.12 fix): the OLD
             // full-length lastOptDist would have re-marched the whole
             // original distance to the converted piece on the first
