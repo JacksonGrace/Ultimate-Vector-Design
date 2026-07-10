@@ -408,21 +408,91 @@
     noise moved placements 10 cm). All passed 2026-07-08.
 
 25. **Quintic march onset + optimizer settings (v13.9 D83 — scratch
-    BridgeBump gained the onset pin).** The march blend's upgrade
-    from cubic to QUINTIC Hermite (zero end second-derivative)
-    softens how hard the rate graphs bend right after a seam: onset
-    ratio (peak |rate slope| in the outer 8% of the span over the
-    overall peak) 0.11 on the turn→straight fixture vs ~0.4 with
-    the cubic, gated < 0.3; overshoot stays x1.00 and EVERY prior
-    bridge gate passes unchanged (constant/zero seam states reduce
-    the quintic to the same constant blend — floor collapse, mode
-    ping-pong purity 56.000 → 56.000 m, zero length-round-trip
-    drift). The three new Options settings (tangent sweep ×, length
-    tolerance %, slope weight) enter the core as PARAMETERS with the
-    old signatures kept as default-overloads, so all probes/gates
-    run the same defaults byte-stably; the settings shape optimize
-    ACTIONS only and the results are stored in the .fvd (files
-    compile identically anywhere). Passed 2026-07-08.
+    BridgeBump gained the onset pin). BOTH REVERTED in v13.10
+    (D84).** The quintic blend (onset ratio 0.11 vs cubic ~0.4) was
+    rolled back to CUBIC on user feel — graphs may bend right off
+    the seam, and the quintic's mid-blend bulge read as shape
+    weirdness; BridgeBump's onset assertion is retired to an
+    informational print (cubic ≈ 0.33). The settings were withdrawn
+    from the UI entirely (Options rows v13.9 → per-bridge rows
+    v13.10-dev → gone); the tuned defaults are internal constants
+    and every determinism/floor/ping-pong gate value held through
+    the revert (knee 56 m, x1.00 overshoot). Kept here as the
+    record of a probed-and-rejected direction.
+
+26. **v13.10 bridge round (scratch SeamPause + BridgeBump/Phase2Gate
+    additions; D84).** SeamPause: at a bridge→next-piece seam the
+    sample stream used to hold a FULL-dt interval covering only the
+    landing centimeters (the last bridge sample stamped ~dt late —
+    the flattened graph tail) followed by an exact zero-advance,
+    zero-dt DUPLICATE (the next piece's first sample — the POV
+    "brief stop"); post-fix min |dPos| 0.066 m and min dt 0.0028 s
+    at the seam, no interval under 0.25·dt anywhere (the landing
+    merges into one ≤ 1.25·dt stride — full-step+runt pairs divided
+    quaternion noise by tiny dt in the optimizer costs and briefly
+    broke the sloped-seam floor collapse to 28 m; the BridgeBump
+    gate caught it). Phase2Gate's seam assertion moved to poses
+    (exit == next entry to 1e-12) + a no-duplicate step check.
+    OPT_POS yaw hump: a 55°-yawed straight target at 30 m peaks
+    68 °/s vs the 48 ideal constant turn and 30→33 m moves the peak
+    9% (was: the septic absorbed the whole heading error — wild
+    shapes, high length sensitivity). Run-clamped Pass A: a
+    detached piece yawed 120° leaves the run-end rates at 0.1 °/s
+    (differencing across the gap gave |Δ120°|/0.01 s ≈ 12000).
+    All passed 2026-07-08.
+
+27. **v13.11 gates (Phase2Gate.partialConvert +
+    deleteKeepsHandles; D85).** PARTIAL bridge convert on the
+    two-piece s/c fixture: LEFT at 40% → [sc, converted geo,
+    bridge] with the whole compiled track within 0.138 m interior /
+    0.000 m end of the original and the remaining bridge landing on
+    the target to 1e-9; RIGHT at 55% → the piece splits at the cut
+    pose, [sc, bridge] + a new force-lane piece whose samples end at
+    the old target's entry within 0.35 m (fit residual), whole
+    track 0.148 m / 0.000 m. DELETE keeps handle geometry: on a
+    slope-fitted lane, removing an interior node preserves the
+    survivor's departure slope EXACTLY (3.500 → 3.500) and its
+    handle's absolute time run (0.0333 s — a plain remove doubled
+    it, halving fitted slopes: the user's "handle snaps
+    horizontal"). All passed 2026-07-08. (v13.12 revised the
+    SEMANTICS on user rule — fractions kept, dv rescaled — and the
+    gate now pins slope preserved + fraction bit-equal.)
+
+28. **v13.12 march-spine bridges (Phase2Gate + BridgeBump re-runs;
+    D86).** With optimized placements, the bridge geometry IS the
+    continuation march: the OPT_POS 55°-yawed fixture rides ONE
+    symmetric rate hump (17→69→1 °/s over 30 m) instead of the
+    septic's end-heavy shape; turn→straight overshoot x1.00 with
+    the onset ratio ~0.3 = the cubic blend's own smoothstep
+    shoulder (printout only — the user explicitly accepts graphs
+    bending off the seam); mode ping-pong P+Y → pos-only → P+Y
+    returns 60.000 → 60.000 m; smooth/sloped splits moved anywhere
+    still collapse to the 1 m floor; 30→90→30 hysteresis stays
+    0.000; all septic-era gates (G² seams, orphan freeze, collinear
+    line, SplitTurnProbe's D77 baselines, BridgeSmooth) pass
+    UNCHANGED — un-optimized bridges (lastOptDist 0, old files)
+    keep the septic path byte-stable. PARTIAL-CONVERT length pin
+    (user bug: upstream edits re-lengthed the remainder, "optimize
+    length suddenly becoming checked"): both surviving bridges come
+    out optLen-OFF with lastOptDist = their share of the cut —
+    gated LEFT 17.7 ≈ 17.9 m share, RIGHT 16.4 m vs a planted stale
+    999. All passed 2026-07-09.
+
+29. **v13.13 gates (Phase2Gate.orientAlign + partialConvert
+    updates; D87).** Piece orientation deltas are decoupled Euler
+    controls: pitch 10° raises the entry pitch only (heading bit-
+    exact), roll 25° banks only (T untouched), zeros revert to
+    baseOrient exactly. Optimize position and ORIENTATION: a target
+    pitched −20° and banked 25° with pitch+roll UNLOCKED meets a
+    level continuation at 0.00° pitch / −0.00° bank; with the
+    default locks the same fixture keeps the user's −20° and the
+    bridge lands on it to 1e-9 (the march's pitch hump). RIGHT
+    partial-convert now keeps the track connected: 2 pieces, the
+    lanes prepend to the target piece, samples joined across the
+    lanes→old-track seam, whole compile within 0.15 m. Fixture
+    lesson: an s/c GLOBAL-0 straight actively unbanks itself (real
+    ~93 °/s head roll), so orientation-holding fixtures use
+    zero-rate GEO sections. All passed 2026-07-09.
 
 ## The historical headless harness (context, not a prescription)
 

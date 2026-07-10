@@ -115,6 +115,8 @@ public class Coaster {
         piece.y = exit.pos().y();
         piece.z = exit.pos().z();
         piece.yawDeg = 0;
+        piece.pitchDeg = 0;
+        piece.rollDeg = 0;
         piece.baseOrient = Quat.fromFrame(exit.T().scale(-1), exit.U());
         java.util.Collections.reverse(piece.sections);
         for (Section s : piece.sections) s.reversed(!s.reversed());
@@ -182,7 +184,7 @@ public class Coaster {
      *  end slopes — matched seam states with zero jerk (a split
      *  constant turn, straight track) reduce to the old constant blend
      *  exactly, keeping the D77 gates. */
-    private double[] seamState(Vec3 acc, Vec3 jerk, Vec3 u, Vec3 r,
+    private static double[] seamState(Vec3 acc, Vec3 jerk, Vec3 u, Vec3 r,
                                double roll, double rollAcc, double v) {
         double vs = Math.max(0.5, v);
         return new double[]{ acc.dot(u), acc.dot(r),
@@ -190,11 +192,24 @@ public class Coaster {
             roll / vs, rollAcc / (vs * vs) };
     }
 
+    /** Which target-orientation axes the optimization ALIGNS
+     *  {yaw, pitch, roll} (v13.13, D87): in optimize-orientation mode
+     *  the UNLOCKED axes align to the march's natural end; locked
+     *  axes (and every axis outside that mode) are MET instead — the
+     *  yaw/pitch humps and the roll twist close to the user's
+     *  values. Defaults = yaw only = the historic P+Y. */
+    private static boolean[] alignFlags(BridgeSection bs, boolean orient) {
+        return orient
+            ? new boolean[]{ !bs.lockYaw, !bs.lockPitch, !bs.lockRoll }
+            : new boolean[]{ false, false, false };
+    }
+
     /** March end state {pos, T, U} for a bridge at length d — the
-     *  placement AND the virtual-target pose for the lens/length
-     *  optimizers share this one path. `path` (nullable) collects the
-     *  marched positions: the IDEAL the lens search measures against. */
-    private Vec3[] marchEnd(BridgeSection bs, double d, List<Vec3> path) {
+     *  placement AND the virtual-target pose for the length optimizer
+     *  share this one path. */
+    private static Vec3[] marchEnd(BridgeSection bs, double d,
+                                   boolean[] align, List<Vec3> path,
+                                   List<double[]> spine) {
         Vec3 pA = bs.solvedEntry.pos();
         Vec3 tA = bs.solvedEntry.T(), uA = bs.solvedEntry.U();
         Vec3 tB = bs.solvedTarget.T(), uB = bs.solvedTarget.U();
@@ -204,32 +219,85 @@ public class Coaster {
             bs.vB > 0 ? bs.rollB : 0, bs.vB > 0 ? bs.rollAccB : 0,
             bs.vB > 0 ? bs.vB : bs.vDesign);
         deadbandSlopes(sa, sb, d);
-        // pass 1: the pure blend, to see what pitch it naturally ends
-        // at; pass 2 re-marches with the correction hump included
-        Vec3[] st = march(pA, tA, uA, d, sa, sb, 0, null);
-        double residual = Math.asin(Math.max(-1, Math.min(1, tB.y())))
-                        - Math.asin(Math.max(-1, Math.min(1, st[1].y())));
-        if (Math.abs(residual) > 1e-9 || path != null) {
+        // pass 1: the pure blend, to see where it naturally ends up;
+        // pass 2 re-marches with the correction humps included. The
+        // PITCH hump always closes the target's pitch (yaw can't fix
+        // pitch in any mode). The YAW hump (v13.10, D84) closes the
+        // target's HEADING when yaw is NOT ours to align ("optimize
+        // position"): placing the piece on the yaw-blind continuation
+        // left the septic to absorb the whole heading error — weird,
+        // unsmooth shapes that jumped around with small length
+        // changes; now the march itself turns to meet the fixed
+        // heading, so the placement is reachable by a smooth path.
+        Vec3[] st = march(pA, tA, uA, d, sa, sb, 0, 0, null, null);
+        // humps close only the LOCKED axes (v13.13): an aligned axis
+        // needs no correction — the PIECE rotates to meet the march
+        double resPitch = align[1] ? 0
+            : Math.asin(Math.max(-1, Math.min(1, tB.y())))
+            - Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+        double resYaw = 0;
+        Vec3 endT = st[1];
+        double ha2 = endT.x() * endT.x() + endT.z() * endT.z();
+        double hb2 = tB.x() * tB.x() + tB.z() * tB.z();
+        if (!align[0] && ha2 > 1e-12 && hb2 > 1e-12) {
+            resYaw = Math.atan2(-tB.z(), tB.x())
+                   - Math.atan2(-endT.z(), endT.x());
+            while (resYaw > Math.PI) resYaw -= 2 * Math.PI;
+            while (resYaw < -Math.PI) resYaw += 2 * Math.PI;
+        }
+        if (Math.abs(resPitch) > 1e-9 || Math.abs(resYaw) > 1e-9
+                || path != null || spine != null) {
             st = march(pA, tA, uA, d, sa, sb,
-                Math.abs(residual) > 1e-9 ? residual : 0, path);
+                Math.abs(resPitch) > 1e-9 ? resPitch : 0,
+                Math.abs(resYaw) > 1e-9 ? resYaw : 0, path, spine);
         }
         return st;
     }
 
-    /** alignYaw = false (v13.5, the "optimize position" mode): the
-     *  target keeps its user-set yaw — only its position lands on the
-     *  march's endpoint; the bridge absorbs the heading difference. */
+    /** The optimize-march SPINE (v13.12, D86): when a bridge's
+     *  placement LANDS on its target — it was optimized and nothing
+     *  moved since — the blended continuation ITSELF becomes the
+     *  bridge geometry: rows {s, pos, T, U, κ} integrated straight
+     *  from the seam states, so curvature is the jerk-matched Hermite
+     *  blend plus the mid-span correction humps, with NO polynomial
+     *  end-concentration (the user's "sharper turns near the start
+     *  and end" on big-turn bridges — a degree-7 interpolant cannot
+     *  bend uniformly for long, the march can). Returns null when the
+     *  march misses the target (never optimized, target moved by
+     *  hand, stale length): the SEPTIC remains the absorber there,
+     *  which is also how pre-v13.12 files keep their exact shape
+     *  (lastOptDist missing = 0). */
+    static List<double[]> marchSpine(BridgeSection bs, boolean orient) {
+        if (bs.lastOptDist <= 0) return null;
+        List<double[]> spine = new ArrayList<>();
+        Vec3[] st = marchEnd(bs, bs.lastOptDist,
+            alignFlags(bs, orient), null, spine);
+        double miss = st[0].sub(bs.solvedTarget.pos()).length();
+        double tAng = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1,
+            st[1].dot(bs.solvedTarget.T())))));
+        return miss > 0.02 || tAng > 0.3 ? null : spine;
+    }
+
+    /** orient = false (the "optimize position" mode): the target
+     *  keeps its whole user-set orientation — only its position lands
+     *  on the march's endpoint; the march humps + twist absorb the
+     *  orientation differences. orient = true: the UNLOCKED axes
+     *  (yaw/pitch/roll deltas, v13.13) rotate the piece to meet the
+     *  march's natural end instead — since each delta controls
+     *  exactly one Euler quantity of the head frame (heading /
+     *  pitch / bank), the alignments are independent additions. */
     public void alignPieceForBridge(BridgeSection bs, int targetIdx,
-                                    double dist, boolean alignYaw) {
+                                    double dist, boolean orient) {
         TrackPiece t = pieces.get(targetIdx);
-        Vec3 tB = bs.solvedTarget.T();
+        boolean[] align = alignFlags(bs, orient);
+        Vec3 tB = bs.solvedTarget.T(), uB = bs.solvedTarget.U();
         double d = dist > 0 ? dist
             : Math.max(1, bs.solvedTarget.pos().sub(bs.solvedEntry.pos()).length());
-        Vec3[] st = marchEnd(bs, d, null);
+        Vec3[] st = marchEnd(bs, d, align, null, null);
         Vec3 endT = st[1];
         double ha2 = endT.x() * endT.x() + endT.z() * endT.z();
         double hb2 = tB.x() * tB.x() + tB.z() * tB.z();
-        if (alignYaw && ha2 > 1e-12 && hb2 > 1e-12) {   // headings defined
+        if (align[0] && ha2 > 1e-12 && hb2 > 1e-12) {   // headings defined
             double delta = Math.atan2(-endT.z(), endT.x())
                          - Math.atan2(-tB.z(), tB.x());
             double yaw = t.yawDeg + Math.toDegrees(delta);
@@ -237,6 +305,27 @@ public class Coaster {
             while (yaw > 360) yaw -= 360;
             while (yaw < -360) yaw += 360;
             t.yawDeg = yaw;
+        }
+        if (align[1] && Math.abs(tB.y()) < 0.999
+                && Math.abs(endT.y()) < 0.999) {
+            double dp = Math.asin(Math.max(-1, Math.min(1, endT.y())))
+                      - Math.asin(Math.max(-1, Math.min(1, tB.y())));
+            t.pitchDeg = Math.max(-85, Math.min(85,
+                t.pitchDeg + Math.toDegrees(dp)));
+        }
+        if (align[2] && ha2 > 1e-6) {
+            double endH2 = 1 - endT.y() * endT.y();
+            if (endH2 > 1e-6) {
+                double dr = ScIntegrator.bankOf(
+                        Quat.fromFrame(endT, st[2]), endT, endH2)
+                    - ScIntegrator.bankOf(bs.solvedTarget.orient(), tB,
+                        1 - tB.y() * tB.y());
+                while (dr > Math.PI) dr -= 2 * Math.PI;
+                while (dr < -Math.PI) dr += 2 * Math.PI;
+                t.rollDeg += Math.toDegrees(dr);
+                while (t.rollDeg > 360) t.rollDeg -= 360;
+                while (t.rollDeg < -360) t.rollDeg += 360;
+            }
         }
         t.x = st[0].x();
         t.y = st[0].y();
@@ -254,19 +343,51 @@ public class Coaster {
     private record VirtTarget(TrackPose pose, Quat rot) {}
 
     private VirtTarget virtualTargetAt(BridgeSection bs, double d,
-                                       boolean alignYaw, List<Vec3> path) {
-        Vec3[] st = marchEnd(bs, d, path);
+                                       boolean orient, List<Vec3> path) {
+        boolean[] align = alignFlags(bs, orient);
+        Vec3[] st = marchEnd(bs, d, align, path, null);
         Vec3 endT = st[1];
         Vec3 tB = bs.solvedTarget.T();
         double ha2 = endT.x() * endT.x() + endT.z() * endT.z();
         double hb2 = tB.x() * tB.x() + tB.z() * tB.z();
         Quat o = bs.solvedTarget.orient();
         Quat rot = null;
-        if (alignYaw && ha2 > 1e-12 && hb2 > 1e-12) {
+        if (align[0] && ha2 > 1e-12 && hb2 > 1e-12) {
             double delta = Math.atan2(-endT.z(), endT.x())
                          - Math.atan2(-tB.z(), tB.x());
             rot = Quat.aboutY(Math.toDegrees(delta));
             o = rot.mul(o);
+        }
+        // pitch/roll alignment mirrors the piece deltas (v13.13):
+        // each step rotates the head about the axis its delta uses,
+        // composed onto `rot` so the B-side world vectors ride along
+        if (align[1] && Math.abs(o.T().y()) < 0.999
+                && Math.abs(endT.y()) < 0.999) {
+            Vec3 ct = o.T();
+            Vec3 r = new Vec3(-ct.z(), 0, ct.x());
+            double len = r.length();
+            if (len > 1e-9) {
+                double dp = Math.asin(Math.max(-1, Math.min(1, endT.y())))
+                          - Math.asin(Math.max(-1, Math.min(1, ct.y())));
+                Quat rp = Quat.aboutAxis(r.scale(1 / len), dp);
+                o = rp.mul(o);
+                rot = rot == null ? rp : rp.mul(rot);
+            }
+        }
+        if (align[2]) {
+            Vec3 ct = o.T();
+            double h2 = 1 - ct.y() * ct.y();
+            double eh2 = 1 - endT.y() * endT.y();
+            if (h2 > 1e-6 && eh2 > 1e-6) {
+                double dr = ScIntegrator.bankOf(
+                        Quat.fromFrame(endT, st[2]), endT, eh2)
+                    - ScIntegrator.bankOf(o, ct, h2);
+                while (dr > Math.PI) dr -= 2 * Math.PI;
+                while (dr < -Math.PI) dr += 2 * Math.PI;
+                Quat rr = Quat.aboutAxis(ct, dr);
+                o = rr.mul(o);
+                rot = rot == null ? rr : rr.mul(rot);
+            }
         }
         return new VirtTarget(new TrackPose(st[0], o), rot);
     }
@@ -308,15 +429,6 @@ public class Coaster {
         if (Math.abs(sb[5]) < rlim) sb[5] = 0;
     }
 
-    /** Tangent-length candidates (× the requested length), preference
-     *  order first (ties keep the earliest). FIXED grid = every
-     *  re-optimize is a pure function of the geometry: the old
-     *  multiplicative rescale (lens ×= requested/realized arc)
-     *  compounded a non-inverting ratio and drifted the shape a
-     *  little on every length round trip — the user's "different
-     *  each time, a bit rougher". */
-    private static final double[] LENS_GRID = { 1.0, 0.85, 1.2, 0.7, 1.45 };
-
     /** ABSOLUTE ascending length candidates (m) for
      *  optimalBridgeLength (v13.8 second round, D82): anchoring the
      *  ladder to the CURRENT chord made every application re-anchor
@@ -330,75 +442,18 @@ public class Coaster {
     private static final double[] LEN_LADDER =
         { 1, 2, 4, 8, 16, 32, 64, 128 };
 
-    /** Lens cost: max POSITION deviation of a candidate solve from
-     *  the MARCH PATH at matched arc fractions — the march is the
-     *  ideal (it's why the piece sits where it sits), so the best
-     *  tangents make the septic BE the continuation. (A peak-RATE
-     *  cost was probed and rejected: on a continued circle it
-     *  rewarded corner-cutting — lower peak curvature, 10–30 cm of
-     *  radial sag.) Coarse dt is plenty — both curves are smooth. */
-    private static double lensCost(BridgeSection bs, VirtTarget virt,
-                                   double lenA, double lenB,
-                                   List<Vec3> marchPath) {
-        List<FVDIntegrator.Sample> s =
-            virtProbe(bs, virt, lenA, lenB).integrate(0.02).samples();
-        // LATERAL deviation only: nearest distance to the march
-        // polyline. (Matching at arc FRACTIONS was probed and
-        // rejected: the realized arc differs from the march length by
-        // ~0.1%, and the resulting TANGENTIAL offset — centimeters,
-        // pure parameterization — swamped the millimeters of real
-        // lateral deviation the search needs to see.)
-        int stride = Math.max(1, marchPath.size() / 200);
-        double dev = 0;
-        for (int k = 1; k < 24; k++) {
-            Vec3 p = s.get((int) Math.round(
-                (k / 24.0) * (s.size() - 1))).pos();
-            dev = Math.max(dev, distToPath(p, marchPath, stride));
-        }
-        return dev;
-    }
-
-    /** Distance from p to the strided polyline (point-to-segment). */
-    private static double distToPath(Vec3 p, List<Vec3> path, int stride) {
-        double best = Double.MAX_VALUE;
-        for (int i = 0; i < path.size() - 1; i += stride) {
-            Vec3 a = path.get(i);
-            Vec3 b = path.get(Math.min(i + stride, path.size() - 1));
-            Vec3 ab = b.sub(a);
-            double len2 = ab.dot(ab);
-            double t = len2 < 1e-12 ? 0
-                : Math.max(0, Math.min(1, p.sub(a).dot(ab) / len2));
-            best = Math.min(best,
-                p.sub(a).sub(ab.scale(t)).length());
-        }
-        return best;
-    }
-
-    // ---- bridge-optimizer preferences (v13.9, D83): per-user
-    // Options ("Bridge optimizer" group) — applied at OPTIMIZE-ACTION
-    // time only; the results (tangents, placement, length) are stored
-    // in the .fvd, so saved files compile identically everywhere
-    // regardless of these. Defaults = the gated v13.8 behavior.
-
-    /** Tangent-sweep scale: multiplies the LENS_GRID candidates.
-     *  Bigger = the bridge leaves/arrives straighter and turns more
-     *  mid-span; smaller = tighter, hugging turns at the seams. */
-    public static final double SWEEP_DEFAULT = 1.0;
-    /** Knee tolerance (fraction): how much smoothness the length
-     *  search trades for a shorter bridge. */
-    public static final double KNEE_TOL_DEFAULT = 0.10;
-    /** Slope weight (per deg/s²) in the length cost: how heavily
-     *  violent rate ramps count against a candidate length. */
-    public static final double SLOPE_W_DEFAULT = 0.1;
-
     /** Length cost: peak frame-rotation rate (deg/s) plus a slope
-     *  term (slopeW per deg/s²) so a cramped transition — same peak,
-     *  violent ramps — still reads as worse than a longer one. */
-    private static double rateCost(BridgeSection bs, VirtTarget virt,
-                                   double lenA, double lenB,
-                                   double slopeW) {
-        List<FVDIntegrator.Sample> s =
-            virtProbe(bs, virt, lenA, lenB).integrate(0.02).samples();
+     *  term (KNEE_SLOPE_WEIGHT per deg/s²) so a cramped transition —
+     *  same peak, violent ramps — still reads as worse than a longer
+     *  one. (These optimizer internals were briefly USER SETTINGS —
+     *  Options in v13.9, per-bridge in v13.10-dev — and were pulled
+     *  back to constants in v13.10, D84: the user found them
+     *  confusing and their effects unpredictable; the tuned defaults
+     *  ARE the behavior.) */
+    private static final double KNEE_SLOPE_WEIGHT = 0.1;
+
+    private static double rateCost(BridgeSection probe) {
+        List<FVDIntegrator.Sample> s = probe.integrate(0.02).samples();
         double maxR = 0, maxSlope = 0, prev = Double.NaN;
         for (int i = 1; i < s.size(); i++) {
             double dt = s.get(i).t() - s.get(i - 1).t();
@@ -414,61 +469,43 @@ public class Coaster {
             }
             prev = r;
         }
-        return maxR + slopeW * maxSlope;
+        return maxR + KNEE_SLOPE_WEIGHT * maxSlope;
     }
 
-    /** OPTIMIZE the bridge at length dist (v13.8, D82): pick the
-     *  tangent-length PAIR from (LENS_GRID·sweep)²·dist that keeps
-     *  the septic closest to the march path, then march-place the
-     *  piece. Deterministic — same geometry + same dist (+ same
-     *  sweep) = the one same bridge, every time (the old
-     *  multiplicative lens rescale drifted a little on every length
-     *  round trip). */
+    /** OPTIMIZE the bridge at length dist: march-place the piece and
+     *  stamp the request (v13.12, D86 — the bridge's GEOMETRY is now
+     *  the march spine itself whenever the placement lands, so there
+     *  are no tangent lengths to search: the old LENS_GRID pair
+     *  search chose the septic that best imitated the march; the
+     *  march needs no imitation. lenA/lenB are set to the length as
+     *  the septic FALLBACK's sweep for when a later manual move
+     *  breaks the landing). Deterministic — same geometry + same
+     *  dist = the one same bridge. */
     public void optimizeBridge(BridgeSection bs, int targetIdx,
                                double dist, boolean alignYaw) {
-        optimizeBridge(bs, targetIdx, dist, alignYaw, SWEEP_DEFAULT);
-    }
-
-    public void optimizeBridge(BridgeSection bs, int targetIdx,
-                               double dist, boolean alignYaw,
-                               double sweep) {
-        List<Vec3> path = new ArrayList<>();
-        VirtTarget virt = virtualTargetAt(bs, dist, alignYaw, path);
-        double best = Double.MAX_VALUE;
-        double bestA = dist, bestB = dist;
-        for (double ma : LENS_GRID) {
-            for (double mb : LENS_GRID) {
-                double la = ma * sweep * dist, lb = mb * sweep * dist;
-                double c = lensCost(bs, virt, la, lb, path);
-                if (c < best - 1e-9) {
-                    best = c;
-                    bestA = la;
-                    bestB = lb;
-                }
-            }
-        }
-        bs.lenA = bestA;
-        bs.lenB = bestB;
+        bs.lastOptDist = dist;   // the auto-reoptimize path re-applies
+                                 // at this length (v13.10, D84), and
+                                 // the march spine reproduces from it
+                                 // (v13.12, D86)
+        bs.lenA = dist;
+        bs.lenB = dist;
         alignPieceForBridge(bs, targetIdx, dist, alignYaw);
+        // stamp the signature (v13.12, D86): explicit applies must
+        // not re-trigger the auto-reoptimize pass
+        bs.optSig = bs.optSignature();
     }
 
-    /** The rate cost of a virtually-marched candidate at length d,
-     *  with the lens quick-picked by deviation (symmetric grid). A
-     *  pure function of the seam states in the optimize modes. */
-    private double lengthCost(BridgeSection bs, double d, boolean alignYaw,
-                              double sweep, double slopeW) {
-        List<Vec3> path = new ArrayList<>();
-        VirtTarget virt = virtualTargetAt(bs, d, alignYaw, path);
-        double bestDev = Double.MAX_VALUE, bestM = 1;
-        for (double m : LENS_GRID) {
-            double c = lensCost(bs, virt, m * sweep * d, m * sweep * d, path);
-            if (c < bestDev - 1e-9) {
-                bestDev = c;
-                bestM = m;
-            }
-        }
-        return rateCost(bs, virt, bestM * sweep * d, bestM * sweep * d,
-            slopeW);
+    /** The rate cost of a virtually-marched candidate at length d —
+     *  the probe's lastOptDist is the candidate length, so its
+     *  integrate() runs the MARCH SPINE against the virtual pose (it
+     *  lands by construction): the ladder scores exactly the
+     *  geometry the apply would produce. A pure function of the seam
+     *  states in the optimize modes. */
+    private double lengthCost(BridgeSection bs, double d, boolean alignYaw) {
+        VirtTarget virt = virtualTargetAt(bs, d, alignYaw, null);
+        BridgeSection probe = virtProbe(bs, virt, d, d);
+        probe.lastOptDist = d;
+        return rateCost(probe);
     }
 
     /** The OPTIMAL length for the "Optimize length" check (v13.8,
@@ -486,20 +523,13 @@ public class Coaster {
      *  the length where the transition stops improving. Virtual
      *  solves only — nothing moves until the caller applies. */
     public double optimalBridgeLength(BridgeSection bs, boolean alignYaw) {
-        return optimalBridgeLength(bs, alignYaw,
-            KNEE_TOL_DEFAULT, SLOPE_W_DEFAULT, SWEEP_DEFAULT);
-    }
-
-    public double optimalBridgeLength(BridgeSection bs, boolean alignYaw,
-                                      double kneeTol, double slopeW,
-                                      double sweep) {
         double[] cost = new double[LEN_LADDER.length];
         double cmin = Double.MAX_VALUE;
         for (int i = 0; i < LEN_LADDER.length; i++) {
-            cost[i] = lengthCost(bs, LEN_LADDER[i], alignYaw, sweep, slopeW);
+            cost[i] = lengthCost(bs, LEN_LADDER[i], alignYaw);
             cmin = Math.min(cmin, cost[i]);
         }
-        double tol = cmin * (1 + kneeTol) + 0.5;
+        double tol = cmin * 1.10 + 0.5;
         int knee = LEN_LADDER.length - 1;
         for (int i = 0; i < LEN_LADDER.length; i++) {
             if (cost[i] <= tol) {
@@ -512,7 +542,7 @@ public class Coaster {
         double lo = LEN_LADDER[knee - 1], hi = LEN_LADDER[knee];
         for (int it = 0; it < 3; it++) {
             double mid = (lo + hi) / 2;
-            if (lengthCost(bs, mid, alignYaw, sweep, slopeW) <= tol) hi = mid;
+            if (lengthCost(bs, mid, alignYaw) <= tol) hi = mid;
             else lo = mid;
         }
         return hi;
@@ -526,24 +556,29 @@ public class Coaster {
      *  integrating to `residual` radians of pitch (0 = pure blend).
      *  sa/sb per seamState. Returns the end state. */
     private static Vec3[] march(Vec3 pos, Vec3 T, Vec3 U, double d,
-                                double[] sa, double[] sb, double residual,
-                                List<Vec3> path) {
+                                double[] sa, double[] sb, double resPitch,
+                                double resYaw, List<Vec3> path,
+                                List<double[]> spine) {
         int n = (int) Math.min(40_000, Math.max(8, Math.ceil(d / 0.05)));
         double h = d / n;
         Vec3[] st = { pos, T.normalize(),
             U.sub(T.scale(U.dot(T))).normalize() };
         if (path != null) path.add(st[0]);
+        if (spine != null) {
+            spine.add(spineRow(0, st,
+                contDeriv(st, 0, sa, sb, resPitch, resYaw, d)[1]));
+        }
         for (int i = 0; i < n; i++) {
             double u0 = (double) i / n;
             double uh = (i + 0.5) / n;
             double u1 = (double) (i + 1) / n;
-            Vec3[] k1 = contDeriv(st, u0, sa, sb, residual, d);
+            Vec3[] k1 = contDeriv(st, u0, sa, sb, resPitch, resYaw, d);
             Vec3[] s2 = stepped(st, k1, h / 2);
-            Vec3[] k2 = contDeriv(s2, uh, sa, sb, residual, d);
+            Vec3[] k2 = contDeriv(s2, uh, sa, sb, resPitch, resYaw, d);
             Vec3[] s3 = stepped(st, k2, h / 2);
-            Vec3[] k3 = contDeriv(s3, uh, sa, sb, residual, d);
+            Vec3[] k3 = contDeriv(s3, uh, sa, sb, resPitch, resYaw, d);
             Vec3[] s4 = stepped(st, k3, h);
-            Vec3[] k4 = contDeriv(s4, u1, sa, sb, residual, d);
+            Vec3[] k4 = contDeriv(s4, u1, sa, sb, resPitch, resYaw, d);
             for (int j = 0; j < 3; j++) {
                 st[j] = st[j].add(k1[j]
                     .add(k2[j].scale(2)).add(k3[j].scale(2)).add(k4[j])
@@ -552,8 +587,21 @@ public class Coaster {
             st[1] = st[1].normalize();
             st[2] = st[2].sub(st[1].scale(st[2].dot(st[1]))).normalize();
             if (path != null) path.add(st[0]);
+            if (spine != null) {
+                spine.add(spineRow((i + 1) * h, st,
+                    contDeriv(st, u1, sa, sb, resPitch, resYaw, d)[1]));
+            }
         }
         return st;
+    }
+
+    /** One march-spine row: {s, pos, T, U, κ} (13 doubles). */
+    private static double[] spineRow(double s, Vec3[] st, Vec3 kap) {
+        return new double[]{ s,
+            st[0].x(), st[0].y(), st[0].z(),
+            st[1].x(), st[1].y(), st[1].z(),
+            st[2].x(), st[2].y(), st[2].z(),
+            kap.x(), kap.y(), kap.z() };
     }
 
     /** CONVERT a compiled shape into editable lanes (v13.7, D81 — the
@@ -644,14 +692,31 @@ public class Coaster {
                     val[idxAtTime(tG, t)][c]));
             }
             BezierBaker.applyDefaultHandles(lane);
-            // C1 fit: each node's handles take the curve's local slope
+            // C1 fit: each node's handles take the curve's slope AT
+            // THE NODE SCALE (v13.13 fix, D87): the old ±2-SAMPLE
+            // windows sat inside the rate extraction's own ±2-sample
+            // smear at the section EDGES — the first/last few values
+            // are nearly equal there, so edge handles came out LEVEL
+            // (the user's partially-converted bridges). Slopes now
+            // difference the fitted node values 0.1 s apart: central
+            // inside, second-order one-sided at the ends.
+            double hstep = dur / (nNodes - 1);
             for (int k = 0; k < nNodes; k++) {
-                double t = dur * k / (nNodes - 1);
-                int i = idxAtTime(tG, t);
-                int i0 = Math.max(0, i - 2), i1 = Math.min(n - 1, i + 2);
-                double span = tG[i1] - tG[i0];
-                double slope = span < 1e-9 ? 0
-                    : (val[i1][c] - val[i0][c]) / span;
+                double slope;
+                if (k == 0) {
+                    slope = nNodes >= 3
+                        ? (-3 * lane.get(0).val + 4 * lane.get(1).val
+                            - lane.get(2).val) / (2 * hstep)
+                        : (lane.get(1).val - lane.get(0).val) / hstep;
+                } else if (k == nNodes - 1) {
+                    slope = nNodes >= 3
+                        ? (3 * lane.get(k).val - 4 * lane.get(k - 1).val
+                            + lane.get(k - 2).val) / (2 * hstep)
+                        : (lane.get(k).val - lane.get(k - 1).val) / hstep;
+                } else {
+                    slope = (lane.get(k + 1).val - lane.get(k - 1).val)
+                        / (2 * hstep);
+                }
                 BezierBaker.Node nd = lane.get(k);
                 if (k < nNodes - 1) {
                     nd.outDv = slope
@@ -666,6 +731,127 @@ public class Coaster {
         }
         return toGeo ? new GeoSection(lanes, vD)
                      : new ForceSection(lanes, vD);
+    }
+
+    /** PARTIAL bridge convert (v13.11, D85 — user spec): convert ONE
+     *  side of a split at arc fraction `frac` into editable lanes;
+     *  the OTHER side remains a live bridge. LEFT: the piece becomes
+     *  [..., converted, bridge(cut→target)] — the bridge stays
+     *  last-of-piece, live-follows the converted section's exit, and
+     *  re-solves to the same measured end conditions, so the
+     *  remainder stays ~identical (the septic sub-arc shares its end
+     *  states). RIGHT: the piece SPLITS — [..., bridge(entry→cut)]
+     *  plus a NEW piece at the exact cut pose holding the converted
+     *  lanes; the kept bridge's next piece is now that converted
+     *  piece and follows it live; the converted lanes end at the old
+     *  target's entry, where the run splits (a converted stretch is
+     *  real track — the full-convert rule). Both directions leave
+     *  optSig null (first-sight: auto re-optimize records without
+     *  acting — a partial convert must not move anything) and PIN
+     *  each surviving bridge's LENGTH: optLen off + lastOptDist =
+     *  that side's share of the cut arc (v13.12 fix — an inherited
+     *  Optimize-length check re-ran the knee ladder on the first
+     *  upstream edit and re-lengthed the bridge the user just cut;
+     *  a stale full-length lastOptDist did the same on the RIGHT
+     *  side). frac clamps to 5–95% with rate-fit margins. */
+    public boolean partialConvertBridge(int pieceIdx, int secIdx,
+                                        double frac, boolean left,
+                                        boolean toGeo, double dt) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (!(piece.sections.get(secIdx) instanceof BridgeSection bs)) {
+            return false;
+        }
+        List<FVDIntegrator.Sample> s = bs.integrate(dt).samples();
+        int n = s.size();
+        if (n < 20) return false;   // too short to split meaningfully
+        double target = Math.max(0.05, Math.min(0.95, frac))
+            * s.get(n - 1).s();
+        int cut = 0;
+        while (cut < n - 1 && s.get(cut).s() < target) cut++;
+        cut = Math.max(6, Math.min(n - 7, cut));
+        FVDIntegrator.Sample cs = s.get(cut);
+        Quat cq = Quat.fromFrame(cs.T(), cs.U());
+        double vCut = cs.v();       // the blend's design speed there
+        if (left) {
+            LaneSection conv = convertToLanes(s.subList(0, cut + 1),
+                bs.vDesign, toGeo, dt);
+            BridgeSection rem = new BridgeSection(
+                new TrackPose(cs.pos(), cq),
+                new TrackPose(bs.solvedTarget.pos(), bs.solvedTarget.orient()),
+                Math.max(0.01, bs.lenA * (1 - frac)),
+                Math.max(0.01, bs.lenB * (1 - frac)), vCut);
+            rem.accB = bs.accB;
+            rem.jerkB = bs.jerkB;
+            rem.rollB = bs.rollB;
+            rem.rollAccB = bs.rollAccB;
+            rem.vB = bs.vB;
+            rem.optMode = bs.optMode;
+            // PIN the remainder's length (v13.12 fix): it keeps the
+            // mode but NOT an inherited Optimize-length check — the
+            // first upstream edit re-ran the knee ladder for the new
+            // seam configuration and re-lengthed the remainder (the
+            // user's "the length suddenly changes, with optimize
+            // length suddenly becoming checked"). lastOptDist = its
+            // own share of the cut, so auto re-optimize re-places at
+            // exactly that length.
+            rem.optLen = false;
+            rem.lastOptDist = Math.max(1,
+                s.get(n - 1).s() - cs.s());
+            piece.sections.set(secIdx, conv);
+            piece.sections.add(secIdx + 1, rem);
+        } else {
+            LaneSection conv = convertToLanes(s.subList(cut, n),
+                vCut, toGeo, dt);
+            // the kept bridge now ends at the cut; seed the far seam
+            // with the dynamics MEASURED there (the next compile
+            // re-captures them from the converted piece's head)
+            bs.solvedTarget = new TrackPose(cs.pos(), cq);
+            Vec3[] kj = TrackCompiler.seamDerivs(s, cut, 1);
+            bs.accB = kj[0];
+            bs.jerkB = kj[1];
+            bs.rollB = TrackCompiler.seamRollRate(s, cut, 1);
+            bs.rollAccB = TrackCompiler.seamRollAcc(s, cut, 1);
+            bs.vB = vCut;
+            bs.lenA = Math.max(0.01, bs.lenA * frac);
+            bs.lenB = Math.max(0.01, bs.lenB * frac);
+            bs.optSig = null;
+            // PIN the kept bridge's length too (v13.12 fix): the OLD
+            // full-length lastOptDist would have re-marched the whole
+            // original distance to the converted piece on the first
+            // upstream edit; and an inherited Optimize-length check
+            // would re-knee it — both re-length the bridge the user
+            // just cut.
+            bs.optLen = false;
+            bs.lastOptDist = Math.max(1, cs.s());
+            if (pieceIdx + 1 < pieces.size()) {
+                // KEEP THE TRACK CONNECTED (v13.13, D87 — user: the
+                // right-convert used to strand the converted lanes on
+                // their own piece, disconnecting everything after
+                // them): the converted lanes PREPEND to the original
+                // target piece, which re-anchors at the exact cut
+                // pose — its old sections chain on after the lanes
+                // (their own shapes untouched, §0; the downstream
+                // track shifts only by the conversion's fit residual).
+                TrackPiece tp = pieces.get(pieceIdx + 1);
+                tp.x = cs.pos().x();
+                tp.y = cs.pos().y();
+                tp.z = cs.pos().z();
+                tp.yawDeg = 0;
+                tp.pitchDeg = 0;
+                tp.rollDeg = 0;
+                tp.baseOrient = cq;
+                tp.sections.add(0, conv);
+            } else {
+                // orphaned bridge: no target to join — the converted
+                // lanes ride a new piece at the cut (old behavior)
+                TrackPiece np = new TrackPiece(cs.pos().x(), cs.pos().y(),
+                    cs.pos().z(), 0);
+                np.baseOrient = cq;
+                np.sections.add(conv);
+                pieces.add(pieceIdx + 1, np);
+            }
+        }
+        return true;
     }
 
     private static int idxAtTime(double[] tG, double t) {
@@ -685,27 +871,29 @@ public class Coaster {
 
     /** d/ds of {pos, T, U} on the blended continuation at fraction u:
      *  pos' = T; T' = κ(u) rebuilt in the LOCAL frame + the vertical
-     *  correction hump; U' = Ω×U with Ω = T×κ + roll·T. Components
-     *  blend as cubic Hermites (value + measured-jerk slope at both
-     *  ends, slopes scaled by d since u = s/d). */
+     *  (and, position-only mode, HEADING) correction humps; U' = Ω×U
+     *  with Ω = T×κ + roll·T. Components blend as quintic Hermites
+     *  (value + measured-jerk slope at both ends, slopes scaled by d
+     *  since u = s/d). */
     private static Vec3[] contDeriv(Vec3[] st, double u,
                                     double[] sa, double[] sb,
-                                    double residual, double d) {
+                                    double resPitch, double resYaw,
+                                    double d) {
         Vec3 T = st[1].normalize();
         Vec3 U = st[2].sub(T.scale(st[2].dot(T))).normalize();
         Vec3 R = U.cross(T);
-        // QUINTIC Hermite basis (v13.9, D83 — was cubic): value +
-        // slope pinned at both ends AND zero end second-derivative,
-        // so the rate graphs LEAVE each seam along their seam slope
-        // and do their bending mid-blend — the cubic started bending
-        // immediately (the user's "high onset curvature at the
-        // ends"). Constant matched ends still reduce to a constant
-        // exactly (the D77/D82 gates).
-        double u2 = u * u, u3 = u2 * u;
-        double h00 = 1 - u3 * (10 - 15 * u + 6 * u2);
-        double h01 = u3 * (10 - 15 * u + 6 * u2);
-        double h10 = u - u3 * (6 - 8 * u + 3 * u2);
-        double h11 = -u3 * (4 - 7 * u + 3 * u2);
+        // CUBIC Hermite basis: value + measured-jerk slope pinned at
+        // both ends. v13.9 (D83) probed a QUINTIC here (zero end
+        // second-derivative — softer rate-graph onsets) and it was
+        // REVERTED in v13.10 on user feel: he's fine with graphs
+        // bending right off the seam, and the mid-blend bulge the
+        // quintic trades for it read as shape weirdness. Constant
+        // matched ends reduce to a constant exactly (the D77/D82
+        // gates).
+        double h00 = 1 + u * u * (2 * u - 3);
+        double h10 = u * (1 + u * (u - 2));
+        double h01 = u * u * (3 - 2 * u);
+        double h11 = u * u * (u - 1);
         double ku = h00 * sa[0] + h01 * sb[0]
                   + d * (h10 * sa[2] + h11 * sb[2]);
         double kr = h00 * sa[1] + h01 * sb[1]
@@ -713,15 +901,25 @@ public class Coaster {
         double rm = h00 * sa[4] + h01 * sb[4]
                   + d * (h10 * sa[5] + h11 * sb[5]);
         Vec3 kap = U.scale(ku).add(R.scale(kr));
-        if (residual != 0) {
+        if (resPitch != 0) {
             // world-vertical direction ⊥ T: rotating T toward it raises
-            // pitch; 6u(1−u)/d integrates to exactly `residual`
+            // pitch; 6u(1−u)/d integrates to exactly `resPitch`
             Vec3 vup = new Vec3(0, 1, 0).sub(T.scale(T.y()));
             double len = vup.length();
             if (len > 1e-9) {
                 kap = kap.add(vup.scale(
-                    residual * 6 * u * (1 - u) / d / len));
+                    resPitch * 6 * u * (1 - u) / d / len));
             }
+        }
+        if (resYaw != 0) {
+            // rotation about WORLD Y: dT/ds = c·(Ŷ×T) changes the
+            // HEADING at exactly c rad/m regardless of pitch (the
+            // horiz² factors cancel), so the parabolic hump
+            // integrates to exactly `resYaw` — the position-only
+            // mode's fixed target heading is met BY THE MARCH, not
+            // dumped on the septic (v13.10, D84)
+            kap = kap.add(new Vec3(T.z(), 0, -T.x()).scale(
+                resYaw * 6 * u * (1 - u) / d));
         }
         return new Vec3[]{ T, kap,
             T.scale(-kap.dot(U)).sub(R.scale(rm)) };

@@ -135,28 +135,10 @@ public class AppSettings {
     public double snapLen() { return getD("snapLen", SNAP_LEN_DEFAULT); }
     public void setSnapLen(double v) { setD("snapLen", v); }
 
-    /** Bridge-optimizer preferences (v13.9, D83; defaults live with
-     *  the optimizer in Coaster). Deliberately PER-USER: they shape
-     *  optimize ACTIONS only — the results (tangents, placement,
-     *  length) are stored in the .fvd, so a saved file compiles the
-     *  same everywhere regardless of these. */
-    public double bridgeSweep() {
-        return getD("bridgeSweep", Coaster.SWEEP_DEFAULT);
-    }
-
-    public void setBridgeSweep(double v) { setD("bridgeSweep", v); }
-
-    public double bridgeKneeTol() {
-        return getD("bridgeKneeTol", Coaster.KNEE_TOL_DEFAULT);
-    }
-
-    public void setBridgeKneeTol(double v) { setD("bridgeKneeTol", v); }
-
-    public double bridgeSlopeW() {
-        return getD("bridgeSlopeW", Coaster.SLOPE_W_DEFAULT);
-    }
-
-    public void setBridgeSlopeW(double v) { setD("bridgeSlopeW", v); }
+    // (the v13.9 bridge-optimizer preferences were WITHDRAWN in
+    // v13.10, D84 — internal constants in Coaster now; any
+    // bridgeSweep/bridgeKneeTol/bridgeSlopeW keys left in the
+    // properties file are simply ignored)
 
     /** Ctrl-snap axis references (v10.2). Defaults = the historical
      *  behavior: time snaps the TRANSITION length from the previous

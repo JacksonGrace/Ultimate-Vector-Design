@@ -2580,3 +2580,257 @@ as in a high curvature on the graph".
   default-overloads, keeping every probe and gate byte-stable).
 - NOT exposed: the LENS_GRID/LEN_LADDER candidate sets, the 2%
   jerk deadband, the 1 m floor — structural, not taste.
+- RETRO (v13.10, D84): BOTH halves of this entry were REVERSED on
+  feel-testing — the quintic blend back to cubic (the softened
+  onset wasn't what he wanted and its mid-blend bulge read as
+  shape weirdness) and the three settings withdrawn from the UI
+  entirely (confusing, effects unpredictable). The tuned values
+  live on as internal constants.
+
+## D84. Bridge round: properties menu, OPT_POS hump, no user
+##      optimizer knobs, the seam pause, auto re-optimize,
+##      run-clamped rates (v13.10)
+
+Six of the user's eight-item list (partial bridge convert and the
+POV/selection sync deferred to the next batch by agreement):
+
+- **"Bridge properties ▾"** (user: "really a completely different
+  menu"): the SAME toolbar button relabels contextually — piece
+  placement normally, the bridge's own panel over a live bridge
+  (mode radios, Length + Optimize-length, the new per-bridge
+  optimizer prefs, next-piece yaw/xyz). updateBridgeControls owns
+  the label; syncLaneButtons fires it on every activation.
+- **"Optimize position" was yaw-blind** (user: "very weirdly shaped
+  track… obvious that a different position would generate a
+  smoother result", high length sensitivity): the march placed the
+  target on the FREE continuation and left the septic to absorb
+  the entire heading error to the user's fixed yaw. The march now
+  closes that heading itself — a parabolic rotation-about-WORLD-Y
+  hump, the pitch hump's twin; dT/ds = c·(Ŷ×T) changes heading at
+  exactly c rad/m regardless of pitch, so the closure is exact.
+  Gated (BridgeBump): a 55°-yawed straight target at 30 m peaks at
+  68 °/s vs the 48 °/s ideal constant turn (1.43×, was the septic's
+  problem alone before) and 30→33 m changes the peak 9% (smooth in
+  length).
+- **The optimizer knobs are NOT user-exposed after all** (a
+  two-step feel reversal inside one version: v13.9 put sweep/knee
+  tolerance/slope weight in Options; this batch first moved them
+  PER-BRIDGE into Bridge properties per user spec — then, on
+  testing, he withdrew them entirely: "a bit confusing and aren't
+  quite what I was imagining — often changing them did nothing,
+  the tangent sweep changed it in unpredictable ways"). The tuned
+  values are internal constants again (LENS_GRID as-is, knee
+  10% + 0.5, KNEE_SLOPE_WEIGHT 0.1); stale AppSettings keys and
+  the short-lived dev `bopt` lines are ignored on load (the
+  unknown-line rule).
+- **The v13.9 QUINTIC march blend is REVERTED to cubic** (user:
+  the softened onset "isn't quite exactly what I want — I'm
+  completely okay with the rate graphs starting to bend the
+  instant they leave the seam", and the quintic's mid-blend bulge
+  "caused some weirdness in how the bridge shapes now"). The D82
+  jerk-slope matching stays; BridgeBump's onset assertion retired
+  to an informational print (cubic ≈ 0.33 end/peak slope — the
+  intended shape); every other gate value held (knee 56 m,
+  OPT_POS peak 66 vs 68 °/s, floor collapses, ping-pong purity).
+- **The seam "brief stop" was TWO bugs** (user report + his flat-
+  kink graph observation, probed in SeamPause): (1) the landing
+  step read sAt AFTER clamping — `(total − (sAt − v·dt))/v` always
+  equaled a FULL dt, stamping the last bridge sample ~dt late: the
+  train crawled the final centimeters over a whole tick (his
+  flattened graph tail); (2) the bridged NEXT PIECE's first sample
+  was kept as "a genuinely new point" (right for detached pieces)
+  but its entry coincides EXACTLY with the bridge exit — a
+  zero-advance, zero-dt duplicate at every bridge seam (the full
+  stop; bodyRates differenced across dt = 0). Fixes: the landing
+  now happens in ONE stride of at most 1.25·dt (no full-step +
+  runt pair either — runt dt in the optimizer costs divided noise
+  into spikes and briefly broke the sloped-seam floor collapse,
+  caught by the gate), and compile drops a bridged piece's first
+  sample like any continuation. Phase2Gate's seam assertion moved
+  to the POSES (exit pose == next entry to 1e-12) + a no-duplicate
+  step check.
+- **AUTO RE-OPTIMIZE** (user rule: upstream edits update optimized
+  bridges): after every compile, each live optimize-mode bridge
+  whose PLACEMENT-INVARIANT signature changed re-runs its
+  optimization at its last requested length (the knee when
+  Optimize-length is on; the zero-distance prompt never fires on
+  the automatic path). Signature = entry pose + body-frame target
+  dynamics (+ target heading only in position-only mode, where yaw
+  is the user's knob): optimizing moves/yaws the piece without
+  changing its own signature, so ONE extra compile settles — no
+  feedback loop, and unrelated compiles are a no-op array compare.
+- **Detached-piece rate jumps** (user: "the resulting graphs jump
+  around" at run ends): bodyRates central-differenced ACROSS the
+  gap to the next piece's first sample. Pass A now differences
+  WITHIN each run (the same run table Pass D uses; bridged seams
+  are one continuous body and still difference straight through).
+
+## D85. Partial bridge convert, POV piece-follow, delete keeps
+##      handles, run-clamped overlays (v13.11)
+
+Three user fixes plus the two features deferred from the D84 list:
+
+- **Bridge Length spinner arrows step 1 m** (was 5).
+- **Deleting a node no longer flattens its neighbors' handles**
+  (user: converted-carpet handles "snap to horizontal" when a node
+  beside them is deleted). Diagnosis: handles are FRACTIONS of the
+  neighboring segment, so removing a node stretched the facing
+  handles' time runs across the merged gap — dv unchanged, slope
+  HALVED per deletion. Invisible on flat default handles (dv = 0),
+  glaring on Convert's slope-matched carpets. Deletion now goes
+  through BezierBaker.removeBridging: the facing fractions
+  re-normalize onto the merged segment so each knob keeps its
+  ABSOLUTE time + value offset (gated: survivor slope 3.500 →
+  3.500 exactly, time run 0.0333 s preserved where plain removal
+  doubled it). The D63 rule is untouched — RE-TIMING still
+  squishes; only DELETION anchors.
+- **Resulting overlays / true strokes / their hover are clamped to
+  the RUN** (user: the next detached piece's resulting graph
+  appeared just right of the run's curves): the global timeline
+  continues into detached pieces, and their first samples mapped
+  inside the window's right edge. All three consumers now skip
+  rows outside [runT0, runT0+runDur] (the scale fit too).
+- **PARTIAL BRIDGE CONVERT** (user spec): a bridge's badge convert
+  items now open a SPLIT-LINE MODE on its strip — the strip
+  highlights, a draggable vertical line (H_RESIZE cursor, live
+  "% of bridge" readout) sets the cut, clicking a side selects
+  which portion converts (tinted + brief flash; LEFT default), and
+  canvas chips [Convert left/right part] / [Cancel] apply or leave
+  (chips over key plumbing: the '+'-button precedent). Engine:
+  Coaster.partialConvertBridge — LEFT: the piece becomes
+  [..., converted lanes, bridge(cut→target)]; the bridge stays
+  last-of-piece, live-follows the converted section's exit and
+  re-solves to the same measured end conditions, so the remainder
+  stays ~identical (gated: whole track holds to 0.14 m interior /
+  0 end, bridge still lands on the target to 1e-9). RIGHT: the
+  piece SPLITS — [..., bridge(entry→cut)] + a new piece at the
+  exact cut pose holding the lanes; the bridge's next piece is now
+  the converted piece (followed live), and the lanes end at the
+  old target's entry where the run splits, the full-convert rule
+  (gated 0.15 m / 0; structure checks). Both leave optSig null —
+  first-sight, so auto re-optimize records without moving
+  anything — and PIN each surviving bridge's LENGTH (v13.12 fix,
+  user report: "after a partial conversion, adjusting the track
+  before it changes the length, with optimize length suddenly
+  becoming checked"): optLen is NOT inherited and lastOptDist :=
+  that side's share of the cut arc, so upstream edits re-place at
+  exactly that length (gated: LEFT remainder pinned 17.7 ≈ its
+  17.9 m share, RIGHT kept bridge 16.4 m instead of a stale 999).
+  Cut clamps 5–95% with rate-fit margins; the mode
+  cancels on any activation change.
+- **POV ↔ selection sync** (user spec): riding across a piece
+  boundary ACTIVATES that piece in the editor (activateAt — run
+  zoom preserved within a run; piece transitions only, so
+  hands-off graph edits are never fought mid-piece). Entering POV
+  starts at the ACTIVE piece's first sample when a DIFFERENT piece
+  was selected since POV last rode, and RESUMES the previous ride
+  position otherwise (it used to always restart at 0; povTime
+  clamps into the current ride length on resume).
+
+## D86. Bridges BECOME the march; mode-switch parity; delete keeps
+##      fractions; POV start fix (v13.12)
+
+Four user calls on v13.11, one of them the deepest bridge change
+since D72 (invited: "put a lot of effort into seeing if you can
+improve this" — with an explicit revert warning, so the septic path
+remains fully intact underneath):
+
+- **Optimized bridges ARE the continuation march now** (the fix for
+  "noticeably sharper turns near the start and end" + "high slope
+  onset" on big-turn bridges): a degree-7 interpolant cannot bend
+  uniformly for long — it concentrates curvature near its pinned
+  ends — while the march (jerk-matched Hermite blend + mid-span
+  correction humps) carries turning evenly by construction. When a
+  bridge's placement LANDS on its target (optimized, nothing moved
+  since; miss test 2 cm / 0.3°), BridgeSection.integrate uses the
+  MARCH SPINE itself ({s,pos,T,U,κ} rows straight from
+  Coaster.marchSpine at lastOptDist, now persisted as blen's 5th
+  field — missing = 0 keeps old files' septic shapes exactly); the
+  march's U carries the blended roll (value+slope seam-matched), a
+  residual-only smoothstep-quintic twist closes the remaining bank
+  without touching either seam's roll-rate graph, and the speed
+  blend + resample tail is shared. The SEPTIC remains the absorber
+  for everything else: manual mode, orphans, never-optimized
+  bridges, and any bridge whose target was yanked by hand. The
+  LENS_GRID pair search died with this — there is nothing to
+  imitate when the geometry IS the ideal (lens := dist as the
+  fallback sweep); optimalBridgeLength's ladder now scores the
+  actual march geometry (probe fixtures: OPT_POS 55° yawed target
+  rides ONE symmetric hump 17→69→1 °/s instead of the septic's
+  end-heavy shape; turn→straight overshoot x1.00; determinism,
+  floor collapse, hysteresis 0.000 all hold).
+- **P+Y → POS switch no longer changes the shape** (user: "even
+  though the Yaw hasn't changed, there seems to be a difference"):
+  switching BETWEEN optimize modes re-ran the optimal-length
+  ladder, whose costs differ per mode (the yaw hump enters at other
+  candidate lengths) — the knee moved even with yaw aligned. Mode
+  switches now keep the CURRENT length (an aligned yaw then makes
+  both modes' marches identical — zero residual hump); only
+  NONE→optimize runs the ladder (the v13.8 "lands at the optimal
+  distance" spec was for entering optimization). The auto-reopt
+  signature moved onto BridgeSection.optSignature and is pure SEAM
+  GEOMETRY — no mode flags, no heading — and optimizeBridge STAMPS
+  it on apply, so explicit actions never double-fire the auto pass.
+- **Delete keeps handle FRACTIONS, preserves SLOPES** (user
+  rejected v13.11's absolute-position variant: "handles should
+  stay their fractional amount. The slope should just not
+  change"): removeBridging now leaves outFrac/inFrac untouched and
+  rescales dv onto the merged segment's new time run — the knob
+  slides out fractionally like every other edit, the curve leaves
+  the survivor at the same dv/dt (gated: slope 3.500 → 3.500,
+  fraction bit-equal).
+- **POV started at the END of the previous piece** when entering
+  track view on a freshly selected piece: pieceStartTime returned
+  Span.t0, which is BY DEFINITION the previous section's last
+  sample time. It reads the piece's own FIRST sample now.
+
+## D87. Right-convert stays connected; orientation LOCKS + "Optimize
+##      position and orientation" (v13.13)
+
+Three user calls (the Convert-expansion list deferred to a fresh
+session by agreement):
+
+- **Right partial-convert keeps the track CONNECTED** (user): the
+  converted lanes used to ride a new piece with everything after
+  them detached. They now PREPEND to the original target piece,
+  which re-anchors at the exact cut pose — its own sections chain
+  on after the lanes (shapes untouched, §0; downstream shifts only
+  by the fit residual). Orphaned bridges keep the old new-piece
+  fallback. Gated: 2 pieces, joined samples, whole track 0.15 m.
+- **Piece orientation DELTAS + LOCKS**: TrackPiece gains pitchDeg/
+  rollDeg beside yawDeg (`piece` fields 9-10, missing = 0) —
+  applied yaw → pitch-about-horizontal-right → roll-about-heading,
+  so each delta controls exactly ONE Euler quantity of the entry
+  frame (gated: pitch 10° raises pitch only, roll 25° banks only,
+  zeros revert to baseOrient exactly — the roadmap's "pitch editing
+  if revertible", landed through the bridge panel). Bridge
+  properties gains Pitch and Roll rows beside Yaw, each with a
+  PADLOCK toggle (🔒/🔓; BridgeSection.lockYaw/Pitch/Roll, blen
+  fields 6-8, missing = yaw unlocked + pitch/roll locked): locked =
+  frozen everywhere, the optimization MEETS the value (yaw/pitch
+  humps, roll twist); unlocked = editable (POS/NONE modes), and
+  the orientation mode ALIGNS it.
+- **"Optimize position and yaw" → "Optimize position and
+  ORIENTATION"** (same optMode 0 — old files + default locks = the
+  historic behavior exactly): the march aligns every UNLOCKED axis
+  to its natural end — yaw via the existing heading delta, pitch/
+  roll as direct Euler additions (the deltas are decoupled, so
+  each alignment is an independent offset; pitch clamps ±85°).
+  Locked axes keep their correction humps/twist. The radio grays
+  out when all three are locked (tooltip explains the padlocks;
+  in-mode lock toggles re-apply immediately at the pinned length).
+  Gated: a target pitched −20° AND banked 25° with pitch+roll
+  unlocked meets a level continuation at 0.00°/−0.00°; with locks
+  (defaults) the same fixture keeps −20° and the bridge lands on
+  it to 1e-9. GATE-FIXTURE LESSON kept for honesty: an s/c
+  straight is NOT an orientation-holding target — its GLOBAL-0
+  roll actively unbanks itself (an honest ~93 °/s head roll rate
+  the march faithfully blends in); zero-rate GEO sections hold any
+  orientation.
+- **Grandfathered badge items REMOVED** (user): "Bridge tangents…"
+  (an optimized bridge's geometry is the march itself — there are
+  no user tangents left to sweep; the septic fallback derives its
+  own) and the explicit "Optimize placement of piece N" action
+  (the mode radios apply on switch, the Length/orientation
+  controls re-run per edit, and auto re-optimize covers upstream
+  changes). The orphan "!" status line stays.

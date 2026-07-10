@@ -76,10 +76,29 @@ public final class BridgeSection implements Section {
      *  march (position + heading, the default); POS = position only,
      *  the user owns the target's yaw; NONE = fully manual — the
      *  target piece is placed by hand and the bridge just follows. */
-    public static final int OPT_POS_YAW = 0;
+    public static final int OPT_POS_YAW = 0;   // "optimize position and
+                                               // ORIENTATION" since
+                                               // v13.13 (D87): which
+                                               // axes align = the
+                                               // unlock flags below;
+                                               // value 0 + default
+                                               // locks = the historic
+                                               // position-and-yaw
     public static final int OPT_POS = 1;
     public static final int OPT_NONE = 2;
     public int optMode = OPT_POS_YAW;
+
+    /** Per-axis orientation LOCKS of the NEXT piece (v13.13, D87):
+     *  locked = the value is frozen — no edits anywhere — and the
+     *  optimization MEETS it (yaw/pitch humps, roll twist); unlocked
+     *  = user-editable, and in optimize-orientation mode the march
+     *  ALIGNS it to its natural end state instead. Defaults (yaw
+     *  unlocked, pitch + roll locked) reproduce the old "optimize
+     *  position and yaw" exactly — how old files load (blen fields
+     *  6-8, missing = defaults). */
+    public boolean lockYaw = false;
+    public boolean lockPitch = true;
+    public boolean lockRoll = true;
 
     /** "Optimize length" (v13.8, D82): while set (and an optimize
      *  mode is active) the LENGTH is chosen by
@@ -88,6 +107,42 @@ public final class BridgeSection implements Section {
      *  (user spec: the switch itself should land at the optimal
      *  distance). blen's 4th field; missing = off (old files). */
     public boolean optLen = false;
+
+    /** TRANSIENT auto-reoptimize bookkeeping (v13.10, D84 — not
+     *  persisted... lastOptDist IS persisted since v13.12, blen's 5th
+     *  field: the march-spine geometry needs the requested length to
+     *  reproduce after a load): the placement-invariant signature of
+     *  the last applied optimization, and the last requested length
+     *  (0 = never optimized; the auto path falls back to the
+     *  compiled arc). */
+    public double[] optSig;
+    public double lastOptDist;
+
+    /** The PLACEMENT-INVARIANT optimization inputs (v13.12, D86 —
+     *  moved here so Coaster.optimizeBridge can STAMP it right after
+     *  applying: explicit actions then never re-trigger the auto
+     *  path). Pure seam geometry — deliberately NO mode flags and no
+     *  target heading: flag flips and mode switches must not
+     *  re-place anything by themselves (the user's "switching modes
+     *  changed the shape" bug); explicit handlers own those. B-side
+     *  vectors enter as BODY components (yaw/translation-invariant),
+     *  so optimizing never changes its own signature. */
+    double[] optSignature() {
+        Vec3 tB = solvedTarget.T(), uB = solvedTarget.U();
+        Vec3 rB = uB.cross(tB);
+        Vec3 pe = solvedEntry.pos();
+        Vec3 te = solvedEntry.T(), ue = solvedEntry.U();
+        return new double[]{
+            pe.x(), pe.y(), pe.z(), te.x(), te.y(), te.z(),
+            ue.x(), ue.y(), ue.z(),
+            accA.x(), accA.y(), accA.z(),
+            jerkA.x(), jerkA.y(), jerkA.z(),
+            rollA, rollAccA, vDesign,
+            accB.dot(uB), accB.dot(rB),
+            jerkB.dot(uB), jerkB.dot(rB),
+            rollB, rollAccB, vB, tB.y(), uB.y(),
+            optLen ? 0 : lastOptDist };
+    }
 
     public BridgeSection(TrackPose entry, TrackPose target,
                          double lenA, double lenB, double vDesign) {
@@ -126,6 +181,11 @@ public final class BridgeSection implements Section {
         b.vB = vB;
         b.optMode = optMode;
         b.optLen = optLen;
+        b.optSig = optSig;
+        b.lastOptDist = lastOptDist;
+        b.lockYaw = lockYaw;
+        b.lockPitch = lockPitch;
+        b.lockRoll = lockRoll;
         return b;
     }
 
@@ -154,6 +214,42 @@ public final class BridgeSection implements Section {
 
     public Result integrate(double dt) {
         Vec3 p0 = solvedEntry.pos(), p1 = solvedTarget.pos();
+
+        // MARCH SPINE (v13.12, D86): when this bridge was OPTIMIZED
+        // and its placement still LANDS on the target, the blended
+        // continuation itself is the geometry — the jerk-matched
+        // Hermite blend + mid-span correction humps carry the turning
+        // uniformly, where the degree-7 interpolant concentrated
+        // curvature near its ends on big-turn bridges (the user's
+        // "sharper turns near the start and end"). The march's U
+        // already carries the blended roll (value + slope matched at
+        // both seams), so the twist layer here closes only the
+        // RESIDUAL bank vs the target — a smoothstep quintic with
+        // ZERO end slopes and accelerations that disturbs neither
+        // seam's roll-rate graph. Misses (never optimized, target
+        // moved by hand, old files) fall through to the septic, which
+        // absorbs anything.
+        List<double[]> spineRows = optMode != OPT_NONE
+            ? Coaster.marchSpine(this, optMode == OPT_POS_YAW) : null;
+        if (spineRows != null) {
+            List<Geo> geo = new ArrayList<>(spineRows.size());
+            for (double[] r : spineRows) {
+                geo.add(new Geo(r[0], new Vec3(r[1], r[2], r[3]),
+                    new Vec3(r[4], r[5], r[6]),
+                    new Vec3(r[7], r[8], r[9]),
+                    new Vec3(r[10], r[11], r[12])));
+            }
+            double total = Math.max(geo.get(geo.size() - 1).s(), 1e-6);
+            Geo end = geo.get(geo.size() - 1);
+            Vec3 wantU = solvedTarget.U()
+                .sub(end.T().scale(solvedTarget.U().dot(end.T())))
+                .normalize();
+            double twist = Math.atan2(end.U().cross(wantU).dot(end.T()),
+                end.U().dot(wantU));
+            double[] tw = { 0, 0, 10 * twist, -15 * twist, 6 * twist, 0, 0 };
+            return resample(geo, total, tw, dt);
+        }
+
         double la = Math.max(0.01, lenA), lb = Math.max(0.01, lenB);
         Vec3 m0 = solvedEntry.T().scale(la);
         Vec3 m1 = solvedTarget.T().scale(lb);
@@ -253,7 +349,17 @@ public final class BridgeSection implements Section {
             -15 * qA + 7 * qB - qC,
             6 * qA - 3 * qB + qC / 2, 0, 0 };
 
-        // --- time-domain resample (uniform dt, exact landing) ---
+        return resample(geo, total, tw, dt);
+    }
+
+    /** The shared tail of both spine kinds: speed blend + time-domain
+     *  resample (uniform dt, exact landing). */
+    private Result resample(List<Geo> geo, double total, double[] tw,
+                            double dt) {
+        double y0 = solvedEntry.pos().y();
+        double vEnd = Math.max(0.5,
+            FVDIntegrator.speedAt(solvedTarget.pos(), vDesign, y0));
+        double dv = vB > 0 ? vB - vEnd : 0;
         List<FVDIntegrator.Sample> out = new ArrayList<>();
         double t = 0, sAt = 0;
         int guard = 0;
@@ -262,10 +368,22 @@ public final class BridgeSection implements Section {
             out.add(sampleAt(geo, Math.min(sAt, total), total, tw, dv, y0, t));
             if (last) break;
             double v = blendedV(Math.min(sAt, total), total, geo, dv, y0);
-            sAt = Math.min(total, sAt + v * dt);
-            t += sAt >= total - 1e-9
-                ? (total - (sAt - v * dt)) / v   // partial landing step
-                : dt;
+            // LANDING (v13.10, D84, two bugs in the old step): the
+            // partial time read sAt AFTER clamping, so the last sample
+            // was stamped a FULL dt late — the train crawled the final
+            // centimeters over a whole tick (the user's "brief stop" +
+            // flattened graph tail). And landing as full-step + RUNT
+            // left two nearly-coincident samples whose tiny dt blew up
+            // slope estimates (noise/dt) in the optimizer costs. The
+            // last step now lands in ONE stride of at most 1.25·dt.
+            double remaining = total - sAt;
+            if (remaining <= 1.25 * v * dt) {
+                sAt = total;
+                t += remaining / v;
+            } else {
+                sAt += v * dt;
+                t += dt;
+            }
         }
         return new Result(out, new TrackPose(solvedTarget.pos(),
             solvedTarget.orient()));

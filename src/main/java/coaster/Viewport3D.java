@@ -141,6 +141,10 @@ class Viewport3D {
                                            // uncaptured POV leaves W/S (and the
                                            // S slide key) to the graph editor
     double povTime;        // current ride position (s); W/S move it
+    private int povFollowPiece = -1;   // the piece POV is riding: the
+                                       // editor follows it (v13.11),
+                                       // and a DIFFERENT user-selected
+                                       // piece re-enters at its start
     long povLastNanos;
     AnimationTimer povTimer;
     final Group markerGroup = new Group();   // on-track node markers
@@ -360,6 +364,18 @@ class Viewport3D {
                 int idx = (int) FvdDesigner.clamp(povTime / FvdDesigner.INTEGRATE_DT, 0, app.lastSamples.size() - 1);
                 applyPovCamera(app.lastSamples.get(idx));
                 updateGridLOD(app.lastSamples.get(idx).pos().x(), app.lastSamples.get(idx).pos().z());
+                // the editor FOLLOWS the ride across pieces (v13.11,
+                // user spec: the piece you're on is the one you're
+                // editing) — piece transitions only, so hands-off
+                // graph edits are never fought mid-piece
+                if (app.editor != null) {
+                    int pc = app.editor.pieceAtTime(
+                        app.lastSamples.get(idx).t());
+                    if (pc >= 0 && pc != povFollowPiece) {
+                        povFollowPiece = pc;
+                        app.editor.activateAt(app.lastSamples.get(idx).t());
+                    }
+                }
             }
         };
 
@@ -602,7 +618,20 @@ class Viewport3D {
             boolean keepCapture = flyActive;   // Space mid-flight keeps capture
             if (flyActive) toggleFly();        // hand the camera over cleanly
             povActive = true;
-            povTime = 0;
+            // START POINT (v13.11, D85, user spec): a piece freshly
+            // selected since POV last rode = start at ITS beginning;
+            // otherwise RESUME where the ride left off (it used to
+            // always restart at 0)
+            int ap = app.editor != null ? app.editor.activePiece() : 0;
+            if (ap != povFollowPiece) {
+                povTime = app.editor != null
+                    ? app.editor.pieceStartTime(ap) : 0;
+                povFollowPiece = ap;
+            } else {
+                double rideEnd = app.lastSamples
+                    .get(app.lastSamples.size() - 1).t();
+                povTime = FvdDesigner.clamp(povTime, 0, rideEnd);
+            }
             povLastNanos = 0;
             moveKeys.clear();
             povCaptured = keepCapture;
@@ -729,6 +758,13 @@ class Viewport3D {
         // single-force-section document this reproduces the old direct
         // integrator call bit-for-bit (gated headlessly, D50).
         TrackCompiler.Result compiled = TrackCompiler.compile(app.coaster, FvdDesigner.INTEGRATE_DT);
+        // AUTO RE-OPTIMIZE (v13.10, D84): upstream edits re-place
+        // optimize-mode bridges; the signature check makes this a
+        // no-op on every compile that didn't change a bridge's inputs,
+        // and ONE recompile settles the moved pieces (no loop)
+        if (app.autoReoptimizeBridges(compiled)) {
+            compiled = TrackCompiler.compile(app.coaster, FvdDesigner.INTEGRATE_DT);
+        }
         List<FVDIntegrator.Sample> samples = compiled.samples();
         if (samples.size() < 2) return;
         app.lastSamples = samples;

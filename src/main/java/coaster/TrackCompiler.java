@@ -70,7 +70,8 @@ public final class TrackCompiler {
             TrackPiece piece = c.pieces.get(p);
             TrackPose pose = piece.entryPose();
             int pieceStart = all.size();
-            if (!piece.sections.isEmpty() && !prevEndsBridge) {
+            boolean bridgedIn = prevEndsBridge;
+            if (!piece.sections.isEmpty() && !bridgedIn) {
                 runs.add(new double[]{ pieceStart,
                     piece.sections.get(0).vDesign() });
             }
@@ -78,7 +79,13 @@ public final class TrackCompiler {
                 prevEndsBridge = piece.sections
                     .get(piece.sections.size() - 1) instanceof BridgeSection;
             }
-            boolean continuation = false;   // false for each piece's FIRST section
+            // a piece's first sample is a genuinely new point for a
+            // DETACHED piece — but a BRIDGED piece's entry coincides
+            // exactly with the bridge's exit (the seam contract), so
+            // keeping it duplicated the sample: zero-advance tick at
+            // every bridge seam (POV froze for a frame, bodyRates
+            // differenced across dt = 0; v13.10 D84)
+            boolean continuation = bridgedIn;
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // LIVE-FOLLOW (v13.1, D73): re-capture the solve
@@ -157,7 +164,7 @@ public final class TrackCompiler {
             }
         }
         double[] trueV = passD(all, runs);
-        double[][] rates = passA(all);
+        double[][] rates = passA(all, runs);
         return new Result(all, trueV, rates,
             trueFelt(all, trueV), trueRates(all, rates, trueV), spans);
     }
@@ -399,6 +406,26 @@ public final class TrackCompiler {
     /** Pass A: resulting body rates from the geometry. */
     public static double[][] passA(List<FVDIntegrator.Sample> samples) {
         return FVDIntegrator.bodyRates(samples);
+    }
+
+    /** Pass A, differenced WITHIN each run (v13.10, D84): the central
+     *  differences used to reach across the GAP to a detached piece's
+     *  first sample — the run-end rates jumped wild (the user's
+     *  "graphs jump around at the very end"). Bridged seams are one
+     *  continuous body and still difference straight through. */
+    public static double[][] passA(List<FVDIntegrator.Sample> samples,
+                                   List<double[]> runs) {
+        double[][] out = new double[samples.size()][4];
+        for (int r = 0; r < runs.size(); r++) {
+            int i0 = (int) runs.get(r)[0];
+            int i1 = r + 1 < runs.size() ? (int) runs.get(r + 1)[0]
+                                         : samples.size();
+            if (i0 >= i1) continue;
+            double[][] part = FVDIntegrator.bodyRates(
+                samples.subList(i0, i1));
+            for (int i = 0; i < part.length; i++) out[i0 + i] = part[i];
+        }
+        return out;
     }
 
     /** Pass A extension (round A, §5.1): TRUE felt G per sample. No

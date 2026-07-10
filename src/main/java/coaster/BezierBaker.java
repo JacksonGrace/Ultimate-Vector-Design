@@ -82,6 +82,32 @@ public class BezierBaker {
         if (prev != null) { n.inFrac = DEFAULT_FRAC;  n.inDv = 0; }
     }
 
+    /** Remove an INTERIOR node, keeping the neighbors' facing handles
+     *  at their FRACTIONS but preserving their SLOPES (v13.12, D86 —
+     *  the user's spec; a v13.11 attempt kept the absolute knob
+     *  positions instead and was rejected: handles must keep their
+     *  fractional amount like every other edit). Fractions are
+     *  segment-relative, so the merged gap stretches the handles'
+     *  time runs — dv rescales with the new run so the curve still
+     *  LEAVES each survivor at the same dv/dt (a plain removal kept
+     *  dv and halved fitted slopes per delete: converted carpets
+     *  "snapped flat"). Ends fall back to a plain remove. */
+    public static void removeBridging(List<Node> lane, int i) {
+        if (i > 0 && i < lane.size() - 1) {
+            Node prev = lane.get(i - 1);
+            Node next = lane.get(i + 1);
+            double outDt = effOutDt(prev, lane.get(i));
+            double inDt = effInDt(lane.get(i), next);
+            double outSlope = Math.abs(outDt) < 1e-12 ? 0 : prev.outDv / outDt;
+            double inSlope = Math.abs(inDt) < 1e-12 ? 0 : next.inDv / inDt;
+            lane.remove(i);
+            prev.outDv = outSlope * effOutDt(prev, next);
+            next.inDv = inSlope * effInDt(prev, next);
+            return;
+        }
+        lane.remove(i);
+    }
+
     /** Out-handle time offset in SECONDS for segment a->b, from the fraction. */
     public static double effOutDt(Node a, Node b) {
         return clamp(a.outFrac, 0, MAX_FRAC) * (b.t - a.t);

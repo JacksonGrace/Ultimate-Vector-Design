@@ -160,18 +160,31 @@ BridgeSection.java  Phase 2 (v13.0 D72; live-follow v13.1 D73; seam
                     "spiky ends flat middles"; NOT a continuity-order
                     problem) + the toolbar Length spinner AND dragging
                     the strip's END LINE re-optimize placement per
-                    tick/event. In OPTIMIZE modes the lens are
-                    OPTIMIZER-OWNED since v13.8 (D82,
-                    Coaster.optimizeBridge): every apply re-picks the
-                    tangent pair from a FIXED grid (LENS_GRID ×
-                    dist), minimizing LATERAL deviation from the
-                    march path (point-to-polyline; arc-fraction
-                    matching rang tangentially and peak-rate
-                    rewarded corner-cutting a circle — both probed
-                    and rejected) — deterministic per (geometry,
-                    dist): the old multiplicative rescale
-                    (lens ×= requested/realized arc) compounded and
-                    drifted the shape every length round trip.
+                    tick/event. OPTIMIZED bridges ARE the march
+                    since v13.12 (D86): when the placement LANDS on
+                    the target (miss test 2 cm/0.3°; lastOptDist =
+                    blen's 5th field, missing = 0 = old files keep
+                    their septic shapes), integrate() takes the
+                    MARCH SPINE itself — Coaster.marchSpine rows,
+                    curvature = the jerk-matched Hermite blend +
+                    mid-span humps, NO polynomial end-concentration
+                    (a septic can't bend uniformly for long: the
+                    user's "sharper turns near the start and end"
+                    on big-turn bridges) — with a residual-only
+                    smoothstep-quintic twist closing the bank
+                    (march U already carries the blended roll,
+                    seams' roll value+slope untouched) and the
+                    shared speed-blend/resample tail. The SEPTIC
+                    remains the absorber for manual mode, orphans,
+                    never-optimized bridges and hand-moved targets;
+                    optimize applies set lens := dist (the fallback
+                    sweep — the v13.8 LENS_GRID deviation search
+                    died with v13.12: nothing to imitate when the
+                    geometry IS the ideal). Mode switches BETWEEN
+                    the two optimize modes keep the CURRENT length
+                    (D86 — re-running the per-mode knee ladder
+                    moved the shape with yaw already aligned);
+                    only NONE→optimize runs the ladder.
                     optLen = the "Optimize length" check (v13.8,
                     blen's 4th field): length :=
                     Coaster.optimalBridgeLength's knee — shortest
@@ -195,7 +208,12 @@ TrackPiece.java     placement (origin + BASE ORIENTATION quat + yaw
                     orientation — identity from scratch, the exact
                     boundary pose after a split, the reversed exit
                     after a piece reversal; yaw 0 = baseOrient exactly,
-                    so zeroing the delta reverts) + section
+                    so zeroing the delta reverts. + PITCH/ROLL deltas
+                    v13.13 D87, `piece` fields 9-10: applied yaw →
+                    pitch-about-horizontal-right → roll-about-heading,
+                    each controls exactly ONE Euler quantity of the
+                    entry frame; all-zero paths stay float-exact) +
+                    section
                     chain; editing one piece can never move another.
 Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     slots (Phase 3). Section-0 lanes are shared BY
@@ -218,7 +236,12 @@ TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
                     passA resulting rates + TRUE felt/rates (no
                     differencing: Gv_true = (v_t²/v_d²)(Gv_d − U.y)
                     + U.y per sample, rates scale by v_t/v_d —
-                    Result.trueFelt/trueRates). Result also carries
+                    Result.trueFelt/trueRates; rates difference
+                    WITHIN runs since v13.10 D84 — a detached
+                    piece's frames poisoned run-end rates). A
+                    BRIDGED piece's first sample drops like a
+                    continuation (v13.10 — it duplicated the bridge
+                    exit exactly: zero-advance tick). Result also carries
                     per-section Spans (sample range + t/s extent,
                     v11.0; + the section's EXACT exit TrackPose,
                     v12.1 — splits copy it into baseOrient) — the
@@ -379,11 +402,16 @@ source tree — they won't compile against the current time-domain API.
   straight len smooth [rollmode rollval]` / `elem curve radius angle
   dir smooth [rollmode rollval]` lines (straight/curve, v11.0; roll
   fields v11.1 — missing = rate 0, the v11.0 geometry), or `bpose`
-  (two pos+quat poses, %.10f) + `blen lenA lenB [optMode [optLen]]`
+  (two pos+quat poses, %.10f) + `blen lenA lenB [optMode [optLen
+  [lastOptDist]]]`
   (3rd
   field v13.5 — placement mode, missing = 0 = optimize position +
-  yaw; 4th field v13.8 — the Optimize-length check, missing =
-  off) + `bacc` (two seam
+  orientation; 4th field v13.8 — the Optimize-length check, missing =
+  off; 5th field v13.12 — the march-spine length, missing = 0 =
+  never optimized, old files keep their septic shapes; fields 6-8
+  v13.13 — the yaw/pitch/roll LOCKS, missing = yaw unlocked +
+  pitch/roll locked = the historic P+Y; `piece` fields 9-10 are the
+  pitch/roll deltas, missing = 0) + `bacc` (two seam
   curvature vectors, v13.1 — missing = zero, the v13.0 G¹) + `bdyn`
   (seam jerk vectors + roll rates + target entry speed, v13.2 —
   missing = zeros, the v13.1 shape; + two seam roll ACCELERATIONS,
@@ -612,20 +640,21 @@ cramped
 geometry still legitimately swings fast INSIDE the bridge). The
 compiler aims solvedTarget at the target's ACTUAL first-sample frame
 (pre-integrated head, v13.4) — a reversed-then-edited first section
-used to kink hard at its entrance. Badge
-menu: "Bridge tangents…"
-adjusts the sweep; "Optimize placement of piece N (continue the
-turn)" runs the CONTINUATION MARCH (v13.4 D77 — the acceptance
+used to kink hard at its entrance. (The badge's "Bridge tangents…"
+dialog and explicit "Optimize placement of piece N" action were
+REMOVED in v13.13, D87 — grandfathered from the pre-mode era; the
+mode radios/controls + auto re-optimize are the whole surface now.)
+The optimize modes run the CONTINUATION MARCH (v13.4 D77 — the acceptance
 principle is "the graphs change as little as possible"): the seams'
 body-frame curvature + roll-per-meter, blended entry → target as
-QUINTIC Hermites — value + measured-jerk slope at both ends AND
-zero end second-derivative (v13.8 D82: the linear blend ignored
-the jerks the septic is FORCED to leave the seams at, and the
-resulting fight was the user's "double bump"; v13.9 D83: the
-cubic's nonzero end 2nd derivative bent the rate graphs
-immediately off the seams — the user's "high onset"; quintic
-onset ratio 0.11 vs cubic ~0.4, gated. Slope terms below 2% of
-the curvature scale
+CUBIC Hermites whose end slopes are the measured seam jerks
+(v13.8 D82 — the linear blend ignored the jerks the septic is
+FORCED to leave the seams at, and the resulting fight was the
+user's "double bump". v13.9 D83 probed a QUINTIC here — zero end
+2nd derivative, softer graph onsets — and v13.10 D84 REVERTED it
+on user feel: graphs may bend right off the seam, and the
+quintic's mid-blend bulge read as shape weirdness. Slope terms
+below 2% of the curvature scale
 are deadbanded as measurement noise — on an exact circle the
 ⊥-jerk measures ~1e-4/m² of fit noise and d-scaling it moved the
 placement 10 cm), marched from the chain end for the requested LENGTH
@@ -675,10 +704,18 @@ current sample) and the stats-bar top speed reads Pass D; both are
 identical to before until a drift exists. Reconciliation ops (badge
 menu) are §5 round B. PLACEMENT MODES (v13.5 D78,
 BridgeSection.optMode, blen's 3rd field, missing = 0): the toolbar
-Placement ▾ goes CONTEXTUAL over a live bridge — mode radios
-"Optimize position and yaw" (Length re-runs the full march)
+button RELABELS "Bridge properties ▾" over a live bridge (v13.10
+D84 — same button, the bridge's own panel; updateBridgeControls
+owns the label, syncLaneButtons fires it per activation) — mode radios
+"Optimize position and ORIENTATION" (v13.13 D87 — was "and yaw";
+same optMode 0: the march aligns every UNLOCKED axis of the next
+piece — yaw heading delta, pitch/roll as direct Euler additions
+onto TrackPiece.pitchDeg/rollDeg — and humps/twists to the LOCKED
+ones; the radio grays out with all three locked; Length re-runs
+the full march)
 | "Optimize position" (march places, the user owns the next piece's
-yaw) | "No optimization" (manual next-piece x/y/z + yaw; Length +
+whole orientation) | "No optimization" (manual next-piece x/y/z +
+unlocked-orientation rows; Length +
 end-line drag disabled; the DEFAULT for NEW bridges since v13.7 D81
 — a fresh bridge moves nothing and the dropdown now says so, user
 rule; the FVDD3 missing-field default stays 0 = POS_YAW so old
@@ -695,11 +732,66 @@ YES = the bridge deletes and the next piece attaches (stray
 placement discarded, seamless re-join), NO = unchecked, nothing
 moves), next-piece Yaw and x/y/z rows, each enabled per mode, all
 editing the NEXT piece through the bridge; the badge optimize
-action follows the mode + check. CONVERT (v13.7 D81 — v13.5's bridge-only
+action follows the mode + check. The optimizer's internals (the
+LEN_LADDER candidates, knee tolerance 10% + 0.5, slope weight 0.1)
+are deliberately NOT user-exposed (v13.10 D84 — probed
+as Options rows in v13.9 and per-bridge rows in v13.10-dev, both
+pulled on user verdict: confusing, effects unpredictable; the
+tuned constants ARE the behavior, and stale AppSettings keys or
+dev `bopt` lines are ignored). AUTO
+RE-OPTIMIZE (v13.10 D84, user rule): after every compile each live
+optimize-mode bridge whose signature changed re-runs at its last
+requested length (the knee when Optimize length is on; the
+zero-distance prompt never fires on the automatic path) — editing
+UPSTREAM of an optimized bridge re-places the next piece live. The
+signature (BridgeSection.optSignature since v13.12 D86) is pure
+SEAM GEOMETRY — entry pose + body-frame target dynamics, NO mode
+flags and NO heading, so flag flips/mode switches never re-place
+by themselves (their explicit handlers own that), and
+Coaster.optimizeBridge STAMPS it on apply so explicit actions
+never double-fire the auto pass; optimizing never changes its own
+signature → ONE recompile settles, no loop (optSig transient,
+lastOptDist persisted since v13.12). The march also closes the HEADING
+gap in position-only mode (v13.10 D84: a rotation-about-world-Y
+hump, the pitch hump's twin, heading rate exactly c rad/m at any
+pitch — the yaw-blind placement left the septic absorbing the
+user's fixed yaw: "very weirdly shaped track", high length
+sensitivity; gated 55°-target peak 1.43× ideal, 9% shape change
+per 10% length). SEAM SAMPLE FIXES (v13.10 D84, the "brief stop"):
+the bridge landing steps ONCE by ≤ 1.25·dt (the old partial read
+sAt post-clamp = the last sample stamped a full dt late — the
+flattened graph tail; full-step+runt pairs also blew up cost
+slopes on noise/dt), and a BRIDGED piece's first sample is dropped
+like any continuation (it duplicated the bridge exit exactly —
+zero-advance tick, POV froze a frame). Pass A differences WITHIN
+runs (detached pieces' frames no longer poison run-end rates).
+CONVERT (v13.7 D81 — v13.5's bridge-only
 "Unfreeze (edit as geo section)" renamed and UNIFIED): every badge
 menu ends with "Convert to geo section" / "Convert to force
 section" (only the OTHER mode(s) offered — force↔geo, s/c→either,
-bridge→either; REVERSED sections refuse, §5.3's rule):
+bridge→either; REVERSED sections refuse, §5.3's rule). BRIDGES
+convert PARTIALLY since v13.11 (D85, user spec — their items wear
+"…"): the item opens a SPLIT-LINE MODE on the strip — highlight, a
+draggable vertical line (H_RESIZE, live "% of bridge" readout,
+5–95% + rate-fit margins), click a side to pick it (tint + brief
+flash; LEFT default), canvas chips [Convert left/right part] /
+[Cancel] apply (Coaster.partialConvertBridge): LEFT ⇒ [..,
+converted lanes, bridge(cut→target)] — the bridge stays
+last-of-piece and re-solves to the same measured cut conditions
+(whole track holds ~0.14 m, bridge lands on the target to 1e-9,
+gated TESTING #27); RIGHT ⇒ the lanes PREPEND to the original
+target piece, re-anchored at the exact cut pose — its own sections
+chain on after them, the track stays CONNECTED end to end (v13.13
+D87 — the v13.11 new-piece split stranded everything downstream;
+orphaned bridges keep that fallback).
+Both leave optSig null (first-sight — auto re-optimize records
+without moving anything) and PIN the surviving bridge's length:
+optLen off + lastOptDist = that side's share of the cut (v13.12 —
+an inherited Optimize-length check re-kneed the remainder on the
+first upstream edit, and the RIGHT side kept a stale full-length
+request); the mode cancels on any activation
+change; the editor follows the converted lanes (right: onto the
+new piece, the split precedent). For NON-bridge sections:
 Coaster.convertToLanes re-authors the compiled shape as editable
 lanes — per-meter rates off the samples, re-timed onto the target's
 energy profile (identity for force/geo/s-c; real work for bridge
@@ -797,7 +889,15 @@ ride controls (mouse hidden, no mouse look): W/S ride at simulated speed,
 Shift ×4, Ctrl ×0.25; right-click releases; while captured, Space flips
 between fly (WASD) and POV (W/S) without releasing (`povCaptured`);
 scroll = fast burst either way, translucent graph line marks the camera
-(Options toggle, default on) ·
+(Options toggle, default on). POV↔selection sync (v13.11 D85, user
+spec): riding across a PIECE boundary activates that piece in the
+editor (activateAt, piece transitions only — povFollowPiece);
+entering POV starts at the active piece's START when a different
+piece was selected since POV last rode — the piece's own FIRST
+sample since v13.12 (D86: Span.t0 is by definition the PREVIOUS
+section's last sample time, which parked the camera at the end of
+the previous piece) — and RESUMES the previous
+ride position otherwise (was: always restarted at 0) ·
 `H` (action "flath") level the selection ONTO the main node — all
 selected nodes take selIdx's value with flat handles, one horizontal
 line; a single selected node just gets flat handles (v10.5 re-deal:
@@ -821,7 +921,14 @@ an endpoint with the selection are untouched), and both take 2+ nodes
 endpoint still unlocks its own segment(s) · `Z`/`X` toggle vertical/horizontal
 node-drag lock (translucent guide line; per-selection) · `Ctrl+S/O` save/load ·
 `Ctrl+Z` undo · `Delete` deletes the selected node (interior deletes bridge
-the gap — neighbors keep positions/handles; last-node deletes shorten the
+the gap — the neighbors' facing handles keep their FRACTIONS and
+their SLOPES: dv rescales onto the merged segment's longer time run
+(BezierBaker.removeBridging, v13.12 D86 — user rule "handles stay
+their fractional amount, the slope should just not change"; plain
+removal kept dv and halved fitted slopes per delete — converted
+carpets "snapped flat" — and a v13.11 keep-absolute-knob variant
+was REJECTED; the D63 re-timing squish is untouched); last-node
+deletes shorten the
 ride; node 0 refuses) · double-click a NODE = modal editor to type
 transition time, transition Δ, and handle fractions directly (typed
 fractions SLIDE the knob along its current line — dv scales with length,
@@ -899,12 +1006,8 @@ signs), Edit
 editor | View/File/History, ACTIONS carries the category as its 4th
 field); rebind by clicking + pressing a key, ↺ resets an edited
 binding to default; Options dialog — the TWO FOV sliders 30–110°, mouse
-sensitivity, snap steps, BRIDGE-OPTIMIZER rows (v13.9 D83: tangent
-sweep × 0.6–2 scaling LENS_GRID, length tolerance % = the knee's
-eagerness, slope weight = the rate-ramp penalty; per-user via
-AppSettings, applied at optimize-ACTION time only — results land in
-the .fvd so files compile identically anywhere; defaults =
-Coaster.SWEEP_DEFAULT/KNEE_TOL_DEFAULT/SLOPE_W_DEFAULT),
+sensitivity, snap steps (the v13.9 bridge-optimizer rows were
+REMOVED in v13.10, D84 — internal constants again),
 "Show heartline (neon)" check — hairline
 self-illuminated yellow tube on the integrated path, app-wide default off,
 setVisible(false) while POV rides (the camera sits ON it) — and the POV
@@ -984,9 +1087,11 @@ the numeric slope, v10.4). Roll is
 deliberately NOT
 offered — the resulting roll rate is the authored roll lane),
 POV, Append (no shortcut hints on buttons — the stats bar hint is
-generated from live bindings); the Resulting overlays span the WHOLE
-ride since v10.8 (v10.1-v10.7 drew them over the active section
-only). Stats bar shows ride time, track length,
+generated from live bindings); the Resulting overlays span the whole
+RUN since v13.11 (v10.8 made them ride-wide, but the global timeline
+continues into DETACHED pieces, whose curves bled in at the window's
+right edge — overlays, true strokes, their hover and the scale fit
+all clamp to [runT0, runT0+runDur] now, D85). Stats bar shows ride time, track length,
 height range, top speed, Gv range. Window sizes itself to
 `Screen.getVisualBounds()` (capped 1400×880) — do not hardcode window sizes;
 that broke on the user's 1080p screen once already.

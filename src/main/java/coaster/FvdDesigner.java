@@ -1,4 +1,4 @@
-package coaster;
+﻿package coaster;
 
 import javafx.animation.AnimationTimer;
 import javafx.animation.PauseTransition;
@@ -363,14 +363,27 @@ public class FvdDesigner extends Application {
      *  syncing never re-runs the optimization. */
     void updateBridgeControls() {
         if (bridgeGapSpinner == null || editor == null) return;
-        if (!editor.activeBridgeWithTarget()) return;
+        // the SAME toolbar button is the piece-placement menu or the
+        // bridge's own properties menu (v13.10, D84 — user: "really a
+        // completely different menu"); the label says which
+        boolean bridge = editor.activeBridgeWithTarget();
+        if (placementBtn != null) {
+            placementBtn.setText(bridge
+                ? "Bridge properties ▾" : "Placement ▾");
+        }
+        if (!bridge) return;
         boolean was = docApplying;
         docApplying = true;
         setIfOff(bridgeGapSpinner, Math.max(1, editor.activeBridgeGap()), 0.05);
-        setIfOff(bridgeYawSpinner, editor.bridgeTargetYaw(), 0.01);
+        setIfOff(bridgeYawSpinner, editor.bridgeTargetOrient(0), 0.01);
+        setIfOff(bridgePitchSpinner, editor.bridgeTargetOrient(1), 0.01);
+        setIfOff(bridgeRollSpinner, editor.bridgeTargetOrient(2), 0.01);
         setIfOff(bridgeXSpinner, editor.bridgeTargetPos(0), 0.005);
         setIfOff(bridgeYSpinner, editor.bridgeTargetPos(1), 0.005);
         setIfOff(bridgeZSpinner, editor.bridgeTargetPos(2), 0.005);
+        bridgeLockYawBtn.setSelected(!editor.bridgeLock(0));
+        bridgeLockPitchBtn.setSelected(!editor.bridgeLock(1));
+        bridgeLockRollBtn.setSelected(!editor.bridgeLock(2));
         int m = editor.bridgeOptMode();
         (m == BridgeSection.OPT_POS ? bridgeModeP
             : m == BridgeSection.OPT_NONE ? bridgeModeN
@@ -391,6 +404,60 @@ public class FvdDesigner extends Application {
         }
     }
 
+    /** AUTO RE-OPTIMIZE (v13.10, D84 — user rule: editing the track
+     *  BEFORE a bridge updates its optimization automatically while
+     *  an optimize mode is on): after a compile, every live
+     *  optimize-mode bridge whose PLACEMENT-INVARIANT seam signature
+     *  changed re-runs its optimization — at its last requested
+     *  length (the knee when "Optimize length" is checked; no
+     *  zero-distance prompt on the automatic path). The signature
+     *  (BridgeSection.optSignature, v13.12 D86) is pure SEAM GEOMETRY
+     *  — no mode flags, no target heading: flag flips and mode
+     *  switches must never re-place anything by themselves (their
+     *  explicit handlers own that), and Coaster.optimizeBridge STAMPS
+     *  the signature when it applies, so explicit actions never
+     *  double-fire this path. Optimizing moves/yaws the piece without
+     *  changing its own signature, so ONE extra compile settles — no
+     *  feedback loop. Returns true when the caller must recompile. */
+    boolean autoReoptimizeBridges(TrackCompiler.Result r) {
+        boolean changed = false;
+        int spanIdx = 0;
+        for (int p = 0; p < coaster.pieces.size(); p++) {
+            java.util.List<Section> secs = coaster.pieces.get(p).sections;
+            for (int k = 0; k < secs.size(); k++, spanIdx++) {
+                if (!(secs.get(k) instanceof BridgeSection bs)) continue;
+                if (bs.optMode == BridgeSection.OPT_NONE
+                        || p + 1 >= coaster.pieces.size()) continue;
+                double[] sig = bs.optSignature();
+                if (bs.optSig == null) {
+                    // FIRST SIGHT (load / fresh bridge): record only.
+                    // Loading a file must never move its pieces — the
+                    // auto path acts on CHANGES from here on.
+                    bs.optSig = sig;
+                    continue;
+                }
+                if (sigEq(sig, bs.optSig)) continue;
+                boolean py = bs.optMode == BridgeSection.OPT_POS_YAW;
+                double dist = bs.optLen
+                    ? coaster.optimalBridgeLength(bs, py)
+                    : bs.lastOptDist > 0 ? bs.lastOptDist
+                    : Math.max(1, spanIdx < r.spans().size()
+                        ? r.spans().get(spanIdx).sLen() : 1);
+                coaster.optimizeBridge(bs, p + 1, dist, py);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    private static boolean sigEq(double[] a, double[] b) {
+        if (b == null || a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) {
+            if (Math.abs(a[i] - b[i]) > 1e-9) return false;
+        }
+        return true;
+    }
+
     /** Per-mode enabling of the bridge placement rows (v13.5):
      *  length drives the march in the optimize modes; yaw is the
      *  user's in position-only and manual; x/y/z manual only. */
@@ -400,7 +467,19 @@ public class FvdDesigner extends Application {
         bridgeLenRow.setDisable(m == BridgeSection.OPT_NONE);
         // auto length owns the spinner, the check stays clickable
         bridgeGapSpinner.setDisable(editor.bridgeOptLen());
-        bridgeYawRow.setDisable(m == BridgeSection.OPT_POS_YAW);
+        // orientation spinners (v13.13): a LOCKED axis is frozen
+        // everywhere; in optimize-orientation mode the UNLOCKED axes
+        // are the march's (live values, not editable). The padlocks
+        // themselves stay clickable in every bridge mode.
+        boolean orient = m == BridgeSection.OPT_POS_YAW;
+        bridgeYawSpinner.setDisable(orient || editor.bridgeLock(0));
+        bridgePitchSpinner.setDisable(orient || editor.bridgeLock(1));
+        bridgeRollSpinner.setDisable(orient || editor.bridgeLock(2));
+        // all three locked = nothing to align: the orientation mode
+        // grays out (its tooltip explains the padlocks)
+        bridgeModePY.setDisable(editor.bridgeLock(0)
+            && editor.bridgeLock(1) && editor.bridgeLock(2)
+            && m != BridgeSection.OPT_POS_YAW);
         bridgePosRow.setDisable(m != BridgeSection.OPT_NONE);
     }
 
@@ -522,11 +601,37 @@ public class FvdDesigner extends Application {
     // bridge placement modes (v13.5): the Placement dropdown edits the
     // NEXT piece through the bridge — mode radios + per-mode spinners
     private VBox bridgeModeRow;
-    private HBox bridgeLenRow, bridgeYawRow, bridgePosRow;
+    private HBox bridgeLenRow, bridgeYawRow, bridgePitchRow,
+        bridgeRollRow, bridgePosRow;
     private RadioButton bridgeModePY, bridgeModeP, bridgeModeN;
     private CheckBox bridgeOptLenCheck;   // v13.8: auto length (D82)
-    private Spinner<Double> bridgeYawSpinner,
-        bridgeXSpinner, bridgeYSpinner, bridgeZSpinner;
+    private Button placementBtn;   // "Placement ▾" / "Bridge properties ▾"
+    private ToggleButton bridgeLockYawBtn, bridgeLockPitchBtn,
+        bridgeLockRollBtn;         // v13.13: orientation locks (D87)
+    private Spinner<Double> bridgeYawSpinner, bridgePitchSpinner,
+        bridgeRollSpinner, bridgeXSpinner, bridgeYSpinner, bridgeZSpinner;
+
+    /** An orientation padlock (v13.13): SELECTED = unlocked (🔓,
+     *  editable / optimizer-aligned), unselected = locked (🔒,
+     *  frozen — the optimization meets the value instead). */
+    private ToggleButton bridgeLockBtn(int axis) {
+        ToggleButton b = new ToggleButton("🔒");
+        b.setFocusTraversable(false);
+        b.setStyle("-fx-font-size: 10px; -fx-padding: 1 4 1 4;");
+        b.selectedProperty().addListener((obs, o, sel) ->
+            b.setText(sel ? "🔓" : "🔒"));
+        b.setOnAction(e -> {
+            if (docApplying) return;
+            editor.setBridgeLock(axis, !b.isSelected());
+            refreshBridgeRows();
+        });
+        Tooltip.install(b, new Tooltip(
+            "Lock/unlock this orientation of the next piece.\n"
+            + "Locked = frozen (the bridge bends to meet it);\n"
+            + "unlocked = editable, and \"Optimize position and\n"
+            + "orientation\" aligns it to the natural continuation."));
+        return b;
+    }
     private SplitPane mainSplit;           // 3D view over graph panel
     private double lastDividerPos = 0.6;   // restore point for the collapse toggle
     RadioMenuItem gradientModeItem, solidModeItem;
@@ -701,8 +806,11 @@ public class FvdDesigner extends Application {
 
         // piece placement/reverse dropdown (v13.2 — moved here from the
         // Coaster menu per user; the rows are built with the menu bar
-        // and reparented into a fresh ContextMenu on each open)
-        Button placementBtn = new Button("Placement ▾");
+        // and reparented into a fresh ContextMenu on each open). Over a
+        // live bridge the SAME button is "Bridge properties ▾" (v13.10,
+        // D84 — user: it's really a different menu): mode + length +
+        // per-bridge optimizer preferences + next-piece placement.
+        placementBtn = new Button("Placement ▾");
         placementBtn.setFocusTraversable(false);
         placementBtn.setStyle(btnStyle);
         placementBtn.setOnAction(e -> {
@@ -716,6 +824,8 @@ public class FvdDesigner extends Application {
                     new CustomMenuItem(bridgeModeRow, false),
                     new CustomMenuItem(bridgeLenRow, false),
                     new CustomMenuItem(bridgeYawRow, false),
+                    new CustomMenuItem(bridgePitchRow, false),
+                    new CustomMenuItem(bridgeRollRow, false),
                     new CustomMenuItem(bridgePosRow, false));
                 sceneRow = bridgeModeRow;
             } else {
@@ -746,7 +856,7 @@ public class FvdDesigner extends Application {
         bridgeGapLbl = new Label("Length (m)");
         bridgeGapLbl.setStyle("-fx-text-fill: rgb(200,205,215);");
         bridgeGapSpinner = new Spinner<>(
-            new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 1000, 20, 5));
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 1000, 20, 1));
         bridgeGapSpinner.setPrefWidth(80);
         bridgeGapSpinner.setEditable(true);
         bridgeGapSpinner.setFocusTraversable(false);
@@ -1185,9 +1295,15 @@ public class FvdDesigner extends Application {
         Label bridgeModeLbl = new Label("Next piece placement");
         bridgeModeLbl.setTextFill(Color.BLACK);
         ToggleGroup modeGroup = new ToggleGroup();
-        bridgeModePY = new RadioButton("Optimize position and yaw");
+        bridgeModePY = new RadioButton("Optimize position and orientation");
         bridgeModeP = new RadioButton("Optimize position");
         bridgeModeN = new RadioButton("No optimization");
+        Tooltip.install(bridgeModePY, new Tooltip(
+            "Places the next piece on the track's natural continuation\n"
+            + "and rotates its UNLOCKED axes (the padlocks on yaw/pitch/\n"
+            + "roll) to meet it; locked axes keep their values and the\n"
+            + "bridge bends to them. Grayed out while all three are\n"
+            + "locked — unlock at least one axis to optimize orientation."));
         RadioButton[] modeBtns = { bridgeModePY, bridgeModeP, bridgeModeN };
         for (int m = 0; m < 3; m++) {
             final int mode = m;
@@ -1222,6 +1338,10 @@ public class FvdDesigner extends Application {
         bridgeLenRow = new HBox(8, bridgeGapLbl, bridgeGapSpinner,
             bridgeOptLenCheck);
         bridgeLenRow.setAlignment(Pos.CENTER_LEFT);
+        // (v13.10-dev briefly exposed three per-bridge optimizer
+        // spinners here — REMOVED in the same version, D84: the user
+        // found them confusing and unpredictable; the optimizer's
+        // constants are internal again)
         Label bYawLbl = new Label("Next piece yaw (°)");
         bYawLbl.setTextFill(Color.BLACK);
         bridgeYawSpinner = new Spinner<>(
@@ -1230,10 +1350,45 @@ public class FvdDesigner extends Application {
         bridgeYawSpinner.setEditable(true);
         bridgeYawSpinner.getEditor().setTextFormatter(signedNumFormatter());
         bridgeYawSpinner.valueProperty().addListener((obs, o, v) -> {
-            if (!docApplying) editor.setBridgeTargetYaw(v);
+            if (!docApplying) editor.setBridgeTargetOrient(0, v);
         });
-        bridgeYawRow = new HBox(8, bYawLbl, bridgeYawSpinner);
+        // orientation LOCKS (v13.13, D87): a locked axis is frozen —
+        // no edits — and the optimization MEETS it; an unlocked axis
+        // is editable, and in optimize-orientation mode the march
+        // ALIGNS it instead. Defaults: yaw unlocked, pitch + roll
+        // locked = the historic "position and yaw".
+        bridgeLockYawBtn = bridgeLockBtn(0);
+        bridgeLockPitchBtn = bridgeLockBtn(1);
+        bridgeLockRollBtn = bridgeLockBtn(2);
+        bridgeYawRow = new HBox(8, bYawLbl, bridgeYawSpinner,
+            bridgeLockYawBtn);
         bridgeYawRow.setAlignment(Pos.CENTER_LEFT);
+        Label bPitchLbl = new Label("Next piece pitch (°)");
+        bPitchLbl.setTextFill(Color.BLACK);
+        bridgePitchSpinner = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(-85, 85, 0, 1));
+        bridgePitchSpinner.setPrefWidth(90);
+        bridgePitchSpinner.setEditable(true);
+        bridgePitchSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        bridgePitchSpinner.valueProperty().addListener((obs, o, v) -> {
+            if (!docApplying) editor.setBridgeTargetOrient(1, v);
+        });
+        bridgePitchRow = new HBox(8, bPitchLbl, bridgePitchSpinner,
+            bridgeLockPitchBtn);
+        bridgePitchRow.setAlignment(Pos.CENTER_LEFT);
+        Label bRollLbl = new Label("Next piece roll (°)");
+        bRollLbl.setTextFill(Color.BLACK);
+        bridgeRollSpinner = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, 0, 1));
+        bridgeRollSpinner.setPrefWidth(90);
+        bridgeRollSpinner.setEditable(true);
+        bridgeRollSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        bridgeRollSpinner.valueProperty().addListener((obs, o, v) -> {
+            if (!docApplying) editor.setBridgeTargetOrient(2, v);
+        });
+        bridgeRollRow = new HBox(8, bRollLbl, bridgeRollSpinner,
+            bridgeLockRollBtn);
+        bridgeRollRow.setAlignment(Pos.CENTER_LEFT);
         Label bPosLbl = new Label("Next piece x/y/z (m)");
         bPosLbl.setTextFill(Color.BLACK);
         bridgeXSpinner = bridgePosSpinner(0);

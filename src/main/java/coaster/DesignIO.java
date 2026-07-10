@@ -82,10 +82,13 @@ public final class DesignIO {
             // %.10f keeps the quantized quat unit to ~4e-10, under the
             // loader's re-normalize threshold — round-trips stay byte-
             // identical
-            out.printf(Locale.US, "piece %.4f %.4f %.4f %.4f %.10f %.10f %.10f %.10f%n",
+            // fields 9-10: pitch/roll deltas (v13.13; missing = 0)
+            out.printf(Locale.US,
+                "piece %.4f %.4f %.4f %.4f %.10f %.10f %.10f %.10f %.4f %.4f%n",
                 piece.x, piece.y, piece.z, piece.yawDeg,
                 piece.baseOrient.w(), piece.baseOrient.x(),
-                piece.baseOrient.y(), piece.baseOrient.z());
+                piece.baseOrient.y(), piece.baseOrient.z(),
+                piece.pitchDeg, piece.rollDeg);
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // bridge (v13.0): the FROZEN solve inputs — poses at
@@ -106,9 +109,17 @@ public final class DesignIO {
                         bs.solvedTarget.orient().y(), bs.solvedTarget.orient().z());
                     // 3rd field: placement-optimization mode (v13.5;
                     // missing = 0, optimize position + yaw); 4th:
-                    // optimize-length check (v13.8; missing = off)
-                    out.printf(Locale.US, "blen %.4f %.4f %d %d%n",
-                        bs.lenA, bs.lenB, bs.optMode, bs.optLen ? 1 : 0);
+                    // optimize-length check (v13.8; missing = off);
+                    // 5th: last requested optimize length (v13.12 —
+                    // the march-spine geometry reproduces from it;
+                    // missing/0 = never optimized, septic shape)
+                    // fields 6-8: yaw/pitch/roll locks (v13.13;
+                    // missing = yaw unlocked, pitch+roll locked)
+                    out.printf(Locale.US,
+                        "blen %.4f %.4f %d %d %.4f %d %d %d%n",
+                        bs.lenA, bs.lenB, bs.optMode, bs.optLen ? 1 : 0,
+                        bs.lastOptDist, bs.lockYaw ? 1 : 0,
+                        bs.lockPitch ? 1 : 0, bs.lockRoll ? 1 : 0);
                     // seam curvature vectors (v13.1 — G² ends; only the
                     // orphaned-bridge fallback ever reads them back,
                     // live compiles re-capture)
@@ -245,6 +256,10 @@ public final class DesignIO {
                     if (parts.length > 8) {   // base orientation (v12.1)
                         curPiece.baseOrient = loadQuat(parts, 5);
                     }
+                    if (parts.length > 10) {  // pitch/roll deltas (v13.13)
+                        curPiece.pitchDeg = Double.parseDouble(parts[9]);
+                        curPiece.rollDeg = Double.parseDouble(parts[10]);
+                    }
                     c.pieces.add(curPiece);
                     curSection = null;
                     curLane = -1;
@@ -309,7 +324,20 @@ public final class DesignIO {
                             Integer.parseInt(parts[3])));
                     }
                     // v13.8 optimize-length check; missing = off
+                    // (a v13.10-dev `bopt` prefs line existed briefly
+                    // and was removed with the prefs — any such lines
+                    // fall to the unknown-line rule and are ignored)
                     bs.optLen = parts.length > 4 && parts[4].equals("1");
+                    // v13.12 march-spine length; missing = 0 (septic)
+                    if (parts.length > 5) {
+                        bs.lastOptDist = Double.parseDouble(parts[5]);
+                    }
+                    // v13.13 orientation locks; missing = defaults
+                    if (parts.length > 8) {
+                        bs.lockYaw = parts[6].equals("1");
+                        bs.lockPitch = parts[7].equals("1");
+                        bs.lockRoll = parts[8].equals("1");
+                    }
                 }
                 case "bacc" -> {   // v13.1; missing = zero (v13.0 = G¹)
                     if (!(curSection instanceof BridgeSection bs))
