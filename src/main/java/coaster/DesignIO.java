@@ -144,8 +144,11 @@ public final class DesignIO {
                     // Trailing roll fields (v11.1): mode 0 = rate °/s,
                     // 1 = global bank °; readers default MISSING fields
                     // to rate 0 so v11.0 saves keep their geometry.
-                    out.printf(Locale.US, "section sc %.4f distance %d%n",
-                        sc.vDesign, sc.reversed ? 1 : 0);
+                    // 5th field: pinned design speed (v14.5 D97;
+                    // missing = off — old readers ignore it)
+                    out.printf(Locale.US, "section sc %.4f distance %d %d%n",
+                        sc.vDesign, sc.reversed ? 1 : 0,
+                        sc.vPinned ? 1 : 0);
                     for (StraightCurveSection.Element e : sc.elements) {
                         int rm = e.rollMode == StraightCurveSection.RollMode.GLOBAL
                             ? 1 : 0;
@@ -163,11 +166,13 @@ public final class DesignIO {
                     continue;
                 }
                 LaneSection fs = (LaneSection) section;   // force | geo (Phase 2)
-                out.printf(Locale.US, "section %s %.4f %s %d%n",
+                // 5th field: pinned design speed (v14.5 D97)
+                out.printf(Locale.US, "section %s %.4f %s %d %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
                     fs.vDesign,
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
-                    fs.reversed ? 1 : 0);
+                    fs.reversed ? 1 : 0,
+                    fs.vPinned ? 1 : 0);
                 for (int lane = 0; lane < 3; lane++) {
                     out.println("lane " + lane);
                     for (BezierBaker.Node n : fs.lanes.get(lane)) {
@@ -279,6 +284,8 @@ public final class DesignIO {
                         default -> throw new IOException("unknown section mode: " + parts[1]);
                     };
                     if (parts.length > 4) curSection.reversed(parts[4].equals("1"));
+                    // v14.5 pinned design speed; missing = off
+                    if (parts.length > 5) curSection.vPinned(parts[5].equals("1"));
                     curPiece.sections.add(curSection);
                     curLane = -1;
                 }

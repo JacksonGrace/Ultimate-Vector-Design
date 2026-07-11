@@ -380,11 +380,19 @@ class GraphEditor extends Region {
             : activeSc() != null || activeBridge() != null ? 2 : 0);
         app.updateBridgeControls();
         // the partial-convert mode is per-strip: any activation change
-        // away from its bridge cancels it (v13.11)
-        if (pcBridge >= 0 && (pcBridge != activeSection
-                || activeBridge() == null)) {
-            pcBridge = -1;
+        // away from its section cancels it (v13.11; any mode v14.0)
+        if (pcSec >= 0 && pcSec != activeSection) {
+            pcSec = -1;
             pcDragLine = false;
+        }
+        // the density preview owns its converted section the same way:
+        // an activation change out from under it (piece selector, 3D
+        // click) cancels — the pristine state comes back (v14.0, D90).
+        // pvApplying: the preview's own restore/re-run passes through
+        // restoreActive and must not self-cancel.
+        if (pvBefore != null && !pvApplying
+                && (activePiece != pvPiece || activeSection != pvSec)) {
+            cancelDensityPreview();
         }
     }
 
@@ -643,34 +651,90 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()) return;
         Section sec = secs.get(k);
-        List<FVDIntegrator.Sample> local;
-        if (sec instanceof BridgeSection bs) {
-            local = bs.integrate(FvdDesigner.INTEGRATE_DT).samples();
-        } else {
-            if (sec.reversed()) return;
-            TrackPose entry = k == 0
-                ? app.coaster.pieces.get(activePiece).entryPose()
-                : spanOf(k - 1) != null ? spanOf(k - 1).exit() : null;
-            if (entry == null) return;
-            local = TrackCompiler.passG(sec, entry,
-                FvdDesigner.INTEGRATE_DT).samples();
+        if (sec.reversed() && !(sec instanceof BridgeSection)) return;
+        int piece = activePiece;
+        // the model twin runs the sampling + replacement so the
+        // density preview can re-run it per change (v14.0, D90); a
+        // BRIDGE whole-convert routes to convertBridgeWhole in there —
+        // the next piece attaches and the track stays connected (D89)
+        beginDensityPreview(k, toGeo,
+            (sp, tol) ->
+            app.coaster.convertWholeSection(piece, k, toGeo,
+                FvdDesigner.INTEGRATE_DT, sp, tol),
+            () -> {
+                activePiece = piece;
+                activeSection = k;
+            });
+    }
+
+    /** Any live bridge EARLIER in this section's RUN? The resolve
+     *  ops are blocked behind one (v14.5, D97 — the user first
+     *  narrowed this to "directly after a bridge", then reversed it
+     *  after testing: the same odd behavior shows up resolving
+     *  ANYWHERE downstream of an unconverted bridge — it re-blends
+     *  against the changed speeds and defeats the resolution.
+     *  Convert the bridge(s) first). */
+    private boolean bridgeUpstream(int k) {
+        int p0 = activePiece;
+        while (p0 > 0) {
+            List<Section> prev = app.coaster.pieces.get(p0 - 1).sections;
+            if (prev.isEmpty() || !(prev.get(prev.size() - 1)
+                    instanceof BridgeSection)) {
+                break;
+            }
+            p0--;
         }
-        if (local.size() < 5) return;   // too short to measure rates
+        for (int p = p0; p <= activePiece; p++) {
+            List<Section> secs = app.coaster.pieces.get(p).sections;
+            int end = p == activePiece ? k : secs.size();
+            for (int i = 0; i < end; i++) {
+                if (secs.get(i) instanceof BridgeSection) return true;
+            }
+        }
+        return false;
+    }
+
+    /** "Make graphs real" (§5 round B, v14.5 D97): resolve this
+     *  section's design/true split KEEPING the shape — lanes re-fit
+     *  at the true entry speed through the density preview; s/c just
+     *  re-freezes (shape speed-independent, no preview needed). */
+    private void makeGraphsReal(int k) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()) return;
+        Section sec = secs.get(k);
+        int piece = activePiece;
+        if (sec instanceof StraightCurveSection) {
+            pushUndoSnapshot();
+            if (app.coaster.makeGraphsReal(piece, k,
+                    FvdDesigner.INTEGRATE_DT,
+                    Coaster.NODE_SPACING_DEFAULT, 0)) {
+                app.rebuildTrack();
+                refreshOffset();
+            }
+            redraw();
+            return;
+        }
+        beginDensityPreview(k, sec instanceof GeoSection, true,
+            (sp, tol) -> app.coaster.makeGraphsReal(piece, k,
+                FvdDesigner.INTEGRATE_DT, sp, tol),
+            () -> {
+                activePiece = piece;
+                activeSection = k;
+            });
+    }
+
+    /** "Re-freeze design speed" (v14.5, D97): the OTHER split
+     *  resolution — graphs kept, geometry re-derives at the true
+     *  entry speed. One undo step. */
+    private void refreezeSpeed(int k) {
+        if (k < 0 || k >= sections().size()) return;
         pushUndoSnapshot();
-        LaneSection conv = Coaster.convertToLanes(local, sec.vDesign(),
-            toGeo, FvdDesigner.INTEGRATE_DT);
-        secs.set(k, conv);
-        activeSection = k;
-        app.lanes = lanesFor(conv);
-        selIdx = -1;
-        selSet.clear();
-        elSel = -1;
-        axisLock = 0;
-        handleViewExpand = false;
-        syncLaneButtons();
-        app.rebuildTrack();
-        app.updatePieceButton();
-        refreshOffset();
+        if (app.coaster.refreezeSpeed(activePiece, k,
+                FvdDesigner.INTEGRATE_DT)) {
+            app.markDirty();
+            app.rebuildTrack();
+            refreshOffset();
+        }
         redraw();
     }
 
@@ -691,6 +755,25 @@ class GraphEditor extends Region {
      *  v13.4 — was the straight-line chord): the compiled span's arc
      *  extent, so a bridge that curves around a turn reads its real
      *  length; chord fallback before the first compile. */
+    /** The length the SPINNER and end-line drag read and step (v14.2,
+     *  D95 — the one v14-round bridge change KEPT on revert: it fixes
+     *  the user's stuck arrow keys and changes no geometry): an
+     *  optimized bridge's REQUESTED march length. The compiled arc
+     *  equals it while the march lands, but diverges to the septic's
+     *  own arc when it misses — the spinner re-synced to that arc and
+     *  arrow-stepping fought the re-sync ("the values do weird things
+     *  and get stuck"). Manual bridges keep the honest compiled
+     *  arc. */
+    double requestedBridgeGap() {
+        BridgeSection bs = activeBridge();
+        if (bs != null && !bridgeOrphan(bs)
+                && bs.optMode != BridgeSection.OPT_NONE
+                && bs.lastOptDist > 0) {
+            return bs.lastOptDist;
+        }
+        return activeBridgeGap();
+    }
+
     double activeBridgeGap() {
         BridgeSection bs = activeBridge();
         if (bs == null || bridgeOrphan(bs)) return 0;
@@ -831,11 +914,44 @@ class GraphEditor extends Region {
         app.markDirty();
         if (mode != BridgeSection.OPT_NONE && !bridgeOrphan(bs)) {
             if (wasMode == BridgeSection.OPT_NONE) {
-                // ENTERING optimization applies right away at the
-                // OPTIMAL length (v13.8, user spec); the length check
-                // turns on with it
-                bs.optLen = true;
-                applyOptimalLength(bs);
+                // LEAVING manual mode (v14.5, D97 — user spec): an
+                // UNTOUCHED round-trip is a no-op — restore the
+                // stashed Optimize-length state exactly; a HAND-MOVED
+                // placement comes back AT the manual bridge's own
+                // arc, length check off (the placement will move onto
+                // the march at that length — the user owns the
+                // length, the mode owns the placement). Bridges with
+                // no stash (fresh — manual is the v13.7 default)
+                // keep the v13.8 entry rule: knee + check on.
+                double[] st = bs.noneStash;
+                bs.noneStash = null;
+                boolean untouched = false;
+                if (st != null
+                        && activePiece + 1 < app.coaster.pieces.size()) {
+                    TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+                    untouched = Math.abs(t.x - st[1]) < 1e-9
+                        && Math.abs(t.y - st[2]) < 1e-9
+                        && Math.abs(t.z - st[3]) < 1e-9
+                        && Math.abs(t.yawDeg - st[4]) < 1e-9
+                        && Math.abs(t.pitchDeg - st[5]) < 1e-9
+                        && Math.abs(t.rollDeg - st[6]) < 1e-9;
+                }
+                if (st == null) {
+                    bs.optLen = true;
+                    applyOptimalLength(bs);
+                } else if (untouched) {
+                    bs.optLen = st[0] == 1;
+                    if (bs.optLen) {
+                        applyOptimalLength(bs);
+                    } else {
+                        applyBridgeGap(bs, bs.lastOptDist > 0
+                            ? bs.lastOptDist
+                            : Math.max(1, activeBridgeGap()));
+                    }
+                } else {
+                    bs.optLen = false;
+                    applyBridgeGap(bs, Math.max(1, activeBridgeGap()));
+                }
             } else {
                 // switching BETWEEN optimize modes keeps the CURRENT
                 // length (v13.12, D86 — re-running the knee ladder
@@ -848,6 +964,16 @@ class GraphEditor extends Region {
                     : Math.max(1, activeBridgeGap()));
             }
         } else {
+            // ENTERING manual mode from an optimize mode: stash the
+            // state so an untouched round-trip restores it (v14.5)
+            if (mode == BridgeSection.OPT_NONE
+                    && wasMode != BridgeSection.OPT_NONE
+                    && !bridgeOrphan(bs)
+                    && activePiece + 1 < app.coaster.pieces.size()) {
+                TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+                bs.noneStash = new double[]{ bs.optLen ? 1 : 0,
+                    t.x, t.y, t.z, t.yawDeg, t.pitchDeg, t.rollDeg };
+            }
             redraw();
         }
         app.updateBridgeControls();
@@ -888,6 +1014,8 @@ class GraphEditor extends Region {
             refreshOffset();
             redraw();
         }
+        // the grayed Length box tracks the manual bridge live (v14.5)
+        app.updateBridgeControls();
     }
 
     boolean bridgeLock(int axis) {
@@ -939,6 +1067,8 @@ class GraphEditor extends Region {
         app.rebuildTrack();
         refreshOffset();
         redraw();
+        // the grayed Length box tracks the manual bridge live (v14.5)
+        app.updateBridgeControls();
     }
 
     /** Is (x, y) on the ACTIVE bridge's end boundary line (the piece
@@ -951,18 +1081,25 @@ class GraphEditor extends Region {
     // brief flash), then the [Convert …] chip applies — the chosen
     // side becomes editable lanes, the other side remains a live
     // bridge (Coaster.partialConvertBridge).
-    private int pcBridge = -1;        // section index in mode; -1 off
+    private int pcSec = -1;           // section index in mode; -1 off
     private boolean pcToGeo;          // requested lane mode
-    private double pcFrac = 0.5;      // split at this arc fraction
+    private double pcFrac = 0.5;      // split fraction (arc or time)
     private boolean pcLeft = true;    // which side converts
     private boolean pcDragLine = false;
     private long pcFlashNanos = 0;    // side-click flash decay
     private double[] pcApplyRect, pcCancelRect;   // chip hit rects
 
+    /** ALL convertible sections take the split-line mode since v14.0
+     *  (D89 — was bridge-only): lane sections cut by TIME (and SNAP
+     *  to clicked nodes), bridge + s/c by ARC (the s/c line clamps
+     *  outside blend/ease windows via Coaster.scCutClamp). */
     void beginPartialConvert(int k, boolean toGeo) {
-        if (k < 0 || k >= sections().size()
-                || !(sections().get(k) instanceof BridgeSection)) return;
-        pcBridge = k;
+        if (k < 0 || k >= sections().size()) return;
+        Section sec = sections().get(k);
+        if (sec.reversed()) return;
+        if (!(sec instanceof BridgeSection || sec instanceof LaneSection
+                || sec instanceof StraightCurveSection)) return;
+        pcSec = k;
         pcToGeo = toGeo;
         pcFrac = 0.5;
         pcLeft = true;
@@ -972,45 +1109,384 @@ class GraphEditor extends Region {
     }
 
     private void cancelPartialConvert() {
-        pcBridge = -1;
+        pcSec = -1;
         pcDragLine = false;
         redraw();
     }
 
     private void applyPartialConvert() {
-        int k = pcBridge;
+        int k = pcSec;
         boolean left = pcLeft, toGeo = pcToGeo;
-        pcBridge = -1;
+        double frac = pcFrac;
+        int piece = activePiece;
+        pcSec = -1;
         pcDragLine = false;
         if (k < 0 || k >= sections().size()) {
             redraw();
             return;
         }
-        pushUndoSnapshot();
-        if (!app.coaster.partialConvertBridge(activePiece, k, pcFrac,
-                left, toGeo, FvdDesigner.INTEGRATE_DT)) {
+        boolean bridge = sections().get(k) instanceof BridgeSection;
+        ConvertOp op = bridge
+            ? (sp, tol) -> app.coaster.partialConvertBridge(piece, k,
+                frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol)
+            : (sp, tol) -> app.coaster.partialConvertSection(piece, k,
+                frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol);
+        beginDensityPreview(k, toGeo, op, () -> {
+            if (bridge && !left
+                    && piece + 1 < app.coaster.pieces.size()) {
+                activePiece = piece + 1;   // lanes prepend to the next piece
+                activeSection = 0;
+            } else {
+                activePiece = piece;
+                activeSection = left ? k : k + 1;   // the converted side
+            }
+        });
+    }
+
+    // ---------- density preview (v14.0, D90) ----------
+    // EVERY convert commits through this: the op applies at the
+    // current density immediately, a small popup tunes it live
+    // (restore -> re-run per change — applyDocState ADOPTS a
+    // snapshot's objects, so the pristine state is re-captured after
+    // every restore), the ORIGINAL compiled curves stay behind as a
+    // dashed reference, Apply pushes ONE undo step (the pre-convert
+    // state), Cancel restores it exactly. Canvas presses are consumed
+    // while the popup is open (the preview owns the section).
+
+    private interface ConvertOp {
+        boolean apply(double spacing, double adaptTol);
+    }
+
+    private FvdDesigner.DocState pvBefore;  // pristine pre-convert state
+    private ConvertOp pvOp;
+    private Runnable pvActivate;
+    private javafx.stage.Popup pvPopup;
+    private double[][] pvRef;               // {globalT, v0, v1, v2} rows
+    private int pvPiece = -1, pvSec = -1;   // the preview's own activation
+    private boolean pvApplying;             // restore-in-progress guard
+    private double pvSpacing = Coaster.NODE_SPACING_DEFAULT;   // sticky
+    private boolean pvAdaptive = false;     // "Optimal placement"
+    private double pvTol = 0.01;            // fraction of the lane range
+    private TextField pvField;
+    private Slider pvSlider;
+    private Label pvLabel, pvCount;
+    private boolean pvSyncing;
+
+    boolean previewActive() { return pvBefore != null; }
+
+    /** The convert UI owns the graph (v14.4, user spec): while the
+     *  split line or the density preview is up, bound graph/file key
+     *  actions are dead — same philosophy as mid-gesture keys (Ctrl+S
+     *  must not save mid-drag). Mouse edits are already consumed by
+     *  the modes' own press handling. */
+    boolean convertUiActive() { return pvBefore != null || pcSec >= 0; }
+
+    private void beginDensityPreview(int k, boolean toGeo, ConvertOp op,
+                                     Runnable activate) {
+        beginDensityPreview(k, toGeo, false, op, activate);
+    }
+
+    /** useTrue: draw the TRUE curves as the reference — for ops whose
+     *  fit targets the real ride (bridge converts, make-real; v14.5,
+     *  D97) rather than the design profile. */
+    private void beginDensityPreview(int k, boolean toGeo, boolean useTrue,
+                                     ConvertOp op, Runnable activate) {
+        cancelDensityPreview();          // one preview at a time
+        captureReference(k, toGeo, useTrue);
+        pvBefore = snapshot();
+        pvOp = op;
+        pvActivate = activate;
+        if (!pvRerun()) {                // apply at the current density
+            pvBefore = null;
+            pvOp = null;
+            pvActivate = null;
+            pvRef = null;
             redraw();
             return;
         }
-        if (left) {
-            activeSection = k;        // the converted lanes
-        } else {
-            activePiece++;            // the new converted piece
-            activeSection = 0;
-        }
+        viewT0 = 0;
+        viewT1 = -1;                     // structure changed: re-fit
+        openPvPopup();
+    }
+
+    /** Restore the pristine state, re-capture it fresh, re-run the op
+     *  at the current density, then the standard post-edit refresh. */
+    private boolean pvRerun() {
+        pvApplying = true;
+        app.applyDocState(pvBefore);
+        pvApplying = false;
+        pvBefore = snapshot();
+        boolean ok = pvOp.apply(pvSpacing, pvAdaptive ? pvTol : 0);
+        if (ok && pvActivate != null) pvActivate.run();
+        activePiece = (int) FvdDesigner.clamp(activePiece, 0,
+            app.coaster.pieces.size() - 1);
+        activeSection = (int) FvdDesigner.clamp(activeSection, 0,
+            sections().size() - 1);
+        pvPiece = activePiece;
+        pvSec = activeSection;
         app.lanes = lanesFor(sections().get(activeSection));
         selIdx = -1;
         selSet.clear();
         elSel = -1;
         axisLock = 0;
         handleViewExpand = false;
-        viewT0 = 0;
-        viewT1 = -1;                  // structure changed: re-fit
         syncLaneButtons();
         app.rebuildTrack();
         app.updatePieceButton();
         refreshOffset();
+        if (pvCount != null) pvCount.setText(pvCountText());
         redraw();
+        return ok;
+    }
+
+    /** Commit: the pre-convert state becomes the single undo step. */
+    private void commitDensityPreview() {
+        if (pvBefore == null) return;
+        pushUndo(pvBefore);
+        clearPv(false);
+        redraw();
+    }
+
+    /** Cancel: put the pristine state back, no history entry. */
+    void cancelDensityPreview() {
+        if (pvBefore == null) {
+            clearPv(true);
+            return;
+        }
+        FvdDesigner.DocState st = pvBefore;
+        clearPv(false);
+        applySnapshot(st);
+    }
+
+    private void clearPv(boolean popupOnly) {
+        if (pvPopup != null) {
+            pvPopup.hide();
+            pvPopup = null;
+        }
+        pvFocusHidden = false;
+        if (popupOnly) return;
+        pvBefore = null;
+        pvOp = null;
+        pvActivate = null;
+        pvRef = null;
+        pvPiece = -1;
+        pvSec = -1;
+    }
+
+    private String pvCountText() {
+        Section sec = sections().get(activeSection);
+        if (!(sec instanceof LaneSection ls)) return "";
+        return String.format(Locale.US, "%d / %d / %d nodes",
+            ls.lanes.get(0).size(), ls.lanes.get(1).size(),
+            ls.lanes.get(2).size());
+    }
+
+    /** The tuning popup: typed value + log-scale slider (node spacing
+     *  in seconds, or accuracy in %-of-range with "Optimal placement"
+     *  checked), live re-fit per change, Apply / Cancel. */
+    private void openPvPopup() {
+        pvPopup = new javafx.stage.Popup();
+        pvPopup.setAutoHide(false);
+        pvLabel = new Label();
+        pvLabel.setStyle("-fx-text-fill: rgb(200,205,215);");
+        pvField = new TextField();
+        pvField.setPrefColumnCount(4);
+        pvField.setStyle("-fx-font-size: 11px;");
+        // numeric-only, like the bridge length spinner (v13.4): a
+        // focused editor still receives ride keys' KEY_TYPED letters
+        pvField.setTextFormatter(new javafx.scene.control.TextFormatter<String>(
+            ch -> ch.getControlNewText().matches("\\d*\\.?\\d*") ? ch : null));
+        pvSlider = new Slider();
+        pvSlider.setPrefWidth(170);
+        CheckBox optimal = new CheckBox("Optimal placement");
+        optimal.setSelected(pvAdaptive);
+        optimal.setStyle("-fx-text-fill: rgb(200,205,215);"
+            + " -fx-font-size: 11px;");
+        pvCount = new Label(pvCountText());
+        pvCount.setStyle("-fx-text-fill: rgb(150,156,170);"
+            + " -fx-font-size: 10px;");
+        Button apply = new Button("Apply");
+        Button cancel = new Button("Cancel");
+        apply.setStyle("-fx-font-size: 11px;");
+        cancel.setStyle("-fx-font-size: 11px;");
+        apply.setDefaultButton(true);
+        apply.setOnAction(e -> commitDensityPreview());
+        cancel.setOnAction(e -> cancelDensityPreview());
+        pvSlider.valueProperty().addListener((o, ov, nv) -> {
+            if (pvSyncing) return;
+            setPvValue(Math.pow(10, nv.doubleValue()));
+        });
+        pvField.setOnAction(e -> {
+            try {
+                setPvValue(Double.parseDouble(pvField.getText().trim()));
+            } catch (NumberFormatException ex) {
+                syncPvControls();
+            }
+        });
+        optimal.setOnAction(e -> {
+            pvAdaptive = optimal.isSelected();
+            syncPvControls();
+            pvRerun();
+        });
+        HBox row1 = new HBox(6, pvLabel, pvField, pvSlider);
+        row1.setAlignment(Pos.CENTER_LEFT);
+        HBox row2 = new HBox(8, optimal, pvCount, apply, cancel);
+        row2.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(pvCount, Priority.ALWAYS);
+        pvCount.setMaxWidth(Double.MAX_VALUE);
+        VBox box = new VBox(7, row1, row2);
+        box.setStyle("-fx-background-color: rgb(38,40,46);"
+            + " -fx-padding: 10; -fx-border-color: rgb(95,100,112);"
+            + " -fx-border-radius: 6; -fx-background-radius: 6;");
+        // DRAGGABLE (v14.4, user spec — it sat over the nodes): grab
+        // any non-control spot (labels, padding) and move it
+        double[] grab = new double[2];
+        box.setOnMousePressed(e -> {
+            grab[0] = e.getScreenX() - pvPopup.getX();
+            grab[1] = e.getScreenY() - pvPopup.getY();
+        });
+        box.setOnMouseDragged(e -> {
+            pvPopup.setX(e.getScreenX() - grab[0]);
+            pvPopup.setY(e.getScreenY() - grab[1]);
+        });
+        pvPopup.getContent().add(box);
+        syncPvControls();
+        // default spot: ABOVE the plot (over the 3D view's bottom
+        // edge), clear of the converted strip's nodes (v14.4)
+        Point2D at = canvas.localToScreen(
+            Math.max(MARGIN_LEFT, tToX(tOff)) + 10, 0);
+        if (at != null) {
+            pvPopup.show(canvas.getScene().getWindow(), at.getX(), at.getY());
+            pvPopup.setY(at.getY() - pvPopup.getHeight() - 8);
+        }
+        hookPvFocus();
+    }
+
+    // a JavaFX Popup floats ABOVE OTHER APPLICATIONS (it is its own
+    // window): hide it when the app loses focus and bring it back —
+    // same spot, still open — when the app returns (v14.4, user spec;
+    // partial occlusion by another window is fine, that's normal
+    // stacking). Registered once; guards make it a no-op while no
+    // preview is up.
+    private boolean pvFocusHooked, pvFocusHidden;
+    private double pvHidX, pvHidY;
+
+    private void hookPvFocus() {
+        if (pvFocusHooked || canvas.getScene() == null
+                || canvas.getScene().getWindow() == null) return;
+        pvFocusHooked = true;
+        canvas.getScene().getWindow().focusedProperty()
+            .addListener((o, was, is) -> {
+                if (!is && pvPopup != null && pvPopup.isShowing()) {
+                    pvHidX = pvPopup.getX();
+                    pvHidY = pvPopup.getY();
+                    pvPopup.hide();
+                    pvFocusHidden = true;
+                } else if (is && pvFocusHidden) {
+                    pvFocusHidden = false;
+                    if (pvPopup != null && pvBefore != null) {
+                        pvPopup.show(canvas.getScene().getWindow(),
+                            pvHidX, pvHidY);
+                    }
+                }
+            });
+    }
+
+    /** Slider/field ranges per mode: spacing 0.02–2 s, accuracy
+     *  0.05–10 % of the lane's value range — both log-scaled. */
+    private void syncPvControls() {
+        if (pvSlider == null) return;
+        pvSyncing = true;
+        if (pvAdaptive) {
+            pvLabel.setText("Accuracy (% of range)");
+            pvSlider.setMin(Math.log10(0.01));
+            pvSlider.setMax(Math.log10(10));
+            pvSlider.setValue(Math.log10(FvdDesigner.clamp(
+                pvTol * 100, 0.01, 10)));
+            pvField.setText(String.format(Locale.US, "%.2f", pvTol * 100));
+        } else {
+            pvLabel.setText("Node spacing (s)");
+            pvSlider.setMin(Math.log10(0.02));
+            pvSlider.setMax(Math.log10(2.0));
+            pvSlider.setValue(Math.log10(FvdDesigner.clamp(
+                pvSpacing, 0.02, 2.0)));
+            pvField.setText(String.format(Locale.US, "%.2f", pvSpacing));
+        }
+        pvSyncing = false;
+    }
+
+    private void setPvValue(double v) {
+        if (pvAdaptive) {
+            pvTol = FvdDesigner.clamp(v, 0.01, 10) / 100.0;
+        } else {
+            pvSpacing = FvdDesigner.clamp(v, 0.02, 2.0);
+        }
+        syncPvControls();
+        pvRerun();
+    }
+
+    /** Sample the ORIGINAL compiled curves over section k's span in
+     *  the TARGET mode's units — the dashed accuracy reference behind
+     *  the preview (force view: felt Gv/Gl + resulting roll; geo
+     *  view: the three resulting rates — same channels derivedAt
+     *  shows). Ends trimmed a hair against bodyRates seam smear. */
+    private void captureReference(int k, boolean toGeo, boolean useTrue) {
+        pvRef = null;
+        TrackCompiler.Span sp = spanOf(k);
+        if (sp == null || app.lastSamples == null
+                || app.resultRates == null
+                || sp.i1() >= app.resultRates.length) return;
+        boolean tru = useTrue && app.trueFelt != null
+            && app.trueRates != null
+            && sp.i1() < app.trueRates.length;
+        int i0 = sp.i0() + 3, i1 = sp.i1() - 3;
+        if (i1 - i0 < 4) return;
+        int n = Math.min(400, i1 - i0);
+        double[][] ref = new double[n + 1][4];
+        for (int i = 0; i <= n; i++) {
+            int idx = i0 + (int) Math.round((double) i * (i1 - i0) / n);
+            FVDIntegrator.Sample sm = app.lastSamples.get(idx);
+            ref[i][0] = sm.t();
+            if (toGeo) {
+                double[][] src = tru ? app.trueRates : app.resultRates;
+                ref[i][1] = src[idx][1];
+                ref[i][2] = src[idx][2];
+                ref[i][3] = src[idx][3];
+            } else {
+                ref[i][1] = tru ? app.trueFelt[idx][0] : sm.Gv();
+                ref[i][2] = tru ? app.trueFelt[idx][1] : sm.Gl();
+                ref[i][3] = (tru ? app.trueRates : app.resultRates)[idx][3];
+            }
+        }
+        pvRef = ref;
+    }
+
+    /** The reference polylines, dashed in the lane colors behind the
+     *  live fit. */
+    private void drawPvRef(GraphicsContext gc) {
+        if (pvRef == null) return;
+        gc.setLineWidth(1.2);
+        gc.setLineDashes(5, 4);
+        gc.setGlobalAlpha(0.55);
+        for (int lane = 0; lane < LANES; lane++) {
+            gc.setStroke(laneColor(lane));
+            gc.beginPath();
+            boolean started = false;
+            for (double[] row : pvRef) {
+                double x = tToX(row[0]);
+                double y = valToY(lane, row[lane + 1]);
+                if (!started) {
+                    gc.moveTo(x, y);
+                    started = true;
+                } else {
+                    gc.lineTo(x, y);
+                }
+            }
+            gc.stroke();
+        }
+        gc.setLineDashes((double[]) null);
+        gc.setGlobalAlpha(1.0);
+        gc.setLineWidth(2);
     }
 
     /** 1 = the Convert chip, 2 = Cancel, 0 = neither. */
@@ -1026,8 +1502,103 @@ class GraphEditor extends Region {
         return 0;
     }
 
+    /** Is the split fraction ARC-based (bridge, s/c) or TIME-based
+     *  (lane sections)? Must match what the model op cuts by. */
+    private boolean pcArcBased() {
+        Section sec = pcSec >= 0 && pcSec < sections().size()
+            ? sections().get(pcSec) : null;
+        return sec instanceof BridgeSection
+            || sec instanceof StraightCurveSection;
+    }
+
+    /** The split line's GLOBAL time for pcFrac: lane fractions map
+     *  directly; ARC fractions map through the span's samples so the
+     *  line sits exactly where the cut will land (v14.0 — it used to
+     *  sit at the TIME fraction while the model cut the ARC fraction:
+     *  visibly off wherever speed drifts along the section). */
+    private double pcLineT() {
+        double dur = Math.max(sectionDur(activeSection), 1e-6);
+        if (!pcArcBased()) return tOff + pcFrac * dur;
+        TrackCompiler.Span sp = spanOf(pcSec);
+        List<FVDIntegrator.Sample> s = app.lastSamples;
+        if (sp == null || s == null || sp.sLen() < 1e-6) {
+            return tOff + pcFrac * dur;
+        }
+        double arc = sp.s0() + pcFrac * sp.sLen();
+        int lo = sp.i0(), hi = Math.min(sp.i1(), s.size() - 1);
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (s.get(mid).s() <= arc) lo = mid; else hi = mid;
+        }
+        double ds = s.get(hi).s() - s.get(lo).s();
+        double u = ds < 1e-12 ? 0 : (arc - s.get(lo).s()) / ds;
+        return s.get(lo).t() + u * (s.get(hi).t() - s.get(lo).t());
+    }
+
     private double pcLineX() {
-        return tToX(tOff + pcFrac * Math.max(sectionDur(activeSection), 1e-6));
+        return tToX(pcLineT());
+    }
+
+    /** Cursor x → split fraction (time or arc), 5–95 % clamped and,
+     *  on s/c, shifted out of blend/ease windows (Coaster.scCutClamp
+     *  — the same clamp the model applies, so the LINE sits where the
+     *  cut can actually land). */
+    private double pcFracAtX(double x) {
+        double dur = Math.max(sectionDur(activeSection), 1e-6);
+        double lt = FvdDesigner.clamp(xToT(x) - tOff, 0, dur);
+        double f = lt / dur;
+        if (pcArcBased()) {
+            TrackCompiler.Span sp = spanOf(pcSec);
+            List<FVDIntegrator.Sample> s = app.lastSamples;
+            if (sp != null && s != null && sp.sLen() > 1e-6) {
+                double gt = tOff + lt;
+                int lo = sp.i0(), hi = Math.min(sp.i1(), s.size() - 1);
+                while (hi - lo > 1) {
+                    int mid = (lo + hi) >>> 1;
+                    if (s.get(mid).t() <= gt) lo = mid; else hi = mid;
+                }
+                double dtg = s.get(hi).t() - s.get(lo).t();
+                double u = dtg < 1e-12 ? 0 : (gt - s.get(lo).t()) / dtg;
+                double arc = s.get(lo).s()
+                    + u * (s.get(hi).s() - s.get(lo).s());
+                f = (arc - sp.s0()) / sp.sLen();
+            }
+        }
+        f = FvdDesigner.clamp(f, 0.05, 0.95);
+        if (sections().get(pcSec) instanceof StraightCurveSection sc
+                && sc.totalLen() > 1e-6) {
+            double a = Coaster.scCutClamp(sc, f * sc.totalLen());
+            if (a >= 0) f = a / sc.totalLen();
+        }
+        return f;
+    }
+
+    /** Node-snap for the split line, ACTIVE lane only (v14.4, user
+     *  spec — every lane's nodes snapped before, and a click anywhere
+     *  on a node's vertical line grabbed it). Click mode (y >= 0):
+     *  requires a DIRECT hit on the node body (x AND y within the
+     *  node radius). Drag mode (y < 0): magnetizes on x alone within
+     *  5 px. The model then cuts by partitioning the node lists — no
+     *  inserted node. NaN = none in range. */
+    private double pcNodeSnapT(double x, double y) {
+        if (pcSec != activeSection
+                || !(sections().get(pcSec) instanceof LaneSection)) {
+            return Double.NaN;
+        }
+        double dur = Math.max(sectionDur(activeSection), 1e-6);
+        double best = y >= 0 ? 7.0 : 5.0, bestT = Double.NaN;
+        for (BezierBaker.Node nd : active()) {
+            if (nd.t / dur < 0.05 || nd.t / dur > 0.95) continue;
+            double dx = Math.abs(ltToX(nd.t) - x);
+            if (y >= 0 && Math.abs(valToY(activeLane, nd.val) - y) > 7.0) {
+                continue;   // click snap needs the node BODY, not its column
+            }
+            if (dx < best) {
+                best = dx;
+                bestT = nd.t;
+            }
+        }
+        return bestT;
     }
 
     /** The split-line overlay: side tints (selection + flash), the
@@ -1059,8 +1630,11 @@ class GraphEditor extends Region {
             gc.setFont(Font.font(11));
             gc.setTextAlign(TextAlignment.LEFT);
             gc.setTextBaseline(VPos.TOP);
-            gc.fillText(String.format(Locale.US, "%.0f%% of bridge",
-                pcFrac * 100), Math.min(lx + 8, x1 - 90), top + h * 0.45);
+            gc.fillText(String.format(Locale.US, "%.0f%% of %s",
+                pcFrac * 100, pcArcBased()
+                    && sections().get(pcSec) instanceof BridgeSection
+                    ? "bridge" : "section"),
+                Math.min(lx + 8, x1 - 90), top + h * 0.45);
         }
         // chips, centered below the badge row
         String at = "Convert " + (pcLeft ? "left" : "right") + " part";
@@ -1091,7 +1665,7 @@ class GraphEditor extends Region {
     }
 
     private boolean hitBridgeEnd(double x, double y) {
-        if (pcBridge >= 0) return false;   // the split mode owns the strip
+        if (pcSec >= 0) return false;   // the split mode owns the strip
         if (!activeBridgeWithTarget()
                 || activeBridge().optMode == BridgeSection.OPT_NONE
                 || activeBridge().optLen) {
@@ -1113,7 +1687,7 @@ class GraphEditor extends Region {
         if (bs == null || bridgeOrphan(bs)) return;
         double dur = Math.max(sectionDur(activeSection), 1e-6);
         double frac = Math.max(0.05, (xToT(x) - tOff) / dur);
-        double gap = activeBridgeGap() * frac;
+        double gap = requestedBridgeGap() * frac;
         if (snap) {
             double step = app.settings.snapLen();
             gap = Math.round(gap / step) * step;
@@ -1256,7 +1830,37 @@ class GraphEditor extends Region {
         MenuItem split = new MenuItem("Split piece before this section");
         split.setDisable(k == 0);   // the piece starts here already
         split.setOnAction(ev -> splitAt(k));
-        cm.getItems().addAll(info, new SeparatorMenuItem(), split, del);
+        cm.getItems().add(info);
+        // RESOLVE SPEED CONFLICT (v14.5, D97 — §5 round B, user
+        // spec): a drifted section's submenu offers both ways out —
+        // keep the SHAPE and make the graphs real (re-fit at the true
+        // entry speed), or keep the GRAPHS and re-freeze the speed
+        // (the shape re-derives; the seam kinks honestly — Shift+B
+        // smooths it). ANY unconverted bridge earlier in the run
+        // blocks both (user, after testing: the bridge re-blends
+        // against the changed speeds and defeats the resolution
+        // anywhere downstream — convert the bridge(s) first). The
+        // submenu only exists on drifted sections at all.
+        if (es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
+                && !(sec instanceof BridgeSection) && !sec.reversed()) {
+            Menu resolve = new Menu("Resolve speed conflict");
+            if (bridgeUpstream(k)) {
+                MenuItem why = new MenuItem(
+                    "Convert the bridge section(s) earlier on this track first");
+                why.setDisable(true);
+                resolve.getItems().add(why);
+            } else {
+                MenuItem real = new MenuItem(
+                    "Make graphs real (keep shape)…");
+                real.setOnAction(ev -> makeGraphsReal(k));
+                MenuItem refr = new MenuItem(
+                    "Re-freeze design speed (keep graphs, reshape)");
+                refr.setOnAction(ev -> refreezeSpeed(k));
+                resolve.getItems().addAll(real, refr);
+            }
+            cm.getItems().add(resolve);
+        }
+        cm.getItems().addAll(new SeparatorMenuItem(), split, del);
         if (sec instanceof StraightCurveSection s) {
             MenuItem addEl = new MenuItem("Append element (10 m straight)");
             addEl.setOnAction(ev -> {
@@ -1282,39 +1886,41 @@ class GraphEditor extends Region {
         // edit, auto re-optimize covers upstream changes, and an
         // optimized bridge's geometry is the march itself — there are
         // no user tangents left to sweep)
-        // CONVERT (v13.7, D81): ONE unified re-authoring feature at
-        // the bottom of every badge menu — the other lane mode(s)
-        // this section's shape can become. The v13.5 bridge
-        // "Unfreeze (edit as geo section)" renamed and extended:
-        // force↔geo, s/c→either, bridge→either (a converted bridge
-        // stops following — it's real track; the run splits).
-        // Reversed sections refuse: their lanes author the opposite
-        // direction (the §5.3 round-1 rule).
+        // CONVERT (v13.7 D81; whole + partial for EVERY convertible
+        // mode since v14.0, D89): re-author the shape — or PART of it
+        // ("Convert part …" opens the split-line mode) — as editable
+        // lanes in the other mode(s); everything commits through the
+        // density preview (D90). A whole-bridge convert ATTACHES the
+        // next piece: the track stays connected (the v13.7 whole
+        // convert split the run — user rule). Reversed sections
+        // refuse: their lanes author the opposite direction (§5.3).
         cm.getItems().add(new SeparatorMenuItem());
-        // bridges convert PARTIALLY (v13.11, D85): the item opens the
-        // split-line mode on the strip instead of converting whole
-        boolean pcMode = sec instanceof BridgeSection;
+        boolean isBridge = sec instanceof BridgeSection;
         if (!(sec instanceof GeoSection)) {
-            MenuItem cg = new MenuItem(pcMode
-                ? "Convert to geo section…" : "Convert to geo section");
-            cg.setDisable(sec.reversed());
-            cg.setOnAction(ev -> {
-                if (pcMode) beginPartialConvert(k, true);
-                else convertSection(k, true);
-            });
-            cm.getItems().add(cg);
+            addConvertItems(cm, k, true, isBridge, sec.reversed());
         }
         if (!(sec instanceof ForceSection)) {
-            MenuItem cf = new MenuItem(pcMode
-                ? "Convert to force section…" : "Convert to force section");
-            cf.setDisable(sec.reversed());
-            cf.setOnAction(ev -> {
-                if (pcMode) beginPartialConvert(k, false);
-                else convertSection(k, false);
-            });
-            cm.getItems().add(cf);
+            addConvertItems(cm, k, false, isBridge, sec.reversed());
         }
         showMenu(cm, screenX, screenY);
+    }
+
+    /** The convert pair for one target mode: whole ("Convert [whole
+     *  bridge] to X section") + partial ("Convert part to X
+     *  section…"), v14.0 D89. */
+    private void addConvertItems(ContextMenu cm, int k, boolean toGeo,
+                                 boolean isBridge, boolean reversed) {
+        String mode = toGeo ? "geo" : "force";
+        MenuItem whole = new MenuItem(isBridge
+            ? "Convert whole bridge to " + mode + " section"
+            : "Convert to " + mode + " section");
+        whole.setDisable(reversed);
+        whole.setOnAction(ev -> convertSection(k, toGeo));
+        MenuItem part = new MenuItem(
+            "Convert part to " + mode + " section…");
+        part.setDisable(reversed);
+        part.setOnAction(ev -> beginPartialConvert(k, toGeo));
+        cm.getItems().addAll(whole, part);
     }
 
     /** Remove section k of the ACTIVE piece; downstream sections
@@ -2075,12 +2681,12 @@ class GraphEditor extends Region {
         gc.setLineWidth(1.5);
         drawDerivedStrip(gc, tOff, dur);
         gc.setGlobalAlpha(1.0);
-        if (pcBridge == activeSection) {
+        if (pcSec == activeSection) {
             drawPartialConvert(gc, dur);   // split-line mode (v13.11)
         }
         if (bridgeDragGap) {   // live readout, element-drag style
             String readout = String.format(Locale.US, "length %.1f m",
-                activeBridgeGap());
+                requestedBridgeGap());
             gc.setFill(Color.WHITE);
             gc.setFont(Font.font(11));
             gc.setTextAlign(TextAlignment.LEFT);
@@ -2621,6 +3227,60 @@ class GraphEditor extends Region {
                 return;
             }
             if (e.getButton() == MouseButton.PRIMARY) {
+                // the density preview owns the plot while its popup is
+                // open: consume plot presses wholesale — tune or
+                // Apply/Cancel there; view pan/zoom stay live, they
+                // don't touch the document (v14.0, D90)
+                if (pvBefore != null && e.getY() >= MARGIN_TOP
+                        && e.getY() <= MARGIN_TOP + plotHeight()) {
+                    return;
+                }
+                // partial-convert mode owns its strip in ANY mode
+                // (v13.11 bridges; v14.0 all): '+' and badges keep
+                // their priority (the v13.11 rank), then chips, the
+                // line, the lane-strip NODE SNAP, then side selection
+                if (pcSec == activeSection && pcSec >= 0) {
+                    if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
+                        plusPressed(e.getScreenX(), e.getScreenY());
+                        return;
+                    }
+                    int badge = hitBadge(e.getX(), e.getY());
+                    if (badge >= 0) {
+                        showRunBadgeMenu(badge, e.getScreenX(), e.getScreenY());
+                        return;
+                    }
+                    if (e.getY() >= MARGIN_TOP
+                            && e.getY() <= MARGIN_TOP + plotHeight()) {
+                        int chip = pcChipHit(e.getX(), e.getY());
+                        if (chip == 1) { applyPartialConvert(); return; }
+                        if (chip == 2) { cancelPartialConvert(); return; }
+                        if (Math.abs(e.getX() - pcLineX()) <= 6) {
+                            pcDragLine = true;
+                            return;
+                        }
+                        double st0 = tToX(tOff);
+                        double st1 = tToX(tOff + sectionDur(activeSection));
+                        if (e.getX() >= st0 && e.getX() <= st1) {
+                            double snapT = pcNodeSnapT(e.getX(), e.getY());
+                            if (!Double.isNaN(snapT)) {
+                                // clicking directly ON an active-lane
+                                // node moves the LINE onto it (v14.0;
+                                // direct-hit + active lane only since
+                                // v14.4) — the cut then partitions
+                                // the lanes exactly there
+                                pcFrac = snapT
+                                    / Math.max(sectionDur(activeSection), 1e-6);
+                                pcFlashNanos = System.nanoTime();
+                                redraw();
+                                return;
+                            }
+                            pcLeft = e.getX() < pcLineX();
+                            pcFlashNanos = System.nanoTime();
+                            redraw();
+                            return;
+                        }
+                    }
+                }
                 // a straight/curve section has its own surface (v11.0)
                 if (activeSc() != null) {
                     scPrimaryPressed(e);
@@ -2637,27 +3297,6 @@ class GraphEditor extends Region {
                     if (badge >= 0) {
                         showRunBadgeMenu(badge, e.getScreenX(), e.getScreenY());
                         return;
-                    }
-                    // partial-convert mode owns the strip (v13.11):
-                    // chips, the split line, then side selection
-                    if (pcBridge == activeSection && activeBridge() != null
-                            && e.getY() >= MARGIN_TOP
-                            && e.getY() <= MARGIN_TOP + plotHeight()) {
-                        int chip = pcChipHit(e.getX(), e.getY());
-                        if (chip == 1) { applyPartialConvert(); return; }
-                        if (chip == 2) { cancelPartialConvert(); return; }
-                        if (Math.abs(e.getX() - pcLineX()) <= 6) {
-                            pcDragLine = true;
-                            return;
-                        }
-                        double st0 = tToX(tOff);
-                        double st1 = tToX(tOff + sectionDur(activeSection));
-                        if (e.getX() >= st0 && e.getX() <= st1) {
-                            pcLeft = e.getX() < pcLineX();
-                            pcFlashNanos = System.nanoTime();
-                            redraw();
-                            return;
-                        }
                     }
                     if (hitBridgeEnd(e.getX(), e.getY())) {
                         beginGesture();
@@ -2875,16 +3514,18 @@ class GraphEditor extends Region {
         canvas.setOnMouseMoved(e -> {
             hoverSlope = e.isShiftDown();
             ctrlHover = e.isControlDown();
-            if (activeSc() != null) {   // grab cursor over drag targets
+            boolean pcLine = pcSec == activeSection && pcSec >= 0
+                && Math.abs(e.getX() - pcLineX()) <= 6
+                && e.getY() >= MARGIN_TOP
+                && e.getY() <= MARGIN_TOP + plotHeight();
+            if (pcLine) {   // the split line drags in ANY mode (v14.0)
+                canvas.setCursor(Cursor.H_RESIZE);
+            } else if (activeSc() != null) {   // grab cursor over drag targets
                 boolean grab = hitScBoundary(e.getX(), e.getY()) >= 1
                     || hitScDiamond(e.getX(), e.getY()) >= 1;
                 canvas.setCursor(grab ? Cursor.H_RESIZE : Cursor.DEFAULT);
             } else if (activeBridge() != null) {   // the end line drags
-                boolean pcLine = pcBridge == activeSection
-                    && Math.abs(e.getX() - pcLineX()) <= 6
-                    && e.getY() >= MARGIN_TOP
-                    && e.getY() <= MARGIN_TOP + plotHeight();
-                canvas.setCursor(pcLine || hitBridgeEnd(e.getX(), e.getY())
+                canvas.setCursor(hitBridgeEnd(e.getX(), e.getY())
                     ? Cursor.H_RESIZE : Cursor.DEFAULT);
             }
             double t = (activeSc() == null && activeBridge() == null
@@ -2966,9 +3607,15 @@ class GraphEditor extends Region {
 
         canvas.setOnMouseDragged(e -> {
             if (pcDragLine && e.isPrimaryButtonDown()) {
-                double dur = Math.max(sectionDur(activeSection), 1e-6);
-                pcFrac = FvdDesigner.clamp((xToT(e.getX()) - tOff) / dur,
-                    0.05, 0.95);
+                // the line MAGNETIZES onto nearby ACTIVE-lane nodes on
+                // lane strips (v14.0; 5 px + active lane only, v14.4)
+                double snapT = pcNodeSnapT(e.getX(), -1);
+                if (!Double.isNaN(snapT)) {
+                    pcFrac = snapT
+                        / Math.max(sectionDur(activeSection), 1e-6);
+                } else {
+                    pcFrac = pcFracAtX(e.getX());
+                }
                 redraw();
                 return;
             }
@@ -4991,6 +5638,7 @@ class GraphEditor extends Region {
         }
 
         drawInactiveSections(gc);
+        drawPvRef(gc);   // density preview's original-curve reference
 
         if (activeSc() != null) {
             // a straight/curve section: the element widget IS the
@@ -5234,6 +5882,14 @@ class GraphEditor extends Region {
             gc.setStroke(Color.rgb(255, 255, 255, 0.55));
             gc.setLineWidth(1);
             gc.strokeRect(bx, by, bw, bh);
+        }
+
+        // the split-line overlay on LANE and S/C strips (v14.0 — the
+        // bridge strip draws its own inside drawBridgeStrip); on top
+        // of nodes/curves: the mode owns the strip
+        if (pcSec == activeSection && pcSec >= 0
+                && activeBridge() == null) {
+            drawPartialConvert(gc, sectionDur(activeSection));
         }
 
         drawAddButton(gc, w);

@@ -26,6 +26,7 @@ public sealed abstract class LaneSection implements Section
 
     public double vDesign;
     public boolean reversed = false;
+    public boolean vPinned = false;   // v14.5 D97: reconcile-exempt
     public String name = "";
 
     protected LaneSection(List<List<BezierBaker.Node>> lanes, double vDesign) {
@@ -58,6 +59,10 @@ public sealed abstract class LaneSection implements Section
     @Override public double vDesign() { return vDesign; }
 
     @Override public void vDesign(double v) { vDesign = v; }
+
+    @Override public boolean vPinned() { return vPinned; }
+
+    @Override public void vPinned(boolean p) { vPinned = p; }
 
     @Override public Domain domain() { return Domain.TIME; }
 

@@ -183,8 +183,16 @@ BridgeSection.java  Phase 2 (v13.0 D72; live-follow v13.1 D73; seam
                     geometry IS the ideal). Mode switches BETWEEN
                     the two optimize modes keep the CURRENT length
                     (D86 — re-running the per-mode knee ladder
-                    moved the shape with yaw already aligned);
-                    only NONE→optimize runs the ladder.
+                    moved the shape with yaw already aligned).
+                    NONE round-trips (v14.5 D97, user spec):
+                    entering manual stashes {optLen, next-piece
+                    placement} (noneStash, transient); returning
+                    UNTOUCHED restores it exactly; returning after
+                    a hand-move comes back at the manual bridge's
+                    own arc, Optimize length unchecked — the v13.8
+                    knee-on-entry fires only for stash-less fresh
+                    bridges. The grayed Length box tracks the
+                    manual bridge live.
                     optLen = the "Optimize length" check (v13.8,
                     blen's 4th field): length :=
                     Coaster.optimalBridgeLength's knee — shortest
@@ -219,6 +227,10 @@ Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     slots (Phase 3). Section-0 lanes are shared BY
                     REFERENCE with the editor. Cosmetics stay UI-side
                     until milestone B (travel via DesignIO.Cosmetics).
+                    Also home to the bridge placement MARCH/optimizer +
+                    the auto-reoptimize pass (v13.14) and the CONVERT
+                    engine (convertToLanes uniform/adaptive fits +
+                    whole/partial ops + scCutClamp, v14.0 D89/D90).
 TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
                     section at vDesign (force = unchanged bake+RK4;
                     geo = GeoIntegrator; s/c = ScIntegrator — both
@@ -658,7 +670,14 @@ below 2% of the curvature scale
 are deadbanded as measurement noise — on an exact circle the
 ⊥-jerk measures ~1e-4/m² of fit noise and d-scaling it moved the
 placement 10 cm), marched from the chain end for the requested LENGTH
-(fixed-step RK4, hard cap, no iteration), the target's head placed
+(fixed-step RK4, hard cap; plus ONE bounded refinement re-march
+when the humps' second-order re-mix of the blend's pitch/heading
+leaves > 1e-4 rad at the end — v14.5 D97: the ~0.06° residual
+kinked the far seam in orientation mode, the user's "instant jump
+in values at the end"; the 1e-4 deadband keeps clean marches on
+the historic two-march sequence bit-identically — NOT D95's
+reverted bank iteration: no wrap-ambiguous measure, one pass
+max), the target's head placed
 at the march's end and yawed to its heading, plus the smallest
 parabolic vertical-rate hump for the pitch gap yaw can't fix — a
 SPLIT CONSTANT TURN re-joins as the SAME turn (gated ≤ 0.11 °/s
@@ -666,10 +685,23 @@ rate ripple, ≤ 7 mm off the circle through 103°) and longer bridges
 just carry it further around; straight seams reduce to dead-ahead
 exactly (1e-12, gated); position + yaw only. The
 toolbar "Length (m)" spinner (visible while a live bridge is
-active; reads back the compiled span's ARC length, chord only
+active; optimize modes read back the REQUESTED march length —
+lastOptDist via requestedBridgeGap, D95: the compiled-arc
+readback diverged to the septic's own arc whenever the march
+missed, and arrow-stepping fought the re-sync, "stuck at certain
+points"; manual bridges keep the honest compiled arc, chord only
 pre-compile) re-runs that optimization at the typed/clicked length
 per change
-(arrow bursts = one undo step), and DRAGGING the active bridge
+(arrow bursts = one undo step); beside it the "Zero lateral G"
+CHECK (v14.3 D94, BridgeSection.zeroGl, blen field 9, missing =
+off): RENDER-side re-bank of every sample's U onto the felt-force
+resultant f⊥ = (v²κ + gŷ)⊥T at the design profile — real lateral
+exactly zero (heartline force-vector law); airtime rows (|f⊥| <
+0.15 g) interpolate the bank linearly across (the zero-G roll),
+±0.75 m box-smoothed, EASED over min(total/3, 10 m) end windows so
+seams keep their banks/roll rates; spine + placement + length
+machinery untouched (gated 0.93 → 0.000 g, path delta 0, works on
+march AND septic renders), and DRAGGING the active bridge
 strip's END LINE does the same per event (v13.3 D75: H_RESIZE
 cursor, live "length … m" readout, Ctrl snaps by the element-length
 step, one undo step per gesture, spinner re-syncs; both paths scale
@@ -688,7 +720,13 @@ end line. Bridge/s-c derived curves take HOVER readouts like lanes
 (v13.5: value, Shift = slope, lane color; drag handles keep priority
 via the H_RESIZE cursor). TRUE-SPEED DISPLAY (v13.6 D79, §5 round A):
 wherever a section's design speed has DRIFTED off the energy that
-actually reaches it, a THIN solid companion stroke in the lane color
+actually reaches it — since v14.1 (D95, user rule) only ACROSS
+PIECE boundaries: same-piece continuation sections re-freeze
+vDesign to their real entry speed automatically after every
+compile (Coaster.reconcileChainedSpeeds, looped with the auto
+re-optimize pass in rebuildTrack; piece FIRST sections and
+REVERSED sections excluded), so plain force/geo/s-c chains keep
+their graphs REAL and re-derive geometry instead of splitting — a THIN solid companion stroke in the lane color
 draws the TRUE felt/rate curve beside the design curve across the
 whole run (GraphEditor.drawTrueStrokes; TRUE_SPLIT_PX 1.5 px on the
 lane's scale is the show threshold, TRUE_STROKE_ALPHA 0.85; felt
@@ -701,8 +739,20 @@ lane + derived hover readouts append " (true …)" — value and
 Shift-slope — once the curves visibly split. POV W/S rides at TRUE
 speed (the design-time advance scales by v_true/v_design at the
 current sample) and the stats-bar top speed reads Pass D; both are
-identical to before until a drift exists. Reconciliation ops (badge
-menu) are §5 round B. PLACEMENT MODES (v13.5 D78,
+identical to before until a drift exists. RESOLVE SPEED CONFLICT (§5 round B, LIVE
+since v14.5 D97): a drifted section's badge menu grows a SUBMENU —
+"Make graphs real (keep shape)…" re-fits the lanes at the TRUE
+entry speed through the density preview (Coaster.makeGraphsReal;
+s/c just re-freezes, shape speed-independent; reference = TRUE
+curves), and "Re-freeze design speed (keep graphs, reshape)"
+(Coaster.refreezeSpeed — the seam kinks honestly; Shift+B smooths
+it). Both clear vPinned. ANY unconverted bridge earlier in the RUN
+blocks both with a disabled explainer ("convert the bridge
+section(s) earlier on this track first"): the bridge re-blends
+against the changed speeds and defeats the resolution anywhere
+downstream (user, corrected after testing — a "directly after
+only" draft was reversed). Undrifted sections carry no submenu. Post-D95 drift
+lives at piece-firsts and PINNED sections. PLACEMENT MODES (v13.5 D78,
 BridgeSection.optMode, blen's 3rd field, missing = 0): the toolbar
 button RELABELS "Bridge properties ▾" over a live bridge (v13.10
 D84 — same button, the bridge's own panel; updateBridgeControls
@@ -770,16 +820,40 @@ like any continuation (it duplicated the bridge exit exactly —
 zero-advance tick, POV froze a frame). Pass A differences WITHIN
 runs (detached pieces' frames no longer poison run-end rates).
 CONVERT (v13.7 D81 — v13.5's bridge-only
-"Unfreeze (edit as geo section)" renamed and UNIFIED): every badge
-menu ends with "Convert to geo section" / "Convert to force
-section" (only the OTHER mode(s) offered — force↔geo, s/c→either,
-bridge→either; REVERSED sections refuse, §5.3's rule). BRIDGES
-convert PARTIALLY since v13.11 (D85, user spec — their items wear
-"…"): the item opens a SPLIT-LINE MODE on the strip — highlight, a
-draggable vertical line (H_RESIZE, live "% of bridge" readout,
+"Unfreeze (edit as geo section)" renamed and UNIFIED; EXPANDED
+v14.0 D89/D90): every badge
+menu ends with a WHOLE + PART pair per target mode — "Convert to
+geo/force section" (bridges: "Convert whole bridge to …", which
+ATTACHES the next piece so the track stays connected — the v13.7
+whole convert split the run; orphans just convert) and "Convert
+part to … section…" (only the OTHER mode(s) offered — force↔geo,
+s/c→either, bridge→either; REVERSED sections refuse, §5.3's rule).
+"Convert part" opens the SPLIT-LINE MODE (v13.11 D85 bridges; ALL
+modes v14.0 D89) on the strip — highlight, a
+draggable vertical line (H_RESIZE, live "% of bridge/section"
+readout,
 5–95% + rate-fit margins), click a side to pick it (tint + brief
 flash; LEFT default), canvas chips [Convert left/right part] /
-[Cancel] apply (Coaster.partialConvertBridge): LEFT ⇒ [..,
+[Cancel] apply. Cuts are EXACT-FRACTION since v14.0 (D89): the cut
+pose interpolates between samples at exactly frac·total
+(sampleAtArc/sampleAtTime — the old nearest-sample snap shifted
+cuts by up to half a sample, the user's "the length is getting
+altered"), and the LINE maps arc↔time through the span's samples
+so it sits where the cut lands. On LANE strips the line SNAPS to
+nodes — ACTIVE lane only, click = direct node-BODY hit, drag
+magnetizes on x within 5 px (v14.4 D96; v14.0 snapped every lane
+from anywhere on the node's column) — and the cut then PARTITIONS
+the node lists bitwise; on s/c strips it clamps outside
+transition-blend + global-roll ease windows (Coaster.scCutClamp —
+the only regions where truncating elements would reshape).
+LANE/S-C partial (Coaster.partialConvertSection): the unconverted
+side keeps its original representation EXACTLY — lanes split by
+the de Casteljau identity (locks ride along), s/c elements by
+length/angle arithmetic (the right half enters sharp) — and the
+downstream side's vDesign re-freezes to the design speed AT the
+cut (same energy expression ⇒ the kept shape continues exactly;
+gated 0.4 mm s/c / 3 mm lanes, TESTING #31). BRIDGE partial
+(Coaster.partialConvertBridge): LEFT ⇒ [..,
 converted lanes, bridge(cut→target)] — the bridge stays
 last-of-piece and re-solves to the same measured cut conditions
 (whole track holds ~0.14 m, bridge lands on the target to 1e-9,
@@ -810,19 +884,49 @@ null: nothing moves, v13.13 behavior exactly. The LEFT remainder
 also keeps the lock flags (they silently reset before);
 the mode cancels on any activation
 change; the editor follows the converted lanes (right: onto the
-new piece, the split precedent). For NON-bridge sections:
+new piece, the split precedent). The FIT engine:
 Coaster.convertToLanes re-authors the compiled shape as editable
 lanes — per-meter rates off the samples, re-timed onto the target's
 energy profile (identity for force/geo/s-c; real work for bridge
-blends), slope-matched nodes every 0.1 s; geo lanes = the rates,
+blends), slope-matched C1 nodes; geo lanes = the rates,
 FORCE lanes = the felt targets ω·v/g + axis.y + the SAME roll-rate
 lane (roll is both modes' shared third lane); vDesign carries over
-(conversion is a REPRESENTATION change — §5.1 drift survives it,
-become-real remains the speed reconciliation). One undo step back;
-a converted bridge stops following and the run splits; residuals
-gated TESTING #23 (mm–2 cm on geo/s-c fixtures; 0.3% across the
+(conversion is a REPRESENTATION change at DESIGN speed — bridge
+cuts take the blend's own speed). Bridge converts PRESERVE the
+downstream design speeds AND the design/true split exactly (v14.5
+D97, user rule — a draft that converted bridges to the TRUE
+profile was reversed): both flavors PIN the first downstream
+section (Section.vPinned, section-line 5th field, missing = off;
+in DocState) so the D95 reconcile leaves the stitched seam's split
+alone; the resolve ops clear the pin. NODE PLACEMENT
+(v14.0, D90): TARGET SPACING — endpoints pinned exactly on the
+section ends, interior even, count nearest the target
+(default NODE_SPACING_DEFAULT 0.1 s, min 2 nodes, 0.01 s floor) —
+or ADAPTIVE ("Optimal placement": fitLaneAdaptive inserts nodes
+greedily at the worst-fitting sample until each lane tracks its
+data within a tolerance × its value range; per-lane counts, flat
+lanes = bare endpoints; 1/3-frac C1 handles make the time cubic
+exactly linear). EVERY convert commits through the DENSITY
+PREVIEW popup (GraphEditor pv*): typed value + log slider
+(spacing 0.02–2 s / accuracy 0.01–10 %), conversion re-applied
+LIVE per change against a restore of the pristine state
+(re-captured per restore — applyDocState ADOPTS snapshot
+objects), the ORIGINAL compiled curves dashed behind in lane
+colors (target-mode units), node-count readout; Apply pushes the
+pre-convert state as ONE undo step, Cancel restores it exactly;
+canvas presses are consumed while open (view pan/zoom live),
+activation changes cancel, and ALL bound key actions are dead
+while the split line or preview is up (v14.4 — an open convert is
+an open gesture; POV/ortho view keys stay live). The popup is
+DRAGGABLE by its body, opens ABOVE the plot (clear of the strip),
+and — being a Popup, its own OS window — hides when the app loses
+focus and returns, still open in place, when focus comes back
+(v14.4, D96). One undo step back;
+a whole-converted bridge attaches its target (connected); a
+PART-converted bridge keeps following its cut; residuals
+gated TESTING #23/#31 (mm–2 cm on geo/s-c fixtures; 0.3% across the
 whole 407 m default layout — the carpet rounding its roll spikes;
-"delete nodes to taste", D78). 3D meshes are
+"delete nodes to taste", D78, now literally a slider). 3D meshes are
 PER PIECE (v13.2): inactive pieces render DESATURATED (gradient
 texture or solid color), meshes never span a piece boundary — a
 clean bridge/attach seam abuts flush and reads as one track, a fresh
@@ -1241,14 +1345,27 @@ bridges, user decision; SECTIONS-DESIGN §5 spec'd in full + user-
 approved 2026-07-07 — ROUND A live v13.6 D79: per-run Pass D, true
 Pass A arrays, drift display/POV/stats, gated TESTING #21; CONVERT
 live v13.7 D81 (§5.3b, user-spec'd during round A — landed early,
-gated TESTING #23); round B =
-the two reconciliation ops, round C = influence mode) →
+gated TESTING #23) and EXPANDED v14.0 D89-D91 per the user's list:
+partial convert for every mode + node snap + exact cuts +
+whole-bridge attach + density preview + adaptive placement + lock
+tints, gated TESTING #31; round B —
+the two reconciliation ops — SHIPPED v14.5 D97; round C =
+influence mode remains) →
 TIME/DISTANCE domain toggle for force/geo
 lanes (author over meters instead of seconds; the graph x-axis
 follows the active section's domain — user-confirmed on the list
 2026-07-06; the Domain slot has been in the model/FVDD3 since
 Phase 1, and s/c strips already lay out DISTANCE sections by their
-compiled time extent, which is the precedent the toggle builds on).
+compiled time extent, which is the precedent the toggle builds on.
+SAME-MODE domain conversion should NOT refit a node carpet (user
+rule, 2026-07-09): move each node t_i → s(t_i) through the energy
+profile — a NONLINEAR map, not a uniform scale — keeping fracs;
+values transfer exactly, node slopes need dv scaled by
+v̄_segment/v(node) (chain rule dG/ds = (dG/dt)/v; the fractional
+handles' segment rescale supplies the v̄ part automatically).
+Between nodes a cubic-in-t composed with s(t) is not a cubic in s,
+so the interior matches exactly only at constant speed — sub-fit-
+residual in practice; zero difference is NOT attainable in theory).
 
 **Phase 3 — dynamics:** speed-controlled sections (constant-v /
 constant-longitudinal-G / curve), air + rolling friction.

@@ -521,6 +521,175 @@
     SeamJolt/UnfreezeProbe/SeamOrient/BridgeProbe2 re-run clean.
     All passed 2026-07-09.
 
+31. **v14.0 convert expansion (Phase2Gate.convertExpansion; D89/
+    D90).** TARGET DENSITY: converting the mixed force fixture at
+    0.5 s spacing yields exactly round(dur/0.5)+1 = 7 nodes,
+    endpoints pinned bit-exact on the section ends, gaps even to
+    1e-6 (0.5000 s realized); a 99 s target collapses to the two
+    endpoints. ADAPTIVE: on a roll-free fixture the flat yaw and
+    roll lanes keep exactly 2 nodes; the rolling fixture at 1 %
+    tolerance holds the whole compiled shape to 0.21 m interior /
+    0.10 m end with 8/6/10 nodes (uniform 0.1 s: 31 per lane).
+    EXACT CUTS: a 37 % right bridge-cut pins lastOptDist to
+    0.37 × total within 1e-6 (the old sample snap was off by up to
+    half a sample). LANE PARTIAL: right-convert at 40 % → [force,
+    geo], kept side within 2.8 mm (bake-grid noise), whole track
+    0.074 m, converted side's vDesign = the cut speed to 0.03 m/s;
+    left-convert cut exactly ON a node partitions the lanes (kept
+    right lane = 2 nodes starting AT the node, no insert). S/C
+    PARTIAL: [straight 12, curve R20 90° smooth 4] cut at 50 % →
+    kept [straight, 27.8° arc] ends at exactly half the arc
+    (1e-6), kept side within 0.4 mm; a 13 m request inside the
+    blend window [9.9..16] clamps to 16.00 m (scCutClamp). WHOLE
+    BRIDGE: converts in place and ATTACHES the next piece — one
+    piece, samples joined end to end, shape holds 0.20 m. All
+    passed 2026-07-09 (205 checks total).
+
+32. **[REVERTED, D95] v14.1 banked-seam bridges (D92).**
+    Fixture = the user's blowup: entry rolls to +30° bank then
+    holds (seam roll rate ~0, pitched +24°, curving), target piece
+    banked −30° via its roll delta AND curving (12 °/s pitch).
+    ROLL HUMP: optimized POS_YAW at 30 m, the march now ARRIVES in
+    the target's frame — seam U mismatch 0.01° (pre-fix ~60°),
+    far-seam felt steps ΔGv 0.000 / ΔGl 0.001 g (pre-fix 0.50 g),
+    no phantom lateral (|Gl|max 0.50 g = pure gravity; pre-fix
+    1.00), far-seam curvature direction step 11.6° = the pitch
+    hump's own accepted shoulder (pre-fix 76° of frame error), and
+    the placement is DETERMINISTIC — a same-mode re-optimize moves
+    0.00000 m (a yaw-variant U-projection twist crept 0.17 m/run;
+    a one-shot hump left 16° — the shipped version measures bank
+    about each frame's own tangent and iterates ≤ 4 marches).
+    RATE BUDGET: the pure knee documents the net-roll 1/d runaway
+    (128 m for a ~40 m gap — the user's "well over 100 m"); the
+    neighbor budget (101 °/s-cost from the entrance's own 60 °/s
+    roll) knees at 36 m. All legacy probes (SplitTurnProbe's
+    circle/dead-ahead baselines, BridgeBump's 60.000 m pure-knee
+    determinism, BridgeSmooth/SeamPause/SeamJolt/UnfreezeProbe/
+    SeamOrient/BridgeProbe2) pass UNCHANGED — the 0.2° twist
+    deadband keeps level/planar marches on the old code path
+    bit-identically. All passed 2026-07-09 (214 checks total;
+    diagnostic scratch: BridgeBank).
+
+33. **[REVERTED, D95 — findings kept for the record] v14.2 march
+    stability (scratch BridgeSweep; D93).** The sweep: 14 seam families × lengths
+    {8,16,32,64,128,knee} with wildness metrics. Pre-fix worst
+    cases: ramped-pitch seams hit 28× seam rates at 128 m; the
+    32 m fold window barrel-rolled 360° of bank with 1.9 g phantom
+    lateral ON A PLANAR FIXTURE and re-optimize crept 8.7 m; knees
+    picked 56-128 m lengths whose apply rendered the septic, not
+    the march they scored. Post-fix (slope caps + fold-signature
+    rejection + landable-knee probing): every family's knee LANDS
+    (ramped-seam knee 14 m, arc == request), the fold window stays
+    planar (|Gl|max 0.000) rendering septic, re-optimize moves
+    0.0000000 m everywhere (redo column all-zero across the
+    sweep), and matched/turn/roll/speed families are byte-stable.
+    Legacy probes (BridgeBump/SplitTurnProbe/BridgeSmooth et al)
+    pass unchanged. All passed 2026-07-09 (217 checks).
+
+63. [REVERTED, D95 — except (c), the Length spinner, which stays] v14.2 bridge feel round: (a) ramp a lane's rate INTO a seam
+    (sloped graph at the cut), bridge across, optimize orientation:
+    no corkscrew at any Length value; sweeping the Length spinner
+    through 20-120 m changes the shape smoothly with no wild
+    window. (b) Optimize length on such seams picks tens of meters
+    and the graph shown IS the optimized shape (no silent septic
+    swap). (c) The Length spinner arrows now step cleanly by 1 m in
+    both directions from any state — no snap-back, no stuck values
+    (it reads the REQUESTED length; a hand-moved target that breaks
+    the landing no longer feeds the septic's arc back into the
+    box). (d) Steep pull-up seams (60°+ pitch) bridged short: the
+    bridge stays in its vertical plane — banking stays put.
+
+34. **[REVERTED, D95] v14.3 zero lateral G + budget (D94).** Budget
+    de-inflation: the banked fixture's floor drops 101 → 61 °/s
+    (slope term removed — node-corner spikes inflated it and knees
+    collapsed to 2-4 m on real tracks), knee 36 → 56 m; ramped-seam
+    knee stays 14 m and landable. ZERO LATERAL G: an unbanked
+    flat-turn bridge (mid-span |Gl| 0.93 g) re-banks to 0.000 g
+    with the PATH bit-unchanged (mid-span position delta 0.00e+00)
+    and the entry seam's bank held (U step 0.09°). All probes
+    unchanged. All passed 2026-07-10 (220 checks).
+
+64. [REVERTED, D95] v14.3 feel round: (a) Optimize length on ordinary bridges no
+    longer collapses to a few meters — lengths come out at rideable
+    scales again. (b) "Zero lateral G" check (bridge panel, next to
+    Optimize length): a turning bridge banks itself so the Gl graph
+    reads ~0 through the interior while easing to the seams' banks
+    at the ends; through an airtime hump the track rolls smoothly
+    (zero-G roll); the 3D path itself does not move when toggling;
+    save/load keeps the check; one Ctrl+Z undoes it. (c) The
+    cut-out S-hill: optimize placement+orientation, check Zero
+    lateral G — compare to the original middle.
+
+35. **v14.1-final same-piece speed reconcile (Phase2Gate.
+    speedReconcile; D95).** A [curvy force, geo] chain whose hill
+    shifts the seam speed 4.09 m/s off the geo section's frozen
+    design speed: the rebuildTrack reconcile loop re-freezes it to
+    0.0000 m/s of drift and Pass D's true speed equals the design
+    profile across the whole piece (max 0.0000 m/s) — the
+    design/true split cannot open inside a plain chain. Bridged
+    pieces keep their drift (piece-first sections excluded). Also
+    re-ran the FULL suite after reverting D92-D94: 209 checks + all
+    7 probes pass — the bridge code is byte-equivalent to v13.14
+    (43baeeb) apart from requestedBridgeGap. All passed 2026-07-10.
+
+65. v14.1-final feel round: (a) chain force -> geo -> s/c in ONE
+    piece, then edit the first section (raise a hill): NO thin true
+    stroke appears anywhere in the piece, downstream badges never
+    wear "≠v", and the downstream geometry re-derives from its
+    graphs at the new speed. (b) A BRIDGED second piece still shows
+    the honest split when the entry speed drifts (that feature is
+    per-piece now). (c) Bridges behave exactly as at v13.14 —
+    including the known banked-seam weirdness D95 records for the
+    next attempt; the Length spinner still steps cleanly by 1 m.
+
+66. v14.4 convert feel round: (a) the density window opens ABOVE
+    the plot, drags anywhere by its body, and while it's up the
+    graph takes no edits (keys included — try Delete/A/Ctrl+Z:
+    nothing; Space/T view keys still work); Alt-Tab to another app:
+    the window vanishes with the app and is back, same spot and
+    still open, on return. (b) Split line: clicking a node's column
+    below/above the node does NOT snap — only clicking the node
+    body itself does, and only on the SELECTED lane; dragging the
+    line magnetizes within ~5 px of the selected lane's nodes only.
+    (c) Bridge panel padlocks read clearly green/red, not grayed.
+
+36. **v14.5 split resolution + split-preserving bridge converts
+    (Phase2Gate.splitResolution; D97).** A dropping piece bridged
+    to a slow-design target (16.8 m/s of real drift at its head):
+    "make real" closes the split to 0.000 m/s keeping the shape
+    (interior 0.191 m); "re-freeze" closes it to 0.000 keeping the
+    IDENTICAL lane objects. Bridge converts PRESERVE the split
+    (user rule): after RIGHT-partial AND whole converts the
+    downstream section keeps vDesign 15.0 bitwise, is vPinned, and
+    its 16.8 m/s split survives the full rebuild loop (reconcile +
+    auto passes); the pin survives save/load. Mode-switch kink
+    (scratch BridgeModeSwitch): the far-seam frame step in
+    optimize-orientation drops 0.063° -> 0.000° (rate spike 2.41 ->
+    1.02 °/s = interior level), POS unchanged at 0.000°, ping-pong
+    deterministic. All passed 2026-07-10 (216 checks + 7 probes).
+
+67. v14.5 feel round: (a) convert a bridge (whole or part) whose
+    next piece rides at a different true speed: EVERYTHING you saw
+    before conversion stays — the downstream design graphs, its
+    design speed, and the thin true strokes marking the split
+    (drag an upstream node afterwards: the split still doesn't
+    close — the seam is pinned). (b) A drifted section's badge menu
+    grows "Resolve speed conflict ▸": anywhere DOWNSTREAM of an
+    unconverted bridge it only explains ("convert the bridge
+    section(s) earlier on this track first"); once no bridge sits
+    upstream, "Make graphs real (keep shape)…"
+    opens the density preview and the true strokes vanish on Apply
+    with the 3D track staying put, while "Re-freeze design speed"
+    keeps the graphs, visibly reshapes, and leaves an honest kink
+    at the seam (Shift+B smooths it).
+    (c) Optimize mode -> set a length -> "No optimization" -> back:
+    untouched round-trips restore Optimize length exactly as left;
+    after moving the piece manually, coming back keeps the manual
+    bridge's length with Optimize length unchecked, and the grayed
+    Length box live-updates while dragging x/y/z. (d) The
+    POS/POS_YAW ping-pong no longer flips an end-of-graph jump in
+    and out.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.
@@ -1263,6 +1432,47 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     geo section)": the bridge becomes ordinary editable geo lanes,
     the run splits there, the seam stays visually tight (tame
     bridges essentially exact); Ctrl+Z brings the live bridge back.
+61. v14.0 convert expansion: (a) PARTIAL CONVERT EVERYWHERE — badge
+    menu of a force/geo/s-c section > "Convert part to … section…":
+    the split line appears; drag it (readout shows the exact %),
+    click a side, press the chip. The unconverted side's curves and
+    3D track do not move; the converted side re-fits. On an s/c
+    strip the line refuses to sit inside transition blends (it
+    jumps past them). (b) NODE SNAP — with the line up on a lane
+    strip, click any node: the line lands exactly on it (drag near
+    one: it magnetizes); the cut then starts/ends the halves at
+    that node with no extra node inserted. Clicking elsewhere in
+    the strip still flips the convert side. (c) DENSITY WINDOW —
+    press any convert (whole or the chip): the popup appears; drag
+    the log slider and watch the node carpet re-fit LIVE with the
+    original curves dashed behind; type a value; check OPTIMAL
+    PLACEMENT: flat lanes drop to two nodes and the slider becomes
+    accuracy (now down to 0.01 %); Apply commits (ONE Ctrl+Z returns the original),
+    Cancel restores exactly — including after slider excursions.
+    While the popup is open, plot clicks do nothing (pan/zoom still
+    work); switching pieces cancels. (d) WHOLE BRIDGE — badge >
+    "Convert whole bridge to geo section": the bridge becomes
+    lanes, the next piece's sections chain on after them (ONE
+    piece, connected track, POV rides through). (e) EXACT % — cut a
+    bridge at 50%: the surviving bridge's Length spinner reads
+    exactly half the original arc. (f) PADLOCKS — the bridge
+    panel's yaw/pitch/roll locks: red tint = locked, green =
+    unlocked, flipping live. (g) UNDO PITCH/ROLL — set a next-piece
+    pitch delta, make any edit, Ctrl+Z: the pitch delta survives
+    (it used to zero).
+62. [REVERTED, D95] v14.1 banked bridges: rebuild the S-hill blowup — bank one way,
+    airtime hill rolling to the other bank, delete the middle,
+    bridge the halves. (a) "Optimize position and orientation": no
+    more looping/corkscrew — the bridge rolls smoothly between the
+    banks, the felt-G and rate graphs flow through both seams, and
+    the placed piece sits at a sane height. (b) Optimize length now
+    lands at a rideable length (tens of meters, scaled to how fast
+    the neighboring track itself rolls/turns) instead of 100+ m.
+    (c) Hand-set lengths look clean across the range — no "obvious
+    dramatically better placement". (d) Repeat-switching modes or
+    re-ticking the Length spinner moves nothing (deterministic).
+    (e) Level/planar bridges (split turns, straight gaps) behave
+    exactly as before.
 58. v13.4 round: (a) BRIDGED RUN — bridge piece 1 to piece 2: the
     graph now shows BOTH pieces' strips plus the bridge as one
     timeline; click any strip or badge on the far side — it

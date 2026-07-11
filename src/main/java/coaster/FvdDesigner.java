@@ -207,11 +207,14 @@ public class FvdDesigner extends Application {
     record SecState(List<List<BezierBaker.Node>> lanes,
                     List<StraightCurveSection.Element> elements,
                     double vDesign, int mode, boolean reversed,
-                    BridgeSection bridge) {}
+                    boolean pinned, BridgeSection bridge) {}
 
-    // one per TrackPiece (v12.0; baseOrient v12.1): sections + placement
+    // one per TrackPiece (v12.0; baseOrient v12.1; pitch/roll deltas
+    // v14.0 — the v13.13 fields were MISSING here, so any undo zeroed
+    // a piece's pitch/roll placement, D89)
     record PieceState(List<SecState> sections,
-                      double x, double y, double z, double yaw, Quat base) {}
+                      double x, double y, double z, double yaw,
+                      double pitch, double roll, Quat base) {}
 
     record DocState(List<PieceState> pieces, int activePiece, int active,
                     double heart, double gauge, double v0) {}
@@ -226,14 +229,15 @@ public class FvdDesigner extends Application {
             for (Section s : piece.sections) {
                 if (s instanceof BridgeSection bs) {
                     secs.add(new SecState(null, null, bs.vDesign, 3,
-                        bs.reversed, bs.copy()));
+                        bs.reversed, false, bs.copy()));
                     continue;
                 }
                 if (s instanceof StraightCurveSection sc) {
                     List<StraightCurveSection.Element> els =
                         new ArrayList<>(sc.elements.size());
                     for (StraightCurveSection.Element e : sc.elements) els.add(e.copy());
-                    secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed, null));
+                    secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed,
+                        sc.vPinned, null));
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
@@ -244,10 +248,12 @@ public class FvdDesigner extends Application {
                     copy.add(laneCopy);
                 }
                 secs.add(new SecState(copy, null, fs.vDesign,
-                    fs instanceof GeoSection ? 1 : 0, fs.reversed, null));
+                    fs instanceof GeoSection ? 1 : 0, fs.reversed,
+                    fs.vPinned, null));
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
-                piece.yawDeg, piece.baseOrient));
+                piece.yawDeg, piece.pitchDeg, piece.rollDeg,
+                piece.baseOrient));
         }
         return new DocState(ps,
             editor != null ? editor.activePiece() : 0,
@@ -264,6 +270,8 @@ public class FvdDesigner extends Application {
         // snapshot lists are deep copies popped off the stack - adopt them
         for (PieceState pst : s.pieces()) {
             TrackPiece piece = new TrackPiece(pst.x(), pst.y(), pst.z(), pst.yaw());
+            piece.pitchDeg = pst.pitch();
+            piece.rollDeg = pst.roll();
             piece.baseOrient = pst.base();
             for (SecState st : pst.sections()) {
                 Section sec = switch (st.mode()) {
@@ -273,6 +281,7 @@ public class FvdDesigner extends Application {
                     default -> new ForceSection(st.lanes(), st.vDesign());
                 };
                 sec.reversed(st.reversed());
+                sec.vPinned(st.pinned());
                 piece.sections.add(sec);
             }
             coaster.pieces.add(piece);
@@ -374,7 +383,7 @@ public class FvdDesigner extends Application {
         if (!bridge) return;
         boolean was = docApplying;
         docApplying = true;
-        setIfOff(bridgeGapSpinner, Math.max(1, editor.activeBridgeGap()), 0.05);
+        setIfOff(bridgeGapSpinner, Math.max(1, editor.requestedBridgeGap()), 0.05);
         setIfOff(bridgeYawSpinner, editor.bridgeTargetOrient(0), 0.01);
         setIfOff(bridgePitchSpinner, editor.bridgeTargetOrient(1), 0.01);
         setIfOff(bridgeRollSpinner, editor.bridgeTargetOrient(2), 0.01);
@@ -559,13 +568,25 @@ public class FvdDesigner extends Application {
 
     /** An orientation padlock (v13.13): SELECTED = unlocked (🔓,
      *  editable / optimizer-aligned), unselected = locked (🔒,
-     *  frozen — the optimization meets the value instead). */
+     *  frozen — the optimization meets the value instead). Tinted
+     *  since v14.0 (D91): GREEN = unlocked, RED = locked — the glyphs
+     *  alone read too alike; SATURATED since v14.4 (D96, user: the
+     *  faded 0.30-alpha washes read as "grayed out"/disabled). */
+    private static final String LOCK_BASE_STYLE =
+        "-fx-font-size: 10px; -fx-padding: 1 4 1 4;";
+    private static final String LOCK_OPEN_STYLE = LOCK_BASE_STYLE
+        + " -fx-base: rgb(40,130,52); -fx-background-color: rgba(58,190,76,0.75);";
+    private static final String LOCK_SHUT_STYLE = LOCK_BASE_STYLE
+        + " -fx-base: rgb(140,42,42); -fx-background-color: rgba(215,58,58,0.75);";
+
     private ToggleButton bridgeLockBtn(int axis) {
         ToggleButton b = new ToggleButton("🔒");
         b.setFocusTraversable(false);
-        b.setStyle("-fx-font-size: 10px; -fx-padding: 1 4 1 4;");
-        b.selectedProperty().addListener((obs, o, sel) ->
-            b.setText(sel ? "🔓" : "🔒"));
+        b.setStyle(LOCK_SHUT_STYLE);
+        b.selectedProperty().addListener((obs, o, sel) -> {
+            b.setText(sel ? "🔓" : "🔒");
+            b.setStyle(sel ? LOCK_OPEN_STYLE : LOCK_SHUT_STYLE);
+        });
         b.setOnAction(e -> {
             if (docApplying) return;
             editor.setBridgeLock(axis, !b.isSelected());
@@ -943,6 +964,16 @@ public class FvdDesigner extends Application {
         // still saves (S with Ctrl never becomes the slide key at rest).
         if ((editor.isDragging() || slideKey)
                 && (e.isControlDown() || e.isShiftDown() || e.isAltDown() || e.isMetaDown())) {
+            return;
+        }
+        // the convert UI owns the graph (v14.4, D96): while the split
+        // line or the density preview is up, edit/file/undo actions
+        // are dead — an open convert is an open gesture (view keys
+        // like POV/ortho stay live below)
+        if (editor.convertUiActive()) {
+            if (matches("pov", e)) togglePov();
+            else if (matches("viewTop", e)) viewport.toggleOrthoView(true);
+            else if (matches("viewSide", e)) viewport.toggleOrthoView(false);
             return;
         }
         if      (matches("undo", e))    editor.undo();

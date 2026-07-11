@@ -118,6 +118,17 @@ public final class BridgeSection implements Section {
     public double[] optSig;
     public double lastOptDist;
 
+    /** TRANSIENT stash for the "No optimization" round-trip (v14.5,
+     *  D97, user spec): {optLen, next piece x, y, z, yaw, pitch,
+     *  roll} captured when the user switches INTO manual mode from an
+     *  optimize mode. Switching back with the placement UNTOUCHED
+     *  restores exactly what was left (a no-op round-trip; the v13.8
+     *  knee-on-entry now fires only for bridges with no stash — fresh
+     *  ones); a HAND-MOVED placement comes back at the manual
+     *  bridge's own arc with Optimize length unchecked. Not
+     *  persisted. */
+    public double[] noneStash;
+
     /** Deliberately-STALE signature (v13.14, D88): partial convert
      *  plants this on a surviving bridge that was RENDERING the march,
      *  so the first rebuild's auto re-optimize pass re-places it at
@@ -198,6 +209,7 @@ public final class BridgeSection implements Section {
         b.lockYaw = lockYaw;
         b.lockPitch = lockPitch;
         b.lockRoll = lockRoll;
+        b.noneStash = noneStash;
         return b;
     }
 

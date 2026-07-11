@@ -115,6 +115,7 @@ public final class StraightCurveSection implements Section {
 
     public double vDesign;
     public boolean reversed = false;
+    public boolean vPinned = false;   // v14.5 D97: reconcile-exempt
     public String name = "";
 
     public StraightCurveSection(List<Element> elements, double vDesign) {
@@ -151,4 +152,8 @@ public final class StraightCurveSection implements Section {
     @Override public boolean reversed() { return reversed; }
 
     @Override public void reversed(boolean r) { reversed = r; }
+
+    @Override public boolean vPinned() { return vPinned; }
+
+    @Override public void vPinned(boolean p) { vPinned = p; }
 }

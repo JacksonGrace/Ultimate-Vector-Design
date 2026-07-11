@@ -206,7 +206,9 @@ public class Coaster {
 
     /** March end state {pos, T, U} for a bridge at length d — the
      *  placement AND the virtual-target pose for the length optimizer
-     *  share this one path. */
+     *  share this one path. (The v14.1-14.3 roll-hump/bank-gap
+     *  machinery was REVERTED on user verdict, D95 — see there for
+     *  what was tried and why it failed before re-attempting.) */
     private static Vec3[] marchEnd(BridgeSection bs, double d,
                                    boolean[] align, List<Vec3> path,
                                    List<double[]> spine) {
@@ -250,6 +252,39 @@ public class Coaster {
             st = march(pA, tA, uA, d, sa, sb,
                 Math.abs(resPitch) > 1e-9 ? resPitch : 0,
                 Math.abs(resYaw) > 1e-9 ? resYaw : 0, path, spine);
+            // ONE bounded refinement (v14.5, D97): each hump's
+            // integral is exact for the rotation it ADDS, but adding
+            // it re-mixes the blend's own pitch/heading along the new
+            // path — a second-order residual (~0.06° on a turning
+            // fixture) that showed as a rate KINK at the far seam in
+            // orientation mode (the user's "instant jump in values at
+            // the end of the graph"; position mode's yaw hump happened
+            // to cancel it, hence "wrong in one mode, right in the
+            // other"). Re-measure once and re-march — quadratic
+            // contraction (~1e-5°); the 1e-4 rad deadband keeps every
+            // already-clean march on the historic two-march sequence
+            // bit-identically. (NOT the reverted D95 bank iteration:
+            // no wrap-ambiguous measure, hard one-pass bound.)
+            double dP = align[1] ? 0
+                : Math.asin(Math.max(-1, Math.min(1, tB.y())))
+                - Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+            double dY = 0;
+            Vec3 eT = st[1];
+            double ea2 = eT.x() * eT.x() + eT.z() * eT.z();
+            if (!align[0] && ea2 > 1e-12 && hb2 > 1e-12) {
+                dY = Math.atan2(-tB.z(), tB.x())
+                   - Math.atan2(-eT.z(), eT.x());
+                while (dY > Math.PI) dY -= 2 * Math.PI;
+                while (dY < -Math.PI) dY += 2 * Math.PI;
+            }
+            if (Math.abs(dP) > 1e-4 || Math.abs(dY) > 1e-4) {
+                resPitch += dP;
+                resYaw += dY;
+                if (path != null) path.clear();
+                if (spine != null) spine.clear();
+                st = march(pA, tA, uA, d, sa, sb, resPitch, resYaw,
+                    path, spine);
+            }
         }
         return st;
     }
@@ -555,6 +590,99 @@ public class Coaster {
         return true;
     }
 
+    /** "MAKE GRAPHS REAL" (v14.5, D97 — §5 round B's become-real,
+     *  user spec): resolve a design/true split WITHOUT moving the
+     *  track — the section re-authors as lanes fitted at its TRUE
+     *  entry speed, so the graphs become the real ride (same fit
+     *  engine as convert; shape kept to the fit residual). Lane
+     *  sections re-fit in their own mode; s/c sections just
+     *  re-freeze vDesign (shape speed-independent — both resolutions
+     *  coincide). Bridges have no split (pure geometry in Pass D);
+     *  REVERSED sections refuse (§5.3's rule). */
+    public boolean makeGraphsReal(int pieceIdx, int secIdx, double dt,
+                                  double spacing, double adaptTol) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        Section sec = piece.sections.get(secIdx);
+        if (sec.reversed() || sec instanceof BridgeSection) return false;
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        TrackCompiler.Span sp = r.spans().get(spanIdx);
+        double vTrue = Math.max(0.5, r.trueV()[sp.i0()]);
+        if (sec instanceof StraightCurveSection) {
+            sec.vDesign(vTrue);
+            sec.vPinned(false);   // resolved: re-join the speed flow
+            return true;
+        }
+        if (sp.i1() - sp.i0() < 4) return false;
+        piece.sections.set(secIdx, convertToLanes(
+            r.samples().subList(sp.i0(), sp.i1() + 1),
+            vTrue, sec instanceof GeoSection, dt, spacing, adaptTol));
+        return true;
+    }
+
+    /** "RE-FREEZE DESIGN SPEED" (v14.5, D97): the OTHER split
+     *  resolution — keep the graphs and set the section's design
+     *  speed to its true entry speed; the geometry re-derives from
+     *  the same graphs at the new speed (the shape changes — the
+     *  user's explicit trade). Reversed sections refuse. */
+    public boolean refreezeSpeed(int pieceIdx, int secIdx, double dt) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        Section sec = piece.sections.get(secIdx);
+        if (sec.reversed() || sec instanceof BridgeSection) return false;
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        sec.vDesign(Math.max(0.5,
+            r.trueV()[r.spans().get(spanIdx).i0()]));
+        sec.vPinned(false);   // resolved: re-join the speed flow
+        return true;
+    }
+
+    /** SPEED RECONCILE for same-piece chains (v14.1, D95 — user
+     *  rule): editing upstream of a directly-chained force/geo/s-c
+     *  section used to leave its FROZEN vDesign behind the speed that
+     *  now actually reaches it — the design/true split appeared
+     *  inside a plain chain, where the user wants the old
+     *  one-integrator behavior: the graphs stay REAL and the
+     *  downstream geometry re-derives from them at the true speed.
+     *  After each compile, every continuation section of a piece
+     *  re-freezes vDesign to the previous section's design-end speed
+     *  (the same rule '+' and Shift+B apply, now automatic; within a
+     *  piece the design profile then equals Pass D's true speed, so
+     *  the split display never opens). Deliberately NOT touched:
+     *  each piece's FIRST section (run entries — bridged/attached
+     *  pieces keep the §5.1 drift feature: shape preserved, split
+     *  shown) and REVERSED sections (their vDesign is the
+     *  authored-direction entry, not the train's). Returns true when
+     *  anything changed — the caller recompiles (rebuildTrack loops
+     *  with the auto-reoptimize pass; heights shift speeds
+     *  second-order, so a couple of passes settle). */
+    public boolean reconcileChainedSpeeds(TrackCompiler.Result r) {
+        boolean changed = false;
+        int spanIdx = 0;
+        for (TrackPiece piece : pieces) {
+            for (int k = 0; k < piece.sections.size(); k++, spanIdx++) {
+                if (k == 0 || spanIdx >= r.spans().size()) continue;
+                Section sec = piece.sections.get(k);
+                if (sec instanceof BridgeSection || sec.reversed()
+                        || sec.vPinned()) continue;   // v14.5 D97: a
+                        // pinned seam keeps its split deliberately
+                double vIn = r.samples()
+                    .get(r.spans().get(spanIdx - 1).i1()).v();
+                if (Math.abs(sec.vDesign() - vIn) > 1e-3) {
+                    sec.vDesign(vIn);
+                    changed = true;
+                }
+            }
+        }
+        return changed;
+    }
+
     /** The rate cost of a virtually-marched candidate at length d —
      *  the probe's lastOptDist is the candidate length, so its
      *  integrate() runs the MARCH SPINE against the virtual pose (it
@@ -683,6 +811,24 @@ public class Coaster {
     public static LaneSection convertToLanes(List<FVDIntegrator.Sample> s,
                                              double vDesign, boolean toGeo,
                                              double dt) {
+        return convertToLanes(s, vDesign, toGeo, dt, NODE_SPACING_DEFAULT, 0);
+    }
+
+    /** Default target node spacing for conversions (s) — the density
+     *  dialog's starting value (v14.0, D90). */
+    public static final double NODE_SPACING_DEFAULT = 0.1;
+
+    /** Full convert with fit control (v14.0, D90): spacing = TARGET
+     *  node spacing (s) — endpoints pinned, interior evenly spaced,
+     *  count chosen so the actual gaps are closest to the target;
+     *  adaptTol > 0 switches to ADAPTIVE placement instead — nodes
+     *  inserted at the worst-fit spot until each lane tracks its data
+     *  within adaptTol × (that lane's value range); flat lanes come
+     *  out as bare endpoints. */
+    public static LaneSection convertToLanes(List<FVDIntegrator.Sample> s,
+                                             double vDesign, boolean toGeo,
+                                             double dt, double spacing,
+                                             double adaptTol) {
         int n = s.size();
         double vD = Math.max(1, vDesign);
         double y0 = s.get(0).pos().y();
@@ -739,58 +885,178 @@ public class Coaster {
         // step.
         double dur = Math.max(dt,
             Math.round(Math.max(0.1, tG[n - 1]) / dt) * dt) * (1 + 1e-9);
-        // 0.1 s node spacing: the cubic fit's error scales with the
-        // spacing⁴, and bridge rate curves can swing fast inside.
-        // Delete nodes to taste after.
-        int nNodes = Math.max(4, (int) Math.round(dur / 0.1) + 1);
         List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
         for (int c = 0; c < 3; c++) {
-            List<BezierBaker.Node> lane = new ArrayList<>(nNodes);
-            for (int k = 0; k < nNodes; k++) {
-                double t = dur * k / (nNodes - 1);
-                lane.add(new BezierBaker.Node(t,
-                    val[idxAtTime(tG, t)][c]));
-            }
-            BezierBaker.applyDefaultHandles(lane);
-            // C1 fit: each node's handles take the curve's slope AT
-            // THE NODE SCALE (v13.13 fix, D87): the old ±2-SAMPLE
-            // windows sat inside the rate extraction's own ±2-sample
-            // smear at the section EDGES — the first/last few values
-            // are nearly equal there, so edge handles came out LEVEL
-            // (the user's partially-converted bridges). Slopes now
-            // difference the fitted node values 0.1 s apart: central
-            // inside, second-order one-sided at the ends.
-            double hstep = dur / (nNodes - 1);
-            for (int k = 0; k < nNodes; k++) {
-                double slope;
-                if (k == 0) {
-                    slope = nNodes >= 3
-                        ? (-3 * lane.get(0).val + 4 * lane.get(1).val
-                            - lane.get(2).val) / (2 * hstep)
-                        : (lane.get(1).val - lane.get(0).val) / hstep;
-                } else if (k == nNodes - 1) {
-                    slope = nNodes >= 3
-                        ? (3 * lane.get(k).val - 4 * lane.get(k - 1).val
-                            + lane.get(k - 2).val) / (2 * hstep)
-                        : (lane.get(k).val - lane.get(k - 1).val) / hstep;
-                } else {
-                    slope = (lane.get(k + 1).val - lane.get(k - 1).val)
-                        / (2 * hstep);
-                }
-                BezierBaker.Node nd = lane.get(k);
-                if (k < nNodes - 1) {
-                    nd.outDv = slope
-                        * BezierBaker.effOutDt(nd, lane.get(k + 1));
-                }
-                if (k > 0) {
-                    nd.inDv = slope
-                        * BezierBaker.effInDt(lane.get(k - 1), nd);
-                }
-            }
-            lanes.add(lane);
+            lanes.add(adaptTol > 0
+                ? fitLaneAdaptive(tG, val, c, dur, adaptTol)
+                : fitLaneUniform(tG, val, c, dur,
+                    Math.max(0.01, spacing)));
         }
         return toGeo ? new GeoSection(lanes, vD)
                      : new ForceSection(lanes, vD);
+    }
+
+    /** Uniform fit: endpoints pinned at 0 and dur, interior nodes
+     *  evenly spaced with the COUNT chosen so the actual gap is
+     *  closest to the target spacing (v14.0, D90 — the fit's error
+     *  scales with spacing⁴; the density dialog owns the knob). */
+    private static List<BezierBaker.Node> fitLaneUniform(double[] tG,
+            double[][] val, int c, double dur, double spacing) {
+        int nNodes = Math.max(2, (int) Math.round(dur / spacing) + 1);
+        // MIN transition 0.01 s: never fit segments the editor refuses
+        nNodes = Math.min(nNodes, 1 + (int) Math.floor(dur / 0.01 + 1e-9));
+        List<BezierBaker.Node> lane = new ArrayList<>(nNodes);
+        for (int k = 0; k < nNodes; k++) {
+            double t = dur * k / (nNodes - 1);
+            lane.add(new BezierBaker.Node(t, valAtT(tG, val, c, t)));
+        }
+        BezierBaker.applyDefaultHandles(lane);
+        // C1 fit: each node's handles take the curve's slope AT
+        // THE NODE SCALE (v13.13 fix, D87): the old ±2-SAMPLE
+        // windows sat inside the rate extraction's own ±2-sample
+        // smear at the section EDGES — the first/last few values
+        // are nearly equal there, so edge handles came out LEVEL
+        // (the user's partially-converted bridges). Slopes
+        // difference the fitted node values one spacing apart:
+        // central inside, second-order one-sided at the ends.
+        double hstep = dur / (nNodes - 1);
+        for (int k = 0; k < nNodes; k++) {
+            double slope;
+            if (k == 0) {
+                slope = nNodes >= 3
+                    ? (-3 * lane.get(0).val + 4 * lane.get(1).val
+                        - lane.get(2).val) / (2 * hstep)
+                    : (lane.get(1).val - lane.get(0).val) / hstep;
+            } else if (k == nNodes - 1) {
+                slope = nNodes >= 3
+                    ? (3 * lane.get(k).val - 4 * lane.get(k - 1).val
+                        + lane.get(k - 2).val) / (2 * hstep)
+                    : (lane.get(k).val - lane.get(k - 1).val) / hstep;
+            } else {
+                slope = (lane.get(k + 1).val - lane.get(k - 1).val)
+                    / (2 * hstep);
+            }
+            BezierBaker.Node nd = lane.get(k);
+            if (k < nNodes - 1) {
+                nd.outDv = slope
+                    * BezierBaker.effOutDt(nd, lane.get(k + 1));
+            }
+            if (k > 0) {
+                nd.inDv = slope
+                    * BezierBaker.effInDt(lane.get(k - 1), nd);
+            }
+        }
+        return lane;
+    }
+
+    /** ADAPTIVE fit (v14.0, D90 — the dialog's "Optimal placement"):
+     *  start from the two endpoints and repeatedly insert a node at
+     *  the worst-fitting sample until the lane tracks its data within
+     *  tol × (the lane's value range). Node values come from the
+     *  data; slopes are node-scale local differences (window bounded
+     *  by the neighbor gaps — the D87 lesson); handles stay C1 at 1/3
+     *  fracs, so the segment time-cubic is exactly linear and the
+     *  curve evaluates in closed form. A flat lane is just its two
+     *  endpoints; each lane gets only the nodes IT needs. */
+    private static List<BezierBaker.Node> fitLaneAdaptive(double[] tG,
+            double[][] val, int c, double dur, double tol) {
+        int n = tG.length;
+        double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
+        for (int i = 0; i < n; i++) {
+            lo = Math.min(lo, val[i][c]);
+            hi = Math.max(hi, val[i][c]);
+        }
+        double eps = Math.max(1e-9, (hi - lo) * tol);
+        double dtData = n >= 2 ? Math.max(1e-6, tG[1] - tG[0]) : 0.01;
+        List<BezierBaker.Node> lane = new ArrayList<>();
+        lane.add(new BezierBaker.Node(0, valAtT(tG, val, c, 0)));
+        lane.add(new BezierBaker.Node(dur, valAtT(tG, val, c, dur)));
+        for (int guard = 0; guard < 400; guard++) {
+            fitHandles(lane, tG, val, c, dtData);
+            double worst = eps, worstT = -1;
+            int seg = 0;
+            for (int i = 0; i < n; i++) {
+                double t = Math.min(tG[i], dur);
+                while (seg < lane.size() - 2
+                        && lane.get(seg + 1).t <= t) seg++;
+                // respect the editor's INSERT_GAP: never propose a
+                // node on top of an existing one
+                if (t - lane.get(seg).t < 0.02
+                        || lane.get(seg + 1).t - t < 0.02) continue;
+                double err = Math.abs(
+                    fittedVal(lane.get(seg), lane.get(seg + 1), t)
+                    - val[i][c]);
+                if (err > worst) {
+                    worst = err;
+                    worstT = t;
+                }
+            }
+            if (worstT < 0) break;
+            int at = 1;
+            while (at < lane.size() && lane.get(at).t < worstT) at++;
+            lane.add(at, new BezierBaker.Node(worstT,
+                valAtT(tG, val, c, worstT)));
+        }
+        fitHandles(lane, tG, val, c, dtData);
+        return lane;
+    }
+
+    /** C1 handles for a fitted lane: each node takes the DATA's local
+     *  slope over a window bounded by its neighbor gaps (node scale,
+     *  the D87 lesson — sample-scale windows sit inside the rate
+     *  extraction's own smear). */
+    private static void fitHandles(List<BezierBaker.Node> lane,
+            double[] tG, double[][] val, int c, double dtData) {
+        BezierBaker.applyDefaultHandles(lane);
+        for (int k = 0; k < lane.size(); k++) {
+            BezierBaker.Node nd = lane.get(k);
+            double gapL = k > 0 ? nd.t - lane.get(k - 1).t : Double.MAX_VALUE;
+            double gapR = k < lane.size() - 1
+                ? lane.get(k + 1).t - nd.t : Double.MAX_VALUE;
+            double h = Math.max(2 * dtData,
+                Math.min(0.15, Math.min(gapL, gapR) / 3));
+            double t0 = Math.max(0, nd.t - h);
+            double t1 = Math.min(tG[tG.length - 1], nd.t + h);
+            double slope = t1 - t0 < 1e-9 ? 0
+                : (valAtT(tG, val, c, t1) - valAtT(tG, val, c, t0))
+                    / (t1 - t0);
+            if (k < lane.size() - 1) {
+                nd.outDv = slope * BezierBaker.effOutDt(nd, lane.get(k + 1));
+            }
+            if (k > 0) {
+                nd.inDv = slope * BezierBaker.effInDt(lane.get(k - 1), nd);
+            }
+        }
+    }
+
+    /** Fitted-segment value at t: with 1/3 fracs the time cubic is
+     *  exactly linear, so u = (t−a.t)/seg and only the value cubic
+     *  needs evaluating. */
+    private static double fittedVal(BezierBaker.Node a, BezierBaker.Node b,
+                                    double t) {
+        double seg = b.t - a.t;
+        if (seg < 1e-12) return a.val;
+        double u = Math.max(0, Math.min(1, (t - a.t) / seg));
+        double w = 1 - u;
+        double y0 = a.val, y1 = a.val + a.outDv;
+        double y2 = b.val + b.inDv, y3 = b.val;
+        return w * w * w * y0 + 3 * w * w * u * y1
+             + 3 * w * u * u * y2 + u * u * u * y3;
+    }
+
+    /** Linear interpolation of a value channel over the tG grid. */
+    private static double valAtT(double[] tG, double[][] val, int c,
+                                 double t) {
+        if (t <= tG[0]) return val[0][c];
+        int hi = tG.length - 1;
+        if (t >= tG[hi]) return val[hi][c];
+        int lo = 0;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (tG[mid] <= t) lo = mid; else hi = mid;
+        }
+        double u = (t - tG[lo]) / Math.max(1e-12, tG[hi] - tG[lo]);
+        return val[lo][c] + u * (val[hi][c] - val[lo][c]);
     }
 
     /** PARTIAL bridge convert (v13.11, D85 — user spec): convert ONE
@@ -827,6 +1093,14 @@ public class Coaster {
     public boolean partialConvertBridge(int pieceIdx, int secIdx,
                                         double frac, boolean left,
                                         boolean toGeo, double dt) {
+        return partialConvertBridge(pieceIdx, secIdx, frac, left, toGeo,
+            dt, NODE_SPACING_DEFAULT, 0);
+    }
+
+    public boolean partialConvertBridge(int pieceIdx, int secIdx,
+                                        double frac, boolean left,
+                                        boolean toGeo, double dt,
+                                        double spacing, double adaptTol) {
         TrackPiece piece = pieces.get(pieceIdx);
         if (!(piece.sections.get(secIdx) instanceof BridgeSection bs)) {
             return false;
@@ -834,26 +1108,39 @@ public class Coaster {
         List<FVDIntegrator.Sample> s = bs.integrate(dt).samples();
         int n = s.size();
         if (n < 20) return false;   // too short to split meaningfully
-        double target = Math.max(0.05, Math.min(0.95, frac))
-            * s.get(n - 1).s();
-        int cut = 0;
-        while (cut < n - 1 && s.get(cut).s() < target) cut++;
-        cut = Math.max(6, Math.min(n - 7, cut));
-        FVDIntegrator.Sample cs = s.get(cut);
+        // EXACT-fraction cut (v14.0, D89): the cut pose interpolates
+        // between samples at exactly frac·total, so the split line's
+        // % readout, the converted share and the pinned length all
+        // agree (the old nearest-sample snap shifted the cut by up to
+        // half a sample — the user's "the length is getting altered").
+        // Rate-fit margins keep ≥ 7 samples per side.
+        double arc = Math.max(s.get(6).s(), Math.min(s.get(n - 7).s(),
+            Math.max(0.05, Math.min(0.95, frac)) * s.get(n - 1).s()));
+        FVDIntegrator.Sample cs = sampleAtArc(s, arc);
         Quat cq = Quat.fromFrame(cs.T(), cs.U());
-        double vCut = cs.v();       // the blend's design speed there
+        // DESIGN blend speed at the cut (v14.5 corrected, D97 — user
+        // rule: converting a bridge changes NOTHING it doesn't have
+        // to. The converted lanes take the blend's own speed there,
+        // so the design graphs continue what the bridge displayed,
+        // the downstream piece keeps its design speed, and the
+        // design/true SPLIT survives the conversion exactly as it
+        // was. A brief v14.5 draft used the true-energy speed instead
+        // — it closed the split and stepped the design graphs, the
+        // opposite of "an extremely small difference".)
+        double vCut = cs.v();
+        double fracArc = arc / s.get(n - 1).s();   // post-clamp share
         // was the cut bridge rendering the MARCH? decided from the
         // pre-cut state, exactly like the integrate() above (D88)
         boolean wasMarch = bs.optMode != BridgeSection.OPT_NONE
             && marchSpine(bs, bs.optMode == BridgeSection.OPT_POS_YAW) != null;
         if (left) {
-            LaneSection conv = convertToLanes(s.subList(0, cut + 1),
-                bs.vDesign, toGeo, dt);
+            LaneSection conv = convertToLanes(sideOf(s, cs, true),
+                bs.vDesign, toGeo, dt, spacing, adaptTol);
             BridgeSection rem = new BridgeSection(
                 new TrackPose(cs.pos(), cq),
                 new TrackPose(bs.solvedTarget.pos(), bs.solvedTarget.orient()),
-                Math.max(0.01, bs.lenA * (1 - frac)),
-                Math.max(0.01, bs.lenB * (1 - frac)), vCut);
+                Math.max(0.01, bs.lenA * (1 - fracArc)),
+                Math.max(0.01, bs.lenB * (1 - fracArc)), vCut);
             rem.accB = bs.accB;
             rem.jerkB = bs.jerkB;
             rem.rollB = bs.rollB;
@@ -872,28 +1159,28 @@ public class Coaster {
             // own share of the cut, so auto re-optimize re-places at
             // exactly that length.
             rem.optLen = false;
-            rem.lastOptDist = Math.max(1,
-                s.get(n - 1).s() - cs.s());
+            rem.lastOptDist = Math.max(1, s.get(n - 1).s() - arc);
             // march-rendering bridge: honor the pinned claim on the
             // first rebuild (v13.14, D88 — see the method doc)
             rem.optSig = wasMarch ? BridgeSection.SIG_STALE : null;
             piece.sections.set(secIdx, conv);
             piece.sections.add(secIdx + 1, rem);
         } else {
-            LaneSection conv = convertToLanes(s.subList(cut, n),
-                vCut, toGeo, dt);
+            List<FVDIntegrator.Sample> side = sideOf(s, cs, false);
+            LaneSection conv = convertToLanes(side, vCut, toGeo, dt,
+                spacing, adaptTol);
             // the kept bridge now ends at the cut; seed the far seam
             // with the dynamics MEASURED there (the next compile
             // re-captures them from the converted piece's head)
             bs.solvedTarget = new TrackPose(cs.pos(), cq);
-            Vec3[] kj = TrackCompiler.seamDerivs(s, cut, 1);
+            Vec3[] kj = TrackCompiler.seamDerivs(side, 0, 1);
             bs.accB = kj[0];
             bs.jerkB = kj[1];
-            bs.rollB = TrackCompiler.seamRollRate(s, cut, 1);
-            bs.rollAccB = TrackCompiler.seamRollAcc(s, cut, 1);
+            bs.rollB = TrackCompiler.seamRollRate(side, 0, 1);
+            bs.rollAccB = TrackCompiler.seamRollAcc(side, 0, 1);
             bs.vB = vCut;
-            bs.lenA = Math.max(0.01, bs.lenA * frac);
-            bs.lenB = Math.max(0.01, bs.lenB * frac);
+            bs.lenA = Math.max(0.01, bs.lenA * fracArc);
+            bs.lenB = Math.max(0.01, bs.lenB * fracArc);
             // march-rendering bridge: honor the pinned claim on the
             // first rebuild (v13.14, D88 — see the method doc)
             bs.optSig = wasMarch ? BridgeSection.SIG_STALE : null;
@@ -904,7 +1191,7 @@ public class Coaster {
             // would re-knee it — both re-length the bridge the user
             // just cut.
             bs.optLen = false;
-            bs.lastOptDist = Math.max(1, cs.s());
+            bs.lastOptDist = Math.max(1, arc);
             if (pieceIdx + 1 < pieces.size()) {
                 // KEEP THE TRACK CONNECTED (v13.13, D87 — user: the
                 // right-convert used to strand the converted lanes on
@@ -922,6 +1209,13 @@ public class Coaster {
                 tp.pitchDeg = 0;
                 tp.rollDeg = 0;
                 tp.baseOrient = cq;
+                // PIN the old first section's design speed (v14.5,
+                // D97): the split must survive the conversion — the
+                // D95 reconcile would otherwise re-freeze it to the
+                // prepended lanes' design end
+                if (!tp.sections.isEmpty()) {
+                    tp.sections.get(0).vPinned(true);
+                }
                 tp.sections.add(0, conv);
             } else {
                 // orphaned bridge: no target to join — the converted
@@ -934,6 +1228,345 @@ public class Coaster {
             }
         }
         return true;
+    }
+
+    /** One side of a cut: the samples strictly before (left) or after
+     *  (right) the interpolated cut sample, with the cut sample itself
+     *  closing that end — both sides share the EXACT boundary. */
+    private static List<FVDIntegrator.Sample> sideOf(
+            List<FVDIntegrator.Sample> s, FVDIntegrator.Sample cs,
+            boolean left) {
+        List<FVDIntegrator.Sample> out = new ArrayList<>();
+        if (left) {
+            for (FVDIntegrator.Sample sm : s) {
+                if (sm.s() >= cs.s() - 1e-9) break;
+                out.add(sm);
+            }
+            out.add(cs);
+        } else {
+            out.add(cs);
+            for (FVDIntegrator.Sample sm : s) {
+                if (sm.s() > cs.s() + 1e-9) out.add(sm);
+            }
+        }
+        return out;
+    }
+
+    /** PARTIAL convert for the LANE and STRAIGHT/CURVE modes (v14.0,
+     *  D89 — the bridge-only v13.11 feature generalized, user spec):
+     *  split section secIdx at `frac` (of its DURATION for lane
+     *  sections, of its ARC length for s/c) and re-author ONE side as
+     *  editable lanes in the target mode; the OTHER side keeps its
+     *  original representation EXACTLY — lane sections split by de
+     *  Casteljau (the insert-on-curve identity: zero disturbance; a
+     *  cut landing on a node just partitions the list, which is what
+     *  the UI's node snap produces), s/c sections by element
+     *  arithmetic (straights split by length, arcs by angle; the cut
+     *  CLAMPS outside transition-blend and global-roll ease windows
+     *  via scCutClamp — the only regions where truncation would
+     *  reshape). The RIGHT side's vDesign re-freezes to the design
+     *  speed AT the cut — the same energy expression, so the kept
+     *  shape continues exactly (the '+' rule). Both sides stay on the
+     *  piece, chained. Reversed sections refuse (the §5.3 rule).
+     *  Returns false when no valid cut exists. */
+    public boolean partialConvertSection(int pieceIdx, int secIdx,
+            double frac, boolean left, boolean toGeo, double dt,
+            double spacing, double adaptTol) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        Section sec = piece.sections.get(secIdx);
+        if (sec.reversed() || sec instanceof BridgeSection) return false;
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        TrackCompiler.Span sp = r.spans().get(spanIdx);
+        if (sp.i1() - sp.i0() < 19) return false;   // too short to split
+        List<FVDIntegrator.Sample> s =
+            r.samples().subList(sp.i0(), sp.i1() + 1);
+        int n = s.size();
+        Section keep;
+        FVDIntegrator.Sample cs;
+        double vCut;
+        if (sec instanceof LaneSection ls) {
+            double dur = sp.t1() - sp.t0();
+            double tc = Math.max(s.get(6).t() - sp.t0(),
+                Math.min(s.get(n - 7).t() - sp.t0(),
+                    Math.max(0.05, Math.min(0.95, frac)) * dur));
+            cs = sampleAtTime(s, sp.t0() + tc);
+            vCut = cs.v();
+            List<List<BezierBaker.Node>> half = splitLanes(ls.lanes, tc, left);
+            keep = ls instanceof GeoSection
+                ? new GeoSection(half, left ? vCut : ls.vDesign)
+                : new ForceSection(half, left ? vCut : ls.vDesign);
+        } else if (sec instanceof StraightCurveSection sc) {
+            double cutArc = scCutClamp(sc,
+                Math.max(0.05, Math.min(0.95, frac)) * sc.totalLen());
+            if (cutArc < 0) return false;
+            cs = sampleAtArc(s, sp.s0() + cutArc);
+            vCut = cs.v();
+            keep = new StraightCurveSection(splitElements(sc, cutArc, left),
+                left ? vCut : sc.vDesign);
+        } else {
+            return false;
+        }
+        keep.reversed(false);
+        LaneSection conv = convertToLanes(sideOf(s, cs, left),
+            left ? sec.vDesign() : vCut, toGeo, dt, spacing, adaptTol);
+        piece.sections.set(secIdx, left ? conv : keep);
+        piece.sections.add(secIdx + 1, left ? keep : conv);
+        return true;
+    }
+
+    /** Split three lanes at LOCAL time tc, returning the requested
+     *  side (right = the side whose vDesign re-freezes; keep = the
+     *  side the caller does NOT convert — left=true means the LEFT
+     *  side converts, so this returns the RIGHT half then). Nodes are
+     *  deep-copied; a cut inside a segment goes through the exact de
+     *  Casteljau identity (curve unchanged); a cut ON a node just
+     *  partitions; a lane ending before tc holds — its right half is
+     *  the single held-value node. Lock flags ride along (the mid
+     *  node inherits the split segment's). */
+    private static List<List<BezierBaker.Node>> splitLanes(
+            List<List<BezierBaker.Node>> lanes, double tc, boolean keepRight) {
+        List<List<BezierBaker.Node>> out = new ArrayList<>(3);
+        for (List<BezierBaker.Node> lane : lanes) {
+            List<BezierBaker.Node> copy = new ArrayList<>(lane.size());
+            for (BezierBaker.Node nd : lane) copy.add(nd.copy());
+            List<BezierBaker.Node> side = new ArrayList<>();
+            BezierBaker.Node last = copy.get(copy.size() - 1);
+            if (last.t <= tc + 1e-9) {
+                // hold region: left half = the whole lane; right half
+                // holds the final value from its own t = 0
+                if (keepRight) {
+                    side.add(new BezierBaker.Node(0, last.val));
+                } else {
+                    side.addAll(copy);
+                }
+            } else {
+                int i = 0;
+                while (i < copy.size() - 1 && copy.get(i + 1).t <= tc + 1e-9) i++;
+                BezierBaker.Node at = copy.get(i);
+                BezierBaker.Node mid;
+                if (Math.abs(at.t - tc) <= 1e-9) {
+                    mid = at;   // cut exactly ON a node (the UI snap)
+                } else {
+                    mid = BezierBaker.splitSegment(at, copy.get(i + 1), tc);
+                    mid.t = tc;   // exact, not the bisected root
+                    mid.straightOut = at.straightOut;
+                    mid.levelOut = at.levelOut;
+                    copy.add(i + 1, mid);
+                    i++;
+                }
+                if (keepRight) {
+                    // rebase by the boundary node's OWN time (== tc up
+                    // to float dust when the cut landed on a node) so
+                    // the right half's node 0 sits at exactly 0
+                    double base = mid.t;
+                    for (int k = i; k < copy.size(); k++) {
+                        BezierBaker.Node nd = copy.get(k).copy();
+                        nd.t -= base;
+                        side.add(nd);
+                    }
+                } else {
+                    for (int k = 0; k <= i; k++) side.add(copy.get(k));
+                }
+            }
+            out.add(side);
+        }
+        return out;
+    }
+
+    /** Clamp an s/c cut OUT of the regions where truncating the
+     *  element list does not reproduce the original shape: the
+     *  sine-blend windows around internal boundaries (half the next
+     *  element's smoothIn each side) and the global-roll ease window
+     *  at the start of GLOBAL-mode elements (max(smoothIn, 2 m) — the
+     *  right half would re-ease from the cut bank). Shared with the
+     *  UI's split line so what you see is where it cuts. Returns the
+     *  clamped LOCAL arc, or −1 when no valid spot exists. */
+    public static double scCutClamp(StraightCurveSection sc, double arc) {
+        double total = sc.totalLen();
+        double end = 0.5;   // section-end margins (m)
+        List<double[]> bad = new ArrayList<>();
+        double at = 0;
+        for (int i = 0; i < sc.elements.size(); i++) {
+            StraightCurveSection.Element e = sc.elements.get(i);
+            if (i > 0 && e.smoothIn > 0) {
+                bad.add(new double[]{ at - e.smoothIn / 2 - 0.1,
+                                      at + e.smoothIn / 2 + 0.1 });
+            }
+            if (e.rollMode == StraightCurveSection.RollMode.GLOBAL) {
+                bad.add(new double[]{ at, at + Math.max(e.smoothIn, 2) });
+            }
+            at += e.arcLen();
+        }
+        double x = Math.max(end, Math.min(total - end, arc));
+        for (int guard = 0; guard < 8; guard++) {
+            boolean moved = false;
+            for (double[] b : bad) {
+                if (x > b[0] && x < b[1]) {
+                    double lo = b[0], hi = b[1];
+                    double pick = x - lo <= hi - x ? lo : hi;
+                    if (pick < end || pick > total - end) {
+                        pick = pick == lo ? hi : lo;   // other edge
+                    }
+                    if (pick < end || pick > total - end) return -1;
+                    x = pick;
+                    moved = true;
+                }
+            }
+            if (!moved) return x;
+        }
+        return -1;
+    }
+
+    /** Split an element list at LOCAL arc, returning the requested
+     *  side's elements (deep copies; straights split by length, arcs
+     *  by angle share; the right half's first element enters SHARP —
+     *  its entry is the new section seam, and scCutClamp guarantees
+     *  the cut sits in constant-state interior). */
+    private static List<StraightCurveSection.Element> splitElements(
+            StraightCurveSection sc, double arc, boolean keepRight) {
+        List<StraightCurveSection.Element> out = new ArrayList<>();
+        double at = 0;
+        for (int i = 0; i < sc.elements.size(); i++) {
+            StraightCurveSection.Element e = sc.elements.get(i);
+            double len = e.arcLen();
+            if (arc > at + 1e-9 && arc < at + len - 1e-9) {
+                double u = (arc - at) / len;
+                StraightCurveSection.Element part = e.copy();
+                if (keepRight) {
+                    if (e.kind == StraightCurveSection.Kind.STRAIGHT) {
+                        part.length = len - (arc - at);
+                    } else {
+                        part.angleDeg = e.angleDeg * (1 - u);
+                    }
+                    part.smoothIn = 0;   // new section seam: sharp
+                    out.add(part);
+                } else {
+                    if (e.kind == StraightCurveSection.Kind.STRAIGHT) {
+                        part.length = arc - at;
+                    } else {
+                        part.angleDeg = e.angleDeg * u;
+                    }
+                    out.add(part);
+                }
+            } else if (keepRight ? at >= arc - 1e-9 : at + len <= arc + 1e-9) {
+                out.add(e.copy());
+            }
+            at += len;
+        }
+        return out;
+    }
+
+    /** FULL convert of a non-bridge section (v14.0, D90): the model
+     *  twin of the editor's v13.7 convert — compiled span re-authored
+     *  as lanes at the requested density, in place. Lives here so the
+     *  density preview can re-run it against a restored document.
+     *  Bridges route to convertBridgeWhole (the attach rule). */
+    public boolean convertWholeSection(int pieceIdx, int secIdx,
+            boolean toGeo, double dt, double spacing, double adaptTol) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        Section sec = piece.sections.get(secIdx);
+        if (sec instanceof BridgeSection) {
+            return convertBridgeWhole(pieceIdx, secIdx, toGeo, dt,
+                spacing, adaptTol);
+        }
+        if (sec.reversed()) return false;
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        TrackCompiler.Span sp = r.spans().get(spanIdx);
+        if (sp.i1() - sp.i0() < 4) return false;   // too short to measure
+        piece.sections.set(secIdx, convertToLanes(
+            r.samples().subList(sp.i0(), sp.i1() + 1),
+            sec.vDesign(), toGeo, dt, spacing, adaptTol));
+        return true;
+    }
+
+    /** FULL bridge convert (v14.0, D89 — back alongside the v13.11
+     *  split-line items, user spec "make sure it doesn't disconnect
+     *  the track"): the whole solved geometry re-authors as lanes IN
+     *  PLACE and the next piece ATTACHES — its sections chain on
+     *  after the lanes (floating placement discarded, the attach
+     *  rule), so the run stays ONE connected track. The v13.7 whole
+     *  convert split the run and left the next piece floating; an
+     *  orphaned bridge just converts. */
+    public boolean convertBridgeWhole(int pieceIdx, int secIdx,
+            boolean toGeo, double dt, double spacing, double adaptTol) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (!(piece.sections.get(secIdx) instanceof BridgeSection bs)) {
+            return false;
+        }
+        List<FVDIntegrator.Sample> s = bs.integrate(dt).samples();
+        if (s.size() < 5) return false;
+        piece.sections.set(secIdx,
+            convertToLanes(s, bs.vDesign, toGeo, dt, spacing, adaptTol));
+        if (pieceIdx + 1 < pieces.size()) {
+            // PIN the first attached section's design speed (v14.5,
+            // D97, user rule): the target's design speeds and its
+            // design/true split must survive the conversion exactly —
+            // without the pin the D95 reconcile re-froze the attached
+            // chain to the lanes' design end and closed the split.
+            TrackPiece next = pieces.get(pieceIdx + 1);
+            if (!next.sections.isEmpty()) {
+                next.sections.get(0).vPinned(true);
+            }
+            attachPiece(pieceIdx, pieceIdx + 1);
+        }
+        return true;
+    }
+
+    /** Sample interpolated at EXACT arc s between its bracketing
+     *  samples (linear pos/T/U/v/t/felt, frame re-orthonormalized —
+     *  the same interpolation the bridge resampler uses). The
+     *  exact-fraction cut poses ride on this (v14.0, D89). */
+    static FVDIntegrator.Sample sampleAtArc(List<FVDIntegrator.Sample> s,
+                                            double arc) {
+        int lo = 0, hi = s.size() - 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (s.get(mid).s() <= arc) lo = mid; else hi = mid;
+        }
+        return lerpSample(s.get(lo), s.get(hi),
+            keyFrac(s.get(lo).s(), s.get(hi).s(), arc), arc, Double.NaN);
+    }
+
+    /** Sample interpolated at EXACT ride time t (lane sections cut in
+     *  their own domain). */
+    static FVDIntegrator.Sample sampleAtTime(List<FVDIntegrator.Sample> s,
+                                             double t) {
+        int lo = 0, hi = s.size() - 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (s.get(mid).t() <= t) lo = mid; else hi = mid;
+        }
+        return lerpSample(s.get(lo), s.get(hi),
+            keyFrac(s.get(lo).t(), s.get(hi).t(), t), Double.NaN, t);
+    }
+
+    private static double keyFrac(double a, double b, double k) {
+        return b - a < 1e-12 ? 0
+            : Math.max(0, Math.min(1, (k - a) / (b - a)));
+    }
+
+    private static FVDIntegrator.Sample lerpSample(FVDIntegrator.Sample a,
+            FVDIntegrator.Sample b, double u, double sExact, double tExact) {
+        Vec3 pos = a.pos().add(b.pos().sub(a.pos()).scale(u));
+        Vec3 T = a.T().add(b.T().sub(a.T()).scale(u)).normalize();
+        Vec3 U = a.U().add(b.U().sub(a.U()).scale(u));
+        U = U.sub(T.scale(U.dot(T))).normalize();
+        double t = Double.isNaN(tExact)
+            ? a.t() + (b.t() - a.t()) * u : tExact;
+        double arc = Double.isNaN(sExact)
+            ? a.s() + (b.s() - a.s()) * u : sExact;
+        return new FVDIntegrator.Sample(t, arc, pos, T, U, U.cross(T),
+            a.v() + (b.v() - a.v()) * u,
+            a.Gv() + (b.Gv() - a.Gv()) * u,
+            a.Gl() + (b.Gl() - a.Gl()) * u);
     }
 
     private static int idxAtTime(double[] tG, double t) {
