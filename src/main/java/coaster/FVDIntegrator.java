@@ -172,6 +172,117 @@ public class FVDIntegrator {
         return samples;
     }
 
+    // ---------- DISTANCE domain (v16.0, D103) ----------
+    // Same physics, other parameterization: the keyframes' t-slots hold
+    // ARC LENGTH (meters — the lanes are baked on an s-grid) and targets
+    // are looked up by the arc actually traveled. s joins the RK4 state
+    // (s' = v, the ScIntegrator pattern); integration still runs in TIME
+    // at dt so samples keep their cadence, and the FINAL step is
+    // Newton-sized to land s exactly on the lane end (the exit pose is a
+    // section contract). The advance speed is floored at 0.5 m/s like
+    // ScIntegrator's so a stalling section still terminates (creep) —
+    // the same floor the time path already applies to ω via vSafe.
+
+    private record DState(Vec3 pos, Vec3 T, Vec3 U, double s) {}
+
+    private record DDeriv(Vec3 dPos, Vec3 dT, Vec3 dU, double dS) {}
+
+    private static DDeriv derivDist(DState st, List<Keyframe> kfs,
+                                    double v0, double y0) {
+        Vec3 T = st.T().normalize();
+        Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
+        Vec3 R = U.cross(T);
+
+        Keyframe kf = interpAt(kfs, st.s());   // lookup by ARC length
+        double v = Math.max(0.5, speedAt(st.pos(), v0, y0));
+
+        double omegaU = (G0 * (kf.Gv() - U.y())) / v;
+        double omegaR = (G0 * (kf.Gl() - R.y())) / v;
+        Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU))
+                      .add(T.scale(Math.toRadians(kf.rollRateDeg())));
+
+        return new DDeriv(T.scale(v), omega.cross(T), omega.cross(U), v);
+    }
+
+    private static DState advanceDist(DState y, DDeriv k, double h) {
+        return new DState(
+            y.pos().add(k.dPos().scale(h)),
+            y.T().add(k.dT().scale(h)),
+            y.U().add(k.dU().scale(h)),
+            y.s() + k.dS() * h);
+    }
+
+    private static DState rk4Dist(DState y, List<Keyframe> kfs,
+                                  double v0, double y0, double h) {
+        DDeriv k1 = derivDist(y, kfs, v0, y0);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0);
+        Vec3 pos = y.pos().add(
+            k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
+                .scale(h / 6));
+        Vec3 T = y.T().add(
+            k1.dT().add(k2.dT().scale(2)).add(k3.dT().scale(2)).add(k4.dT())
+                .scale(h / 6)).normalize();
+        Vec3 U = y.U().add(
+            k1.dU().add(k2.dU().scale(2)).add(k3.dU().scale(2)).add(k4.dU())
+                .scale(h / 6));
+        U = U.sub(T.scale(U.dot(T))).normalize();
+        double s = y.s() + (k1.dS() + 2 * k2.dS() + 2 * k3.dS() + k4.dS()) * h / 6;
+        return new DState(pos, T, U, s);
+    }
+
+    private static void addSampleDist(List<Sample> samples, DState st, double t,
+                                      List<Keyframe> kfs, double v0, double y0) {
+        Vec3 T = st.T();
+        Vec3 U = st.U();
+        Keyframe kf = interpAt(kfs, st.s());
+        double v = speedAt(st.pos(), v0, y0);
+        samples.add(new Sample(t, st.s(), st.pos(), T, U, U.cross(T),
+            Math.max(0.1, v), kf.Gv(), kf.Gl()));
+    }
+
+    /** DISTANCE-domain run: keyframes over arc length (meters in the
+     *  t slots), integrated until s lands exactly on the last keyframe's
+     *  arc. Samples stay on the dt grid plus one Newton-sized landing
+     *  step (≤ ~1.25·dt, the D84 rule). */
+    public static List<Sample> integrateTrackDist(List<Keyframe> keyframes,
+                                                  Options opts) {
+        double dt = opts.dt;
+        double totalLen = Math.max(keyframes.get(keyframes.size() - 1).t(), 1e-6);
+
+        Vec3 T = opts.startHeading.normalize();
+        Vec3 U = opts.startUp.sub(T.scale(opts.startUp.dot(T))).normalize();
+        DState st = new DState(opts.pos0, T, U, 0);
+        double y0 = opts.pos0.y();
+        double t = 0;
+        List<Sample> samples = new ArrayList<>();
+        int guard = 0;
+
+        while (st.s() < totalLen - 1e-9 && guard++ < 500_000) {
+            addSampleDist(samples, st, t, keyframes, opts.v0, y0);
+            double v = Math.max(0.5, speedAt(st.pos(), opts.v0, y0));
+            if (st.s() + v * dt < totalLen - 1e-12) {
+                st = rk4Dist(st, keyframes, opts.v0, y0, dt);
+                t += dt;
+            } else {
+                // land the last step EXACTLY on the lane end (v barely
+                // changes inside one step — two refinements reach noise)
+                double h = (totalLen - st.s()) / v;
+                DState end = st;
+                for (int it = 0; it < 3; it++) {
+                    end = rk4Dist(st, keyframes, opts.v0, y0, h);
+                    double vEnd = Math.max(0.5, speedAt(end.pos(), opts.v0, y0));
+                    h += (totalLen - end.s()) / vEnd;
+                }
+                st = new DState(end.pos(), end.T(), end.U(), totalLen);
+                t += h;
+            }
+        }
+        addSampleDist(samples, st, t, keyframes, opts.v0, y0);
+        return samples;
+    }
+
     /**
      * RESULTING body rotation rates from integrated samples, for the
      * read-only "rates" graph overlay (Phase 0 item 3). Display sign

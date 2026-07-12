@@ -353,8 +353,14 @@ public final class TrackCompiler {
     }
 
     /** The plain FORCE path (extracted v15.0 — the influence fast path
-     *  reuses it verbatim; zero added arithmetic on the D50 gate). */
+     *  reuses it verbatim; zero added arithmetic on the D50 gate).
+     *  DISTANCE-domain sections (v16.0, D103) bake onto an s-grid and
+     *  take the arc-terminated integrator — same physics, other
+     *  parameterization. */
     private static Centerline forceLane(ForceSection fs, TrackPose entry, double dt) {
+        boolean dist = fs.domain() == Section.Domain.DISTANCE;
+        // 0.05 = the bake grid in the lane's own axis units (s or m) —
+        // the same density relative to the axis either way
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(fs.lanes, 0.05);
         FVDIntegrator.Options opts = new FVDIntegrator.Options();
         opts.dt = dt;
@@ -365,12 +371,16 @@ public final class TrackCompiler {
             // the reversed shape bitwise equal to a forward run at
             // the same height (gated)
             opts.pos0 = new Vec3(0, entry.pos().y(), 0);
-            return reverseAndPlace(FVDIntegrator.integrateTrack(kfs, opts), entry);
+            return reverseAndPlace(dist
+                ? FVDIntegrator.integrateTrackDist(kfs, opts)
+                : FVDIntegrator.integrateTrack(kfs, opts), entry);
         }
         opts.pos0 = entry.pos();
         opts.startHeading = entry.T();   // identity orientation: exactly (1,0,0)
         opts.startUp = entry.U();        //                       exactly (0,1,0)
-        List<FVDIntegrator.Sample> samples = FVDIntegrator.integrateTrack(kfs, opts);
+        List<FVDIntegrator.Sample> samples = dist
+            ? FVDIntegrator.integrateTrackDist(kfs, opts)
+            : FVDIntegrator.integrateTrack(kfs, opts);
         FVDIntegrator.Sample last = samples.get(samples.size() - 1);
         TrackPose exit = new TrackPose(last.pos(),
             Quat.fromFrame(last.T(), last.U()),
@@ -378,18 +388,26 @@ public final class TrackCompiler {
         return new Centerline(samples, exit);
     }
 
-    /** The plain GEO path (extracted v15.0, same rationale). */
+    /** The plain GEO path (extracted v15.0, same rationale; distance
+     *  domain v16.0 like forceLane). */
     private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt) {
+        boolean dist = gs.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(gs.lanes, 0.05);
         if (gs.reversed) {
-            GeoIntegrator.Result rr = GeoIntegrator.integrate(kfs, dt,
-                gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY);
+            GeoIntegrator.Result rr = dist
+                ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
+                    new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY)
+                : GeoIntegrator.integrate(kfs, dt,
+                    gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY);
             return reverseAndPlace(rr.samples(), entry);
         }
         // quaternion-native (the §2 amendment): the exit orientation
         // is the integrated q itself, not a frame round-trip
-        GeoIntegrator.Result r = GeoIntegrator.integrate(
-            kfs, dt, gs.vDesign, entry.pos(), entry.orient());
+        GeoIntegrator.Result r = dist
+            ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
+                entry.pos(), entry.orient())
+            : GeoIntegrator.integrate(kfs, dt, gs.vDesign,
+                entry.pos(), entry.orient());
         FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
         TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t());
@@ -429,6 +447,15 @@ public final class TrackCompiler {
      *  reshaping. */
     static Centerline influencedLane(LaneSection ls, TrackPose entry,
                                      double dt, boolean isGeo) {
+        // DISTANCE-domain sections take no influence (v16.0): the
+        // two-pass re-time machinery is time-parameterized end to end.
+        // The UI refuses entry; a hand-edited file falls back to the
+        // plain path here (influence lines ignored, geometry honest).
+        if (ls.domain() == Section.Domain.DISTANCE) {
+            ls.baseCurves = null;
+            return isGeo ? geoLane((GeoSection) ls, entry, dt)
+                         : forceLane((ForceSection) ls, entry, dt);
+        }
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(ls.lanes, 0.05);
         if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored) {
             Centerline line = isGeo ? geoLane((GeoSection) ls, entry, dt)

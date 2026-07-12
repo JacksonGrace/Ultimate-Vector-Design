@@ -12,8 +12,10 @@ package coaster;
 public sealed interface Section
         permits LaneSection, StraightCurveSection, BridgeSection {
 
-    /** TIME is today's model; DISTANCE arrived with straight/curve
-     *  sections (v11.0) — force/geo stay TIME until the domain toggle. */
+    /** TIME is the classic model; DISTANCE arrived with straight/curve
+     *  sections (v11.0) and opened to force/geo lanes with the domain
+     *  toggle (v16.0, D103): the same lanes authored over METERS of
+     *  track instead of seconds of ride. */
     enum Domain { TIME, DISTANCE }
 
     double vDesign();
@@ -24,6 +26,21 @@ public sealed interface Section
     void vDesign(double v);
 
     Domain domain();
+
+    /** Domain write access (v16.0, D103): only force/geo lanes are
+     *  domain-switchable — s/c is inherently DISTANCE and a bridge is
+     *  world geometry; both ignore writes. */
+    default void domain(Domain d) {}
+
+    /** CROSS-DOMAIN VIEW (v16.0, D103): while true the strip DISPLAYS
+     *  (and edits through) the OTHER domain's axis — the underlying
+     *  lanes/elements stay native, the editor warps x through the
+     *  section's compiled map. Session state like editInfluence:
+     *  snapshotted in DocState, never saved to file. Bridges have no
+     *  view (their strip is read-only time-derived curves). */
+    default boolean viewOtherDomain() { return false; }
+
+    default void viewOtherDomain(boolean v) {}
 
     /** Geometry-level reversal (Phase 2; carried in the model now so
      *  FVDD3 has a stable slot for it). */

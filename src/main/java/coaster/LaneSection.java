@@ -29,6 +29,16 @@ public sealed abstract class LaneSection implements Section
     public boolean vPinned = false;   // v14.5 D97: reconcile-exempt
     public String name = "";
 
+    /** Authoring DOMAIN (v16.0, D103): TIME = lane x is seconds (the
+     *  classic model), DISTANCE = lane x is METERS of track. The lane
+     *  VALUES keep their units either way (G / °/s) — the domain only
+     *  re-parameterizes the x-axis, which is what lets the exact node
+     *  map convert between them without touching values. */
+    public Section.Domain domain = Section.Domain.TIME;
+
+    /** Cross-domain view flag (v16.0) — see Section.viewOtherDomain. */
+    public boolean viewOtherDomain = false;
+
     // ---------- INFLUENCE (v15.0, D98; SECTIONS-DESIGN §5.4) ----------
     // Sparse DELTA lanes in the OTHER mode's units (force section →
     // pitch/yaw/roll °/s, geo section → Gv/Gl g; lane 2 is the shared
@@ -151,12 +161,19 @@ public sealed abstract class LaneSection implements Section
     /** Two-node 1 s lanes holding the given per-lane values (flat
      *  default handles) — the '+' menu's hold/straight continuations. */
     protected static List<List<BezierBaker.Node>> holdLanes(double v0, double v1, double v2) {
+        return holdLanes(v0, v1, v2, 1);
+    }
+
+    /** Hold lanes of an explicit x-extent (v16.0): 1 s for TIME
+     *  sections, 10 m for DISTANCE continuations. */
+    protected static List<List<BezierBaker.Node>> holdLanes(double v0, double v1,
+                                                            double v2, double len) {
         double[] vals = { v0, v1, v2 };
         List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
         for (int i = 0; i < 3; i++) {
             List<BezierBaker.Node> lane = new ArrayList<>(2);
             lane.add(new BezierBaker.Node(0, vals[i]));
-            lane.add(new BezierBaker.Node(1, vals[i]));
+            lane.add(new BezierBaker.Node(len, vals[i]));
             BezierBaker.applyDefaultHandles(lane);
             lanes.add(lane);
         }
@@ -180,7 +197,15 @@ public sealed abstract class LaneSection implements Section
 
     @Override public void vPinned(boolean p) { vPinned = p; }
 
-    @Override public Domain domain() { return Domain.TIME; }
+    @Override public Domain domain() { return domain; }
+
+    @Override public void domain(Domain d) {
+        domain = d == null ? Domain.TIME : d;
+    }
+
+    @Override public boolean viewOtherDomain() { return viewOtherDomain; }
+
+    @Override public void viewOtherDomain(boolean v) { viewOtherDomain = v; }
 
     @Override public boolean reversed() { return reversed; }
 

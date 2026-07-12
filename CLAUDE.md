@@ -45,7 +45,14 @@ FVDIntegrator.java  PHYSICS. Pure Java, no JavaFX. Takes keyframes
                     (t, Gv, Gl, rollRateDeg), RK4 at dt=0.01s, produces
                     Samples (t, s, pos, T/U/R frame, v, Gv, Gl); also
                     bodyRates(samples) — resulting pitch/yaw/roll °/s
-                    for the read-only graph overlay.
+                    for the read-only graph overlay. DISTANCE mode
+                    (v16.0, D103): integrateTrackDist — keyframe
+                    t-slots hold ARC LENGTH, s joins the RK4 state
+                    (s' = v, the ScIntegrator pattern), lookups by
+                    the arc traveled, the FINAL step Newton-lands
+                    exactly on the lane end; advance floored 0.5 so
+                    stalls creep and terminate (gated: dist-authored
+                    circle 2.6e-12 m).
 
 AppSettings.java    APP-WIDE PERSISTENT SETTINGS. Pure Java, no JavaFX.
                     Shortcut bindings + FOV in ~/.fvd-designer.properties
@@ -67,13 +74,24 @@ TrackPose.java      pos + orient (+ running global s/t offsets): section
                     entry/exit contract.
 Section.java        sealed interface (domain TIME|DISTANCE, vDesign,
                     reversed — getters AND setters since v11.0, so the
-                    editor writes through the interface) — permits
+                    editor writes through the interface; domain SETTER
+                    + viewOtherDomain since v16.0 D103 — the
+                    cross-domain view flag, session state like
+                    editInfluence: in DocState, never saved) — permits
                     LaneSection + StraightCurveSection + BridgeSection;
                     external joins the list when it lands.
 LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     lanes + vDesign + reversed live here so the editor,
                     undo, IO and compiler handle force and geo through
-                    one type. INFLUENCE state (v15.0, D98): deltaLanes
+                    one type. DOMAIN field (v16.0, D103): TIME = lane
+                    x is seconds (classic), DISTANCE = lane x is
+                    METERS of track; values keep their units either
+                    way (G, °/s — a domain re-parameterizes the
+                    authoring AXIS, which is what makes the exact
+                    node-map switch possible; a distance GEO section's
+                    shape therefore still depends on design speed,
+                    unlike s/c). INFLUENCE state (v15.0, D98; refuses
+                    distance sections — time-parameterized): deltaLanes
                     (OTHER-mode delta lanes; null = uninfluenced) +
                     vAuthored (frozen authored speed — the vDesign
                     FIELD stays the one OPERATING speed everything
@@ -98,7 +116,9 @@ GeoIntegrator.java  GEO PHYSICS. Pure Java, no JavaFX. RK4 on (pos,
                     section by a phantom end-rate×dt, the "instant
                     roll jump" at geo seams; exit == last drawn
                     sample is the all-modes contract, gated).
-                    See PHYSICS.md §2b.
+                    DISTANCE mode (v16.0): integrateDist, the
+                    FVDIntegrator pattern — rates stay °/s over an
+                    arc-length axis. See PHYSICS.md §2b.
 StraightCurveSection.java  Phase 2 (v11.0, D68): the first NON-LANE
                     section — an ELEMENT list: straight (length) | arc
                     (radius, signed angle, direction: 0 = flat turn
@@ -267,7 +287,24 @@ Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     REAL-ANCHORED continuations — vDesign nearer the
                     true seam speed than the design end — and
                     freezes them to TRUE so the resolution
-                    survives).
+                    survives). DOMAIN SWITCH (v16.0, D103):
+                    switchLaneDomain = the EXACT NODE MAP (user rule
+                    2026-07-09, NO refit/preview): node x through the
+                    section's own compiled design-speed profile
+                    (sectionMap — {t,s,v} rows, reversed flipped to
+                    the authored axis, exact end anchors; mapCol =
+                    the shared lerp w/ linear extrapolation — the
+                    editor's cross-domain warp reads the same map),
+                    fracs stay, values exact, dv × v̄_seg/v(node)
+                    (chain rule); speeds/pins/locks untouched —
+                    CONFLICTS PERSIST. Constant-rate sections switch
+                    exactly; the 407 m default layout re-compiles
+                    within 0.83 m = 0.20%, below the convert
+                    engine's 0.3% fit residual (the theory-floor
+                    composition residual, gated #40). continuation()
+                    carries the domain (10 m hold after a distance
+                    section); partialConvertSection cuts distance
+                    lanes by ARC fraction, kept half stays native.
 TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
                     section at vDesign (force = unchanged bake+RK4;
                     geo = GeoIntegrator; s/c = ScIntegrator — both
@@ -469,7 +506,11 @@ source tree — they won't compile against the current time-domain API.
   orientation, v12.1; missing = identity; %.10f so round-trips skip
   the loader's re-normalize) holding `section force|geo|sc|bridge
   vDesign domain
-  reversed` blocks holding `lane`/`n` lines (force/geo; an
+  reversed` blocks (the domain field — written since Phase 1 — is
+  HONORED for force/geo since v16.0 D103: "distance" = lane x in
+  meters; every old file says "time" there and loads unchanged;
+  the cross-domain VIEW flag is deliberately NOT saved) holding
+  `lane`/`n` lines (force/geo; an
   INFLUENCED section, v15.0 D98, appends `infl vApply` — the
   OPERATING speed; the section line keeps the AUTHORED speed so old
   readers pair the lanes with the speed they were designed at — plus
@@ -583,13 +624,46 @@ graph click (JavaFX auto-hide misses the canvas — openMenu field).
 A dashed line + circled '+' past the ride
 end opens the add-section menu: the LANE modes append a 1 s HOLD of the
 ride's end state (same-mode = final lane values via
-Coaster.continuation, now mode-generic; force-after-geo = felt end
+Coaster.continuation, now mode-generic — and DOMAIN-carrying since
+v16.0: after a distance section the same-mode hold is 10 m of track,
+label says so; force-after-geo = felt end
 Gv/Gl + final roll; geo-after-force = resulting end pitch/yaw +
 authored roll; after an s/c or reversed section the roll comes from
 the compiled resulting rates), and "straight/curve" appends a 10 m
 STRAIGHT (a straight IS the seamless continuation); vDesign frozen at
 the piece-end design speed per §0; bridge + attach-piece stay
-disabled placeholders. STRAIGHT/CURVE STRIP WIDGET (v11.0, D68): an
+disabled placeholders. TIME/DISTANCE DOMAIN (v16.0, D103): the plot's
+x-axis follows the ACTIVE section's DISPLAY domain — seconds, or
+METERS over a distance-domain force/geo section or an s/c section
+(which now lays out LINEARLY in meters when active; elements at true
+lengths) — with the axis label/ticks/zoom in those units and every
+other strip WARPED on by plotting compiled samples at their other
+coordinate (same-mode inactive strips draw authored lanes only when
+their native domain IS the axis; overlays/true strokes/POV marker/
+hovers all axis-generic, seam trims speed-scaled on meters). The
+badge menu's SECTION SETTINGS block (top, after the info line — the
+future global/local axis toggles land here too) holds the Domain
+radios — switching = Coaster.switchLaneDomain's EXACT NODE MAP (no
+refit, no preview; shape to sub-fit residual, speeds/pins/conflicts
+untouched; s/c radios read-only, influenced sections park both
+options) — and the cross-domain VIEW check ("View in meters/
+seconds"): a pure view, native lanes untouched, the strip warps
+through the section's compiled map (ltToX/xToLt are the choke
+points — the dispOff precedent x-flavored; the map FREEZES per
+node/handle gesture so live rebuilds don't slide the curve under
+the cursor) and editing goes straight THROUGH it — Ctrl-snap/
+nudges/insert-snap grid in the DISPLAY units and map back, readouts
+show Δs=…m / slopes per display unit. Distance ergonomics: the
+element-length step (default 1 m) is THE distance snap step, min
+transition 0.1 m, insert gap 0.2 m, A appends 10 m, node dialog
+says "Transition length (m)", badges wear "·m". B/Shift+B convert
+slope units across mixed-domain seams (domSlope: per-second ↔
+per-meter at the re-frozen seam speed, all four match paths).
+Partial convert on distance lanes cuts by ARC fraction (the split
+line drops a live cross-domain view on entry — fraction and cut
+must share units); whole/mode converts + make-real still produce
+TIME lanes. 3D markers/POV/inserts bridge node-x → ride time via
+nodeGlobalTime. STRAIGHT/CURVE STRIP WIDGET (v11.0, D68): an
 active s/c section replaces the lanes with element BANDS (straight
 slate / curve rose, labeled chips like "R20 90°→"), felt-G derived
 curves behind at 0.45 alpha, dashed separators, and a smoothing
@@ -1504,21 +1578,27 @@ the two reconciliation ops — SHIPPED v14.5 D97; round C —
 INFLUENCE mode — SHIPPED v15.0 D98 per the user's 2026-07-11
 re-spec (cross-mode delta lanes, two views, non-modal design
 editing, gated TESTING #37 + walkthrough #68 — §5 is COMPLETE) →
-TIME/DISTANCE domain toggle for force/geo
-lanes (author over meters instead of seconds; the graph x-axis
-follows the active section's domain — user-confirmed on the list
-2026-07-06; the Domain slot has been in the model/FVDD3 since
-Phase 1, and s/c strips already lay out DISTANCE sections by their
-compiled time extent, which is the precedent the toggle builds on.
-SAME-MODE domain conversion should NOT refit a node carpet (user
-rule, 2026-07-09): move each node t_i → s(t_i) through the energy
-profile — a NONLINEAR map, not a uniform scale — keeping fracs;
-values transfer exactly, node slopes need dv scaled by
-v̄_segment/v(node) (chain rule dG/ds = (dG/dt)/v; the fractional
-handles' segment rescale supplies the v̄ part automatically).
-Between nodes a cubic-in-t composed with s(t) is not a cubic in s,
-so the interior matches exactly only at constant speed — sub-fit-
-residual in practice; zero difference is NOT attainable in theory).
+~~TIME/DISTANCE domain toggle for force/geo lanes~~ DONE v16.0
+(D103, per the user's 2026-07-12 re-spec: per-section domain, the
+graph x-axis follows the ACTIVE section's display domain with every
+other strip WARPED on, badge-menu Domain radios = the exact node-map
+conversion (the 2026-07-09 rule — NO carpet refit: t_i → s(t_i)
+through the section's own profile, fracs kept, values exact, dv ×
+v̄_segment/v(node); constant-rate exact, the 407 m torture layout
+0.20% — below the convert engine's 0.3% fit residual, the promised
+"sub-fit-residual"; speeds/pins/conflicts persist), plus the
+CROSS-DOMAIN VIEW (edit the native lanes through the other domain's
+warped axis; snaps/readouts in display units, map frozen per
+gesture). Gated TESTING #40 + walkthrough #71. The same user message
+placed the domain options in the badge-menu SECTION SETTINGS block
+where the GLOBAL/LOCAL yaw-pitch (geo, currently local) and roll
+(both modes) axis toggles will also live — deferred to their own
+round: the roll half needs a spec answer first, since the code's
+roll rotates about the LOCAL T axis while the message described
+current behavior as "global") →
+TIME/DISTANCE domain for the INFLUENCE delta machinery (currently
+mutually exclusive: distance sections refuse influence entry — the
+two-pass re-time is time-parameterized end to end).
 
 **Phase 3 — dynamics:** speed-controlled sections (constant-v /
 constant-longitudinal-G / curve), air + rolling friction.

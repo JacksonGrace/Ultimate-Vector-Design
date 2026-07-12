@@ -412,22 +412,27 @@ class Viewport3D {
      *  time, sitting on the spine like the ties; selected nodes are
      *  white. Signature-guarded: the graph calls this on every redraw,
      *  but the scene graph only churns when something relevant changed. */
-    void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx, double tOff) {
+    void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx,
+                             double[] nodeTimes) {
         List<BezierBaker.Node> laneNodes = app.lanes.get(lane);
+        int count = Math.min(laneNodes.size(), nodeTimes.length);
         Color laneCol = app.editor.laneColor(lane);   // mode palette (geo: teal/yellow)
         StringBuilder sb = new StringBuilder();
         sb.append(lane).append('|').append(selIdx).append('|').append(sel)
-          .append('|').append(tOff).append('|').append(laneCol)
+          .append('|').append(laneCol)
           .append('|').append(System.identityHashCode(app.lastSamples))
           .append('|').append(app.settings.trackMarkers());
-        for (BezierBaker.Node n : laneNodes) sb.append(';').append(n.t);
+        // nodeTimes = each node's GLOBAL RIDE TIME, computed by the
+        // editor (v16.0 — distance-domain lanes' x is meters, so the
+        // old tOff + n.t no longer meant time)
+        for (int i = 0; i < count; i++) sb.append(';').append(nodeTimes[i]);
         String sig = sb.toString();
         if (sig.equals(markerSig)) return;
         markerSig = sig;
         markerGroup.getChildren().clear();
         if (!app.settings.trackMarkers() || app.lastSamples == null || app.lastSamples.isEmpty()) return;
-        for (int i = 0; i < laneNodes.size(); i++) {
-            int idx = (int) FvdDesigner.clamp(Math.round((tOff + laneNodes.get(i).t) / FvdDesigner.INTEGRATE_DT),
+        for (int i = 0; i < count; i++) {
+            int idx = (int) FvdDesigner.clamp(Math.round(nodeTimes[i] / FvdDesigner.INTEGRATE_DT),
                                   0, app.lastSamples.size() - 1);
             FVDIntegrator.Sample sm = app.lastSamples.get(idx);
             Vec3 p = sm.pos().sub(sm.U().scale(app.heartOffset));   // spine, like ties

@@ -205,13 +205,16 @@ public class FvdDesigner extends Application {
     // mode: 0 force, 1 geo, 2 straight/curve (lanes null, elements
     // set), 3 bridge (lanes+elements null, bridge set). dlanes /
     // vAuthored / editInfl = the influence state (v15.0, D98; dlanes
-    // null + vAuthored NaN = uninfluenced)
+    // null + vAuthored NaN = uninfluenced). dist/viewOther = the
+    // authoring domain + cross-domain view flag (v16.0, D103 — the
+    // view rides undo like editInfl, never the file)
     record SecState(List<List<BezierBaker.Node>> lanes,
                     List<StraightCurveSection.Element> elements,
                     double vDesign, int mode, boolean reversed,
                     boolean pinned, BridgeSection bridge,
                     List<List<BezierBaker.Node>> dlanes,
-                    double vAuthored, boolean editInfl) {}
+                    double vAuthored, boolean editInfl,
+                    boolean dist, boolean viewOther) {}
 
     /** Deep copy of a 3-lane node-list set (null-safe). */
     private static List<List<BezierBaker.Node>> copyLanes(
@@ -247,7 +250,7 @@ public class FvdDesigner extends Application {
                 if (s instanceof BridgeSection bs) {
                     secs.add(new SecState(null, null, bs.vDesign, 3,
                         bs.reversed, false, bs.copy(),
-                        null, Double.NaN, false));
+                        null, Double.NaN, false, false, false));
                     continue;
                 }
                 if (s instanceof StraightCurveSection sc) {
@@ -255,14 +258,16 @@ public class FvdDesigner extends Application {
                         new ArrayList<>(sc.elements.size());
                     for (StraightCurveSection.Element e : sc.elements) els.add(e.copy());
                     secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed,
-                        sc.vPinned, null, null, Double.NaN, false));
+                        sc.vPinned, null, null, Double.NaN, false,
+                        true, sc.viewOtherDomain));
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
                 secs.add(new SecState(copyLanes(fs.lanes), null, fs.vDesign,
                     fs instanceof GeoSection ? 1 : 0, fs.reversed,
                     fs.vPinned, null,
-                    copyLanes(fs.deltaLanes), fs.vAuthored, fs.editInfluence));
+                    copyLanes(fs.deltaLanes), fs.vAuthored, fs.editInfluence,
+                    fs.domain == Section.Domain.DISTANCE, fs.viewOtherDomain));
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
@@ -295,11 +300,19 @@ public class FvdDesigner extends Application {
                 };
                 sec.reversed(st.reversed());
                 sec.vPinned(st.pinned());
-                if (sec instanceof LaneSection ls && st.dlanes() != null) {
-                    // influence state rides the snapshot (v15.0, D98)
-                    ls.deltaLanes = st.dlanes();
-                    ls.vAuthored = st.vAuthored();
-                    ls.editInfluence = st.editInfl();
+                if (sec instanceof LaneSection ls) {
+                    // domain + view flag ride the snapshot (v16.0)
+                    ls.domain = st.dist() ? Section.Domain.DISTANCE
+                                          : Section.Domain.TIME;
+                    ls.viewOtherDomain = st.viewOther();
+                    if (st.dlanes() != null) {
+                        // influence state rides the snapshot (v15.0, D98)
+                        ls.deltaLanes = st.dlanes();
+                        ls.vAuthored = st.vAuthored();
+                        ls.editInfluence = st.editInfl();
+                    }
+                } else if (sec instanceof StraightCurveSection scv) {
+                    scv.viewOtherDomain = st.viewOther();
                 }
                 piece.sections.add(sec);
             }
@@ -492,8 +505,9 @@ public class FvdDesigner extends Application {
      *  entry, the marker sync and the POV toggle live in Viewport3D. */
     void rebuildTrack() { viewport.rebuildTrack(); }
 
-    void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx, double tOff) {
-        viewport.refreshTrackMarkers(lane, sel, selIdx, tOff);
+    void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx,
+                             double[] nodeTimes) {
+        viewport.refreshTrackMarkers(lane, sel, selIdx, nodeTimes);
     }
 
     void togglePov() { viewport.togglePov(); }
@@ -962,9 +976,10 @@ public class FvdDesigner extends Application {
         appendBtn.setStyle(btnStyle);
         appendBtn.setOnAction(e -> editor.appendAction());
         Tooltip.install(appendBtn, new Tooltip(
-            "Lane section — no selection: extend the ride 1 s;\n"
-            + "node selected: insert a 1 s flat hold after it\n"
-            + "(everything later shifts 1 s).\n"
+            "Lane section — no selection: extend the ride 1 s\n"
+            + "(distance-domain sections: 10 m); node selected:\n"
+            + "insert a flat hold of the same size after it\n"
+            + "(everything later shifts along).\n"
             + "Straight/curve section: append a 10 m straight element."));
 
         toolbar.setAlignment(Pos.CENTER_LEFT);

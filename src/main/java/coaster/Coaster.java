@@ -51,21 +51,31 @@ public class Coaster {
         return pieces.get(0).sections.get(0);
     }
 
-    /** A 1 s SAME-MODE section holding the given section's final lane
+    /** Hold extent of a DISTANCE-domain '+' continuation (m) — the s/c
+     *  10 m default, the scale a "grabbable flat stretch" needs. */
+    public static final double CONT_HOLD_DIST = 10;
+
+    /** A SAME-MODE section holding the given section's final lane
      *  values — what the graph's '+' affordance appends (D55; geo
      *  joined in v10.1: holding the end rates keeps the transition as
      *  seamless as force-after-force). vDesign comes from the caller
      *  (the design speed at the previous section's exit, frozen at
-     *  creation per the §0 invariant). */
+     *  creation per the §0 invariant). The DOMAIN carries over
+     *  (v16.0): after a distance section the hold is 10 m of track
+     *  instead of 1 s of ride. */
     public static LaneSection continuation(LaneSection prev, double vDesign) {
         double[] end = new double[3];
         for (int i = 0; i < 3; i++) {
             List<BezierBaker.Node> src = prev.lanes.get(i);
             end[i] = src.get(src.size() - 1).val;
         }
-        List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(end[0], end[1], end[2]);
-        return prev instanceof GeoSection
+        boolean dist = prev.domain() == Section.Domain.DISTANCE;
+        List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(
+            end[0], end[1], end[2], dist ? CONT_HOLD_DIST : 1);
+        LaneSection out = prev instanceof GeoSection
             ? new GeoSection(lanes, vDesign) : new ForceSection(lanes, vDesign);
+        out.domain(prev.domain());
+        return out;
     }
 
     /** A 1 s force section holding explicit Gv/Gl/roll-rate values —
@@ -672,6 +682,146 @@ public class Coaster {
             r.trueV()[r.spans().get(spanIdx).i0()]));
         sec.vPinned(false);   // resolved: re-join the speed flow
         return true;
+    }
+
+    /** AUTHORED-axis map of one compiled span (v16.0, D103): ascending
+     *  rows {local t, local s, design v} covering the section, exact
+     *  (0,0) and (tLen,sLen) anchors, REVERSED sections flipped out of
+     *  train order so the rows map the AUTHORED axis directly. Shared
+     *  by the domain switch below and the editor's cross-domain warp —
+     *  one map, one truth. */
+    public static double[][] sectionMap(List<FVDIntegrator.Sample> samples,
+                                        TrackCompiler.Span sp, boolean reversed) {
+        int i0 = sp.i0(), i1 = Math.min(sp.i1(), samples.size() - 1);
+        double tLen = sp.t1() - sp.t0(), sLen = sp.sLen();
+        List<double[]> rows = new ArrayList<>(i1 - i0 + 3);
+        if (reversed) {
+            // train order flipped: authored τ = tLen − localT ascending
+            for (int i = i1; i >= i0; i--) {
+                FVDIntegrator.Sample sm = samples.get(i);
+                addMapRow(rows, tLen - (sm.t() - sp.t0()),
+                    sLen - (sm.s() - sp.s0()), sm.v());
+            }
+            addMapRow(rows, tLen, sLen,
+                rows.get(rows.size() - 1)[2]);   // exact authored end
+        } else {
+            // a continuation span's exact (0,0) entry was dropped as a
+            // duplicate of the previous exit — restore the anchor
+            FVDIntegrator.Sample first = samples.get(i0);
+            if (first.t() - sp.t0() > 1e-12) {
+                addMapRow(rows, 0, 0, first.v());
+            }
+            for (int i = i0; i <= i1; i++) {
+                FVDIntegrator.Sample sm = samples.get(i);
+                addMapRow(rows, sm.t() - sp.t0(), sm.s() - sp.s0(), sm.v());
+            }
+        }
+        return rows.toArray(new double[0][]);
+    }
+
+    /** Append a map row, skipping degenerate (non-advancing) ones so
+     *  both columns stay strictly monotonic through stalls. */
+    private static void addMapRow(List<double[]> rows, double t, double s,
+                                  double v) {
+        if (!rows.isEmpty()) {
+            double[] last = rows.get(rows.size() - 1);
+            if (t - last[0] < 1e-12 || s - last[1] < 1e-12) return;
+        }
+        rows.add(new double[]{ t, s, v });
+    }
+
+    /** Linear read of a map column at x on another column, binary
+     *  search inside, LINEAR EXTRAPOLATION past both ends (the edge
+     *  segment's slope — end-node drags and end-of-lane nodes keep
+     *  meaning something beyond the compiled extent, the s/c cursor
+     *  rule). */
+    static double mapCol(double[][] map, int from, int to, double x) {
+        int n = map.length;
+        if (n == 0) return x;
+        if (n == 1) return map[0][to] + (x - map[0][from]);
+        int lo = 0, hi = n - 1;
+        if (x <= map[0][from]) {
+            hi = 1;
+        } else if (x >= map[hi][from]) {
+            lo = n - 2;
+        } else {
+            while (hi - lo > 1) {
+                int mid = (lo + hi) >>> 1;
+                if (map[mid][from] <= x) lo = mid; else hi = mid;
+            }
+        }
+        double dx = map[hi][from] - map[lo][from];
+        double u = Math.abs(dx) < 1e-12 ? 0 : (x - map[lo][from]) / dx;
+        return map[lo][to] + u * (map[hi][to] - map[lo][to]);
+    }
+
+    /** SWITCH a force/geo section's authoring DOMAIN (v16.0, D103 —
+     *  time ↔ distance) WITHOUT changing the track or its speeds: each
+     *  node's x maps through the section's own design-speed profile
+     *  (t_i → s(t_i) or back — a NONLINEAR map off the compiled span,
+     *  NOT a uniform scale), fracs stay, VALUES transfer exactly, and
+     *  handle dv rescales by v̄_segment/v(node) (chain rule
+     *  dG/ds = (dG/dt)/v — the fractional handles' segment rescale
+     *  supplies the v̄ part, this supplies the v(node) part). The
+     *  user's 2026-07-09 rule: NO carpet refit, no density preview.
+     *  Between nodes a cubic-in-t composed with s(t) is not a cubic in
+     *  s, so the interior matches exactly only at constant speed —
+     *  sub-fit-residual in practice, zero unattainable in theory.
+     *  vDesign/vPinned/reversed/locks untouched: speed conflicts
+     *  PERSIST through the switch (user rule). Influenced sections
+     *  refuse — their delta machinery is time-parameterized (bake or
+     *  discard first, like partial convert). */
+    public boolean switchLaneDomain(int pieceIdx, int secIdx, double dt) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (!(piece.sections.get(secIdx) instanceof LaneSection ls)
+                || ls.influenced()) return false;
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        TrackCompiler.Span sp = r.spans().get(spanIdx);
+        if (sp.i1() - sp.i0() < 2) return false;   // too short to map
+        double[][] map = sectionMap(r.samples(), sp, ls.reversed());
+        if (map.length < 2) return false;
+        boolean toDist = ls.domain() == Section.Domain.TIME;
+        for (List<BezierBaker.Node> lane : ls.lanes) {
+            mapLaneAxis(lane, map, toDist);
+        }
+        ls.domain(toDist ? Section.Domain.DISTANCE : Section.Domain.TIME);
+        ls.viewOtherDomain(false);   // the native axis IS the new display
+        return true;
+    }
+
+    /** One lane through the domain map: x re-parameterized, dv scaled
+     *  so node slopes obey the chain rule (see switchLaneDomain). */
+    private static void mapLaneAxis(List<BezierBaker.Node> lane,
+                                    double[][] map, boolean toDist) {
+        int n = lane.size();
+        double[] newX = new double[n];
+        double[] vAt = new double[n];
+        int from = toDist ? 0 : 1;
+        for (int i = 0; i < n; i++) {
+            double x = lane.get(i).t;
+            newX[i] = mapCol(map, from, toDist ? 1 : 0, x);
+            vAt[i] = Math.max(0.5, mapCol(map, from, 2, x));
+        }
+        for (int i = 0; i < n; i++) {
+            BezierBaker.Node nd = lane.get(i);
+            if (i < n - 1) {
+                double dxOld = lane.get(i + 1).t - nd.t;
+                double ratio = Math.abs(dxOld) < 1e-12 ? 1
+                    : (newX[i + 1] - newX[i]) / dxOld;   // v̄ of the segment
+                nd.outDv *= toDist ? ratio / vAt[i] : ratio * vAt[i];
+            }
+            if (i > 0) {
+                double dxOld = nd.t - lane.get(i - 1).t;
+                double ratio = Math.abs(dxOld) < 1e-12 ? 1
+                    : (newX[i] - newX[i - 1]) / dxOld;
+                nd.inDv *= toDist ? ratio / vAt[i] : ratio * vAt[i];
+            }
+        }
+        for (int i = 0; i < n; i++) lane.get(i).t = newX[i];
     }
 
     /** SPEED RECONCILE for same-piece chains (v14.1, D95 — user
@@ -1361,16 +1511,33 @@ public class Coaster {
         FVDIntegrator.Sample cs;
         double vCut;
         if (sec instanceof LaneSection ls) {
-            double dur = sp.t1() - sp.t0();
-            double tc = Math.max(s.get(6).t() - sp.t0(),
-                Math.min(s.get(n - 7).t() - sp.t0(),
-                    Math.max(0.05, Math.min(0.95, frac)) * dur));
-            cs = sampleAtTime(s, sp.t0() + tc);
-            vCut = cs.v();
-            List<List<BezierBaker.Node>> half = splitLanes(ls.lanes, tc, left);
-            keep = ls instanceof GeoSection
+            List<List<BezierBaker.Node>> half;
+            if (ls.domain() == Section.Domain.DISTANCE) {
+                // DISTANCE lanes cut in their own axis (v16.0): the cut
+                // is an ARC fraction and the de Casteljau split runs on
+                // the meter-parameterized lanes directly — exact, no
+                // time mapping in the loop at all
+                double sLen = sp.sLen();
+                double sc2 = Math.max(s.get(6).s() - sp.s0(),
+                    Math.min(s.get(n - 7).s() - sp.s0(),
+                        Math.max(0.05, Math.min(0.95, frac)) * sLen));
+                cs = sampleAtArc(s, sp.s0() + sc2);
+                vCut = cs.v();
+                half = splitLanes(ls.lanes, sc2, left);
+            } else {
+                double dur = sp.t1() - sp.t0();
+                double tc = Math.max(s.get(6).t() - sp.t0(),
+                    Math.min(s.get(n - 7).t() - sp.t0(),
+                        Math.max(0.05, Math.min(0.95, frac)) * dur));
+                cs = sampleAtTime(s, sp.t0() + tc);
+                vCut = cs.v();
+                half = splitLanes(ls.lanes, tc, left);
+            }
+            LaneSection kp = ls instanceof GeoSection
                 ? new GeoSection(half, left ? vCut : ls.vDesign)
                 : new ForceSection(half, left ? vCut : ls.vDesign);
+            kp.domain(ls.domain());   // the kept half stays native
+            keep = kp;
         } else if (sec instanceof StraightCurveSection sc) {
             double cutArc = scCutClamp(sc,
                 Math.max(0.05, Math.min(0.95, frac)) * sc.totalLen());

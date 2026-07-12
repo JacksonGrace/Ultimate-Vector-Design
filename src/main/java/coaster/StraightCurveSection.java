@@ -118,6 +118,12 @@ public final class StraightCurveSection implements Section {
     public boolean vPinned = false;   // v14.5 D97: reconcile-exempt
     public String name = "";
 
+    /** Cross-domain view (v16.0, D103): true = the strip lays out on
+     *  the TIME axis (the pre-v16.0 rendering — element bands warped
+     *  through the design-speed profile); false (default) = the
+     *  native METERS axis, where elements are linear. */
+    public boolean viewOtherDomain = false;
+
     public StraightCurveSection(List<Element> elements, double vDesign) {
         this.elements = elements;
         this.vDesign = vDesign;
@@ -148,6 +154,10 @@ public final class StraightCurveSection implements Section {
     @Override public void vDesign(double v) { vDesign = v; }
 
     @Override public Domain domain() { return Domain.DISTANCE; }
+
+    @Override public boolean viewOtherDomain() { return viewOtherDomain; }
+
+    @Override public void viewOtherDomain(boolean v) { viewOtherDomain = v; }
 
     @Override public boolean reversed() { return reversed; }
 

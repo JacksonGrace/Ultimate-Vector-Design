@@ -298,6 +298,13 @@ public final class DesignIO {
                             5, 5, vd);
                         default -> throw new IOException("unknown section mode: " + parts[1]);
                     };
+                    // the DOMAIN slot has been written since Phase 1 and
+                    // honored for force/geo since v16.0 (D103); old
+                    // files say "time" there — nothing changes for them
+                    if (parts.length > 3 && curSection instanceof LaneSection) {
+                        curSection.domain(parts[3].equals("distance")
+                            ? Section.Domain.DISTANCE : Section.Domain.TIME);
+                    }
                     if (parts.length > 4) curSection.reversed(parts[4].equals("1"));
                     // v14.5 pinned design speed; missing = off
                     if (parts.length > 5) curSection.vPinned(parts[5].equals("1"));

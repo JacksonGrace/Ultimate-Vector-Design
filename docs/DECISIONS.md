@@ -3577,3 +3577,115 @@ handle, no neighbor probe and no seam speed re-freeze (user: "the
 default locations for influence should be no influence"; the v15.0
 neighbor-minus-base match nudged the node by the base sampling
 residual on every press). Works with or without a neighbor.
+
+## D103. TIME/DISTANCE domain for force/geo lanes: exact node-map
+##       conversion, axis-follows-active, cross-domain edit view (v16.0)
+
+The Phase-2 domain toggle (user-confirmed 2026-07-06; detailed
+re-spec 2026-07-12): force/geo lanes can author over METERS of track
+instead of seconds of ride. Three deliberately separate things —
+
+- **The DOMAIN is a per-section property** (LaneSection.domain; the
+  Section slot existed since Phase 1, the FVDD3 field was already
+  written and is now honored on load — old files all say "time" and
+  load unchanged). Lane VALUES keep their units in both domains
+  (G, °/s): a domain is a re-parameterization of the AUTHORING AXIS,
+  not a unit change. That is what makes the exact node map possible —
+  and it means a distance-domain GEO section's shape still depends on
+  design speed through the °/s rates (unlike s/c curvature-per-meter;
+  documented in GeoIntegrator).
+- **Physics**: FVDIntegrator.integrateTrackDist / GeoIntegrator
+  .integrateDist — the ScIntegrator pattern (s joins the RK4 state,
+  s' = v; keyframe lookup by arc; the FINAL step Newton-lands exactly
+  on the lane end; advance speed floored at 0.5 so stalls creep and
+  terminate). Lanes bake onto a 0.05 m grid (the same 0.05 constant,
+  per-axis units). Gated: a distance-authored flat circle closes to
+  2.6e-12 m radial deviation and lands its length to float exactness
+  (TESTING #40b).
+- **Domain SWITCHING is the exact node map** (Coaster.switchLaneDomain
+  — the 2026-07-09 user rule: NO carpet refit, NO density preview):
+  each node's x maps through the section's own compiled design-speed
+  profile (Coaster.sectionMap — {t, s, v} rows off the span, reversed
+  sections flipped to the authored axis, exact (0,0)/(end,end)
+  anchors), fracs stay, values transfer exactly, handle dv scales by
+  v̄_segment/v(node) (the chain rule; node slopes exact). vDesign,
+  vPinned, reversed and locks are untouched — SPEED CONFLICTS PERSIST
+  (user rule). The interior residual is the documented theory floor
+  (a cubic-in-t composed with s(t) is not a cubic in s): constant-rate
+  sections switch NUMERICALLY EXACTLY (2.4e-5 m, gated #40n); the
+  407 m default layout — big speed swings through every transition,
+  lever-arm amplification — measures 0.83 m = 0.20%, BELOW the
+  convert engine's own 0.3% fit residual on the same layout (the
+  "sub-fit-residual" the roadmap promised; gated #40d/e/g/h at that
+  scale). Want it tighter locally: add nodes before switching.
+  NOTE the user's 2026-07-12 message said "fully convert them with
+  the existing convert feature" — read as the menu/UX placement, not
+  the refit engine, which would CONTRADICT the recorded 2026-07-09
+  node-map rule; flagged in the session summary.
+- **The plot's x-axis follows the ACTIVE section's DISPLAY domain**
+  (axisDist): seconds, or meters over a distance/s-c section. All
+  layout (runLayout/durOf/tOff/zoom windows) runs in axis units;
+  strips of the other parameterization WARP on by plotting compiled
+  samples at their other coordinate (every sample carries t AND s —
+  the warp falls out for free; same-mode inactive strips draw their
+  authored lanes only when their native domain IS the axis, else the
+  derived path). Overlays, true strokes, POV marker, hovers: all
+  sample-driven, all axis-generic; seam trims scale by the local
+  speed on the meters axis (2.5·dt of ride either way). An axis flip
+  resets to auto-fit (the window's units changed meaning). s/c
+  sections now lay out LINEARLY in meters when active (elements at
+  true lengths); their "seconds view" is the pre-v16.0 rendering.
+- **The cross-domain VIEW** (Section.viewOtherDomain — session state
+  like editInfluence: in DocState, never saved): the active strip
+  keeps its NATIVE lanes but displays on the other domain's axis,
+  warped through the section's own map (Coaster.sectionMap again —
+  one map, one truth), FROZEN per node/handle gesture so live
+  rebuilds never slide the curve under the cursor (the auto-fit
+  freeze rule). Editing goes straight THROUGH the warp: ltToX/xToLt
+  are the two choke points (the dispOff precedent, x-flavored), so
+  every gesture path works verbatim; Ctrl-snap, arrow nudges and
+  insert snapping grid in the DISPLAY domain's units and map back
+  (unwarped, the math reduces to the historic expressions exactly);
+  readouts show what you see (Δs=…m, slopes per display unit).
+- **Seam matching converts slope units** (domSlope): a boundary slope
+  is per-second or per-meter by the neighbor's native domain; B/
+  Shift+B convert through the seam design speed (dG/dt = v·dG/ds) at
+  every path — authored same-mode, analytic cross-mode (neighbor
+  edge slopes normalized to per-second before the ω math, results
+  converted to the active side's native units), sampled, and
+  forceTargetFromRates. The D78 seam-speed re-freeze runs first as
+  ever, so one v serves both sides.
+- **Distance ergonomics**: the Options element-length step (default
+  1 m) is THE distance snap step everywhere (drag snap, nudges,
+  inserts — no new Options row); min transition 0.1 m / insert gap
+  0.2 m (the 0.01 s/0.02 s siblings); A and the hold-insert append
+  10 m; the '+' same-mode continuation after a distance section is a
+  10 m hold CARRYING the domain (cross-mode adds stay 1 s TIME);
+  node dialog says "Transition length (m)"; badges wear "·m"; the
+  badge-menu SECTION SETTINGS block (user spec: with the type
+  options, where the future global/local axis toggles will also
+  live) holds the Domain radios (= the exact convert) and the view
+  check.
+- **Refusals**: influence ⇄ distance is mutually exclusive (the
+  delta machinery is time-parameterized end to end — enter is
+  disabled on distance sections, domain options disabled while
+  influenced, compiler falls back to the plain path for hand-edited
+  files); the partial-convert split line drops a live cross-domain
+  view on entry (fraction and cut must share units); bridges have no
+  domain surface (their strip reads as time). Partial converts on
+  distance lanes cut by ARC fraction with the same de Casteljau
+  machinery (the kept half stays distance; gated #40l); whole/mode
+  converts and make-graphs-real produce TIME lanes as ever — switch
+  back after if wanted.
+- **3D bridges**: markers/POV/selected-sample map node x → global
+  ride TIME through the span (nodeGlobalTime; refreshTrackMarkers now
+  takes per-node times — the old tOff + n.t stopped meaning time).
+
+Gated as TESTING #40 (14 checks incl. the all-TIME do-no-harm
+baseline and a byte-identical FVDD3 round trip with distance
+sections); walkthrough #71. The global/local yaw/pitch/roll axis
+toggles from the same user message are deferred to their own round —
+the roll half needs a spec question answered first (see the session
+summary): the code's force/geo roll rotates about the LOCAL T axis
+(s/c's "RATE" semantics; bank drifts through pitched turns), which
+the message called "currently global".

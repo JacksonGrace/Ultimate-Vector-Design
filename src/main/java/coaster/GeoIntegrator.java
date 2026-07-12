@@ -124,4 +124,109 @@ public final class GeoIntegrator {
 
         return new Result(samples, qEnd);
     }
+
+    // ---------- DISTANCE domain (v16.0, D103) ----------
+    // The keyframes' t-slots hold ARC LENGTH; rates stay °/s (a domain
+    // is a re-parameterization of the AUTHORING axis, not a unit change
+    // — the exact node map between domains rides on values transferring
+    // untouched). RK4 on (pos, q, s) with the ScIntegrator landing:
+    // the final step Newton-sizes onto the lane end. The advance speed
+    // is floored at 0.5 so a stall still terminates; rates are per
+    // second, so unlike s/c curvature the floored creep DOES shape a
+    // genuinely stalled section — the same caveat s/c RATE roll carries.
+
+    private record DState(Vec3 pos, Quat q, double s) {}
+
+    private record DDeriv(Vec3 dPos, Quat dQ, double dS) {}
+
+    private static DDeriv derivDist(DState st, List<FVDIntegrator.Keyframe> kfs,
+                                    double vDesign, double y0) {
+        Quat q = st.q().normalize();
+        Vec3 T = q.T();
+        Vec3 U = q.U();
+        Vec3 R = U.cross(T);
+
+        FVDIntegrator.Keyframe kf = FVDIntegrator.interpAt(kfs, st.s());
+        double v = Math.max(0.5, FVDIntegrator.speedAt(st.pos(), vDesign, y0));
+
+        Vec3 omega = U.scale(Math.toRadians(kf.Gl()))           // yaw slot
+            .add(R.scale(-Math.toRadians(kf.Gv())))             // pitch slot
+            .add(T.scale(Math.toRadians(kf.rollRateDeg())));    // roll
+        Quat dQ = new Quat(0, omega.x(), omega.y(), omega.z()).mul(q).scale(0.5);
+        return new DDeriv(T.scale(v), dQ, v);
+    }
+
+    private static DState advanceDist(DState y, DDeriv k, double h) {
+        return new DState(y.pos().add(k.dPos().scale(h)),
+            y.q().add(k.dQ().scale(h)), y.s() + k.dS() * h);
+    }
+
+    private static DState rk4Dist(DState y, List<FVDIntegrator.Keyframe> kfs,
+                                  double vDesign, double y0, double h) {
+        DDeriv k1 = derivDist(y, kfs, vDesign, y0);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, vDesign, y0);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, vDesign, y0);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, vDesign, y0);
+        Vec3 pos = y.pos().add(
+            k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
+                .scale(h / 6));
+        Quat q = y.q().add(
+            k1.dQ().add(k2.dQ().scale(2)).add(k3.dQ().scale(2)).add(k4.dQ())
+                .scale(h / 6)).normalize();
+        double s = y.s() + (k1.dS() + 2 * k2.dS() + 2 * k3.dS() + k4.dS()) * h / 6;
+        return new DState(pos, q, s);
+    }
+
+    private static void addSampleDist(List<FVDIntegrator.Sample> samples,
+                                      DState st, double t,
+                                      List<FVDIntegrator.Keyframe> kfs,
+                                      double vDesign, double y0) {
+        Quat q = st.q();
+        Vec3 T = q.T();
+        Vec3 U = q.U();
+        Vec3 R = U.cross(T);
+        FVDIntegrator.Keyframe kf = FVDIntegrator.interpAt(kfs, st.s());
+        double v = FVDIntegrator.speedAt(st.pos(), vDesign, y0);
+        double gv = Math.toRadians(kf.Gv()) * v / FVDIntegrator.G0 + U.y();
+        double gl = Math.toRadians(kf.Gl()) * v / FVDIntegrator.G0 + R.y();
+        samples.add(new FVDIntegrator.Sample(t, st.s(), st.pos(), T, U, R,
+            Math.max(0.1, v), gv, gl));
+    }
+
+    /** DISTANCE-domain run: rate keyframes over arc length. qEnd = the
+     *  landing state = the last sample's orientation (the D80 contract
+     *  holds by construction here — the loop ends ON the sample). */
+    public static Result integrateDist(List<FVDIntegrator.Keyframe> keyframes,
+                                       double dt, double vDesign,
+                                       Vec3 pos0, Quat q0) {
+        double totalLen = Math.max(keyframes.get(keyframes.size() - 1).t(), 1e-6);
+
+        DState st = new DState(pos0, q0.normalize(), 0);
+        double y0 = pos0.y();
+        double t = 0;
+        List<FVDIntegrator.Sample> samples = new ArrayList<>();
+        int guard = 0;
+
+        while (st.s() < totalLen - 1e-9 && guard++ < 500_000) {
+            addSampleDist(samples, st, t, keyframes, vDesign, y0);
+            double v = Math.max(0.5, FVDIntegrator.speedAt(st.pos(), vDesign, y0));
+            if (st.s() + v * dt < totalLen - 1e-12) {
+                st = rk4Dist(st, keyframes, vDesign, y0, dt);
+                t += dt;
+            } else {
+                double h = (totalLen - st.s()) / v;
+                DState end = st;
+                for (int it = 0; it < 3; it++) {
+                    end = rk4Dist(st, keyframes, vDesign, y0, h);
+                    double vEnd = Math.max(0.5,
+                        FVDIntegrator.speedAt(end.pos(), vDesign, y0));
+                    h += (totalLen - end.s()) / vEnd;
+                }
+                st = new DState(end.pos(), end.q(), totalLen);
+                t += h;
+            }
+        }
+        addSampleDist(samples, st, t, keyframes, vDesign, y0);
+        return new Result(samples, st.q());
+    }
 }

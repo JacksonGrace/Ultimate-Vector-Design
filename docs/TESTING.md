@@ -831,6 +831,62 @@
     with a flat handle (no influence) — repeat presses change
     nothing, and neither seam speed moves.
 
+40. **v16.0 TIME/DISTANCE domain gates (scratch DomainGate; D103).**
+    14 checks, all passed 2026-07-12: (a) DO-NO-HARM — the all-TIME
+    default layout keeps its RK4 baseline exactly (1347 samples,
+    406.878 m, end pitch 0.2284°). (b) DISTANCE CIRCLE — a flat
+    unbanked turn authored over METERS (Gv=1, Gl=1.5, v0=20, one
+    full circumference) closes to 2.57e-12 m radial deviation, stays
+    in plane to 0, and the last sample's arc equals the authored
+    length BITWISE (the Newton landing). (c) geo distance straight:
+    zero rates over 50 m = dead ahead, s ends exactly 50. (d) the
+    default layout switched time→distance re-compiles within 0.83 m
+    over 407 m — 0.20%, BELOW the convert engine's 0.3% fit residual
+    on the same layout (the interior composition residual is theory:
+    see D103; the deviation grows lever-arm-linearly, ~0.1° of
+    accumulated heading). (e) switching BACK recovers every node to
+    1.4e-2 s (the shape residual ÷ v — dv offsets bitwise) and the
+    track to 0.71 m. (f) the switch leaves vDesign + vPinned
+    untouched (conflicts persist). (g) a REVERSED section switches
+    within 1.55 m (the flipped map path). (h) a bent GEO section
+    (pitch/yaw/roll ramps) switches within 1.28 m. (n) EXACTNESS
+    CANARY: a constant-rate section switches to 2.4e-5 m — the
+    composition is exact there, so any regression is an
+    implementation bug, not the theory floor. (i) influenced
+    sections refuse the switch. (j) FVDD3 with a distance section:
+    save→load→save byte-identical, domain honored on load. (k) the
+    '+' continuation after a distance section is a 10 m DISTANCE
+    hold. (l) partial convert (right→geo) on distance lanes: the
+    kept half stays DISTANCE, end deviation 0.13 m. (m)
+    Coaster.sectionMap rows anchored at (0,0) and strictly monotonic
+    in both columns.
+
+71. v16.0 domain feel round (untested by the user yet): (a) badge
+    menu > Domain: distance (m) on a force section — the x-axis
+    relabels "Distance (m)", the strip's nodes slide to their arc
+    positions (fast track stretches, slow track bunches), the
+    3D track doesn't move, and every OTHER strip warps onto the
+    meters axis; the badge wears ·m. Switch back — the original
+    node times return. (b) with a distance section active, drag a
+    node with Ctrl: it snaps whole meters (the Options
+    element-length step); arrows nudge by the same; A appends 10 m;
+    the ⊕ hold after it is 10 m and stays a distance section.
+    (c) "View in meters" on a TIME section: the axis flips, the
+    curve warps, nodes stay put in the model (uncheck = everything
+    back); drag a node mid-warp — the curve doesn't slide under the
+    cursor while the track rebuilds, Ctrl snaps in METERS, and the
+    readout says Δs=…m. (d) a speed-conflicted section switched to
+    distance keeps its ≠v badge, both speeds, and its true strokes.
+    (e) B/Shift+B across a time|distance seam: values AND slopes
+    join (the felt/rate curves flow through), re-press = no creep.
+    (f) an s/c section now lays out linearly in meters when active
+    (elements at true lengths, drag readouts unchanged); its "View
+    in seconds" shows the old time-warped layout. (g) POV marker,
+    hover readouts and Ctrl+click-insert all land on the right spot
+    on a meters axis (slopes read /m). (h) influence entry is
+    grayed on a distance section (and the domain radios gray on an
+    influenced one) with the reason in the item text.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

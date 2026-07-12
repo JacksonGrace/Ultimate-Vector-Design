@@ -158,11 +158,12 @@ class GraphEditor extends Region {
         return idx >= 0 && idx < spans.size() ? spans.get(idx) : null;
     }
 
-    /** Global ride time where the active piece begins. */
+    /** AXIS coordinate where the active piece begins (global ride time
+     *  or global arc length, per the display domain). */
     private double pieceT0() {
         if (activePiece == 0) return 0;
         TrackCompiler.Span sp = spanOf(0);
-        return sp != null ? sp.t0() : 0;
+        return sp != null ? (axisDist() ? sp.s0() : sp.t0()) : 0;
     }
 
     // ---------- bridged RUNS (v13.4) ----------
@@ -197,10 +198,31 @@ class GraphEditor extends Region {
 
     int runEndPiece() { return runEnd(); }
 
-    /** Duration of piece p's section k (the sectionDur recipe, any
-     *  piece). */
+    /** Extent of piece p's section k in the current AXIS units (the
+     *  sectionDur recipe, any piece): seconds on the time axis, meters
+     *  on the distance axis (v16.0, D103). Native-axis sections read
+     *  their authored extent exactly; the rest read the compiled span
+     *  (with pre-compile estimates). */
     private double durOf(int p, int k) {
         Section s = app.coaster.pieces.get(p).sections.get(k);
+        if (axisDist()) {
+            if (s instanceof StraightCurveSection sc) {
+                return Math.max(sc.totalLen(), 1e-6);   // native meters
+            }
+            if (s instanceof LaneSection ls
+                    && ls.domain() == Section.Domain.DISTANCE) {
+                return Math.max(BezierBaker.rideEnd(ls.lanes), 1e-6);
+            }
+            TrackCompiler.Span sp = spanAt(p, k);
+            if (sp != null) return Math.max(sp.sLen(), 1e-6);
+            if (s instanceof LaneSection ls) {   // pre-compile estimate
+                return Math.max(1e-6, BezierBaker.rideEnd(ls.lanes)
+                    * Math.max(0.5, ls.vDesign));
+            }
+            BridgeSection bs = (BridgeSection) s;
+            return Math.max(0.1,
+                bs.solvedTarget.pos().sub(bs.solvedEntry.pos()).length());
+        }
         if (s instanceof LaneSection ls) {
             if (ls.influenced()) {
                 // an influenced section's duration is the RE-TIMED
@@ -210,6 +232,14 @@ class GraphEditor extends Region {
                 if (isp != null) return isp.t1() - isp.t0();
                 return BezierBaker.rideEnd(ls.lanes)
                     * ls.vAuthored / Math.max(0.5, ls.vDesign);
+            }
+            if (ls.domain() == Section.Domain.DISTANCE) {
+                // a DISTANCE section's DURATION exists only after a
+                // compile — the s/c rule exactly
+                TrackCompiler.Span dsp = spanAt(p, k);
+                if (dsp != null) return dsp.t1() - dsp.t0();
+                return BezierBaker.rideEnd(ls.lanes)
+                    / Math.max(0.5, ls.vDesign);
             }
             return BezierBaker.rideEnd(ls.lanes);
         }
@@ -222,12 +252,12 @@ class GraphEditor extends Region {
                 / Math.max(0.5, bs.vDesign));
     }
 
-    /** Global ride time where the RUN begins. */
+    /** AXIS coordinate where the RUN begins. */
     private double runT0() {
         int rs = runStart();
         if (rs == 0) return 0;
         TrackCompiler.Span sp = spanAt(rs, 0);
-        return sp != null ? sp.t0() : 0;
+        return sp != null ? (axisDist() ? sp.s0() : sp.t0()) : 0;
     }
 
     /** Total duration of the run (the graph window's width basis). */
@@ -384,6 +414,162 @@ class GraphEditor extends Region {
         return tp.pitchDeg != 0 || tp.rollDeg != 0;
     }
 
+    // ---------- x-AXIS DOMAIN (v16.0, D103) ----------
+    // The plot's x-axis follows the ACTIVE section's DISPLAY domain:
+    // its native domain, flipped by its cross-domain view toggle. All
+    // layout (runLayout/tOff/tToX windows) runs in AXIS units — seconds
+    // or meters — and strips of the other parameterization WARP onto it
+    // by plotting compiled samples at their other coordinate (every
+    // sample carries both t and s). A bridge strip reads as TIME.
+
+    /** Is the plot's x-axis DISTANCE (meters)? */
+    private boolean axisDist() {
+        List<Section> secs = sections();
+        if (activeSection >= secs.size()) return false;
+        Section s = secs.get(activeSection);
+        if (s instanceof BridgeSection) return false;
+        boolean nd = s.domain() == Section.Domain.DISTANCE;
+        return s.viewOtherDomain() ? !nd : nd;
+    }
+
+    /** Is the ACTIVE section natively DISTANCE-parameterized (its node
+     *  math — lane x, walls, gaps — runs in meters)? */
+    private boolean activeDistNative() {
+        List<Section> secs = sections();
+        return activeSection < secs.size()
+            && secs.get(activeSection) instanceof LaneSection ls
+            && ls.domain() == Section.Domain.DISTANCE;
+    }
+
+    /** Compiled sample i's coordinate on the current x-axis. */
+    private double gAxis(int i) {
+        return axisDist() ? app.lastSamples.get(i).s()
+                          : app.resultRates[i][0];
+    }
+
+    /** The SEAM_TRIM band around sample i in AXIS units: 2.5·dt of
+     *  ride either way — on a meters axis that is 2.5·dt·v of track. */
+    private double axisTrim(int i) {
+        return axisDist()
+            ? SEAM_TRIM * Math.max(0.5, app.lastSamples.get(i).v())
+            : SEAM_TRIM;
+    }
+
+    /** Index of the compiled sample nearest axis coordinate a — the
+     *  axis-generic sibling of rateIdxAt (0 before a compile). */
+    private int sampleIdxAtAxis(double a) {
+        if (app.resultRates == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return 0;
+        if (!axisDist()) return rateIdxAt(a);
+        List<FVDIntegrator.Sample> ss = app.lastSamples;
+        int lo = 0, hi = ss.size() - 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (ss.get(mid).s() <= a) lo = mid; else hi = mid;
+        }
+        return a - ss.get(lo).s() <= ss.get(hi).s() - a ? lo : hi;
+    }
+
+    /** Global ride time → the current axis coordinate (POV marker and
+     *  other time-sourced positions). Identity on the time axis. */
+    private double axisOfTime(double gt) {
+        if (!axisDist() || app.lastSamples == null
+                || app.lastSamples.isEmpty()
+                || app.resultRates == null) return gt;
+        return app.lastSamples.get(rateIdxAt(gt)).s();
+    }
+
+    // ---------- cross-domain WARP of the ACTIVE strip (v16.0) ----------
+    // While the active LANE section displays the OTHER domain, node
+    // math stays NATIVE and ltToX/xToLt translate native x ↔ the axis
+    // through the section's compiled {t,s,v} map — FROZEN during node/
+    // handle gestures so the live rebuild never moves the map under
+    // the cursor (the auto-fit freeze rule). s/c strips have their own
+    // map path (scAxisAtS); bridges never warp.
+
+    private double[][] warpMap;   // Coaster.sectionMap rows, or null
+    private boolean warpToDist;   // native TIME shown on a DISTANCE axis
+
+    /** Rebuild the warp map off the last compile (no-gesture moments
+     *  only — redraw calls this; drags keep the captured map). */
+    private void refreshWarp() {
+        List<Section> secs = sections();
+        Section s = activeSection < secs.size() ? secs.get(activeSection) : null;
+        if (!(s instanceof LaneSection ls) || !ls.viewOtherDomain()
+                || ls.influenced()) {
+            warpMap = null;
+            return;
+        }
+        TrackCompiler.Span sp = spanOf(activeSection);
+        if (sp == null || app.lastSamples == null
+                || sp.i1() >= app.lastSamples.size()
+                || sp.i1() - sp.i0() < 2) {
+            warpMap = null;
+            return;
+        }
+        warpMap = Coaster.sectionMap(app.lastSamples, sp, ls.reversed());
+        warpToDist = ls.domain() == Section.Domain.TIME;
+    }
+
+    /** Native lane x → the strip-local AXIS coordinate (identity
+     *  without a live warp; linear extrapolation past the map ends so
+     *  end-of-section drags keep meaning something out there). */
+    private double warpFwd(double x) {
+        return warpMap == null ? x
+            : Coaster.mapCol(warpMap, warpToDist ? 0 : 1,
+                warpToDist ? 1 : 0, x);
+    }
+
+    /** Strip-local axis coordinate → native lane x (warpFwd's inverse). */
+    private double warpInv(double a) {
+        return warpMap == null ? a
+            : Coaster.mapCol(warpMap, warpToDist ? 1 : 0,
+                warpToDist ? 0 : 1, a);
+    }
+
+    /** Horizontal Ctrl-snap step in AXIS units: seconds step on a time
+     *  axis, the Options element-length step (the app's one distance
+     *  step) on a meters axis. Native == axis when unwarped, so this
+     *  is also the native step. */
+    private double snapXStep() {
+        return axisDist() ? app.settings.snapLen() : snapT();
+    }
+
+    /** Minimum transition length in the active section's NATIVE x
+     *  units (0.01 s of ride ≈ 0.1 m of track at typical speeds). */
+    private double minGap() {
+        return activeDistNative() ? 0.1 : MIN_GAP;
+    }
+
+    /** Insert clearance in native x units (INSERT_GAP's sibling). */
+    private double insertGap() {
+        return activeDistNative() ? 0.2 : INSERT_GAP;
+    }
+
+    /** Display-domain unit for x readouts. */
+    private String xUnit() { return axisDist() ? "m" : "s"; }
+
+    /** The Append/hold step in native x units: 1 s of ride or 10 m of
+     *  track (the s/c default's scale). */
+    private double appendStep() {
+        return activeDistNative() ? Coaster.CONT_HOLD_DIST : 1.0;
+    }
+
+    /** Global ride TIME of the active section's node at native x —
+     *  the 3D marker / sample bridge (the model's clock, whatever the
+     *  plot's axis shows). */
+    private double nodeGlobalTime(double nativeX) {
+        TrackCompiler.Span sp = activeSpan();
+        if (sp == null) return nativeX;
+        if (!activeDistNative()) return sp.t0() + nativeX;
+        List<Section> secs = sections();
+        boolean rev = activeSection < secs.size()
+            && secs.get(activeSection).reversed();
+        double tot = Math.max(sp.sLen(), 1e-9);
+        double sTrav = rev ? tot - nativeX : nativeX;
+        return timeAtSpanS(sp, FvdDesigner.clamp(sTrav, 0, tot));
+    }
+
     /** DISPLAY offset for lane values at local time t: in the
      *  influence RESULTING VIEW every node/knob/curve point plots at
      *  base(t) + value; drags subtract it back out. 0 elsewhere. */
@@ -531,9 +717,9 @@ class GraphEditor extends Region {
             ? sectionDur(activeSection) : BezierBaker.rideEnd(app.lanes);
     }
 
-    private double ltToX(double localT) { return tToX(tOff + localT); }
+    private double ltToX(double localT) { return tToX(tOff + warpFwd(localT)); }
 
-    private double xToLt(double x) { return xToT(x) - tOff; }
+    private double xToLt(double x) { return warpInv(xToT(x) - tOff); }
 
     void setActiveSection(int k) {
         List<Section> secs = sections();
@@ -610,25 +796,27 @@ class GraphEditor extends Region {
         if (!endsBridge && pieceEndDrifted()) {
             Menu cont = new Menu("Continue speed conflict ▸");
             Menu real = new Menu("Transition to real ▸");
-            String[] names = { "Add force section (1 s hold)",
+            // the REAL fork always builds fresh TIME holds; the design
+            // continuation carries the previous section's domain (v16.0)
+            String[] realNames = { "Add force section (1 s hold)",
                 "Add geo section (1 s hold)",
                 "Add straight/curve section (10 m straight)" };
             for (int m = 0; m < 3; m++) {
                 final int mode = m;
-                MenuItem ci = new MenuItem(names[m]);
+                MenuItem ci = new MenuItem(addLabel(m));
                 ci.setOnAction(ev -> addSection(mode, false));
                 cont.getItems().add(ci);
-                MenuItem ri = new MenuItem(names[m]);
+                MenuItem ri = new MenuItem(realNames[m]);
                 ri.setOnAction(ev -> addSection(mode, true));
                 real.getItems().add(ri);
             }
             cm.getItems().addAll(cont, real);
         } else {
-            MenuItem force = new MenuItem("Add force section (1 s hold)");
+            MenuItem force = new MenuItem(addLabel(0));
             force.setOnAction(ev -> addSection(0));
-            MenuItem geo = new MenuItem("Add geo section (1 s hold)");
+            MenuItem geo = new MenuItem(addLabel(1));
             geo.setOnAction(ev -> addSection(1));
-            MenuItem sc = new MenuItem("Add straight/curve section (10 m straight)");
+            MenuItem sc = new MenuItem(addLabel(2));
             sc.setOnAction(ev -> addSection(2));
             force.setDisable(endsBridge);
             geo.setDisable(endsBridge);
@@ -689,6 +877,22 @@ class GraphEditor extends Region {
             cm.getItems().add(attach);
         }
         showMenu(cm, screenX, screenY);
+    }
+
+    /** The '+' item label for one mode: a SAME-MODE continuation after
+     *  a distance-domain section is a 10 m hold, not a 1 s one
+     *  (v16.0 — Coaster.continuation carries the domain). */
+    private String addLabel(int mode) {
+        if (mode == 2) return "Add straight/curve section (10 m straight)";
+        List<Section> secs = sections();
+        Section prevSec = secs.get(secs.size() - 1);
+        boolean distHold = prevSec instanceof LaneSection pl
+            && pl.domain() == Section.Domain.DISTANCE
+            && !pl.reversed() && !pl.influenced()
+            && (mode == 1) == (prevSec instanceof GeoSection);
+        String hold = distHold ? "10 m hold" : "1 s hold";
+        return mode == 1 ? "Add geo section (" + hold + ")"
+                         : "Add force section (" + hold + ")";
     }
 
     /** Append a live-following bridge from the ACTIVE piece's end to
@@ -1212,6 +1416,10 @@ class GraphEditor extends Region {
         if (sec.reversed()) return;
         if (!(sec instanceof BridgeSection || sec instanceof LaneSection
                 || sec instanceof StraightCurveSection)) return;
+        // the split-line mode runs on the NATIVE axis (v16.0): a live
+        // cross-domain view would put the line's fraction and the
+        // model's cut in different units — drop the view first
+        if (sec.viewOtherDomain()) sec.viewOtherDomain(false);
         pcSec = k;
         pcToGeo = toGeo;
         pcFrac = 0.5;
@@ -1619,13 +1827,16 @@ class GraphEditor extends Region {
         return 0;
     }
 
-    /** Is the split fraction ARC-based (bridge, s/c) or TIME-based
-     *  (lane sections)? Must match what the model op cuts by. */
+    /** Is the split fraction ARC-based (bridge, s/c, DISTANCE-domain
+     *  lanes — v16.0) or TIME-based (time lanes)? Must match what the
+     *  model op cuts by. */
     private boolean pcArcBased() {
         Section sec = pcSec >= 0 && pcSec < sections().size()
             ? sections().get(pcSec) : null;
         return sec instanceof BridgeSection
-            || sec instanceof StraightCurveSection;
+            || sec instanceof StraightCurveSection
+            || (sec instanceof LaneSection ls
+                && ls.domain() == Section.Domain.DISTANCE);
     }
 
     /** The split line's GLOBAL time for pcFrac: lane fractions map
@@ -1635,7 +1846,11 @@ class GraphEditor extends Region {
      *  visibly off wherever speed drifts along the section). */
     private double pcLineT() {
         double dur = Math.max(sectionDur(activeSection), 1e-6);
-        if (!pcArcBased()) return tOff + pcFrac * dur;
+        // fraction axis == display axis: time-frac on the time axis,
+        // arc-frac on the meters axis (v16.0) — both map linearly;
+        // only an arc fraction shown on the TIME axis needs the
+        // sample map (the historic bridge/s-c case)
+        if (!pcArcBased() || axisDist()) return tOff + pcFrac * dur;
         TrackCompiler.Span sp = spanOf(pcSec);
         List<FVDIntegrator.Sample> s = app.lastSamples;
         if (sp == null || s == null || sp.sLen() < 1e-6) {
@@ -1664,7 +1879,7 @@ class GraphEditor extends Region {
         double dur = Math.max(sectionDur(activeSection), 1e-6);
         double lt = FvdDesigner.clamp(xToT(x) - tOff, 0, dur);
         double f = lt / dur;
-        if (pcArcBased()) {
+        if (pcArcBased() && !axisDist()) {
             TrackCompiler.Span sp = spanOf(pcSec);
             List<FVDIntegrator.Sample> s = app.lastSamples;
             if (sp != null && s != null && sp.sLen() > 1e-6) {
@@ -1933,11 +2148,14 @@ class GraphEditor extends Region {
             ? String.format(Locale.US, " · entered %.1f m/s", es[1])
             : "";
         MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s%s%s%s",
+            "%s section %d — design %.1f m/s%s%s%s%s",
             modeName(sec), k + 1, sec.vDesign(),
             sec instanceof LaneSection ili && ili.influenced()
                 ? String.format(Locale.US, " (authored %.1f)", ili.vAuthored)
                 : "",
+            sec instanceof LaneSection
+                && sec.domain() == Section.Domain.DISTANCE
+                ? " · distance (m)" : "",
             drift, extra));
         info.setDisable(true);
         // the per-section Reversed check moved to piece scope in v12.1
@@ -1952,6 +2170,47 @@ class GraphEditor extends Region {
         split.setDisable(k == 0);   // the piece starts here already
         split.setOnAction(ev -> splitAt(k));
         cm.getItems().add(info);
+        // SECTION SETTINGS (v16.0, D103 — user spec: the type/domain
+        // options live with the section, where "force"/"geo" do): the
+        // authoring DOMAIN — the radios CONVERT the lanes through the
+        // exact node map, shape + speeds untouched — and the
+        // cross-domain VIEW toggle (edit the native x-axis while the
+        // plot shows the other domain's, warped). s/c is inherently
+        // DISTANCE (radios read-only); bridges have neither. The
+        // global/local axis options land here when they arrive.
+        if (!(sec instanceof BridgeSection)) {
+            boolean isSc = sec instanceof StraightCurveSection;
+            boolean infl = sec instanceof LaneSection li0 && li0.influenced();
+            boolean nd = sec.domain() == Section.Domain.DISTANCE;
+            RadioMenuItem domT = new RadioMenuItem("Domain: time (s)");
+            RadioMenuItem domD = new RadioMenuItem("Domain: distance (m)");
+            ToggleGroup dg = new ToggleGroup();
+            domT.setToggleGroup(dg);
+            domD.setToggleGroup(dg);
+            (nd ? domD : domT).setSelected(true);
+            if (isSc || infl) {
+                domT.setDisable(true);
+                domD.setDisable(true);
+            } else {
+                domT.setOnAction(ev -> switchDomainUi(k, Section.Domain.TIME));
+                domD.setOnAction(ev -> switchDomainUi(k, Section.Domain.DISTANCE));
+            }
+            CheckMenuItem viewOther = new CheckMenuItem(nd
+                ? "View in seconds (edit through the time axis)"
+                : "View in meters (edit through the distance axis)");
+            viewOther.setSelected(sec.viewOtherDomain());
+            viewOther.setDisable(infl);
+            viewOther.setOnAction(ev ->
+                setViewOtherDomain(k, !sec.viewOtherDomain()));
+            cm.getItems().addAll(domT, domD, viewOther);
+            if (infl) {
+                MenuItem why = new MenuItem(
+                    "…domain options wait for the influence — bake or "
+                    + "discard it first");
+                why.setDisable(true);
+                cm.getItems().add(why);
+            }
+        }
         // RESOLVE SPEED CONFLICT (v14.5 D97; reworked v15.2 D101;
         // simplified v15.4 D102 — user: the explicit transition-to-
         // real RESOLVE op is gone, its job is the two-step
@@ -2032,10 +2291,14 @@ class GraphEditor extends Region {
             cm.getItems().add(new SeparatorMenuItem());
             boolean geoSec = lsec instanceof GeoSection;
             if (!lsec.influenced()) {
-                MenuItem enter = new MenuItem(geoSec
+                boolean distSec =
+                    lsec.domain() == Section.Domain.DISTANCE;
+                MenuItem enter = new MenuItem((geoSec
                     ? "Influence felt force graphs"
-                    : "Influence resulting geo graphs");
-                enter.setDisable(lsec.reversed);
+                    : "Influence resulting geo graphs")
+                    // the delta machinery is time-parameterized (v16.0)
+                    + (distSec ? " (time-domain sections only)" : ""));
+                enter.setDisable(lsec.reversed || distSec);
                 enter.setOnAction(ev -> enterInfluenceUi(k));
                 cm.getItems().add(enter);
             } else {
@@ -2097,7 +2360,8 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)
-                || ls.influenced() || ls.reversed) return;
+                || ls.influenced() || ls.reversed
+                || ls.domain() == Section.Domain.DISTANCE) return;
         pushUndoSnapshot();
         if (k != activeSection) setActiveSection(k);
         // speeds untouched (v15.4, D102); the delta lanes span the
@@ -2152,6 +2416,47 @@ class GraphEditor extends Region {
         selSet.clear();
         syncLaneButtons();
         app.rebuildTrack();
+        refreshOffset();
+        redraw();
+    }
+
+    /** SWITCH section k's authoring domain (v16.0, D103): the exact
+     *  node map — shape, speeds and conflicts preserved; no preview
+     *  needed (nothing is refit). One undo step. */
+    private void switchDomainUi(int k, Section.Domain to) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()
+                || !(secs.get(k) instanceof LaneSection ls)
+                || ls.domain() == to || ls.influenced()) return;
+        pushUndoSnapshot();
+        if (k != activeSection) setActiveSection(k);
+        if (app.coaster.switchLaneDomain(activePiece, k,
+                FvdDesigner.INTEGRATE_DT)) {
+            selIdx = -1;
+            selSet.clear();
+            viewT0 = 0;
+            viewT1 = -1;   // the x-axis just changed units
+            app.rebuildTrack();
+            refreshOffset();
+        }
+        redraw();
+    }
+
+    /** Toggle section k's cross-domain VIEW (v16.0): purely visual —
+     *  the native lanes/elements stay put, the plot's axis flips and
+     *  the strip warps onto it. Session state (DocState, not saved),
+     *  no undo push — the editInfluence precedent. */
+    private void setViewOtherDomain(int k, boolean on) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()) return;
+        Section sec = secs.get(k);
+        if (sec instanceof BridgeSection
+                || (sec instanceof LaneSection li && li.influenced())) return;
+        sec.viewOtherDomain(on);
+        if (k == activeSection) {
+            viewT0 = 0;
+            viewT1 = -1;   // auto-fit the new axis
+        }
         refreshOffset();
         redraw();
     }
@@ -2321,6 +2626,11 @@ class GraphEditor extends Region {
                 if (rs.sec() instanceof LaneSection ls
                         && (ls instanceof GeoSection) == actGeo
                         && !ls.reversed && !ls.influenced()
+                        // authored lanes draw directly only when their
+                        // native domain IS the plot's axis (v16.0) —
+                        // otherwise the compiled samples carry the
+                        // warp (both coordinates ride every sample)
+                        && (ls.domain() == Section.Domain.DISTANCE) == axisDist()
                         // a TILTED piece's force felt deviates from
                         // its lanes (v15.2) — derived there too; geo
                         // rates are rotation-invariant and stay true
@@ -2385,17 +2695,21 @@ class GraphEditor extends Region {
     // read as direct connections, not tiny angled ramps (v10.2)
     private static final double SEAM_TRIM = 2.5 * FvdDesigner.INTEGRATE_DT;
 
-    /** An other-mode inactive strip: the active mode's quantities over
-     *  its stretch, straight off the compiled samples. */
+    /** An other-mode (or other-domain, v16.0) inactive strip: the
+     *  active mode's quantities over its stretch, straight off the
+     *  compiled samples — plotted at each sample's AXIS coordinate, so
+     *  the warp between domains falls out for free. off/dur are axis
+     *  units. */
     private void drawDerivedStrip(GraphicsContext gc, double off, double dur) {
         if (app.resultRates == null || app.lastSamples == null
                 || app.lastSamples.isEmpty()) return;
         for (int L = 0; L < LANES; L++) {
             List<double[]> pts = new ArrayList<>();
             for (int i = 0; i < app.resultRates.length; i++) {
-                double t = app.resultRates[i][0];
-                if (t < off + SEAM_TRIM || t > off + dur - SEAM_TRIM) continue;
-                pts.add(new double[]{ tToX(t), valToY(L, derivedAt(i, L)) });
+                double a = gAxis(i);
+                double trim = axisTrim(i);
+                if (a < off + trim || a > off + dur - trim) continue;
+                pts.add(new double[]{ tToX(a), valToY(L, derivedAt(i, L)) });
             }
             if (pts.size() < 2) continue;
             fillUnderSeries(gc, pts, L);
@@ -2504,17 +2818,20 @@ class GraphEditor extends Region {
             boolean started = false;
             for (int i = 0; i < app.resultRates.length; i++) {
                 double t = app.resultRates[i][0];
-                if (t < vt0 || t > vt1 || t < rT0 || t > rT1
-                        || (rateSrc && (t < rT0 + SEAM_TRIM
-                                        || t > rT1 - SEAM_TRIM
-                                        || nearSeam(t, seams)))) {
+                double a = gAxis(i);          // axis coordinate (v16.0)
+                double trim = axisTrim(i);
+                if (a < vt0 || a > vt1 || a < rT0 || a > rT1
+                        || (rateSrc && (a < rT0 + trim
+                                        || a > rT1 - trim
+                                        || nearSeam(a, seams, trim)))) {
                     started = false;
                     continue;
                 }
                 double ref = inflSpan != null
                         && t >= inflSpan.t0() - 1e-9
                         && t <= inflSpan.t1() + 1e-9
-                    ? BezierBaker.evalAt(inflDesign.lanes.get(L), t - tOff)
+                    ? BezierBaker.evalAt(inflDesign.lanes.get(L),
+                        t - inflSpan.t0())
                     : derivedAt(i, L);
                 double dy = valToY(L, ref);
                 double ty = valToY(L, trueAt(i, L));
@@ -2522,7 +2839,7 @@ class GraphEditor extends Region {
                     started = false;
                     continue;
                 }
-                double x = tToX(t);
+                double x = tToX(a);
                 if (!started) { gc.moveTo(x, ty); started = true; }
                 else gc.lineTo(x, ty);
             }
@@ -2532,18 +2849,18 @@ class GraphEditor extends Region {
         gc.setLineWidth(2);
     }
 
-    /** " (true …)" hover suffix at global time gt on lane L — empty
+    /** " (true …)" hover suffix at compiled sample i on lane L — empty
      *  until the true curve visibly splits from the design curve
-     *  there (round A, §5.2). slope = the Shift readout. */
-    private String trueSuffix(double gt, int L, boolean slope) {
+     *  there (round A, §5.2). slope = the Shift readout, differenced
+     *  by INDEX (±2 samples) and reported per DISPLAY-axis unit. */
+    private String trueSuffix(int i, int L, boolean slope) {
         if (!trueArraysReady()) return "";
-        int i = rateIdxAt(gt);
         double dv = derivedAt(i, L), tv = trueAt(i, L);
         if (Math.abs(valToY(L, tv) - valToY(L, dv)) <= TRUE_SPLIT_PX) return "";
         if (!slope) return String.format(" (true %.2f)", tv);
-        double dt = FvdDesigner.INTEGRATE_DT;
-        int i0 = rateIdxAt(gt - 2 * dt), i1 = rateIdxAt(gt + 2 * dt);
-        double span = app.resultRates[i1][0] - app.resultRates[i0][0];
+        int i0 = Math.max(0, i - 2);
+        int i1 = Math.min(app.resultRates.length - 1, i + 2);
+        double span = gAxis(i1) - gAxis(i0);
         double sl = span < 1e-9 ? 0 : (trueAt(i1, L) - trueAt(i0, L)) / span;
         return String.format(" (true %.2f)", sl);
     }
@@ -2646,6 +2963,10 @@ class GraphEditor extends Region {
                     : rs.sec() instanceof StraightCurveSection ? "s/c"
                     : rs.sec() instanceof BridgeSection
                         ? (dirty ? "bridge !" : "bridge") : "force")
+                // distance-domain lanes wear the meters tag (v16.0)
+                + (rs.sec() instanceof LaneSection
+                    && rs.sec().domain() == Section.Domain.DISTANCE
+                    ? "·m" : "")
                 + (rs.sec().reversed() ? " ◀" : "")
                 // influence mark (v15.0, D98)
                 + (rs.sec() instanceof LaneSection li && li.influenced()
@@ -2743,12 +3064,16 @@ class GraphEditor extends Region {
         return a.t() + (b.t() - a.t()) * u;
     }
 
-    /** Global ride time of AUTHORED arc length s in the active s/c
-     *  section. Reversal runs the authored shape back-to-front, so
-     *  authored s maps to traversal (total − s) there — element 0 draws
-     *  at the strip's right edge, matching what the train does. */
-    private double scTimeAtS(StraightCurveSection sc, double sLocal) {
+    /** AXIS coordinate of AUTHORED arc length s in the active s/c
+     *  section. On the native METERS axis (v16.0) this is LINEAR —
+     *  elements lay out at their true lengths; in the time view it
+     *  maps through the compiled samples (the pre-v16.0 rendering).
+     *  Reversal runs the authored shape back-to-front, so authored s
+     *  maps to traversal (total − s) — element 0 draws at the strip's
+     *  right edge, matching what the train does. */
+    private double scAxisAtS(StraightCurveSection sc, double sLocal) {
         double sTrav = sc.reversed ? sc.totalLen() - sLocal : sLocal;
+        if (axisDist()) return tOff + sTrav;
         TrackCompiler.Span sp = activeSpan();
         if (sp == null || app.lastSamples == null
                 || sp.i0() >= app.lastSamples.size()) {
@@ -2758,13 +3083,18 @@ class GraphEditor extends Region {
         return timeAtSpanS(sp, sTrav);
     }
 
-    /** AUTHORED arc length under global ride time t (inverse map).
+    /** AUTHORED arc length under axis coordinate gt (inverse map).
      *  EXTRAPOLATES past both span ends at the boundary sample's speed
-     *  (v11.1): the cursor keeps meaning something beyond the current
-     *  section end, so a boundary drag can EXTEND the section, not
-     *  just shorten it (the live rebuild re-maps every event). */
+     *  (v11.1; exact 1:1 on the meters axis): the cursor keeps meaning
+     *  something beyond the current section end, so a boundary drag
+     *  can EXTEND the section, not just shorten it (the live rebuild
+     *  re-maps every event). */
     private double scSAtT(StraightCurveSection sc, double gt) {
         double tot = Math.max(sc.totalLen(), 1e-6);
+        if (axisDist()) {
+            double sTrav = gt - tOff;   // linear, extends past both ends
+            return sc.reversed ? tot - sTrav : sTrav;
+        }
         TrackCompiler.Span sp = activeSpan();
         double sTrav;
         if (sp == null || app.lastSamples == null
@@ -2816,7 +3146,7 @@ class GraphEditor extends Region {
         int best = -1;
         double bestD = 5;
         for (int j = 1; j < b.length; j++) {
-            double d = Math.abs(x - tToX(scTimeAtS(sc, b[j])));
+            double d = Math.abs(x - tToX(scAxisAtS(sc, b[j])));
             if (d <= bestD) { bestD = d; best = j; }
         }
         return best;
@@ -2831,7 +3161,7 @@ class GraphEditor extends Region {
         if (sc == null) return -1;
         double[] b = scBoundsS(sc);
         for (int j = 1; j < b.length - 1; j++) {
-            if (Math.hypot(x - tToX(scTimeAtS(sc, b[j])), y - scDiamondY()) <= 7) {
+            if (Math.hypot(x - tToX(scAxisAtS(sc, b[j])), y - scDiamondY()) <= 7) {
                 return j;
             }
         }
@@ -2883,8 +3213,8 @@ class GraphEditor extends Region {
         gc.setTextBaseline(VPos.CENTER);
         for (int i = 0; i < sc.elements.size(); i++) {
             StraightCurveSection.Element e = sc.elements.get(i);
-            double xa = tToX(scTimeAtS(sc, b[i]));
-            double xb = tToX(scTimeAtS(sc, b[i + 1]));
+            double xa = tToX(scAxisAtS(sc, b[i]));
+            double xb = tToX(scAxisAtS(sc, b[i + 1]));
             double x0 = Math.min(xa, xb), x1 = Math.max(xa, xb);
             Color col = e.kind == StraightCurveSection.Kind.STRAIGHT
                 ? SC_STRAIGHT_COLOR : SC_CURVE_COLOR;
@@ -2911,11 +3241,11 @@ class GraphEditor extends Region {
             }
         }
         for (int j = 1; j < b.length; j++) {
-            double bx = tToX(scTimeAtS(sc, b[j]));
+            double bx = tToX(scAxisAtS(sc, b[j]));
             boolean internal = j < b.length - 1;
             if (internal && prof.half[j] > 1e-9) {   // the blend zone
-                double za = tToX(scTimeAtS(sc, b[j] - prof.half[j]));
-                double zb = tToX(scTimeAtS(sc, b[j] + prof.half[j]));
+                double za = tToX(scAxisAtS(sc, b[j] - prof.half[j]));
+                double zb = tToX(scAxisAtS(sc, b[j] + prof.half[j]));
                 gc.setFill(Color.rgb(255, 255, 255, 0.07));
                 gc.fillRect(Math.min(za, zb), top, Math.abs(zb - za), bot - top);
             }
@@ -2950,12 +3280,12 @@ class GraphEditor extends Region {
             readout = e.kind == StraightCurveSection.Kind.STRAIGHT
                 ? String.format(Locale.US, "length %.1f m", e.length)
                 : String.format(Locale.US, "arc %.1f m  (%.0f°)", e.arcLen(), e.angleDeg);
-            rx = tToX(scTimeAtS(sc, b[elDragBoundary + 1]));
+            rx = tToX(scAxisAtS(sc, b[elDragBoundary + 1]));
         } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
             double sm = sc.elements.get(elDragSmooth).smoothIn;
             readout = sm < 1e-9 ? "smooth off"
                 : String.format(Locale.US, "smooth %.1f m", sm);
-            rx = tToX(scTimeAtS(sc, b[elDragSmooth]));
+            rx = tToX(scAxisAtS(sc, b[elDragSmooth]));
         }
         if (readout != null) {
             gc.setFill(Color.WHITE);
@@ -3016,7 +3346,7 @@ class GraphEditor extends Region {
     }
 
     /** Faint element separators over an INACTIVE s/c strip (inherits
-     *  the caller's strip alpha). */
+     *  the caller's strip alpha). Linear on the meters axis (v16.0). */
     private void drawScSeparators(GraphicsContext gc, StraightCurveSection sc,
                                   TrackCompiler.Span sp) {
         if (sp == null || app.lastSamples == null
@@ -3027,7 +3357,8 @@ class GraphEditor extends Region {
         gc.setLineDashes(2, 5);
         for (int j = 1; j < b.length - 1; j++) {
             double sTrav = sc.reversed ? sc.totalLen() - b[j] : b[j];
-            double bx = tToX(timeAtSpanS(sp, sTrav));
+            double bx = tToX(axisDist() ? sp.s0() + sTrav
+                                        : timeAtSpanS(sp, sTrav));
             gc.strokeLine(bx, MARGIN_TOP, bx, MARGIN_TOP + plotHeight());
         }
         gc.setLineDashes((double[]) null);
@@ -3408,8 +3739,12 @@ class GraphEditor extends Region {
     private double hoverT = Double.NaN;   // insert preview position on the curve
     private boolean hoverSlope = false;   // Shift while hovering: show the slope
 
-    // time-axis view window; viewT1 < 0 = auto (whole ride, follows edits)
+    // x-axis view window in AXIS units (seconds or meters, v16.0);
+    // viewT1 < 0 = auto (whole ride, follows edits)
     private double viewT0 = 0, viewT1 = -1;
+    // last redraw's axis domain — a flip resets to auto-fit (the
+    // window's units just changed meaning)
+    private boolean lastAxisDist = false;
     private double panLastX = Double.NaN;
     // window frozen for the duration of a drag gesture so the mapping
     // under the cursor stays stable while the ride length changes
@@ -3846,11 +4181,12 @@ class GraphEditor extends Region {
             int rc = 0;
             double rt = 0, rv = 0;
             if (Double.isNaN(t) && resAxisOn) {
-                double gt = xToT(e.getX());
+                double gt = xToT(e.getX());   // AXIS coordinate (v16.0)
                 double rT0 = runT0(), rT1 = rT0 + runDur();
-                if (gt > rT0 + SEAM_TRIM && gt < rT1 - SEAM_TRIM
-                        && !nearSeam(gt, sectionBoundaries())) {
-                    int i = rateIdxAt(gt);
+                int i = sampleIdxAtAxis(gt);
+                double trim = axisTrim(i);
+                if (gt > rT0 + trim && gt < rT1 - trim
+                        && !nearSeam(gt, sectionBoundaries(), trim)) {
                     double best = 8;
                     for (int comp = 1; comp <= 2; comp++) {
                         if (comp == 1 ? !app.settings.resPitch()
@@ -3876,10 +4212,11 @@ class GraphEditor extends Region {
                     && app.resultRates.length > 0
                     && e.getY() >= MARGIN_TOP
                     && e.getY() <= MARGIN_TOP + plotHeight()) {
-                double gt = xToT(e.getX());
+                double gt = xToT(e.getX());   // AXIS coordinate (v16.0)
                 double dur = sectionDur(activeSection);
-                if (gt > tOff + SEAM_TRIM && gt < tOff + dur - SEAM_TRIM) {
-                    int i = rateIdxAt(gt);
+                int i = sampleIdxAtAxis(gt);
+                double trim = axisTrim(i);
+                if (gt > tOff + trim && gt < tOff + dur - trim) {
                     double bestPx = 8;
                     for (int L = 0; L < LANES; L++) {
                         double v = derivedAt(i, L);
@@ -4084,7 +4421,15 @@ class GraphEditor extends Region {
     /** Sync the 3D node markers with this editor's lane/selection. */
     void refreshMarkers() {
         refreshOffset();
-        app.refreshTrackMarkers(activeLane, selSet, selIdx, tOff);
+        // per-node GLOBAL RIDE TIMES (v16.0): distance-domain lanes'
+        // node x is meters — the viewport needs the model's clock,
+        // whatever the plot's axis shows
+        List<BezierBaker.Node> lane = active();
+        double[] times = new double[lane.size()];
+        for (int i = 0; i < lane.size(); i++) {
+            times[i] = nodeGlobalTime(lane.get(i).t);
+        }
+        app.refreshTrackMarkers(activeLane, selSet, selIdx, times);
     }
 
     /** Spine-level track position of the primary selected node, or
@@ -4105,8 +4450,8 @@ class GraphEditor extends Region {
         if (selIdx < 0 || selIdx >= active().size()) return null;
         if (app.lastSamples == null || app.lastSamples.isEmpty()) return null;
         refreshOffset();
-        int idx = (int) FvdDesigner.clamp(
-            Math.round((tOff + active().get(selIdx).t) / FvdDesigner.INTEGRATE_DT),
+        int idx = (int) FvdDesigner.clamp(Math.round(
+            nodeGlobalTime(active().get(selIdx).t) / FvdDesigner.INTEGRATE_DT),
             0, app.lastSamples.size() - 1);
         return app.lastSamples.get(idx);
     }
@@ -4119,7 +4464,18 @@ class GraphEditor extends Region {
         if (!activateGlobal(globalT)) return;
         // s/c + bridge: activate only, no nodes to insert
         if (activeSc() != null || activeBridge() != null) return;
-        insertNodeOnCurve(globalT - tOff);
+        // native lane x at this ride time (v16.0): seconds directly,
+        // or the sample's arc for a distance-domain section
+        double lx;
+        TrackCompiler.Span sp = activeSpan();
+        if (activeDistNative() && sp != null && app.lastSamples != null) {
+            double sTrav = app.lastSamples.get(rateIdxAt(globalT)).s() - sp.s0();
+            boolean rev = sections().get(activeSection).reversed();
+            lx = rev ? sp.sLen() - sTrav : sTrav;
+        } else {
+            lx = globalT - (sp != null ? sp.t0() : tOff);
+        }
+        insertNodeOnCurve(lx);
     }
 
     /** 3D plain-click: activate the piece + section at this ride time
@@ -4220,16 +4576,17 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node sel = lane.get(selIdx);
         double tc = sel.t;
-        // every lane's later nodes move 1 s (fractional handles keep all
-        // shapes; a foreign segment spanning tc stretches by 1 s)
+        double stepX = appendStep();   // 1 s of ride / 10 m of track (v16.0)
+        // every lane's later nodes move by the hold (fractional handles
+        // keep all shapes; a foreign segment spanning tc stretches)
         for (List<BezierBaker.Node> ln : app.lanes) {
             for (BezierBaker.Node m : ln) {
-                if (m.t > tc + 1e-9) m.t += 1.0;
+                if (m.t > tc + 1e-9) m.t += stepX;
             }
         }
         // the selected node's outgoing transition moves to the new node;
-        // selected -> new is a flat 1 s hold
-        BezierBaker.Node hold = new BezierBaker.Node(tc + 1.0, sel.val);
+        // selected -> new is a flat hold
+        BezierBaker.Node hold = new BezierBaker.Node(tc + stepX, sel.val);
         hold.outFrac = sel.outFrac;
         hold.outDv = sel.outDv;
         hold.inFrac = SINE_FRAC;
@@ -4245,14 +4602,15 @@ class GraphEditor extends Region {
 
     void appendSecond() {
         // only the ACTIVE lane gets a real node; the other lanes keep
-        // holding their final value (dotted line) without extra nodes
-        double newEnd = BezierBaker.rideEnd(app.lanes) + 1.0;
+        // holding their final value (dotted line) without extra nodes.
+        // 1 s of ride, or 10 m of track on a distance section (v16.0)
+        double newEnd = BezierBaker.rideEnd(app.lanes) + appendStep();
         List<BezierBaker.Node> lane = active();
         if (activeInfl() != null) {
             // the influence wall is absolute: append lands AT most on
             // the section end, and refuses when there is no room
             double wall = sectionEnd();
-            if (lane.get(lane.size() - 1).t >= wall - MIN_GAP) {
+            if (lane.get(lane.size() - 1).t >= wall - minGap()) {
                 app.statsLabel.setText(
                     "The influence surface ends with its section.");
                 return;
@@ -4591,21 +4949,29 @@ class GraphEditor extends Region {
         if (!real && nbSec instanceof LaneSection nb
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
                 && !nb.reversed && !nb.influenced()) {
+            // slopes read in the NEIGHBOR's native x units and convert
+            // to OURS at the seam design speed (v16.0, D103) — values
+            // are unit-identical across domains
+            boolean nbD = nb.domain() == Section.Domain.DISTANCE;
+            boolean actD = activeDistNative();
+            double vSeam = seamDesignV(atStart);
             List<BezierBaker.Node> ln = nb.lanes.get(laneIdx);
             if (atStart) {
                 BezierBaker.Node n0 = ln.get(0);
                 double outDt = ln.size() >= 2
                     ? BezierBaker.effOutDt(n0, ln.get(1)) : 0;
-                return new double[]{ n0.val,
-                    Math.abs(outDt) < 1e-9 ? 0 : n0.outDv / outDt };
+                return new double[]{ n0.val, domSlope(
+                    Math.abs(outDt) < 1e-9 ? 0 : n0.outDv / outDt,
+                    nbD, actD, vSeam) };
             }
             BezierBaker.Node last = ln.get(ln.size() - 1);
             if (ln.size() < 2 || last.t < BezierBaker.rideEnd(nb.lanes) - 1e-9) {
                 return new double[]{ last.val, 0 };   // holding flat at the boundary
             }
             double inDt = BezierBaker.effInDt(ln.get(ln.size() - 2), last);
-            return new double[]{ last.val,
-                Math.abs(inDt) < 1e-9 ? 0 : last.inDv / inDt };
+            return new double[]{ last.val, domSlope(
+                Math.abs(inDt) < 1e-9 ? 0 : last.inDv / inDt,
+                nbD, actD, vSeam) };
         }
         if (app.resultRates == null || app.lastSamples == null
                 || app.resultRates.length < 12) return null;
@@ -4667,6 +5033,9 @@ class GraphEditor extends Region {
         double val = (real ? trueAt(at, laneIdx) : derivedAt(at, laneIdx))
             - slope * (app.resultRates[at][0] - tB);
         if (real) slope *= realScale;   // design axis → real time
+        // sampled slopes are per SECOND — onto our native x (v16.0)
+        slope = domSlope(slope, false, activeDistNative(),
+            seamDesignV(atStart));
         return new double[]{ val, slope };
     }
 
@@ -4715,6 +5084,20 @@ class GraphEditor extends Region {
         for (int L = 0; L < 3; L++) {
             edge[L] = laneEdge(nb.lanes.get(L), nbEnd, nbStarts);
         }
+        // a DISTANCE-domain neighbor's edge slopes are per METER — the
+        // analytic rate math below runs per second, so convert at the
+        // neighbor's own seam design speed first (v16.0, D103); its
+        // edge VALUES are unit-identical either way
+        if (nb.domain() == Section.Domain.DISTANCE) {
+            TrackCompiler.Span nbSp = spanOf(k);
+            double vNbSeam = nbStarts || nbSp == null
+                ? nb.vDesign
+                : app.lastSamples.get(Math.min(nbSp.i1(),
+                    app.lastSamples.size() - 1)).v();
+            for (int L = 0; L < 3; L++) {
+                edge[L][1] = domSlope(edge[L][1], true, false, vNbSeam);
+            }
+        }
         double rate, rateSlope;   // the neighbor's laneIdx rate, °/s + °/s²
         double pitchDeg, yawDeg;
         if (nb instanceof GeoSection) {
@@ -4745,7 +5128,11 @@ class GraphEditor extends Region {
             rate = Math.toDegrees(rateRad);
             rateSlope = Math.toDegrees(slopeRad);
         }
-        if (activeGeo()) return new double[]{ rate, rateSlope };
+        if (activeGeo()) {
+            // per-second slope → OUR native x units (v16.0)
+            return new double[]{ rate, domSlope(rateSlope, false,
+                activeDistNative(), seamDesignV(atStart)) };
+        }
         // force view: v13.3's rate→G conversion at the ACTIVE side's
         // seam design speed
         double vAct = atStart
@@ -4758,7 +5145,8 @@ class GraphEditor extends Region {
         double val = w * vAct / FVDIntegrator.G0 + axis.y();
         double slope = Math.toRadians(rateSlope) * vAct / FVDIntegrator.G0
             - w * T.y() + omega.cross(axis).y();
-        return new double[]{ val, slope };
+        return new double[]{ val,
+            domSlope(slope, false, activeDistNative(), vAct) };
     }
 
     /** Ω from a body-rate triple (°/s) in the given frame — the shared
@@ -4823,7 +5211,9 @@ class GraphEditor extends Region {
         Vec3 axis = laneIdx == 0 ? U : R;
         double slope = Math.toRadians(slopeR) * vSeam / FVDIntegrator.G0
             - w * T.y() + omega.cross(axis).y();
-        return new double[]{ val, slope };
+        // per-second slope → OUR native x units (v16.0, D103)
+        return new double[]{ val,
+            domSlope(slope, false, activeDistNative(), vSeam) };
     }
 
     /** Index of the compiled sample nearest ride time t (rows are
@@ -4845,6 +5235,33 @@ class GraphEditor extends Region {
     private static boolean sameMode(LaneSection a, Section b) {
         return b instanceof LaneSection
             && (a instanceof GeoSection) == (b instanceof GeoSection);
+    }
+
+    /** Convert a boundary SLOPE between authoring domains at the seam
+     *  design speed (v16.0, D103 — the chain rule): per-meter × v =
+     *  per-second, per-second ÷ v = per-meter; identity when both
+     *  sides share a domain. Values need no conversion — the lanes
+     *  hold the same quantities either way. */
+    private static double domSlope(double slope, boolean fromDist,
+                                   boolean toDist, double v) {
+        if (fromDist == toDist) return slope;
+        double vs = Math.max(0.5, v);
+        return fromDist ? slope * vs : slope / vs;
+    }
+
+    /** The ACTIVE side's design speed at the boundary it is matching
+     *  across (post re-freeze both sides agree there): our compiled
+     *  design END when the neighbor is NEXT, our vDesign otherwise. */
+    private double seamDesignV(boolean atStart) {
+        if (atStart) {
+            TrackCompiler.Span act = spanOf(activeSection);
+            if (act != null && app.lastSamples != null
+                    && !app.lastSamples.isEmpty()) {
+                return Math.max(0.5, app.lastSamples.get(
+                    Math.min(act.i1(), app.lastSamples.size() - 1)).v());
+            }
+        }
+        return Math.max(0.5, sections().get(activeSection).vDesign());
     }
 
     /** The horizontal WALL for a node drag (v10.2): the section end as
@@ -5023,24 +5440,32 @@ class GraphEditor extends Region {
         double newVal = yToVal(activeLane, y);
 
         if (snap) {   // Ctrl enables snapping; free otherwise
-            // time: quantize the TRANSITION from the previous node
-            // (0.3 s, 0.8 s, ...) by default, or the ABSOLUTE ride-time
-            // grid the axis ticks show (Options toggle, v10.2)
+            // x: quantize the TRANSITION from the previous node
+            // (0.3 s / 0.8 s — or meters on a distance axis) by
+            // default, or the ABSOLUTE grid the axis ticks show
+            // (Options toggle, v10.2). The grid lives in the DISPLAY
+            // domain (v16.0): a cross-domain view snaps on the axis
+            // you SEE, mapped back to native through the warp
+            // (identity when unwarped — the historic math exactly).
             if (dragNodeIdx > 0) {
-                double step = snapT();
-                double prevT = lane.get(dragNodeIdx - 1).t;
+                double step = snapXStep();
+                double aNew = warpFwd(newT);
+                double aPrev = warpFwd(lane.get(dragNodeIdx - 1).t);
                 double g = app.settings.snapTAbsolute()
-                    ? Math.round((tOff + newT) / step) * step - tOff
-                    : prevT + Math.round((newT - prevT) / step) * step;
+                    ? Math.round((tOff + aNew) / step) * step - tOff
+                    : aPrev + Math.round((aNew - aPrev) / step) * step;
                 // the section end is a snap point of its own, and grid
                 // points hugging it are ABSORBED — a snap near the end
                 // lands EXACTLY on the end, never almost (v10.2)
-                if (dragEndLimit < Double.MAX_VALUE
-                        && (Math.abs(g - dragEndLimit) < step * 0.5
-                            || Math.abs(newT - dragEndLimit) < Math.abs(newT - g))) {
+                double aEnd = dragEndLimit < Double.MAX_VALUE
+                    ? warpFwd(dragEndLimit) : Double.MAX_VALUE;
+                if (aEnd < Double.MAX_VALUE
+                        && (Math.abs(g - aEnd) < step * 0.5
+                            || Math.abs(aNew - aEnd) < Math.abs(aNew - g))) {
                     newT = dragEndLimit;
                 } else {
-                    newT = Math.max(prevT + MIN_GAP, g);
+                    newT = Math.max(lane.get(dragNodeIdx - 1).t + minGap(),
+                        warpInv(g));
                 }
             }
             // value: global absolute grid (0.0 G, 3.6 G, 124 deg/s ...)
@@ -5100,10 +5525,10 @@ class GraphEditor extends Region {
         double lo = -1e18, hi = 1e18;
         for (int i : selSet) {
             if (i > 0 && !selSet.contains(i - 1)) {
-                lo = Math.max(lo, lane.get(i - 1).t + MIN_GAP - lane.get(i).t);
+                lo = Math.max(lo, lane.get(i - 1).t + minGap() - lane.get(i).t);
             }
             if (i < lane.size() - 1 && !selSet.contains(i + 1)) {
-                hi = Math.min(hi, lane.get(i + 1).t - MIN_GAP - lane.get(i).t);
+                hi = Math.min(hi, lane.get(i + 1).t - minGap() - lane.get(i).t);
             }
         }
         dT = FvdDesigner.clamp(dT, Math.min(lo, 0), Math.max(hi, 0));
@@ -5123,16 +5548,21 @@ class GraphEditor extends Region {
         if (selIdx < 0) return false;
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(selIdx);
-        double newT = n.t + dtDir * snapT();
+        // steps live in the DISPLAY domain (v16.0): a warped view
+        // nudges by axis steps, mapped back to native
+        double step = snapXStep();
+        double newT = warpMap == null ? n.t + dtDir * step
+            : warpInv(warpFwd(n.t) + dtDir * step);
         double newVal = n.val + dvDir * snapVal(activeLane);
         if (grid) {   // land ON the grid — same axis references as Ctrl-drag
             if (selIdx > 0) {
-                double step = snapT();
-                double prevT = lane.get(selIdx - 1).t;
+                double aNew = warpFwd(newT);
+                double aPrev = warpFwd(lane.get(selIdx - 1).t);
                 double g = app.settings.snapTAbsolute()
-                    ? Math.round((tOff + newT) / step) * step - tOff
-                    : prevT + Math.round((newT - prevT) / step) * step;
-                newT = Math.max(prevT + MIN_GAP, g);
+                    ? Math.round((tOff + aNew) / step) * step - tOff
+                    : aPrev + Math.round((aNew - aPrev) / step) * step;
+                newT = Math.max(lane.get(selIdx - 1).t + minGap(),
+                    warpInv(g));
             }
             double vStep = snapVal(activeLane);
             if (app.settings.snapVRelative() && selIdx > 0) {
@@ -5159,11 +5589,11 @@ class GraphEditor extends Region {
         if (idx == 0) {
             newT = 0;
         } else {
-            double lo = lane.get(idx - 1).t + MIN_GAP;
+            double lo = lane.get(idx - 1).t + minGap();
             // time-rippling pushes the later nodes along, so no upper clamp
             double hi = (app.rippleT || idx == lane.size() - 1)
                     ? Double.MAX_VALUE
-                    : lane.get(idx + 1).t - MIN_GAP;
+                    : lane.get(idx + 1).t - minGap();
             newT = FvdDesigner.clamp(newT, lo, hi);
         }
         if (app.rippleT || app.rippleV) {
@@ -5322,25 +5752,27 @@ class GraphEditor extends Region {
         int i = 0;
         while (i < lane.size() && lane.get(i).t < t) i++;
         if (i == 0) return false;
-        if (t - lane.get(i - 1).t < INSERT_GAP) return false;
-        if (i < lane.size() && lane.get(i).t - t < INSERT_GAP) return false;
+        if (t - lane.get(i - 1).t < insertGap()) return false;
+        if (i < lane.size() && lane.get(i).t - t < insertGap()) return false;
         return true;
     }
 
-    /** The insert position's Ctrl time-snap (v10.7): the horizontal
-     *  snap reference applies — Δt from the previous node (local,
-     *  default) or the absolute ride-time grid. */
+    /** The insert position's Ctrl x-snap (v10.7): the horizontal snap
+     *  reference applies — Δ from the previous node (local, default)
+     *  or the absolute grid, in the DISPLAY domain's units (v16.0),
+     *  mapped back to native through the warp. */
     private double snapInsertT(double t) {
-        double step = snapT();
+        double step = snapXStep();
+        double a = warpFwd(t);
         if (app.settings.snapTAbsolute()) {
-            return Math.round((tOff + t) / step) * step - tOff;
+            return warpInv(Math.round((tOff + a) / step) * step - tOff);
         }
         List<BezierBaker.Node> lane = active();
         int i = 0;
         while (i < lane.size() && lane.get(i).t < t) i++;
         if (i == 0) return t;
-        double prevT = lane.get(i - 1).t;
-        return prevT + Math.round((t - prevT) / step) * step;
+        double aPrev = warpFwd(lane.get(i - 1).t);
+        return warpInv(aPrev + Math.round((a - aPrev) / step) * step);
     }
 
     /** The hover dot after the optional Ctrl snap: time lands on the
@@ -5378,7 +5810,7 @@ class GraphEditor extends Region {
             // on the dotted hold-final-value extension: append a real
             // node at the same level (flat sine transition)
             BezierBaker.Node last = lane.get(i - 1);
-            if (t - last.t < INSERT_GAP || t > sectionEnd() + 1e-9) return -1;
+            if (t - last.t < insertGap() || t > sectionEnd() + 1e-9) return -1;
             pushUndoSnapshot();
             n = new BezierBaker.Node(t, last.val);
             last.outFrac = SINE_FRAC; last.outDv = 0;
@@ -5394,7 +5826,7 @@ class GraphEditor extends Region {
             return i;
         }
         BezierBaker.Node a = lane.get(i - 1), b = lane.get(i);
-        if (t - a.t < INSERT_GAP || b.t - t < INSERT_GAP) return -1;
+        if (t - a.t < insertGap() || b.t - t < insertGap()) return -1;
         pushUndoSnapshot();
         boolean flat = Math.abs(a.outDv) < 1e-9 && Math.abs(b.inDv) < 1e-9
                     && Math.abs(a.val - b.val) < 1e-9;
@@ -5792,7 +6224,10 @@ class GraphEditor extends Region {
         int row = 0;
         if (prev != null) {
             dtField = new TextField(String.format(Locale.US, "%.3f", n.t - prev.t));
-            grid.addRow(row++, new Label("Transition time (s)"), dtField);
+            // NATIVE units — a distance-domain section's transitions
+            // are meters of track (v16.0)
+            grid.addRow(row++, new Label(activeDistNative()
+                ? "Transition length (m)" : "Transition time (s)"), dtField);
         } else if (activeSection == 0 && activeInfl() == null) {
             // node 0 of the FIRST section: the ride's start speed lives
             // here too (same value as the Coaster-menu spinner). Not on
@@ -5863,7 +6298,7 @@ class GraphEditor extends Region {
             }
             double val = parseOr(fVal, n.val);
             if (prev != null) {
-                double dt = Math.max(MIN_GAP, parseOr(fDt, n.t - prev.t));
+                double dt = Math.max(minGap(), parseOr(fDt, n.t - prev.t));
                 moveNode(idx, prev.t + dt, val);   // honors ripple toggles
             } else {
                 moveNode(idx, n.t, val);
@@ -5893,9 +6328,10 @@ class GraphEditor extends Region {
                 double lo = defMin(L), hi = defMax(L);
                 if (app.resultRates != null && app.lastSamples != null) {
                     for (int i = 0; i < app.resultRates.length; i++) {
-                        double t = app.resultRates[i][0];
-                        if (t < Math.max(tOff + SEAM_TRIM, t0)
-                                || t > Math.min(tOff + dur - SEAM_TRIM, t1)) continue;
+                        double a = gAxis(i);
+                        double trim = axisTrim(i);
+                        if (a < Math.max(tOff + trim, t0)
+                                || a > Math.min(tOff + dur - trim, t1)) continue;
                         double v = derivedAt(i, L);
                         lo = Math.min(lo, v);
                         hi = Math.max(hi, v);
@@ -5918,12 +6354,13 @@ class GraphEditor extends Region {
         for (int L = 0; L < LANES; L++) {
             double lo = defMin(L), hi = defMax(L);
             for (double[] p : BezierBaker.polyline(app.lanes.get(L))) {
-                if (tOff + p[0] < t0 || tOff + p[0] > t1) continue;
+                double a = tOff + warpFwd(p[0]);   // native → axis (v16.0)
+                if (a < t0 || a > t1) continue;
                 lo = Math.min(lo, p[1]);
                 hi = Math.max(hi, p[1]);
             }
-            double eA = BezierBaker.evalAt(app.lanes.get(L), t0 - tOff);
-            double eB = BezierBaker.evalAt(app.lanes.get(L), t1 - tOff);
+            double eA = BezierBaker.evalAt(app.lanes.get(L), warpInv(t0 - tOff));
+            double eB = BezierBaker.evalAt(app.lanes.get(L), warpInv(t1 - tOff));
             lo = Math.min(lo, Math.min(eA, eB));
             hi = Math.max(hi, Math.max(eA, eB));
             if (infl != null) {
@@ -5973,10 +6410,11 @@ class GraphEditor extends Region {
         List<Double> seams = sectionBoundaries();
         double rT0 = runT0(), rT1 = rT0 + runDur();   // run clamp (D85)
         for (int i = 0; i < app.resultRates.length; i++) {
-            double t = app.resultRates[i][0];
-            if (t < t0 || t > t1) continue;
-            if (t < rT0 + SEAM_TRIM || t > rT1 - SEAM_TRIM
-                    || nearSeam(t, seams)) continue;
+            double a = gAxis(i);
+            double trim = axisTrim(i);
+            if (a < t0 || a > t1) continue;
+            if (a < rT0 + trim || a > rT1 - trim
+                    || nearSeam(a, seams, trim)) continue;
             if (app.settings.resPitch()) {
                 lo = Math.min(lo, resValueAt(i, 1));
                 hi = Math.max(hi, resValueAt(i, 1));
@@ -5992,9 +6430,9 @@ class GraphEditor extends Region {
         resHi = Math.ceil((hi + pad) / step) * step;
     }
 
-    /** Interior section-boundary times (global) across the whole RUN —
-     *  the overlays skip a SEAM_TRIM band around each (bodyRates smear
-     *  discontinuities). */
+    /** Interior section boundaries in AXIS coordinates across the
+     *  whole RUN — the overlays skip a trim band around each
+     *  (bodyRates smear discontinuities). */
     private List<Double> sectionBoundaries() {
         List<Double> out = new ArrayList<>();
         List<RunSec> rl = runLayout();
@@ -6002,9 +6440,11 @@ class GraphEditor extends Region {
         return out;
     }
 
-    private static boolean nearSeam(double t, List<Double> seams) {
+    /** Within `trim` axis units of a seam? (SEAM_TRIM on the time
+     *  axis; speed-scaled by the caller on the meters axis, v16.0.) */
+    private static boolean nearSeam(double a, List<Double> seams, double trim) {
         for (double s : seams) {
-            if (Math.abs(t - s) < SEAM_TRIM) return true;
+            if (Math.abs(a - s) < trim) return true;
         }
         return false;
     }
@@ -6062,7 +6502,18 @@ class GraphEditor extends Region {
         double w = canvas.getWidth(), h = canvas.getHeight();
         if (w <= 0 || h <= 0 || plotWidth() <= 0 || plotHeight() <= 0) return;
         enforceLocks();           // before updateScale sees the handles
-        refreshOffset();          // section offsets before any t mapping
+        // an AXIS DOMAIN change re-scales the whole x-axis: any manual
+        // zoom window is meaningless in the new units — auto-fit
+        if (axisDist() != lastAxisDist) {
+            lastAxisDist = axisDist();
+            viewT0 = 0;
+            viewT1 = -1;
+        }
+        refreshOffset();          // section offsets before any x mapping
+        // the cross-domain warp map follows the compile — except while
+        // a node/handle gesture is live (frozen so the mapping under
+        // the cursor stays stable through the per-event rebuilds)
+        if (dragNodeIdx < 0 && dragHandleIdx < 0) refreshWarp();
         sanitizeView();           // stale manual windows follow the piece
         updateScale();
         refreshMarkers();         // 3D markers follow lane + selection
@@ -6174,13 +6625,14 @@ class GraphEditor extends Region {
                 gc.beginPath();
                 boolean started = false;
                 for (int i = 0; i < app.resultRates.length; i++) {
-                    double t = app.resultRates[i][0];
-                    if (t < rT0 + SEAM_TRIM || t > rT1 - SEAM_TRIM
-                            || nearSeam(t, seams)) {
+                    double a = gAxis(i);
+                    double trim = axisTrim(i);
+                    if (a < rT0 + trim || a > rT1 - trim
+                            || nearSeam(a, seams, trim)) {
                         started = false;   // break the path across seams
                         continue;
                     }
-                    double rx = tToX(t);
+                    double rx = tToX(a);
                     double ry = resToY(resValueAt(i, comp));
                     if (!started) { gc.moveTo(rx, ry); started = true; }
                     else gc.lineTo(rx, ry);
@@ -6211,13 +6663,13 @@ class GraphEditor extends Region {
             String unit = activeGeo() ? "g" : "°/s";
             String txt;
             if (hoverSlope) {
-                double dt = FvdDesigner.INTEGRATE_DT;
-                int i0 = rateIdxAt(hoverResT - 2 * dt);
-                int i1 = rateIdxAt(hoverResT + 2 * dt);
-                double span = app.resultRates[i1][0] - app.resultRates[i0][0];
+                int ic = sampleIdxAtAxis(hoverResT);
+                int i0 = Math.max(0, ic - 2);
+                int i1 = Math.min(app.resultRates.length - 1, ic + 2);
+                double span = gAxis(i1) - gAxis(i0);
                 double slope = span < 1e-9 ? 0
                     : (resValueAt(i1, hoverResComp) - resValueAt(i0, hoverResComp)) / span;
-                txt = String.format("%s %.2f %s/s", name, slope, unit);
+                txt = String.format("%s %.2f %s/%s", name, slope, unit, xUnit());
             } else {
                 txt = String.format("%s %.2f %s", name, hoverResVal, unit);
             }
@@ -6240,21 +6692,21 @@ class GraphEditor extends Region {
             gc.setTextAlign(TextAlignment.LEFT);
             gc.setTextBaseline(VPos.BOTTOM);
             String txt;
+            int ic = sampleIdxAtAxis(hoverDerT);
             if (hoverSlope) {
-                double hdt = FvdDesigner.INTEGRATE_DT;
-                int i0 = rateIdxAt(hoverDerT - 2 * hdt);
-                int i1 = rateIdxAt(hoverDerT + 2 * hdt);
-                double span = app.resultRates[i1][0] - app.resultRates[i0][0];
+                int i0 = Math.max(0, ic - 2);
+                int i1 = Math.min(app.resultRates.length - 1, ic + 2);
+                double span = gAxis(i1) - gAxis(i0);
                 double slope = span < 1e-9 ? 0
                     : (derivedAt(i1, hoverDerLane)
                         - derivedAt(i0, hoverDerLane)) / span;
-                txt = String.format("%.2f %s/s", slope,
-                    laneUnit(hoverDerLane).trim())
-                    + trueSuffix(hoverDerT, hoverDerLane, true);
+                txt = String.format("%.2f %s/%s", slope,
+                    laneUnit(hoverDerLane).trim(), xUnit())
+                    + trueSuffix(ic, hoverDerLane, true);
             } else {
                 txt = String.format("%.2f%s", hoverDerVal,
                     laneUnit(hoverDerLane))
-                    + trueSuffix(hoverDerT, hoverDerLane, false);
+                    + trueSuffix(ic, hoverDerLane, false);
             }
             gc.fillText(txt, hx + 8, hy - 6);
             gc.setGlobalAlpha(1.0);
@@ -6293,10 +6745,16 @@ class GraphEditor extends Region {
                     ? String.format("%.2f%s (Δ %+.2f)", nd.val + off,
                         laneUnit(activeLane), nd.val)
                     : String.format("%.2f%s", nd.val, laneUnit(activeLane));
+                // x readout in the DISPLAY domain: native Δ unwarped
+                // (Δt or Δs per the section), the warped axis Δ in a
+                // cross-domain view — always what the plot shows
+                String xu = xUnit();
                 String txt = i == 0
-                    ? String.format("t=%.2fs  %s", nd.t, vTxt)
-                    : String.format("Δt=%.2fs  %s",
-                        nd.t - lane.get(i - 1).t, vTxt);
+                    ? String.format("%s=%.2f%s  %s",
+                        axisDist() ? "s" : "t", warpFwd(nd.t), xu, vTxt)
+                    : String.format("Δ%s=%.2f%s  %s",
+                        axisDist() ? "s" : "t",
+                        warpFwd(nd.t) - warpFwd(lane.get(i - 1).t), xu, vTxt);
                 double tw = txt.length() * 6.5;   // approx width at 11 px
                 double tx = FvdDesigner.clamp(px + 8, MARGIN_LEFT + 4, w - marginRight() - tw - 4);
                 double ty = FvdDesigner.clamp(py - 20, MARGIN_TOP + 4, MARGIN_TOP + plotHeight() - 16);
@@ -6322,9 +6780,19 @@ class GraphEditor extends Region {
             String hoverTxt;
             if (hoverSlope) {
                 // Shift: the ANALYTIC slope here replaces the value
-                // (differencing the baked polyline stair-stepped)
+                // (differencing the baked polyline stair-stepped).
+                // Native units — divided onto the DISPLAY axis when
+                // the strip is warped (the slope you SEE, v16.0).
                 double slope = BezierBaker.slopeAt(lane, hoverT);
-                hoverTxt = String.format("%.2f %s/s", slope, laneUnit(activeLane).trim());
+                if (warpMap != null) {
+                    double hStep = activeDistNative() ? 0.5 : 0.02;
+                    double da = warpFwd(hoverT + hStep)
+                        - warpFwd(hoverT - hStep);
+                    slope = Math.abs(da) < 1e-12 ? 0
+                        : slope * 2 * hStep / da;
+                }
+                hoverTxt = String.format("%.2f %s/%s", slope,
+                    laneUnit(activeLane).trim(), xUnit());
             } else {
                 hoverTxt = String.format("%.2f%s", hv, laneUnit(activeLane));
             }
@@ -6332,7 +6800,9 @@ class GraphEditor extends Region {
             // (not on the influence surface — its deltas aren't the
             // quantity the true arrays measure; the overlays carry true)
             if (activeInfl() == null) {
-                hoverTxt += trueSuffix(tOff + hoverT, activeLane, hoverSlope);
+                hoverTxt += trueSuffix(
+                    sampleIdxAtAxis(tOff + warpFwd(hoverT)),
+                    activeLane, hoverSlope);
             }
             gc.fillText(hoverTxt, hx + 8, hy - 6);
             gc.setGlobalAlpha(1.0);
@@ -6362,7 +6832,7 @@ class GraphEditor extends Region {
 
         // POV camera position on the track (toggle in Edit > Options)
         if (app.viewport.povActive && app.settings.povMarker()) {
-            double px2 = tToX(app.viewport.povTime);
+            double px2 = tToX(axisOfTime(app.viewport.povTime));
             if (px2 >= MARGIN_LEFT - 1 && px2 <= w - marginRight() + 1) {
                 gc.setGlobalAlpha(0.4);
                 gc.setStroke(FvdDesigner.TIME_COLOR);   // purple = time
@@ -6449,8 +6919,9 @@ class GraphEditor extends Region {
             gc.fillText(String.format(tickFmt, t), tToX(t), h - 16);
         }
         gc.setFont(Font.font(11));
-        gc.setFill(FvdDesigner.TIME_COLOR);   // purple = time, everywhere in the UI
-        gc.fillText("Time (s)", MARGIN_LEFT + plotWidth() / 2, h - 2);
+        gc.setFill(FvdDesigner.TIME_COLOR);   // purple = the x-axis color
+        gc.fillText(axisDist() ? "Distance (m)" : "Time (s)",
+            MARGIN_LEFT + plotWidth() / 2, h - 2);
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setTextBaseline(VPos.TOP);
     }
