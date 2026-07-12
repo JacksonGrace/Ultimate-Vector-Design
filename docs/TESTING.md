@@ -690,6 +690,147 @@
     POS/POS_YAW ping-pong no longer flips an end-of-graph jump in
     and out.
 
+37. **v15.0 INFLUENCE mode (Phase2Gate.influence; D98, §5 round
+    C).** 24 checks: (a) DO-NO-HARM — entering influence on an
+    undrifted section (zero deltas) compiles BITWISE, the fast path
+    still exports base curves, and discard restores bitwise — also
+    after sculpting a real delta first; (b) delta-0 closure at a
+    DRIFTED operating speed (26 → 29 m/s over the 407 m default
+    layout): shape holds to 0.27 m interior / 0.10 m end
+    (convert-class residual — the re-time across a speed change IS
+    the become-real mechanism) and the clock re-times shorter
+    (ratio 0.919); (c) ADDITIVITY, force section: a 15 °/s yaw
+    delta hump lands on the resulting yaw rate as base + delta to
+    0.006 °/s while genuinely bending the track 77 m; discard
+    restores bitwise; (d) ADDITIVITY, geo section: a 0.4 g ΔGv hump
+    lands on the felt Gv to 1e-4 g; (e) the USER'S EXAMPLE: a
+    no-lateral force section + a held 10 °/s yaw delta produces
+    felt/true Gl 0.463 g (= ω·v/g analytically) with the authored
+    Gl lane untouched at 0; (f) upstream translation leaves the
+    influenced local shape to 0.0 (float-exact); (g) the D95
+    reconcile LEAVES an influenced continuation's operating speed
+    (the split is deliberate); (h) IO — influenced saves carry
+    infl/dlane/dn, the section line keeps the AUTHORED speed, the
+    canonical round-trip is byte-identical, and uninfluenced saves
+    carry no influence lines; (i) piece reversal with influence
+    compiles and double-reversal restores to 5.6e-14 m. All passed
+    2026-07-11 (241 checks + 7 probes).
+
+68. v15.0 influence feel round (untested by the user yet):
+    (a) badge menu > "Influence resulting geo graphs" on a force
+    section: the strip flips to geo colors, lane buttons read
+    Δ Pitch/Δ Yaw/Δ Roll, badge grows "fx", and the track does NOT
+    move; the dotted resulting curves sit behind a flat zero delta
+    line. Drag the delta up — the 3D track bends live and the
+    dotted resulting follows exactly (hover it: values; the
+    Resulting ▾ picks read TRUE values, right axis says "True").
+    (b) Badge > "Resulting view": one curve per lane — the nodes
+    now sit ON the resulting curve; place a node where the yaw rate
+    should BE and the readout shows "value (Δ delta)"; the faint
+    dashed base guide and the tint between show what the influence
+    adds; Ctrl-snap lands the RESULTING value on grid steps.
+    (c) Uncheck "Edit influence": the design lanes come back
+    (force colors) — author zero laterals, and with a yaw delta
+    live a THIN true stroke shows the laterals beside the flat
+    design lane; hover reads " (true …)".
+    (d) B on a delta edge node at a section boundary: the RESULTING
+    curve meets the neighbor (repeat = no creep).
+    (e) "Bake influence into design graphs…": density preview
+    opens against the compiled (influenced) curves; Apply folds the
+    influence into ordinary lanes (badge loses fx); one Ctrl+Z
+    returns the influenced state. "Discard influence" snaps the
+    track back exactly.
+    (f) Delta nodes refuse to drag past the section end (hard
+    wall); A appends only up to it; the hold-insert explains
+    itself in the stats bar.
+    (g) Undo/redo walk the whole flow (enter → sculpt → view
+    toggles → discard) cleanly; save/load round-trips the deltas
+    and comes back on the DESIGN surface.
+    (h) Reverse the piece: the influenced shape survives (badge ◀
+    + fx), influence editing is locked until reversed back.
+
+38. **v15.1-v15.3 conversion round (Phase2Gate.convRound;
+    D99-D101).** (a) ANALYTIC EXTRACTION: a max-accuracy adaptive
+    force→geo convert of the default layout converges — interior
+    rate residual 0.077 °/s (the old ±2-sample differencing floored
+    at ~1.1 however dense; ConvProbe also showed zero time-shift,
+    ruling out the re-time). (b) CONFLICT-PRESERVING CONVERTS: a
+    pinned 15 m/s section with 1.94 m/s of drift converts to geo
+    keeping vDesign 15 bitwise, the pin, the identical drift, and
+    its shape to the fit residual through the full rebuild loop;
+    partial converts pin BOTH halves. (c) RIGID TILT: force AND geo
+    pieces at pitch 10° roll −7° match the exact rigid rotation to
+    0.0 m (probed 190 m / 21 m off before), zeroing the deltas
+    restores BITWISE, and the felt re-projection preserves the κ
+    identity to 2e-16 g. (d) TRANSITION TO REAL: a section
+    inheriting a pinned neighbor's 3.55 m/s split closes to
+    0.000 m/s, SURVIVES the reconcile loop (the real-anchor rule),
+    the neighbor keeps its own 1.94 m/s conflict, and the start Gv
+    lands on the neighbor's true end felt. All passed 2026-07-11
+    (261 checks + probes).
+
+69. v15.1-v15.3 conversion feel round (untested by the user yet):
+    (a) convert any section at high density/accuracy — the fitted
+    graphs now sit ON the dashed originals (no "slightly different
+    spot"); the roll spikes still round a hair (roll is measured,
+    not analytic). (b) Convert a speed-conflicted section
+    whole/partial: the conflict badge (≠v), the design speed and
+    the shape all stay; the thin true strokes don't move. (c) Pitch
+    or roll a piece (Placement ▾ rows — unlock the padlock first;
+    or the bridge panel): the 3D track rotates RIGIDLY about the
+    piece start; the force strips grow true strokes showing the new
+    felt reality; zeroing reverts exactly. Splitting/reversing a
+    TILTED piece bakes the tilt in (documented corner — the tail
+    re-solves). (d) '+' after a conflicted section forks: continue
+    = the old behavior; transition to real = the new section starts
+    seamlessly off the TRUE curves (watch the thin strokes stop at
+    the seam). (e) Resolve submenu: on a conflicted section
+    directly after another conflicted one, only "Transition to
+    real" is live (the others say resolve-the-previous-first);
+    directly after a bridge everything explains itself; chains
+    resolve cleanly left→right, each section its own choice.
+    (f) B/Shift+B on the FIRST node of a transitioned section keeps
+    matching the real curves (re-press = no creep); B on the LAST
+    node of the conflicted section before it refuses with the
+    stats-bar hint. (g) Bridge-panel padlocks and Placement-row
+    padlocks on the bridged-in piece are the same locks — flip one,
+    reopen the other menu, it followed.
+
+39. **v15.4 influence/resolve adjustments (Phase2Gate influence
+    (a/b/g/g2) + convRound (d) REWRITTEN; D102).** (a) entering
+    influence NEVER touches speeds (vDesign bitwise, pair
+    mirrored); (b) the divergent-pair machinery still engages via
+    direct field writes (hand-edited files); (g) an influenced
+    continuation reconciles like a normal section (18.35 →
+    25.87 m/s under upstream drift, pair locked); (g2) THE USER'S
+    BUG: influencing a pinned conflicted section leaves its speed
+    (15.0 bitwise) and the NEXT section's conflict (drift 3.55 →
+    3.55 m/s, vDesign kept); (d) RE-FREEZE directly right of a
+    conflicted section closes the downstream split 3.55 →
+    0.000 m/s and survives the reconcile (the refreeze-then-Shift+B
+    flow). All passed 2026-07-11 (253 checks).
+
+70. v15.4 feel round (untested by the user yet): (a) the POV
+    convert-cancel bug: park POV BEYOND a bridge, convert the whole
+    bridge — it now applies (and any refused convert says why in
+    the stats bar). (b) Influence a speed-conflicted section: its
+    ≠v badge, its design speed and the NEXT section's conflict all
+    stay put; the transition into the section stays perfect.
+    (c) Influence lanes are Δ Vert G/Δ Lat G or Δ Pitch/Δ Yaw only
+    — the roll button grays, the roll strip shows the dotted
+    resulting roll; a fresh influence has nodes at BOTH ends of the
+    flat zero line. (d) Resulting view: drag a handle — its angle
+    reads exactly as in Influence view (the assembly rides the
+    base). (e) Resolve submenu: two ops; "Re-freeze" works right
+    after another conflicted section, then Shift+B on the first
+    node lines the seam up with the real ride (re-press = no
+    creep); "Make graphs real" still waits for the previous
+    section. (f) '+' after a conflicted end still forks
+    Continue/Transition to real — unchanged, per your note.
+    (g) B or Shift+B on a delta lane's first/last node zeroes it
+    with a flat handle (no influence) — repeat presses change
+    nothing, and neither seam speed moves.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

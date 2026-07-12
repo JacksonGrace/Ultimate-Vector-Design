@@ -73,7 +73,16 @@ Section.java        sealed interface (domain TIME|DISTANCE, vDesign,
 LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     lanes + vDesign + reversed live here so the editor,
                     undo, IO and compiler handle force and geo through
-                    one type.
+                    one type. INFLUENCE state (v15.0, D98): deltaLanes
+                    (OTHER-mode delta lanes; null = uninfluenced) +
+                    vAuthored (frozen authored speed — the vDesign
+                    FIELD stays the one OPERATING speed everything
+                    reads/writes) + editInfluence (which surface the
+                    strip edits; in DocState, never saved) +
+                    baseCurves (last compile's base rows {t*, L0..L2},
+                    transient — the editor's guides/offsets read them
+                    via baseValAt/baseSlopeAt; deltasAllZero() gates
+                    the do-no-harm fast path).
 ForceSection.java   classic FVD mode: lanes = Gv / Gl / roll rate.
 GeoSection.java     Phase 2 (v10.0, D58): lanes = pitch / yaw / roll
                     rate (°/s), integrated DIRECTLY — no solver;
@@ -220,24 +229,74 @@ TrackPiece.java     placement (origin + BASE ORIENTATION quat + yaw
                     v13.13 D87, `piece` fields 9-10: applied yaw →
                     pitch-about-horizontal-right → roll-about-heading,
                     each controls exactly ONE Euler quantity of the
-                    entry frame; all-zero paths stay float-exact) +
-                    section
+                    entry frame; all-zero paths stay float-exact.
+                    RIGID since v15.2 D100: sections integrate at
+                    genPose() = baseOrient⊕yaw and tilt() — the
+                    pitch/roll rotation, IDENTITY object when both 0
+                    — rotates the finished geometry about the entry,
+                    so tilting preserves shape and the felt splits
+                    design/real instead of gravity re-solving.
+                    uiLockPitch/Roll = the Placement rows' edit
+                    guards, not persisted; a bridged-in piece uses
+                    the bridge's lock fields instead) + section
                     chain; editing one piece can never move another.
+                    CORNER (D100): split/reverse of a TILTED piece
+                    bakes the tilt into baseOrient — those re-solve.
 Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     slots (Phase 3). Section-0 lanes are shared BY
                     REFERENCE with the editor. Cosmetics stay UI-side
                     until milestone B (travel via DesignIO.Cosmetics).
                     Also home to the bridge placement MARCH/optimizer +
-                    the auto-reoptimize pass (v13.14) and the CONVERT
+                    the auto-reoptimize pass (v13.14), the CONVERT
                     engine (convertToLanes uniform/adaptive fits +
-                    whole/partial ops + scCutClamp, v14.0 D89/D90).
+                    whole/partial ops + scCutClamp, v14.0 D89/D90;
+                    pitch/yaw extraction ANALYTIC off the recorded
+                    felt since v15.1 D99 — the κ identity, exact;
+                    only roll is measured, ±1 sample — and converts
+                    CARRY vPinned: a conflicted section stays
+                    conflicted, both partial halves pin),
+                    the INFLUENCE enter/discard ops (v15.0 D98 —
+                    model-side so the gates drive the real thing;
+                    reconcileChainedSpeeds SKIPS influenced sections:
+                    "influencing creates the split", their operating
+                    speed moves only by explicit action; partial
+                    convert refuses them) and TRANSITION-TO-REAL
+                    (v15.2 D101: vDesign := true entry + lane start
+                    nodes lined to the left neighbor's TRUE curves,
+                    slope in real time; the reconcile recognizes
+                    REAL-ANCHORED continuations — vDesign nearer the
+                    true seam speed than the design end — and
+                    freezes them to TRUE so the resolution
+                    survives).
 TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
                     section at vDesign (force = unchanged bake+RK4;
                     geo = GeoIntegrator; s/c = ScIntegrator — both
                     exit poses carry the integrated quaternion;
                     REVERSED sections generate
                     canonically at the entry height and
-                    reverseAndPlace flips + yaw-places them, D67),
+                    reverseAndPlace flips + yaw-places them, D67;
+                    a piece's PITCH/ROLL deltas apply as a RIGID
+                    per-section rotation about its entry (tiltLine/
+                    tiltSample, v15.2 D100 — recorded felt
+                    re-projects G' = G − axis.y + axis'.y so the κ
+                    identity holds; v stays the design profile —
+                    the tilt's speed change IS Pass D's split;
+                    bridges never tilt, pieceHead feeds the tilted
+                    head to the bridge capture);
+                    INFLUENCED lane sections take influencedLane's
+                    TWO-PASS, v15.0 D98: ref = integrate(authored
+                    lanes, vAuthored), base = ANALYTIC other-mode
+                    values along ref at the operating profile —
+                    rates ω = g(G−axis.y)/v scaled v*over v_d, felt
+                    via the §5.1 identity, roll from the bake —
+                    re-timed by the convert trapezoid onto t*, then
+                    base+delta integrates AS the other mode
+                    (force→GeoIntegrator, geo→FVDIntegrator) at the
+                    operating speed, so resulting == base + delta
+                    EXACTLY and shape is operating-speed-invariant;
+                    all-zero deltas at vDesign==vAuthored take the
+                    plain path BITWISE — both gated. baseCurves
+                    export rides on LaneSection),
                     passD TRUE speed per RUN (v13.6 D79, §5.1: a
                     run = pieces chained by trailing bridges; each
                     run's energy references its own entry at its
@@ -410,7 +469,13 @@ source tree — they won't compile against the current time-domain API.
   orientation, v12.1; missing = identity; %.10f so round-trips skip
   the loader's re-normalize) holding `section force|geo|sc|bridge
   vDesign domain
-  reversed` blocks holding `lane`/`n` lines (force/geo), `elem
+  reversed` blocks holding `lane`/`n` lines (force/geo; an
+  INFLUENCED section, v15.0 D98, appends `infl vApply` — the
+  OPERATING speed; the section line keeps the AUTHORED speed so old
+  readers pair the lanes with the speed they were designed at — plus
+  `dlane k`/`dn …` delta-lane lines in the exact `n` grammar;
+  missing = uninfluenced, empty dlane blocks heal to a single (0,0)
+  node), `elem
   straight len smooth [rollmode rollval]` / `elem curve radius angle
   dir smooth [rollmode rollval]` lines (straight/curve, v11.0; roll
   fields v11.1 — missing = rate 0, the v11.0 geometry), or `bpose`
@@ -740,19 +805,92 @@ Shift-slope — once the curves visibly split. POV W/S rides at TRUE
 speed (the design-time advance scales by v_true/v_design at the
 current sample) and the stats-bar top speed reads Pass D; both are
 identical to before until a drift exists. RESOLVE SPEED CONFLICT (§5 round B, LIVE
-since v14.5 D97): a drifted section's badge menu grows a SUBMENU —
-"Make graphs real (keep shape)…" re-fits the lanes at the TRUE
-entry speed through the density preview (Coaster.makeGraphsReal;
-s/c just re-freezes, shape speed-independent; reference = TRUE
-curves), and "Re-freeze design speed (keep graphs, reshape)"
-(Coaster.refreezeSpeed — the seam kinks honestly; Shift+B smooths
-it). Both clear vPinned. ANY unconverted bridge earlier in the RUN
-blocks both with a disabled explainer ("convert the bridge
-section(s) earlier on this track first"): the bridge re-blends
-against the changed speeds and defeats the resolution anywhere
-downstream (user, corrected after testing — a "directly after
-only" draft was reversed). Undrifted sections carry no submenu. Post-D95 drift
-lives at piece-firsts and PINNED sections. PLACEMENT MODES (v13.5 D78,
+since v14.5 D97; REWORKED v15.2 D101, SIMPLIFIED v15.4 D102 —
+conflicts resolve LEFT TO RIGHT, one section at a time): a drifted
+section's badge menu grows a SUBMENU with TWO ops — "Make graphs
+real (keep shape)…" (re-fit at the TRUE entry speed through the
+density preview; s/c just re-freezes; grays while the DIRECT left
+neighbor is itself conflicted) and "Re-freeze design speed (keep
+graphs, reshape)" (available even right of another conflicted
+section, D102 — re-freeze THEN Shift+B is the whole
+transition-to-real flow for existing sections: against a drifted
+neighbor, once the speed is re-anchored to the TRUE seam speed,
+B/Shift+B match the neighbor's TRUE curves — value + slope in
+REAL time, D101's machinery). A REAL-ANCHORED section is
+recognized by its vDesign sitting nearer the true seam speed than
+the neighbor's design end: refreezeSeamSpeed and the D95 reconcile
+freeze it to TRUE (the reconcile would otherwise undo the
+resolution, gated), and B from the CONFLICTED side's end node
+toward it REFUSES with a stats hint (the feedback rule). Both ops
+clear vPinned. Only a live bridge DIRECTLY
+before the section blocks the submenu (explainer: it re-blends to
+follow any resolution — convert it first). The '+' menu
+FORKS after a conflicted piece end (D101; KEPT in D102 — user:
+"I really like how it works for adding"): "Continue speed
+conflict ▸" = the historic design continuation; "Transition to
+real ▸" = the new section starts at the TRUE end speed holding
+the TRUE end state (addSection(mode, real)). Undrifted sections
+carry no submenu and no fork. Post-D95 drift
+lives at piece-firsts, PINNED sections and
+TILTED pieces; converts PRESERVE conflicts (D99: vPinned rides
+whole converts, partial converts pin both halves). The
+(Coaster.transitionToReal resolve op existed briefly in-session
+and was removed unshipped, D102.)
+INFLUENCE (v15.0 D98, §5 round C — user re-spec 2026-07-11; speed
+semantics + roll removal v15.4 D102): a
+force/geo badge menu's "Influence resulting geo/felt force graphs"
+gives the section OTHER-MODE DELTA LANES that ADD to its resulting
+graphs (resulting == base + delta EXACTLY — the compiler's two-pass
+integrates base+delta AS the other mode; see TrackCompiler above).
+Deltas exist for lanes 0/1 ONLY (force → Δpitch/Δyaw, geo →
+ΔGv/ΔGl; ROLL takes none — its button disables, its strip shows
+the dotted resulting roll read-only; lane 2 stays in the model +
+file, inert). Entering NEVER touches speeds (D102 — "behave
+exactly like a normal section, just with nudges"; the v15.0
+instant-reconciliation silently closed the NEXT section's conflict,
+gated now): vAuthored just mirrors vDesign from then on
+(LaneSection.vDesign(v) syncs the pair through every consumer) and
+influenced sections join the D95 reconcile like normal ones
+(pinned still skips; the divergent-pair machinery in influencedLane
+survives for hand-edited files, gated). Fresh delta lanes hold a
+node at 0 AND at the section end (flat zero line). The strip flips
+to the other mode's
+palette/units/snap (activeGeo() flips; lane buttons wear Δ, badge
+wears "fx", info line shows both speeds), app.lanes binds to the
+DELTA lanes (every gesture/lock/dialog/undo path works verbatim),
+and TWO VIEWS toggle by badge radios: "Influence view" (default)
+edits deltas around zero with the RESULTING graphs dotted behind
+(hoverable, derived-hover pathway); "Resulting view" is purely
+visual — nodes RIDE base+delta via ONE dispOff() choke point
+threaded through draw/hit/drag/box-select/handles (drags write the
+delta back out; Ctrl value-snap lands the RESULTING value on grid;
+readout "value (Δ delta)"; faint dashed base guide + guide→curve
+fill; knobs offset by the base at the NODE's time — D102: the
+node+handle assembly translates rigidly, handle ANGLES match the
+Influence view exactly). The delta wall is ABSOLUTE (sectionEnd = the compiled t*
+duration, durOf reads the span like s/c; A clamps, hold-insert
+refuses, no started-at-end exemption). "Edit influence" unchecks
+back to the DESIGN lanes — influence stays live and drawTrueStrokes
+references the AUTHORED curves inside that strip, so the thin true
+stroke shows exactly what influencing causes (the user's "see the
+laterals along with the original graph of no laterals"); inactive
+influenced strips draw DERIVED (reversed-strip rule); B-matching
+against an influenced neighbor takes the sampled path, and ON a
+delta EDGE node returns it to NO INFLUENCE — value 0, flat facing
+handle, no seam probe/re-freeze (v15.5 D102 user rule; the v15.0
+neighbor-minus-base match nudged nodes by the base sampling
+residual). Resulting ▾ overlays read the TRUE
+other-mode arrays while influence-editing (labels + right axis say
+"True"). Exits (one undo step each): "Bake influence into design
+graphs…" = convert to the OWN mode via the density preview
+(reference = the compiled/influenced curves); "Discard influence"
+= bitwise restore (gated). Partial converts refuse influenced
+sections (menu + model guard); '+' after an influenced section
+routes through the compiled end state; reversed sections refuse
+ENTRY, piece reversal carries influence fine (editing locked).
+Node-0 dialog on the influence surface drops the start-speed row
+and labels the value "Delta". Gated TESTING #37 (24 checks),
+walkthrough #68. PLACEMENT MODES (v13.5 D78,
 BridgeSection.optMode, blen's 3rd field, missing = 0): the toolbar
 button RELABELS "Bridge properties ▾" over a live bridge (v13.10
 D84 — same button, the bridge's own panel; updateBridgeControls
@@ -1014,7 +1152,11 @@ between fly (WASD) and POV (W/S) without releasing (`povCaptured`);
 scroll = fast burst either way, translucent graph line marks the camera
 (Options toggle, default on). POV↔selection sync (v13.11 D85, user
 spec): riding across a PIECE boundary activates that piece in the
-editor (activateAt, piece transitions only — povFollowPiece);
+editor (activateAt, piece transitions only — povFollowPiece;
+SUSPENDED while the convert UI owns the graph, v15.4 D102 — a
+whole-bridge convert shifts piece indices and the follow's
+activation change cancelled the density preview, undoing the
+convert within a frame: the "convert did nothing in POV" bug);
 entering POV starts at the active piece's START when a different
 piece was selected since POV last rode — the piece's own FIRST
 sample since v13.12 (D86: Span.t0 is by definition the PREVIOUS
@@ -1243,6 +1385,15 @@ non-obvious behavior. Do not ship a feature without touching it.
   constant sub-sample phase. POV/marker code indexes time as t/dt
   (nearest sample) — the lag is < 10 ms of ride and invisible, but
   don't add code that assumes sample i sits exactly at i·dt.
+- SPLITTING or REVERSING a TILTED piece (pitch/roll deltas ≠ 0)
+  bakes the tilt into the new baseOrient — generation resumes FROM
+  the tilted pose there, so those two ops re-solve force sections
+  against gravity instead of staying rigid (D100 accepted corner;
+  everything else about tilts is rigid + gated).
+- The Placement rows' pitch/roll padlocks on un-bridged pieces
+  (TrackPiece.uiLockPitch/Roll) are UI edit-guards only — not
+  persisted, not in undo; a bridged-in piece shares the BRIDGE's
+  persisted lock fields instead.
 
 ## Roadmap (user-endorsed, phased — see docs/SECTIONS-DESIGN.md for Phase 1+)
 
@@ -1349,8 +1500,10 @@ gated TESTING #23) and EXPANDED v14.0 D89-D91 per the user's list:
 partial convert for every mode + node snap + exact cuts +
 whole-bridge attach + density preview + adaptive placement + lock
 tints, gated TESTING #31; round B —
-the two reconciliation ops — SHIPPED v14.5 D97; round C =
-influence mode remains) →
+the two reconciliation ops — SHIPPED v14.5 D97; round C —
+INFLUENCE mode — SHIPPED v15.0 D98 per the user's 2026-07-11
+re-spec (cross-mode delta lanes, two views, non-modal design
+editing, gated TESTING #37 + walkthrough #68 — §5 is COMPLETE) →
 TIME/DISTANCE domain toggle for force/geo
 lanes (author over meters instead of seconds; the graph x-axis
 follows the active section's domain — user-confirmed on the list

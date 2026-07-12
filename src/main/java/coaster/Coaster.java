@@ -77,6 +77,37 @@ public class Coaster {
         return new ForceSection(LaneSection.holdLanes(gv, gl, roll), vDesign);
     }
 
+    /** ENTER influence mode (v15.0 D98; re-specced v15.4 D102 — user:
+     *  influenced sections "behave exactly like a normal force or geo
+     *  section, just with little nudges"): the SPEEDS are untouched —
+     *  vAuthored simply mirrors vDesign from here on (the setter keeps
+     *  the pair locked), so entering influence never moves this
+     *  section's design speed nor, through its design end, the next
+     *  section's (the v15.0 "instant reconciliation" to the true entry
+     *  did exactly that and silently closed the downstream section's
+     *  speed conflict — the user's bug). Flat-zero delta lanes appear,
+     *  spanning the section (a node at 0 AND at the end, dur = the
+     *  compiled duration). Model-side so the headless gates drive the
+     *  real thing (the v13.14 rule). */
+    public static void enterInfluence(LaneSection ls, double dur) {
+        if (ls.influenced()) return;
+        ls.vAuthored = ls.vDesign;
+        ls.deltaLanes = LaneSection.zeroDeltaLanes(dur);
+        ls.editInfluence = true;
+    }
+
+    /** DISCARD influence: deltas + the operating speed drop, the
+     *  authored pair governs again — the shape snaps back exactly
+     *  (the un-influenced path is untouched code). */
+    public static void discardInfluence(LaneSection ls) {
+        if (!ls.influenced()) return;
+        ls.vDesign = ls.vAuthored;
+        ls.vAuthored = Double.NaN;
+        ls.deltaLanes = null;
+        ls.baseCurves = null;
+        ls.editInfluence = false;
+    }
+
     /** SPLIT a piece before section sectionIdx (v12.0, D70; exact
      *  orientation v12.1, D71): sections [sectionIdx..] move to a NEW
      *  piece inserted right after, placed at the compiled boundary
@@ -672,8 +703,30 @@ public class Coaster {
                 if (sec instanceof BridgeSection || sec.reversed()
                         || sec.vPinned()) continue;   // v14.5 D97: a
                         // pinned seam keeps its split deliberately
-                double vIn = r.samples()
-                    .get(r.spans().get(spanIdx - 1).i1()).v();
+                // (the v15.0 influenced-section exemption was REMOVED
+                // in v15.4, D102 — user re-spec: influenced sections
+                // behave exactly like normal ones; the vDesign setter
+                // keeps vAuthored mirrored, so a reconcile re-derives
+                // the ref at the new speed with the deltas on top.
+                // Pinned influenced sections still skip via the pin.)
+                int ip = r.spans().get(spanIdx - 1).i1();
+                double vIn = r.samples().get(ip).v();
+                // REAL-ANCHORED continuation (v15.2, D101): a section
+                // lined up with a drifted neighbor's TRUE curves (the
+                // transition-to-real state) keeps chasing the REAL
+                // seam speed — re-freezing it back onto the design
+                // profile would silently undo the resolution. Which
+                // anchor it follows is read off which speed its
+                // vDesign already sits nearer (0.2 = the UI's
+                // DRIFT_EPS).
+                if (ip < r.trueV().length) {
+                    double vTrue = r.trueV()[ip];
+                    if (Math.abs(vTrue - vIn) > 0.2
+                            && Math.abs(sec.vDesign() - vTrue)
+                               < Math.abs(sec.vDesign() - vIn)) {
+                        vIn = vTrue;
+                    }
+                }
                 if (Math.abs(sec.vDesign() - vIn) > 1e-3) {
                     sec.vDesign(vIn);
                     changed = true;
@@ -846,17 +899,31 @@ public class Coaster {
                 tG[i] = tG[i - 1] + ds / Math.max(0.5, (vG + prevVG) / 2);
             }
             prevVG = vG;
-            FVDIntegrator.Sample a = s.get(Math.max(0, i - 2));
-            FVDIntegrator.Sample b = s.get(Math.min(n - 1, i + 2));
+            // PITCH/YAW: ANALYTIC per sample (v15.1, D99 — the user's
+            // "converges to a slightly different spot": the old ±2-
+            // sample frame differencing low-passed the rate curves'
+            // CORNERS, a floor no node density could recover; every
+            // mode records felt to the κ identity κ = g(G − axis.y)/v²
+            // — the same assumption Pass A's trueFelt rides — so the
+            // curvature components come out exactly)
+            double vSafe = Math.max(0.5, sm.v());
+            double kU = FVDIntegrator.G0 * (sm.Gv() - sm.U().y())
+                / (vSafe * vSafe);
+            double kR = FVDIntegrator.G0 * (sm.Gl() - sm.R().y())
+                / (vSafe * vSafe);
+            rate[i][0] = Math.toDegrees(kU * vG);
+            rate[i][1] = Math.toDegrees(kR * vG);
+            // ROLL has no felt to invert — still measured, but over ±1
+            // sample (second-order error drops 4×; the ±2 window was
+            // the visible rounding on the roll spikes)
+            FVDIntegrator.Sample a = s.get(Math.max(0, i - 1));
+            FVDIntegrator.Sample b = s.get(Math.min(n - 1, i + 1));
             double ds = b.s() - a.s();
             if (ds < 1e-9) {
-                if (i > 0) System.arraycopy(rate[i - 1], 0, rate[i], 0, 3);
+                if (i > 0) rate[i][2] = rate[i - 1][2];
                 continue;
             }
-            Vec3 dT = b.T().sub(a.T());
             Vec3 dU = b.U().sub(a.U());
-            rate[i][0] = Math.toDegrees(dT.dot(sm.U()) / ds) * vG;
-            rate[i][1] = Math.toDegrees(dT.dot(sm.R()) / ds) * vG;
             rate[i][2] = Math.toDegrees(-dU.dot(sm.R()) / ds) * vG;
         }
         // target-mode VALUES per sample: geo = the rates themselves;
@@ -1275,6 +1342,11 @@ public class Coaster {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
+        // INFLUENCED sections refuse the partial cut (v15.0, D98): the
+        // kept side's ref = integrate(its half-lanes) cannot reproduce
+        // the ORIGINAL ref's sub-arc once the deltas bent the entry
+        // frame — bake or discard the influence first (the UI says so)
+        if (sec instanceof LaneSection li && li.influenced()) return false;
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
@@ -1313,6 +1385,13 @@ public class Coaster {
         keep.reversed(false);
         LaneSection conv = convertToLanes(sideOf(s, cs, left),
             left ? sec.vDesign() : vCut, toGeo, dt, spacing, adaptTol);
+        // BOTH halves continue the original's DESIGN speed profile, so
+        // a conflicted (pinned) section leaves two conflicted halves —
+        // the pin rides onto each (v15.1, D99; unpinned originals get
+        // false = today's behavior, where the reconcile's re-freeze of
+        // the second half is a no-op on the shared profile anyway)
+        keep.vPinned(sec.vPinned());
+        conv.vPinned = sec.vPinned();
         piece.sections.set(secIdx, left ? conv : keep);
         piece.sections.add(secIdx + 1, left ? keep : conv);
         return true;
@@ -1481,9 +1560,16 @@ public class Coaster {
         }
         TrackCompiler.Span sp = r.spans().get(spanIdx);
         if (sp.i1() - sp.i0() < 4) return false;   // too short to measure
-        piece.sections.set(secIdx, convertToLanes(
+        LaneSection conv = convertToLanes(
             r.samples().subList(sp.i0(), sp.i1() + 1),
-            sec.vDesign(), toGeo, dt, spacing, adaptTol));
+            sec.vDesign(), toGeo, dt, spacing, adaptTol);
+        // a SPEED-CONFLICTED section stays conflicted through a convert
+        // (v15.1, D99 — user rule: "the geo section should still have
+        // design/real speed conflict and shouldn't change shape"): the
+        // pin rides along, so the reconcile keeps leaving it alone and
+        // the shape survives (vDesign already carries over above)
+        conv.vPinned = sec.vPinned();
+        piece.sections.set(secIdx, conv);
         return true;
     }
 

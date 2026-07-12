@@ -68,7 +68,16 @@ public final class TrackCompiler {
         boolean prevEndsBridge = false;
         for (int p = 0; p < c.pieces.size(); p++) {
             TrackPiece piece = c.pieces.get(p);
-            TrackPose pose = piece.entryPose();
+            // RIGID TILT placement (v15.2, D100): sections integrate
+            // at the DESIGN orientation (genPose — gravity solves
+            // there) and the piece's pitch/roll deltas rotate the
+            // finished geometry rigidly about the entry point. tilt()
+            // returns the IDENTITY object for untilted pieces, so the
+            // historic path below is bitwise-untouched.
+            Quat tilt = piece.tilt();
+            TrackPose pose = tilt == Quat.IDENTITY
+                ? piece.entryPose() : piece.genPose();
+            Vec3 anchor = pose.pos();
             int pieceStart = all.size();
             boolean bridgedIn = prevEndsBridge;
             if (!piece.sections.isEmpty() && !bridgedIn) {
@@ -96,7 +105,13 @@ public final class TrackCompiler {
                     // loop: a bridge's geometry never feeds its own
                     // endpoints. With the target piece gone the stored
                     // solve stands (frozen fallback, badge "!").
-                    bs.solvedEntry = new TrackPose(pose.pos(), pose.orient());
+                    // The chain pose is DESIGN-space under a tilt — the
+                    // bridge lives in the world and captures the REAL
+                    // (tilted) seam (v15.2).
+                    TrackPose worldPose = tilt == Quat.IDENTITY ? pose
+                        : tiltPose(pose, tilt, anchor);
+                    bs.solvedEntry = new TrackPose(worldPose.pos(),
+                        worldPose.orient());
                     if (continuation && all.size() - pieceStart >= 9) {
                         int e = all.size() - 1;
                         bs.vDesign = all.get(e).v();   // live entry speed
@@ -123,9 +138,11 @@ public final class TrackCompiler {
                         if (!next.sections.isEmpty()) {
                             // pre-integrate the target's FIRST section
                             // once: measured head derivatives are mode-
-                            // agnostic (reversed sections included)
+                            // agnostic (reversed sections included; a
+                            // TILTED target's head arrives rigidly
+                            // rotated, v15.2 — pieceHead applies it)
                             List<FVDIntegrator.Sample> head =
-                                passG(next.sections.get(0), tgt, dt).samples();
+                                pieceHead(next, dt);
                             if (!head.isEmpty()) {
                                 bs.vB = head.get(0).v();
                                 // aim at the ACTUAL first-sample frame,
@@ -152,14 +169,21 @@ public final class TrackCompiler {
                     }
                 }
                 Centerline line = passG(section, pose, dt);
+                // chain the NEXT section in design space; the world
+                // gets the rigidly tilted copy (identity = no-op).
+                // Bridges are world-anchored already and never tilt.
+                pose = line.exit();
+                if (tilt != Quat.IDENTITY
+                        && !(section instanceof BridgeSection)) {
+                    line = tiltLine(line, tilt, anchor);
+                }
                 int i0 = all.size();
                 double t0 = all.isEmpty() ? 0 : all.get(all.size() - 1).t();
                 double s0 = all.isEmpty() ? 0 : all.get(all.size() - 1).s();
                 appendRebased(all, line.samples(), continuation);
                 FVDIntegrator.Sample end = all.get(all.size() - 1);
-                pose = line.exit();
                 spans.add(new Span(i0, all.size() - 1, t0, end.t(),
-                    s0, end.s() - s0, pose));
+                    s0, end.s() - s0, line.exit()));
                 continuation = true;
             }
         }
@@ -242,43 +266,12 @@ public final class TrackCompiler {
      *  CANONICAL frame and hand it to reverseAndPlace. */
     public static Centerline passG(Section section, TrackPose entry, double dt) {
         if (section instanceof ForceSection fs) {
-            List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(fs.lanes, 0.05);
-            FVDIntegrator.Options opts = new FVDIntegrator.Options();
-            opts.dt = dt;
-            opts.v0 = fs.vDesign;
-            if (fs.reversed) {
-                // canonical frame at the ENTRY HEIGHT: energy is
-                // height-relative but float rounding is not — this keeps
-                // the reversed shape bitwise equal to a forward run at
-                // the same height (gated)
-                opts.pos0 = new Vec3(0, entry.pos().y(), 0);
-                return reverseAndPlace(FVDIntegrator.integrateTrack(kfs, opts), entry);
-            }
-            opts.pos0 = entry.pos();
-            opts.startHeading = entry.T();   // identity orientation: exactly (1,0,0)
-            opts.startUp = entry.U();        //                       exactly (0,1,0)
-            List<FVDIntegrator.Sample> samples = FVDIntegrator.integrateTrack(kfs, opts);
-            FVDIntegrator.Sample last = samples.get(samples.size() - 1);
-            TrackPose exit = new TrackPose(last.pos(),
-                Quat.fromFrame(last.T(), last.U()),
-                entry.s0() + last.s(), entry.t0() + last.t());
-            return new Centerline(samples, exit);
+            if (fs.influenced()) return influencedLane(fs, entry, dt, false);
+            return forceLane(fs, entry, dt);
         }
         if (section instanceof GeoSection gs) {
-            List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(gs.lanes, 0.05);
-            if (gs.reversed) {
-                GeoIntegrator.Result rr = GeoIntegrator.integrate(kfs, dt,
-                    gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY);
-                return reverseAndPlace(rr.samples(), entry);
-            }
-            // quaternion-native (the §2 amendment): the exit orientation
-            // is the integrated q itself, not a frame round-trip
-            GeoIntegrator.Result r = GeoIntegrator.integrate(
-                kfs, dt, gs.vDesign, entry.pos(), entry.orient());
-            FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
-            TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
-                entry.s0() + last.s(), entry.t0() + last.t());
-            return new Centerline(r.samples(), exit);
+            if (gs.influenced()) return influencedLane(gs, entry, dt, true);
+            return geoLane(gs, entry, dt);
         }
         if (section instanceof StraightCurveSection sc) {
             // straight/curve (v11.0): same quaternion-native pattern as
@@ -307,6 +300,275 @@ public final class TrackCompiler {
             return new Centerline(r.samples(), exit);
         }
         throw new IllegalArgumentException("unhandled section mode: " + section);
+    }
+
+    /** Rigid pitch/roll placement (v15.2, D100): rotate a section's
+     *  samples + exit pose about the piece's entry point. The recorded
+     *  felt RE-PROJECTS (G' = G − axis.y + axis'.y) so the κ identity
+     *  g(G − axis.y)/v² keeps measuring the rotated-but-unchanged
+     *  curvature — Pass A's true curves and every felt consumer stay
+     *  honest. v stays the DESIGN profile (the tilt's real speed
+     *  change IS Pass D's design/real split); body rates are
+     *  rotation-invariant, so authored GEO lanes stay true and only
+     *  FORCE felt splits design-vs-real. */
+    static Centerline tiltLine(Centerline line, Quat tilt, Vec3 anchor) {
+        List<FVDIntegrator.Sample> out =
+            new ArrayList<>(line.samples().size());
+        for (FVDIntegrator.Sample sm : line.samples()) {
+            out.add(tiltSample(sm, tilt, anchor));
+        }
+        return new Centerline(out, tiltPose(line.exit(), tilt, anchor));
+    }
+
+    static FVDIntegrator.Sample tiltSample(FVDIntegrator.Sample sm,
+                                           Quat tilt, Vec3 anchor) {
+        Vec3 U = tilt.rotate(sm.U());
+        Vec3 R = tilt.rotate(sm.R());
+        return new FVDIntegrator.Sample(sm.t(), sm.s(),
+            tilt.rotate(sm.pos().sub(anchor)).add(anchor),
+            tilt.rotate(sm.T()), U, R, sm.v(),
+            sm.Gv() - sm.U().y() + U.y(),
+            sm.Gl() - sm.R().y() + R.y());
+    }
+
+    static TrackPose tiltPose(TrackPose p, Quat tilt, Vec3 anchor) {
+        return new TrackPose(
+            tilt.rotate(p.pos().sub(anchor)).add(anchor),
+            tilt.mul(p.orient()), p.s0(), p.t0());
+    }
+
+    /** A piece's FIRST section as it really starts — generation at the
+     *  design orientation with the rigid tilt applied (the bridge
+     *  target-head capture reads this; identity tilt = the historic
+     *  call bitwise). */
+    static List<FVDIntegrator.Sample> pieceHead(TrackPiece piece, double dt) {
+        Quat tilt = piece.tilt();
+        if (tilt == Quat.IDENTITY) {
+            return passG(piece.sections.get(0), piece.entryPose(), dt)
+                .samples();
+        }
+        TrackPose gen = piece.genPose();
+        Centerline line = passG(piece.sections.get(0), gen, dt);
+        return tiltLine(line, tilt, gen.pos()).samples();
+    }
+
+    /** The plain FORCE path (extracted v15.0 — the influence fast path
+     *  reuses it verbatim; zero added arithmetic on the D50 gate). */
+    private static Centerline forceLane(ForceSection fs, TrackPose entry, double dt) {
+        List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(fs.lanes, 0.05);
+        FVDIntegrator.Options opts = new FVDIntegrator.Options();
+        opts.dt = dt;
+        opts.v0 = fs.vDesign;
+        if (fs.reversed) {
+            // canonical frame at the ENTRY HEIGHT: energy is
+            // height-relative but float rounding is not — this keeps
+            // the reversed shape bitwise equal to a forward run at
+            // the same height (gated)
+            opts.pos0 = new Vec3(0, entry.pos().y(), 0);
+            return reverseAndPlace(FVDIntegrator.integrateTrack(kfs, opts), entry);
+        }
+        opts.pos0 = entry.pos();
+        opts.startHeading = entry.T();   // identity orientation: exactly (1,0,0)
+        opts.startUp = entry.U();        //                       exactly (0,1,0)
+        List<FVDIntegrator.Sample> samples = FVDIntegrator.integrateTrack(kfs, opts);
+        FVDIntegrator.Sample last = samples.get(samples.size() - 1);
+        TrackPose exit = new TrackPose(last.pos(),
+            Quat.fromFrame(last.T(), last.U()),
+            entry.s0() + last.s(), entry.t0() + last.t());
+        return new Centerline(samples, exit);
+    }
+
+    /** The plain GEO path (extracted v15.0, same rationale). */
+    private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt) {
+        List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(gs.lanes, 0.05);
+        if (gs.reversed) {
+            GeoIntegrator.Result rr = GeoIntegrator.integrate(kfs, dt,
+                gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY);
+            return reverseAndPlace(rr.samples(), entry);
+        }
+        // quaternion-native (the §2 amendment): the exit orientation
+        // is the integrated q itself, not a frame round-trip
+        GeoIntegrator.Result r = GeoIntegrator.integrate(
+            kfs, dt, gs.vDesign, entry.pos(), entry.orient());
+        FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
+        TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
+            entry.s0() + last.s(), entry.t0() + last.t());
+        return new Centerline(r.samples(), exit);
+    }
+
+    /** INFLUENCE two-pass (v15.0, D98; SECTIONS-DESIGN §5.4): the
+     *  section's RESULTING other-mode graphs become base + delta.
+     *
+     *    ref     = integrate(authored lanes, vAuthored, entry) —
+     *              the section's old shape, fresh every compile (the
+     *              base can never feed on its own output)
+     *    v*(s)   = energy from the OPERATING vDesign over ref's
+     *              heights; t* = ∫ds/v* (trapezoid, the convert
+     *              re-time recipe)
+     *    base    = the other mode's quantities along ref at v*,
+     *              ANALYTIC per sample (rates ω = g(G−axis.y)/v
+     *              scaled by v* / v_d — κ is fixed; felt via the
+     *              §5.1 identity; roll = the authored bake at the
+     *              same scale) — exact at the edges, no differencing
+     *    result  = integrate(base + delta curves, vDesign, entry) as
+     *              the OTHER mode (force section → GeoIntegrator,
+     *              geo section → FVDIntegrator), so the resulting
+     *              graphs equal base + delta BY CONSTRUCTION and the
+     *              felt records stay honest at the operating profile.
+     *
+     *  FAST PATH (do-no-harm, gated bitwise): all-zero deltas at
+     *  vDesign == vAuthored take the plain single-pass route — a
+     *  freshly-entered influence moves nothing; discarding restores
+     *  the un-influenced document exactly. Reversed sections run
+     *  both passes CANONICALLY and reverseAndPlace the result, like
+     *  every lane mode (influence editing is refused on them
+     *  UI-side; the geometry stays well-defined under piece
+     *  reversal). Shape is vDesign-invariant by construction (rates
+     *  at v* retrace the same spatial curve — only the clock moves),
+     *  which is what lets the operating speed reconcile without
+     *  reshaping. */
+    static Centerline influencedLane(LaneSection ls, TrackPose entry,
+                                     double dt, boolean isGeo) {
+        List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(ls.lanes, 0.05);
+        if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored) {
+            Centerline line = isGeo ? geoLane((GeoSection) ls, entry, dt)
+                                    : forceLane((ForceSection) ls, entry, dt);
+            // base guides off the very samples on show (identity
+            // re-time); reversed strips never edit influence — skip
+            ls.baseCurves = ls.reversed ? null
+                : buildBase(line.samples(), kfs, isGeo, null, null);
+            return line;
+        }
+        // REF at the AUTHORED speed (canonical frame when reversed,
+        // the D67 rule)
+        Vec3 pos0 = ls.reversed ? new Vec3(0, entry.pos().y(), 0) : entry.pos();
+        Quat q0 = ls.reversed ? Quat.IDENTITY : entry.orient();
+        List<FVDIntegrator.Sample> ref;
+        if (isGeo) {
+            ref = GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, q0)
+                .samples();
+        } else {
+            FVDIntegrator.Options opts = new FVDIntegrator.Options();
+            opts.dt = dt;
+            opts.v0 = ls.vAuthored;
+            opts.pos0 = pos0;
+            if (!ls.reversed) {
+                opts.startHeading = entry.T();
+                opts.startUp = entry.U();
+            }
+            ref = FVDIntegrator.integrateTrack(kfs, opts);
+        }
+        int n = ref.size();
+        // operating profile + re-timed clock along the ref
+        double yEntry = ref.get(0).pos().y();
+        double vApply = Math.max(0.5, ls.vDesign);
+        double[] tStar = new double[n];
+        double[] vStar = new double[n];
+        for (int i = 0; i < n; i++) {
+            vStar[i] = Math.max(0.1,
+                FVDIntegrator.speedAt(ref.get(i).pos(), vApply, yEntry));
+            if (i > 0) {
+                double ds = ref.get(i).s() - ref.get(i - 1).s();
+                tStar[i] = tStar[i - 1]
+                    + ds / Math.max(0.5, (vStar[i] + vStar[i - 1]) / 2);
+            }
+        }
+        double[][] base = buildBase(ref, kfs, isGeo, tStar, vStar);
+        // duration lands ON the dt grid (the convert rounding recipe —
+        // lane integration drops fractional tails)
+        double dur = Math.max(dt,
+            Math.round(Math.max(0.1, tStar[n - 1]) / dt) * dt) * (1 + 1e-9);
+        // synthesized keyframes: base + the delta CURVES (bakeLane's
+        // polylines with held ends — exactly what the editor draws)
+        List<double[]> d0 = BezierBaker.polyline(ls.deltaLanes.get(0));
+        List<double[]> d1 = BezierBaker.polyline(ls.deltaLanes.get(1));
+        List<double[]> d2 = BezierBaker.polyline(ls.deltaLanes.get(2));
+        List<FVDIntegrator.Keyframe> synth = new ArrayList<>(n + 1);
+        for (int i = 0; i < n && base[i][0] < dur; i++) {
+            if (i > 0 && base[i][0] <= base[i - 1][0] + 1e-12) continue;
+            synth.add(new FVDIntegrator.Keyframe(base[i][0],
+                base[i][1] + polyAt(d0, base[i][0]),
+                base[i][2] + polyAt(d1, base[i][0]),
+                base[i][3] + polyAt(d2, base[i][0])));
+        }
+        // final keyframe exactly at the rounded duration
+        synth.add(new FVDIntegrator.Keyframe(dur,
+            LaneSection.baseAt(base, 0, dur) + polyAt(d0, dur),
+            LaneSection.baseAt(base, 1, dur) + polyAt(d1, dur),
+            LaneSection.baseAt(base, 2, dur) + polyAt(d2, dur)));
+        ls.baseCurves = base;
+        // pass 2: the OTHER mode's integrator at the operating speed
+        if (isGeo) {   // geo section + felt-G deltas → force integrator
+            FVDIntegrator.Options o2 = new FVDIntegrator.Options();
+            o2.dt = dt;
+            o2.v0 = ls.vDesign;
+            o2.pos0 = pos0;
+            if (!ls.reversed) {
+                o2.startHeading = entry.T();
+                o2.startUp = entry.U();
+            }
+            List<FVDIntegrator.Sample> out = FVDIntegrator.integrateTrack(synth, o2);
+            if (ls.reversed) return reverseAndPlace(out, entry);
+            FVDIntegrator.Sample last = out.get(out.size() - 1);
+            return new Centerline(out, new TrackPose(last.pos(),
+                Quat.fromFrame(last.T(), last.U()),
+                entry.s0() + last.s(), entry.t0() + last.t()));
+        }
+        GeoIntegrator.Result r2 = GeoIntegrator.integrate(
+            synth, dt, ls.vDesign, pos0, q0);
+        if (ls.reversed) return reverseAndPlace(r2.samples(), entry);
+        FVDIntegrator.Sample last = r2.samples().get(r2.samples().size() - 1);
+        return new Centerline(r2.samples(), new TrackPose(last.pos(), r2.qEnd(),
+            entry.s0() + last.s(), entry.t0() + last.t()));
+    }
+
+    /** BASE rows {t*, lane0, lane1, lane2} in the delta lanes' units,
+     *  analytic per ref sample. tStar/vStar null = identity re-time
+     *  (the fast path: the operating profile IS the ref profile, so
+     *  the clock is the samples' own time and every scale is 1). */
+    private static double[][] buildBase(List<FVDIntegrator.Sample> ref,
+            List<FVDIntegrator.Keyframe> kfs, boolean isGeo,
+            double[] tStar, double[] vStar) {
+        int n = ref.size();
+        double[][] base = new double[n][4];
+        for (int i = 0; i < n; i++) {
+            FVDIntegrator.Sample sm = ref.get(i);
+            double vd = Math.max(0.1, sm.v());
+            double scale = vStar == null ? 1 : vStar[i] / vd;
+            double roll = FVDIntegrator.interpAt(kfs, sm.t()).rollRateDeg();
+            base[i][0] = tStar == null ? sm.t() : tStar[i];
+            if (isGeo) {
+                // geo section: deltas are FELT G — the §5.1 identity
+                double r2 = scale * scale;
+                base[i][1] = r2 * (sm.Gv() - sm.U().y()) + sm.U().y();
+                base[i][2] = r2 * (sm.Gl() - sm.R().y()) + sm.R().y();
+            } else {
+                // force section: deltas are RATES — invert the targets
+                double vSafe = Math.max(vd, 0.5);
+                base[i][1] = Math.toDegrees(FVDIntegrator.G0
+                    * (sm.Gv() - sm.U().y()) / vSafe) * scale;
+                base[i][2] = Math.toDegrees(FVDIntegrator.G0
+                    * (sm.Gl() - sm.R().y()) / vSafe) * scale;
+            }
+            base[i][3] = roll * scale;
+        }
+        return base;
+    }
+
+    /** Linear eval of a (t, value) polyline with held ends — the
+     *  delta lanes' hold-final-value semantics. Package-visible: the
+     *  editor's influence overlays evaluate the same curve. */
+    static double polyAt(List<double[]> poly, double t) {
+        if (t <= poly.get(0)[0]) return poly.get(0)[1];
+        int hi = poly.size() - 1;
+        if (t >= poly.get(hi)[0]) return poly.get(hi)[1];
+        int lo = 0;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (poly.get(mid)[0] <= t) lo = mid; else hi = mid;
+        }
+        double[] a = poly.get(lo), b = poly.get(hi);
+        return a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]);
     }
 
     /** REVERSAL (Phase 2, D67; SECTIONS-DESIGN §3): the authored

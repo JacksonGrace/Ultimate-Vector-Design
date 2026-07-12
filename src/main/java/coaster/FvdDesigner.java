@@ -1,4 +1,4 @@
-﻿package coaster;
+package coaster;
 
 import javafx.animation.AnimationTimer;
 import javafx.animation.PauseTransition;
@@ -203,11 +203,28 @@ public class FvdDesigner extends Application {
     // changes the track path, not just aesthetics"). Tie spacing and colors
     // stay menu-local-undo only.
     // mode: 0 force, 1 geo, 2 straight/curve (lanes null, elements
-    // set), 3 bridge (lanes+elements null, bridge set)
+    // set), 3 bridge (lanes+elements null, bridge set). dlanes /
+    // vAuthored / editInfl = the influence state (v15.0, D98; dlanes
+    // null + vAuthored NaN = uninfluenced)
     record SecState(List<List<BezierBaker.Node>> lanes,
                     List<StraightCurveSection.Element> elements,
                     double vDesign, int mode, boolean reversed,
-                    boolean pinned, BridgeSection bridge) {}
+                    boolean pinned, BridgeSection bridge,
+                    List<List<BezierBaker.Node>> dlanes,
+                    double vAuthored, boolean editInfl) {}
+
+    /** Deep copy of a 3-lane node-list set (null-safe). */
+    private static List<List<BezierBaker.Node>> copyLanes(
+            List<List<BezierBaker.Node>> lanes) {
+        if (lanes == null) return null;
+        List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
+        for (List<BezierBaker.Node> lane : lanes) {
+            List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
+            for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
+            copy.add(laneCopy);
+        }
+        return copy;
+    }
 
     // one per TrackPiece (v12.0; baseOrient v12.1; pitch/roll deltas
     // v14.0 — the v13.13 fields were MISSING here, so any undo zeroed
@@ -229,7 +246,8 @@ public class FvdDesigner extends Application {
             for (Section s : piece.sections) {
                 if (s instanceof BridgeSection bs) {
                     secs.add(new SecState(null, null, bs.vDesign, 3,
-                        bs.reversed, false, bs.copy()));
+                        bs.reversed, false, bs.copy(),
+                        null, Double.NaN, false));
                     continue;
                 }
                 if (s instanceof StraightCurveSection sc) {
@@ -237,19 +255,14 @@ public class FvdDesigner extends Application {
                         new ArrayList<>(sc.elements.size());
                     for (StraightCurveSection.Element e : sc.elements) els.add(e.copy());
                     secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed,
-                        sc.vPinned, null));
+                        sc.vPinned, null, null, Double.NaN, false));
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
-                List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
-                for (List<BezierBaker.Node> lane : fs.lanes) {
-                    List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
-                    for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
-                    copy.add(laneCopy);
-                }
-                secs.add(new SecState(copy, null, fs.vDesign,
+                secs.add(new SecState(copyLanes(fs.lanes), null, fs.vDesign,
                     fs instanceof GeoSection ? 1 : 0, fs.reversed,
-                    fs.vPinned, null));
+                    fs.vPinned, null,
+                    copyLanes(fs.deltaLanes), fs.vAuthored, fs.editInfluence));
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
@@ -282,6 +295,12 @@ public class FvdDesigner extends Application {
                 };
                 sec.reversed(st.reversed());
                 sec.vPinned(st.pinned());
+                if (sec instanceof LaneSection ls && st.dlanes() != null) {
+                    // influence state rides the snapshot (v15.0, D98)
+                    ls.deltaLanes = st.dlanes();
+                    ls.vAuthored = st.vAuthored();
+                    ls.editInfluence = st.editInfl();
+                }
                 piece.sections.add(sec);
             }
             coaster.pieces.add(piece);
@@ -332,6 +351,24 @@ public class FvdDesigner extends Application {
         startYSpinner.getValueFactory().setValue(p.y);
         startZSpinner.getValueFactory().setValue(p.z);
         yawSpinner.getValueFactory().setValue(p.yawDeg);
+        if (piecePitchSpinner != null) {
+            // pitch/roll rows (v15.3): values off the piece; lock
+            // state off the bridge connecting into it when one exists
+            // (shared padlocks), else the piece's own UI guard. A
+            // LOCKED axis freezes its spinner; a bridged-in piece in
+            // optimize-orientation mode is march-owned either way.
+            piecePitchSpinner.getValueFactory().setValue(p.pitchDeg);
+            pieceRollSpinner.getValueFactory().setValue(p.rollDeg);
+            BridgeSection bs = bridgeInto(editor.activePiece());
+            boolean lp = bs != null ? bs.lockPitch : p.uiLockPitch;
+            boolean lr = bs != null ? bs.lockRoll : p.uiLockRoll;
+            pieceLockPitchBtn.setSelected(!lp);
+            pieceLockRollBtn.setSelected(!lr);
+            boolean marchOwns = bs != null
+                && bs.optMode == BridgeSection.OPT_POS_YAW;
+            piecePitchSpinner.setDisable(lp || marchOwns);
+            pieceRollSpinner.setDisable(lr || marchOwns);
+        }
         docApplying = was;
     }
 
@@ -498,22 +535,32 @@ public class FvdDesigner extends Application {
      *  has no lanes, so the buttons grey out and disable; the plot
      *  shows the FORCE view there (felt G), so the "Resulting" picks
      *  read as rates, same as over a force section. */
-    void setLaneButtonMode(int mode) {
+    void setLaneButtonMode(int mode) { setLaneButtonMode(mode, false); }
+
+    /** delta = the INFLUENCE surface is being edited (v15.0, D98): the
+     *  buttons wear the other mode's names with a Δ prefix, and the
+     *  Resulting picks — which show TRUE values there — say so. */
+    void setLaneButtonMode(int mode, boolean delta) {
         boolean geo = mode == 1;
         String[] names = geo ? GEO_LANE_BTN : FORCE_LANE_BTN;
         Color[] cols = geo ? GEO_LANE_COLORS : LANE_COLORS;
         for (int i = 0; i < 3; i++) {
             if (laneButtons[i] == null) continue;
-            laneButtons[i].setText(names[i]);
-            laneButtons[i].setDisable(mode == 2);
+            // roll takes no deltas (v15.4, D102): the influence
+            // surface offers Gv/Gl or pitch/yaw only
+            laneButtons[i].setText((delta && i < 2 ? "Δ " : "") + names[i]);
+            laneButtons[i].setDisable(mode == 2 || (delta && i == 2));
             laneButtons[i].setStyle(TOOLBTN_STYLE + String.format(
                 " -fx-text-fill: rgb(%d,%d,%d);",
                 (int) (cols[i].getRed() * 255), (int) (cols[i].getGreen() * 255),
                 (int) (cols[i].getBlue() * 255)));
         }
         if (resPitchCheck != null) {
-            resPitchCheck.setText(geo ? "Vertical G (g)" : "Pitch rate (°/s)");
-            resYawCheck.setText(geo ? "Lateral G (g)" : "Yaw rate (°/s)");
+            String tru = delta ? "True " : "";
+            resPitchCheck.setText(tru
+                + (geo ? "Vertical G (g)" : "Pitch rate (°/s)"));
+            resYawCheck.setText(tru
+                + (geo ? "Lateral G (g)" : "Yaw rate (°/s)"));
         }
     }
     // TIME is light purple throughout the graph UI (v10.2, was yellow —
@@ -544,6 +591,11 @@ public class FvdDesigner extends Application {
     private Spinner<Double> heartSpinner, gaugeSpinner, tieSpinner;
     private Spinner<Double> startXSpinner, startYSpinner, startZSpinner;
     private Spinner<Double> yawSpinner;   // active piece's heading (v12.0)
+    // piece START pitch/roll + padlocks (v15.3, D101 — the rigid-tilt
+    // placement knobs; locks shared with a bridge connecting in)
+    private Spinner<Double> piecePitchSpinner, pieceRollSpinner;
+    private ToggleButton pieceLockPitchBtn, pieceLockRollBtn;
+    private HBox tiltPlacementRow;
     Spinner<Double> startSpeedSpinner;
     private Button pieceBtn;              // piece selector (hidden at 1 piece)
     // piece placement/reverse live in a toolbar dropdown since v13.2
@@ -597,6 +649,55 @@ public class FvdDesigner extends Application {
             + "Locked = frozen (the bridge bends to meet it);\n"
             + "unlocked = editable, and \"Optimize position and\n"
             + "orientation\" aligns it to the natural continuation."));
+        return b;
+    }
+
+    /** The live bridge CONNECTING INTO piece pieceIdx (= the previous
+     *  piece's trailing bridge), or null — its lock fields govern the
+     *  Placement pitch/roll padlocks so the two panels show one state
+     *  (v15.3, D101). */
+    private BridgeSection bridgeInto(int pieceIdx) {
+        if (pieceIdx <= 0 || pieceIdx >= coaster.pieces.size()) return null;
+        List<Section> prev = coaster.pieces.get(pieceIdx - 1).sections;
+        return !prev.isEmpty()
+            && prev.get(prev.size() - 1) instanceof BridgeSection bs
+            ? bs : null;
+    }
+
+    /** Placement-row padlock (v15.3, D101): the ACTIVE piece's start
+     *  pitch (axis 1) / roll (axis 2). Bridged-in pieces share the
+     *  bridge's lock state; free pieces keep a UI-only guard. */
+    private ToggleButton placementLockBtn(int axis) {
+        ToggleButton b = new ToggleButton("🔒");
+        b.setFocusTraversable(false);
+        b.setStyle(LOCK_SHUT_STYLE);
+        b.selectedProperty().addListener((obs, o, sel) -> {
+            b.setText(sel ? "🔓" : "🔒");
+            b.setStyle(sel ? LOCK_OPEN_STYLE : LOCK_SHUT_STYLE);
+        });
+        b.setOnAction(e -> {
+            if (docApplying) return;
+            boolean locked = !b.isSelected();
+            BridgeSection bs = bridgeInto(editor.activePiece());
+            if (bs != null) {
+                if ((axis == 1 ? bs.lockPitch : bs.lockRoll) != locked) {
+                    editor.pushUndoSnapshot();
+                    if (axis == 1) bs.lockPitch = locked;
+                    else bs.lockRoll = locked;
+                    markDirty();
+                }
+            } else {
+                TrackPiece p = activePieceRef();
+                if (axis == 1) p.uiLockPitch = locked;
+                else p.uiLockRoll = locked;
+            }
+            syncPlacementSpinners();
+        });
+        Tooltip.install(b, new Tooltip(
+            "Lock/unlock the pitch/roll at this piece's START.\n"
+            + "Locked (default) = frozen at its value. When a bridge\n"
+            + "connects into this piece these are the SAME padlocks\n"
+            + "as its bridge panel."));
         return b;
     }
     private SplitPane mainSplit;           // 3D view over graph panel
@@ -796,9 +897,11 @@ public class FvdDesigner extends Application {
                     new CustomMenuItem(bridgePosRow, false));
                 sceneRow = bridgeModeRow;
             } else {
+                syncPlacementSpinners();   // lock states follow the piece
                 cm.getItems().addAll(
                     new CustomMenuItem(placementRow, false),
                     new CustomMenuItem(yawPlacementRow, false),
+                    new CustomMenuItem(tiltPlacementRow, false),
                     reverseItem);
                 sceneRow = placementRow;
             }
@@ -1265,6 +1368,33 @@ public class FvdDesigner extends Application {
         placementRow.setAlignment(Pos.CENTER_LEFT);
         yawPlacementRow = new HBox(8, yawLbl, yawSpinner);
         yawPlacementRow.setAlignment(Pos.CENTER_LEFT);
+        // piece START pitch/roll rows (v15.3, D101 — user spec): the
+        // rigid tilt (D100) made these shape-preserving placement
+        // knobs; padlocked like the bridge panel (default LOCKED), and
+        // for a bridged-in piece the padlocks ARE the bridge's — one
+        // shared state, whichever panel flips them
+        Label tiltLbl = new Label("Piece pitch/roll (°)");
+        tiltLbl.setTextFill(Color.BLACK);
+        piecePitchSpinner = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(-85, 85,
+                piece0.pitchDeg, 1));
+        piecePitchSpinner.setPrefWidth(80);
+        piecePitchSpinner.setEditable(true);
+        piecePitchSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        wireDocSpinner(piecePitchSpinner, v -> activePieceRef().pitchDeg = v);
+        pieceRollSpinner = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360,
+                piece0.rollDeg, 1));
+        pieceRollSpinner.setPrefWidth(80);
+        pieceRollSpinner.setEditable(true);
+        pieceRollSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        wireDocSpinner(pieceRollSpinner, v -> activePieceRef().rollDeg = v);
+        pieceLockPitchBtn = placementLockBtn(1);
+        pieceLockRollBtn = placementLockBtn(2);
+        tiltPlacementRow = new HBox(8, tiltLbl,
+            pieceLockPitchBtn, piecePitchSpinner,
+            pieceLockRollBtn, pieceRollSpinner);
+        tiltPlacementRow.setAlignment(Pos.CENTER_LEFT);
 
         // bridge placement panel (v13.5): while a live bridge is
         // active, the Placement dropdown edits the NEXT piece through

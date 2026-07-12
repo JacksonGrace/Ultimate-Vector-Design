@@ -30,6 +30,14 @@ public final class TrackPiece {
      *  Persisted as `piece` fields 9-10 (missing = 0). */
     public double pitchDeg;
     public double rollDeg;
+    /** UI edit-guards for the Placement pitch/roll rows (v15.3, D101):
+     *  locked = the spinner is frozen, matching the bridge panel's
+     *  padlock defaults. With a bridge connecting INTO this piece the
+     *  bridge's own lock fields govern instead (one shared state);
+     *  these apply only to un-bridged pieces and are deliberately NOT
+     *  persisted (pure edit-guards, like the graph's axis locks). */
+    public boolean uiLockPitch = true;
+    public boolean uiLockRoll = true;
     public Quat baseOrient = Quat.IDENTITY;   // natural orientation
 
     public final List<Section> sections = new ArrayList<>();
@@ -44,7 +52,9 @@ public final class TrackPiece {
     /** Entry pose of the piece's first section. Identity base + all
      *  deltas 0 = exactly the identity orientation, and deltas 0 in
      *  general is exactly baseOrient (float-exact — the bit-for-bit
-     *  and split gates ride on these paths). */
+     *  and split gates ride on these paths). Always equals
+     *  tilt() ∘ genPose() — same math, kept verbatim for the
+     *  identity-path guarantees. */
     public TrackPose entryPose() {
         Quat q = yawDeg == 0 ? baseOrient
             : Quat.aboutY(yawDeg).mul(baseOrient);
@@ -64,5 +74,47 @@ public final class TrackPiece {
             q = Quat.aboutAxis(q.T(), Math.toRadians(rollDeg)).mul(q);
         }
         return new TrackPose(new Vec3(x, y, z), q);
+    }
+
+    /** GENERATION pose (v15.2, D100): baseOrient ⊕ yaw only — the
+     *  DESIGN orientation the sections integrate at. The pitch/roll
+     *  deltas are a RIGID placement transform on top (tilt()), so
+     *  tilting a piece PRESERVES its geometric shape instead of
+     *  re-solving it against gravity (user rule: "make sure the real
+     *  geometric shape is being preserved"); the felt-G difference
+     *  the tilt causes shows as the design/real split. Yaw stays in
+     *  the generation pose — rotation about world Y commutes with
+     *  gravity exactly, so its placement was always rigid. */
+    public TrackPose genPose() {
+        Quat q = yawDeg == 0 ? baseOrient
+            : Quat.aboutY(yawDeg).mul(baseOrient);
+        return new TrackPose(new Vec3(x, y, z), q);
+    }
+
+    /** The rigid TILT the pitch/roll deltas add on top of genPose():
+     *  entryPose().orient() == tilt().mul(genPose().orient()) by
+     *  construction (identical axis math). Returns Quat.IDENTITY —
+     *  the same object — when both deltas are 0, so the compiler's
+     *  identity short-circuit keeps every untilted piece bitwise. */
+    public Quat tilt() {
+        if (pitchDeg == 0 && rollDeg == 0) return Quat.IDENTITY;
+        Quat q = yawDeg == 0 ? baseOrient
+            : Quat.aboutY(yawDeg).mul(baseOrient);
+        Quat tilt = Quat.IDENTITY;
+        if (pitchDeg != 0) {
+            Vec3 t = q.T();
+            Vec3 r = new Vec3(-t.z(), 0, t.x());
+            double len = r.length();
+            if (len > 1e-9) {
+                Quat pq = Quat.aboutAxis(r.scale(1 / len),
+                    Math.toRadians(pitchDeg));
+                tilt = pq;
+                q = pq.mul(q);
+            }
+        }
+        if (rollDeg != 0) {
+            tilt = Quat.aboutAxis(q.T(), Math.toRadians(rollDeg)).mul(tilt);
+        }
+        return tilt;
     }
 }

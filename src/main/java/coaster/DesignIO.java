@@ -166,10 +166,15 @@ public final class DesignIO {
                     continue;
                 }
                 LaneSection fs = (LaneSection) section;   // force | geo (Phase 2)
-                // 5th field: pinned design speed (v14.5 D97)
+                // 5th field: pinned design speed (v14.5 D97). An
+                // INFLUENCED section's line carries the AUTHORED speed
+                // (§5.6): an old reader ignoring the influence lines
+                // still pairs the lanes with the speed they were
+                // authored at; the `infl` line restores the operating
+                // speed on load.
                 out.printf(Locale.US, "section %s %.4f %s %d %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
-                    fs.vDesign,
+                    fs.influenced() ? fs.vAuthored : fs.vDesign,
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
                     fs.reversed ? 1 : 0,
                     fs.vPinned ? 1 : 0);
@@ -178,10 +183,19 @@ public final class DesignIO {
                     for (BezierBaker.Node n : fs.lanes.get(lane)) {
                         // 8th field straight-lock, 9th level-lock — both
                         // ride the ignore-extra-fields rule for old readers
-                        out.printf(Locale.US, "n %.4f %.4f %.4f %.4f %.4f %.4f %d %d %d%n",
-                            n.t, n.val, n.outFrac, n.outDv, n.inFrac, n.inDv,
-                            n.smooth ? 1 : 0, n.straightOut ? 1 : 0,
-                            n.levelOut ? 1 : 0);
+                        writeNode(out, "n", n);
+                    }
+                }
+                if (fs.influenced()) {
+                    // INFLUENCE (v15.0, D98): operating speed + delta
+                    // lanes in the exact `n` grammar; missing = the
+                    // section loads uninfluenced (old files, old apps)
+                    out.printf(Locale.US, "infl %.4f%n", fs.vDesign);
+                    for (int lane = 0; lane < 3; lane++) {
+                        out.println("dlane " + lane);
+                        for (BezierBaker.Node n : fs.deltaLanes.get(lane)) {
+                            writeNode(out, "dn", n);
+                        }
                     }
                 }
                 out.println("endsection");
@@ -215,6 +229,7 @@ public final class DesignIO {
         TrackPiece curPiece = null;
         Section curSection = null;
         int curLane = -1;
+        int curDLane = -1;   // influence delta lane (v15.0, D98)
         // legacy flat files: one implicit piece + section holds everything
         if (!v3) {
             curPiece = new TrackPiece(0, 21, 0, 0);
@@ -288,6 +303,7 @@ public final class DesignIO {
                     if (parts.length > 5) curSection.vPinned(parts[5].equals("1"));
                     curPiece.sections.add(curSection);
                     curLane = -1;
+                    curDLane = -1;
                 }
                 case "lane" -> {
                     if (!(curSection instanceof LaneSection))
@@ -298,16 +314,38 @@ public final class DesignIO {
                 case "n" -> {
                     if (!(curSection instanceof LaneSection ls) || curLane < 0)
                         throw new IOException("node outside lane section");
-                    BezierBaker.Node n = new BezierBaker.Node(
-                        Double.parseDouble(parts[1]), Double.parseDouble(parts[2]));
-                    n.outFrac = Double.parseDouble(parts[3]);  // raw seconds if FVDD1
-                    n.outDv   = Double.parseDouble(parts[4]);
-                    n.inFrac  = Double.parseDouble(parts[5]);
-                    n.inDv    = Double.parseDouble(parts[6]);
-                    n.smooth = !parts[7].equals("0");
-                    n.straightOut = parts.length > 8 && parts[8].equals("1");
-                    n.levelOut = parts.length > 9 && parts[9].equals("1");
-                    ls.lanes.get(curLane).add(n);
+                    ls.lanes.get(curLane).add(parseNode(parts));
+                }
+                // ---- INFLUENCE lines (v15.0, D98; missing = section
+                // loads uninfluenced — the unknown-line rule covers
+                // old readers seeing these) ----
+                case "infl" -> {
+                    if (!(curSection instanceof LaneSection ls))
+                        throw new IOException("infl outside lane section");
+                    // the section line carried the AUTHORED speed; the
+                    // operating speed rides this line (§5.6 mapping)
+                    ls.vAuthored = ls.vDesign;
+                    ls.vDesign = clamp(Double.parseDouble(parts[1]), 0.5, 100);
+                    // scaffolding only: the dlane blocks that follow
+                    // replace these; a file with no dn lines heals to
+                    // lone (0,0) nodes in the post-load validation
+                    ls.deltaLanes = LaneSection.zeroDeltaLanes(1);
+                    curDLane = -1;
+                }
+                case "dlane" -> {
+                    if (!(curSection instanceof LaneSection ls)
+                            || !ls.influenced())
+                        throw new IOException("dlane outside influenced section");
+                    curDLane = Integer.parseInt(parts[1]);
+                    if (curDLane < 0 || curDLane > 2)
+                        throw new IOException("bad dlane index");
+                    ls.deltaLanes.get(curDLane).clear();
+                }
+                case "dn" -> {
+                    if (!(curSection instanceof LaneSection ls)
+                            || !ls.influenced() || curDLane < 0)
+                        throw new IOException("dn outside delta lane");
+                    ls.deltaLanes.get(curDLane).add(parseNode(parts));
                 }
                 case "bpose" -> {
                     if (!(curSection instanceof BridgeSection bs))
@@ -420,11 +458,43 @@ public final class DesignIO {
                     if (lane.size() < 2)
                         throw new IOException("each lane needs at least 2 nodes");
                 }
+                if (fs.influenced()) {
+                    // delta lanes need only ONE node (flat zero is a
+                    // single node at t=0); an empty block heals to it
+                    for (List<BezierBaker.Node> dl : fs.deltaLanes) {
+                        if (dl.isEmpty()) dl.add(new BezierBaker.Node(0, 0));
+                    }
+                }
                 if (legacy1) convertLegacyHandles(fs);
             }
         }
 
         return new LoadResult(c, new Cosmetics(heart, gauge, tie, solid, rail, grad, stops));
+    }
+
+    /** One node line in the shared `n`/`dn` grammar (9 fields; the
+     *  8th/9th lock fields ride the ignore-extra-fields rule). */
+    private static void writeNode(PrintWriter out, String tag, BezierBaker.Node n) {
+        out.printf(Locale.US, "%s %.4f %.4f %.4f %.4f %.4f %.4f %d %d %d%n",
+            tag, n.t, n.val, n.outFrac, n.outDv, n.inFrac, n.inDv,
+            n.smooth ? 1 : 0, n.straightOut ? 1 : 0,
+            n.levelOut ? 1 : 0);
+    }
+
+    /** Parse a node from an `n`/`dn` line's fields (writeNode's dual;
+     *  outFrac/inFrac are raw seconds under FVDD1 — the caller's
+     *  convertLegacyHandles fixes design lanes up afterwards). */
+    private static BezierBaker.Node parseNode(String[] parts) {
+        BezierBaker.Node n = new BezierBaker.Node(
+            Double.parseDouble(parts[1]), Double.parseDouble(parts[2]));
+        n.outFrac = Double.parseDouble(parts[3]);
+        n.outDv   = Double.parseDouble(parts[4]);
+        n.inFrac  = Double.parseDouble(parts[5]);
+        n.inDv    = Double.parseDouble(parts[6]);
+        n.smooth = !parts[7].equals("0");
+        n.straightOut = parts.length > 8 && parts[8].equals("1");
+        n.levelOut = parts.length > 9 && parts[9].equals("1");
+        return n;
     }
 
     /** Four quat fields starting at parts[at]. Re-normalized only when

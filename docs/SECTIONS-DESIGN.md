@@ -233,9 +233,11 @@ optimization at the chosen distance on every change.
 STATUS: designed in full 2026-07-07 (user-approved); ROUND A LIVE
 (v13.6, D79 — true speed exists and shows; 5.1/5.2 implemented);
 CONVERT LIVE (v13.7, D81 — 5.3b, user-spec'd during round A and
-landed early); 5.3/5.4 (become-real, re-freeze, influence) are not
-yet built. The original three-point sketch's semantics survive as
-5.3/5.4. Ships in rounds (5.7).
+landed early); ROUND B LIVE (v14.5, D97 — the resolve-conflict
+submenu implements 5.3's two ops); ROUND C LIVE (v15.0, D98 —
+influence mode, re-spec'd CROSS-MODE by the user 2026-07-11; the
+5.4/5.5 amendments below record where the shipped design departs
+from the 2026-07-07 text). §5 is COMPLETE.
 
 ### 5.0 The problem, and the property that shapes the design
 
@@ -399,7 +401,30 @@ fit (5.3) upgrades both when it lands.
 
 ### 5.4 Influence mode (round C) — the reference/base construction
 
-The sketch's `effectiveTarget = resulting + delta` is kept, with
+SHIPPED v15.0 (D98) with user amendments (2026-07-11) that OVERRIDE
+this section where they conflict:
+- CROSS-MODE: the delta lanes live in the OTHER mode's units and add
+  to the section's RESULTING other-mode graphs (force section → geo
+  rate deltas, geo section → felt-G deltas; lane 2 = shared roll).
+  passG integrates base+delta AS the other mode, so resulting ==
+  base + delta by construction.
+- NON-MODAL: the authored lanes stay editable (badge toggle between
+  the two surfaces); "dormant" below is dead.
+- vApply lives in the vDesign FIELD (every consumer unchanged); the
+  NEW field vAuthored freezes the authored speed for ref. The §5.6
+  file slots are unchanged (section line = authored, infl line =
+  operating). Influenced sections are EXEMPT from the D95 same-piece
+  reconcile — "influencing creates the split" (user note): vApply
+  moves only by explicit action.
+- Exits: "Bake influence into design graphs…" (= convert to the OWN
+  mode via the density preview) replaces "Become real"; "Discard
+  influence" restores bitwise (gated). Partial converts refuse on
+  influenced sections. Reversed: entry refused; carried influence
+  keeps applying under piece reversal (canonical two-pass), editing
+  locked.
+
+The original text (kept for the construction, which survives):
+the sketch's `effectiveTarget = resulting + delta` is kept, with
 "resulting" pinned down so regeneration can NEVER feed itself (the
 feedback loop D72 originally guarded against, relocated here by
 D73): the base is computed fresh every compile from the section's
@@ -452,7 +477,21 @@ Mode rules:
 
 ### 5.5 Influence UX (round C; §10's open question, decided)
 
-EFFECTIVE-VIEW editing: the strip draws the EFFECTIVE curves
+SHIPPED v15.0 (D98): the user asked for BOTH visuals as a toggle —
+"Resulting view" is this section's effective-view (nodes ride
+base+delta, purely visual, one dispOff choke point through draw /
+hit / drag / box-select; Ctrl value-snap lands the RESULTING value
+on the grid) and "Influence view" (the DEFAULT) is the reserve
+alternative below (deltas around zero, the resulting graphs dotted
+behind, hoverable). Badge-menu radios switch; the badge wears "fx",
+lane buttons wear Δ, and the Resulting ▾ overlays read the TRUE
+other-mode values while either influence view is active (user
+spec). In the DESIGN surface of an influenced section the true
+strokes reference the AUTHORED curves, so the influence's effect
+(e.g. the laterals a yaw delta causes) draws beside the untouched
+design lanes.
+
+The original text: EFFECTIVE-VIEW editing — the strip draws the EFFECTIVE curves
 (base + delta) as the lane curves — the graph keeps showing real
 ride quantities, per the unified-view rule — with the BASE as a
 dashed guide underneath (lane color, low alpha). Delta nodes RIDE

@@ -3298,3 +3298,282 @@ Three user items after his convert-expansion testing:
   one-pass bound. Gated via the mode-switch repro (scratch
   BridgeModeSwitch): seam step 0.063 -> 0.000 deg, ping-pong
   deterministic, POS unchanged.
+
+## D98. INFLUENCE mode — cross-mode delta lanes over a self-computed
+##      base (§5 round C, v15.0)
+
+The user's round-C spec (2026-07-11) sharpened §5.4/5.5 into the
+shipped design; where his message and the older written spec
+differed, the message won:
+
+- **CROSS-MODE, not same-mode**: influence lets a FORCE section
+  sculpt its RESULTING GEO graphs and a geo section its FELT FORCE
+  graphs — "editing that graph directly adds or subtracts the
+  amount from the influence graph to the resulting graph". Delta
+  lanes live in the OTHER mode's units (lane 2 = the shared roll
+  rate either way). The additive contract is exact BY CONSTRUCTION:
+  passG integrates base+delta AS the other mode (force section →
+  GeoIntegrator on rate keyframes, geo section → FVDIntegrator on
+  felt targets), so the resulting graphs ARE base + delta and the
+  recorded felt stays honest at the operating profile. Gated:
+  resulting yaw == base + delta to 0.006 °/s, geo felt to 1e-4 g;
+  the user's example (no-lateral section + yaw influence → the
+  laterals appear in felt/true, authored lane untouched) matches
+  ω·v/g analytically.
+- **The §5.4 base construction survives, with the field mapping
+  INVERTED**: ls.vDesign stays THE operating speed every consumer
+  already reads/writes (run rows, '+', B re-freeze, bridge vB, the
+  resolve ops — no interface trickery); the NEW field vAuthored
+  freezes the authored speed for ref generation. The FILE keeps the
+  spec'd §5.6 slots exactly (section line = authored, `infl` line =
+  operating; `dlane`/`dn` in the `n` grammar; missing = uninfluenced
+  — old readers see the plain design). base = analytic per-sample
+  other-mode values along ref at v* (no differencing — exact at the
+  edges), re-timed by the convert trapezoid; rows {t*, L0..L2}
+  exported transiently on LaneSection.baseCurves for the editor.
+- **DO-NO-HARM fast path**: all-zero deltas at vDesign == vAuthored
+  (bitwise compare) take the untouched single-pass route — entering
+  influence moves NOTHING (gated bitwise), discarding restores the
+  un-influenced document bitwise even after sculpting. The two-pass
+  engages only when a delta or a speed drift exists; its delta-0
+  closure at a DRIFTED speed is convert-class (0.27 m over the
+  407 m layout — the re-time across a speed change IS the
+  become-real mechanism, same residual family).
+- **NON-MODAL editing** (softens §5.4's "authored lanes dormant" —
+  user: "make able to go back and edit original design mode"): a
+  badge-menu check toggles the strip between the DESIGN lanes and
+  the DELTA lanes; both stay live. lanesFor() binds app.lanes to
+  the deltas while influence-editing, so every node gesture, snap,
+  lock, dialog and undo path works on them verbatim; activeGeo()
+  FLIPS there, so palette, units, snap steps, y-axis, the Resulting
+  popup and the B-matching conversions all follow the edited
+  surface (lane buttons wear Δ, badge wears fx).
+- **TWO VIEWS, both user-spec'd** (§5.5's primary AND its reserve,
+  as a radio pair): "Influence view" (default) edits deltas around
+  zero with the RESULTING graphs dotted behind (hoverable);
+  "Resulting view" is purely visual — nodes RIDE base+delta (drawn
+  as a sampled polyline with a faint dashed base guide and the fill
+  spanning guide→curve), drags/snap/box-select/handles all offset
+  by base(t) through one dispOff() choke point and write the delta
+  back out. Ctrl value-snap lands the RESULTING value on the grid.
+- **Design view shows the truth beside the design** (the user's
+  laterals requirement): inside an influenced strip being
+  design-edited, drawTrueStrokes references the AUTHORED lane curve
+  instead of derivedAt — the compiled curves equal the truth there
+  and would never split. Inactive influenced strips draw DERIVED
+  (reversed-strip rule); B-matching against an influenced neighbor
+  takes the sampled path (its authored lanes don't tell the truth);
+  on a delta edge node it writes (neighbor target − base), so the
+  RESULTING curve meets the neighbor.
+- **"Influencing creates a split in the resulting and design
+  speeds"** (user note, honored literally): influenced sections are
+  EXEMPT from the D95 same-piece reconcile — entering influence
+  reconciles the operating speed once (to the true entry at that
+  moment) and it moves only by explicit action afterwards (resolve
+  ops, B seam re-freeze, spinner). Shape is operating-speed
+  invariant by construction (rates at v* retrace the same spatial
+  curve; only the clock moves), so a later re-freeze re-times
+  without reshaping.
+- **Exits**: "Bake influence into design graphs…" = convert to the
+  OWN mode through the density preview (the influence effect is in
+  the compiled shape; deltas gone); "Discard influence" = deltas +
+  vAuthored drop, bitwise restore. Whole cross-mode converts bake
+  the influence naturally; PARTIAL converts refuse on influenced
+  sections (model-side guard too): the kept side's ref cannot
+  reproduce the original's sub-arc once deltas bent the mid-section
+  frame. REVERSED sections refuse influence ENTRY (§5.3's rule) but
+  a reversed piece carrying influence keeps applying it (passG runs
+  both passes canonically + reverseAndPlace; double reversal gated
+  to 5.6e-14 m) with editing locked.
+- **Duration**: an influenced section's clock is the re-timed
+  t*_end (durOf reads the compiled span, like s/c; the delta wall
+  is absolute — influence never extends the section). Corner
+  accepted: entering influence on an ALREADY-drifted section pins
+  vApply ≠ vAuthored, so the design lanes' own clock differs from
+  the strip width by the speed ratio — the design curves are
+  reference material there until resolved (flagged in Help).
+
+Gates: Phase2Gate.influence (TESTING #37) — 24 checks: bitwise
+entry/discard, drifted-speed closure + re-clock, both additivity
+directions, the laterals example, translation invariance (0.0),
+reconcile exemption, IO round-trip byte-identical + uninfluenced
+saves clean, reversal round-trip. All 241 suite checks green.
+
+## D99. Convert honesty round (v15.1): analytic rate extraction;
+##      converts preserve speed conflicts
+
+Two confirmed-by-probe fixes from the user's conversion testing
+(2026-07-11, ConvProbe in the session scratchpad):
+
+- **"Converged to a slightly different spot" — root cause: the
+  MEASUREMENT, not the fit.** convertToLanes differenced frames over
+  a ±2-sample window, low-passing the CORNERS of the rate curves —
+  a floor (~1.1 °/s on the default layout) no node density could
+  recover, and NOT a time shift (best time-alignment was exactly 0).
+  Fix: pitch/yaw come ANALYTICALLY from the recorded felt per sample
+  (κ = g(G − axis.y)/v² — the same identity Pass A's trueFelt
+  already rides; every mode records felt compatibly, bridges and
+  reversed sections included). Roll has no felt to invert and stays
+  measured, but over ±1 sample (second-order error ÷4). Max-accuracy
+  adaptive converts now converge: rate residual 1.094 → 0.077 °/s
+  (gated). Shape residual stays ~0.3 m / 407 m (roll measurement +
+  duration quantum — the documented convert class).
+- **Converting a speed-conflicted section silently RESOLVED it**
+  (user: "the geo section should still have design/real speed
+  conflict and shouldn't change shape"): the replacement section
+  dropped vPinned, the D95 reconcile re-froze it (15 → 16.93 m/s in
+  the probe), and the shape re-derived 0.75 m. Whole converts now
+  carry vPinned onto the converted section; partial converts pin
+  BOTH halves of a pinned original (each continues the same design
+  profile, so each stays conflicted). Gated: vDesign 15 kept, pin
+  kept, 1.94 m/s drift identical, shape movement down to the fit
+  residual.
+
+## D100. RIGID pitch/roll placement (v15.2): the design/real
+##       ORIENTATION split
+
+USER RULE (2026-07-11): "if the pitch and/or roll of the end of a
+bridge section [= the start of the next piece] gets changed, make
+sure that the real geometric shape is being preserved… pitching/
+rolling starting point of track" — plus a design/real PITCH AND ROLL
+split to go with the speed one. Probed first: pitching a piece 10°
+re-solved a force section 190 m off the rigid rotation (gravity), and
+even geo moved 21 m (the energy profile rides the heights). Design:
+
+- Sections integrate at the piece's GENERATION pose (baseOrient ⊕
+  yaw — TrackPiece.genPose(); yaw always commuted with gravity), and
+  the pitch/roll deltas become a RIGID rotation of the finished
+  geometry about the entry point (TrackPiece.tilt(), applied
+  per-section in the compiler; identity object short-circuit keeps
+  every untilted piece BITWISE — the whole suite rides it).
+- The recorded felt RE-PROJECTS through the rotation
+  (G' = G − axis.y + axis'.y), preserving the κ identity exactly
+  (gated to 2e-16), so Pass A's true curves, rail colors and every
+  felt consumer stay honest; recorded v stays the DESIGN profile —
+  the tilt's real speed change is exactly Pass D's design/real speed
+  split, shown by the existing machinery. Body rates are
+  rotation-invariant: authored GEO lanes stay true under tilt; only
+  FORCE felt splits (true strokes reference the AUTHORED lanes
+  inside a tilted piece's active force strip, the influence rule
+  reused; inactive force strips draw derived; the analytic B-match
+  branch falls back to sampled there).
+- Bridges never tilt (world-anchored); the bridge target-head
+  capture reads the tilted head (pieceHead). Gated: force AND geo
+  pieces rigid to 0.0 m at pitch 10° roll −7°, zeroing restores
+  bitwise.
+- ACCEPTED CORNER: splitting or reversing a TILTED piece bakes the
+  tilt into the new baseOrient (deltas reset) — generation resumes
+  FROM the tilted pose there, i.e. those two ops re-solve tilted
+  force sections instead of staying rigid. Documented; revisit if
+  feel-testing trips on it.
+
+## D101. Transition-to-real; left-to-right conflict resolution;
+##       placement pitch/roll rows (v15.2-v15.3)
+
+The user's conversion-round UX spec (his 4 unanswered design forks
+defaulted to the recommended options — all reversible):
+
+- **'+' FORK after a conflicted piece end**: "Continue speed
+  conflict ▸" (the historic design-profile continuation) vs
+  "Transition to real ▸" (the new section starts at the TRUE end
+  speed holding the TRUE end state — force = true felt, geo = true
+  rates — as if the real curves were the design graphs). Identical
+  menus when nothing drifted.
+- **"Transition to real" as a RESOLVE op** (Coaster.transitionToReal):
+  vDesign := true entry, pin cleared, every lane's start node takes
+  the LEFT neighbor's TRUE curve value + slope at the seam — slope
+  in REAL time (dG/dt_real = dG/dt_axis · v_true/v_design). Gated:
+  a section inheriting a pinned neighbor's 3.55 m/s split closes to
+  0.000, the neighbor keeps its own conflict, the start value lands
+  on the true end felt.
+- **Resolve-menu rework** (user relaxed the v14.5 whole-run bridge
+  block): the submenu is blocked ONLY directly right of a live
+  bridge (new explainer: it re-blends to follow any resolution —
+  convert it first). Make-real/re-freeze additionally gray while the
+  DIRECT left neighbor is itself conflicted ("resolve the previous
+  section first") — conflicts resolve LEFT TO RIGHT, one section at
+  a time; a resolved section's downstream stays put because
+  make-real/transition preserve what arrives there (the pinned ones
+  keep their conflicts — D99 — and unpinned continuations were
+  already tracking).
+- **REAL-ANCHORED sections** (the transition-to-real state) are
+  recognized by which seam speed their vDesign sits nearer (true vs
+  the neighbor's design end): B/Shift+B then matches the neighbor's
+  TRUE curves (sampled from the true arrays, slope onto real time),
+  refreezeSeamSpeed and the D95 reconcile freeze them to the TRUE
+  seam speed (the reconcile would otherwise silently undo the
+  resolution — gated), and B on the CONFLICTED side's end node
+  toward a real-anchored neighbor is REFUSED with a stats hint
+  (user: only the right side of the transition matches; the other
+  direction feedback-chases).
+- **Placement ▾ pitch/roll rows** (v15.3): the ACTIVE piece's start
+  pitch/roll spinners with padlocks (default LOCKED, the bridge
+  panel's convention). A bridged-in piece shares the BRIDGE's lock
+  fields (one state, whichever panel flips it); free pieces keep a
+  UI-only guard (TrackPiece.uiLockPitch/Roll, deliberately not
+  persisted — pure edit-guards). In optimize-orientation mode the
+  march owns the values and the spinners freeze either way.
+
+## D102. Influence behaves like a normal section; resolve flow
+##       simplified; the POV convert-cancel bug (v15.4)
+
+The user's first influence/conversion test round (2026-07-11,
+evening):
+
+- **THE POV CONVERT-CANCEL BUG** ("Convert whole bridge to … did
+  nothing", intermittent, self-healing): a whole-bridge convert
+  ATTACHES the next piece, shifting piece indices; with POV parked
+  BEYOND the bridge, the POV piece-follow saw a "new" piece under
+  the camera on the very next animation frame, fired activateAt,
+  and the activation change CANCELLED the density preview —
+  restoring the pre-convert snapshot within a frame. Matches every
+  observed detail (positions before the bridge keep their index =
+  worked; partial converts remove no piece = worked; leaving POV
+  stops the timer = worked again). Fix: the follow yields while
+  editor.convertUiActive(); and beginDensityPreview now posts a
+  stats-bar message whenever a convert op refuses — nothing fails
+  silently again.
+- **INFLUENCE NEVER TOUCHES SPEEDS** (user: influenced sections
+  should "behave exactly like a normal force or geo section, just
+  with little nudges" — supersedes both the §5.4 "instant
+  reconciliation" and D98's reconcile exemption): entering
+  influence on a speed-conflicted section used to move its
+  OPERATING speed to the true entry, changing its design end and
+  silently closing the NEXT section's conflict (his bug, now gated:
+  drift 3.55 → 3.55, vDesign bitwise). enterInfluence leaves
+  vDesign alone; LaneSection.vDesign(v) MIRRORS vAuthored while
+  influenced (the pair is locked through every consumer — spinner,
+  B, reconcile, resolve ops); the D95 reconcile treats influenced
+  sections exactly like normal ones (pinned still skips). The
+  divergent-pair machinery in influencedLane stays (hand-edited
+  files), gated via direct field writes.
+- **NO ROLL DELTAS** (user): influence offers Gv/Gl (geo sections)
+  or pitch/yaw (force sections) only. Lane 2 stays in the model and
+  file (machinery + old files intact) but is INERT in the UI: the
+  roll button disables with the Δ set, lane-switch paths refuse it,
+  and its strip draws only the dotted RESULTING roll. Fresh delta
+  lanes now hold a node at 0 AND at the section end (user spec);
+  lane 2 keeps its lone (0,0).
+- **RESULTING-VIEW HANDLE ANGLES** (user): knobs offset by the base
+  at the NODE's time, not the knob's own — the node+handle assembly
+  translates rigidly, so handle angles read identically in both
+  influence views (they used to bend along the base curve).
+- **RESOLVE SIMPLIFIED** (user, reversing part of D101): the
+  explicit "Transition to real" RESOLVE op is REMOVED — its job is
+  the two-step "Re-freeze design speed" (now available even
+  directly right of another conflicted section) then B/Shift+B
+  (which, against a drifted neighbor with the speed re-anchored,
+  matches the TRUE curves — value + slope in real time, the D101
+  machinery unchanged). Make-real keeps waiting for the previous
+  section's conflict. The '+' menu's "Transition to real ▸" fork
+  for ADDING sections STAYS — user: "I really like how it works
+  for adding a section." Gated: refreeze right of a pinned
+  conflict closes the downstream split 3.55 → 0.000 m/s and
+  survives the reconcile.
+
+Addendum (v15.5, same session): B/Shift+B on a delta lane's FIRST
+or LAST node now returns it to NO INFLUENCE — value 0, flat facing
+handle, no neighbor probe and no seam speed re-freeze (user: "the
+default locations for influence should be no influence"; the v15.0
+neighbor-minus-base match nudged the node by the base sampling
+residual on every press). Works with or without a neighbor.

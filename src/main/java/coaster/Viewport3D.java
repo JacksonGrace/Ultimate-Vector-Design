@@ -367,8 +367,15 @@ class Viewport3D {
                 // the editor FOLLOWS the ride across pieces (v13.11,
                 // user spec: the piece you're on is the one you're
                 // editing) — piece transitions only, so hands-off
-                // graph edits are never fought mid-piece
-                if (app.editor != null) {
+                // graph edits are never fought mid-piece. NOT while
+                // the convert UI owns the graph (v15.4, D102): a
+                // whole-bridge convert ATTACHES a piece, the indices
+                // shift, this follow saw a "new" piece under the
+                // parked camera and its activation change CANCELLED
+                // the density preview — restoring the pre-convert
+                // state within a frame (the user's "convert whole
+                // bridge did nothing in POV beyond the bridge").
+                if (app.editor != null && !app.editor.convertUiActive()) {
                     int pc = app.editor.pieceAtTime(
                         app.lastSamples.get(idx).t());
                     if (pc >= 0 && pc != povFollowPiece) {

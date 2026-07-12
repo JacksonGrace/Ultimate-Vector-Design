@@ -201,7 +201,18 @@ class GraphEditor extends Region {
      *  piece). */
     private double durOf(int p, int k) {
         Section s = app.coaster.pieces.get(p).sections.get(k);
-        if (s instanceof LaneSection ls) return BezierBaker.rideEnd(ls.lanes);
+        if (s instanceof LaneSection ls) {
+            if (ls.influenced()) {
+                // an influenced section's duration is the RE-TIMED
+                // clock (t*_end) — read the compiled span like s/c;
+                // pre-compile, estimate by the speed ratio
+                TrackCompiler.Span isp = spanAt(p, k);
+                if (isp != null) return isp.t1() - isp.t0();
+                return BezierBaker.rideEnd(ls.lanes)
+                    * ls.vAuthored / Math.max(0.5, ls.vDesign);
+            }
+            return BezierBaker.rideEnd(ls.lanes);
+        }
         TrackCompiler.Span sp = spanAt(p, k);
         if (sp != null) return sp.t1() - sp.t0();
         if (s instanceof StraightCurveSection sc) return sc.estDuration();
@@ -325,13 +336,73 @@ class GraphEditor extends Region {
         List.of(), List.of(), List.of());
 
     private List<List<BezierBaker.Node>> lanesFor(Section s) {
-        return s instanceof LaneSection ls ? ls.lanes : NO_LANES;
+        // INFLUENCE editing (v15.0, D98): the strip edits the DELTA
+        // lanes through the same binding — every node gesture, snap,
+        // lock and undo path works on them verbatim
+        if (s instanceof LaneSection ls) {
+            return ls.editInfluence && ls.influenced() ? ls.deltaLanes
+                                                       : ls.lanes;
+        }
+        return NO_LANES;
     }
 
-    /** Is the ACTIVE section a geo (body-rate) section? */
+    // ---------- INFLUENCE editing state (v15.0, D98; §5.4/5.5) ----------
+    // While a section's INFLUENCE surface is active, the plot flips to
+    // the OTHER mode's quantities (the delta lanes' units) and offers
+    // two visuals: "Influence view" (deltas drawn around zero, the
+    // resulting graphs dotted behind) and "Resulting view" (nodes RIDE
+    // base+delta — purely visual, drags still write the delta).
+
+    /** Session view toggle: false = Influence view (default), true =
+     *  Resulting view. Badge-menu radios switch it. */
+    private boolean resultingView = false;
+
+    /** The active LaneSection while its INFLUENCE surface is being
+     *  edited, else null. */
+    private LaneSection activeInfl() {
+        List<Section> secs = sections();
+        return activeSection < secs.size()
+            && secs.get(activeSection) instanceof LaneSection ls
+            && ls.editInfluence && ls.influenced() ? ls : null;
+    }
+
+    /** The active section as an influenced LaneSection (whatever
+     *  surface is showing), else null. */
+    private LaneSection activeInfluenced() {
+        List<Section> secs = sections();
+        return activeSection < secs.size()
+            && secs.get(activeSection) instanceof LaneSection ls
+            && ls.influenced() ? ls : null;
+    }
+
+    /** Piece p carries a rigid pitch/roll tilt (v15.2, D100): its
+     *  FORCE sections' recorded felt deviates from the authored lanes
+     *  (the design/real orientation split) — geo rates are
+     *  rotation-invariant and stay true. */
+    private boolean pieceTilted(int p) {
+        TrackPiece tp = app.coaster.pieces.get(p);
+        return tp.pitchDeg != 0 || tp.rollDeg != 0;
+    }
+
+    /** DISPLAY offset for lane values at local time t: in the
+     *  influence RESULTING VIEW every node/knob/curve point plots at
+     *  base(t) + value; drags subtract it back out. 0 elsewhere. */
+    private double dispOff(int lane, double localT) {
+        LaneSection infl = activeInfl();
+        return infl != null && resultingView
+            ? infl.baseValAt(lane, localT) : 0;
+    }
+
+    /** Is the ACTIVE section a geo (body-rate) section? Influence
+     *  editing FLIPS this: the delta lanes carry the OTHER mode's
+     *  quantities, and everything keyed off the active mode — names,
+     *  units, palette, scales, snap steps, the Resulting popup, the
+     *  B-matching conversions — follows the edited surface. */
     private boolean activeGeo() {
         List<Section> secs = sections();
-        return activeSection < secs.size() && secs.get(activeSection) instanceof GeoSection;
+        boolean geo = activeSection < secs.size()
+            && secs.get(activeSection) instanceof GeoSection;
+        return activeInfl() != null ? !geo : geo;
     }
 
     /** The active STRAIGHT/CURVE section, or null (v11.0). */
@@ -351,7 +422,10 @@ class GraphEditor extends Region {
     }
 
     private String laneName(int lane) {
-        return activeGeo() ? GEO_LANE_NAMES[lane] : LANE_NAMES[lane];
+        // the influence surface labels its deltas honestly: Δ in
+        // Influence view; Resulting view places the sum, plain name
+        String base = activeGeo() ? GEO_LANE_NAMES[lane] : LANE_NAMES[lane];
+        return activeInfl() != null && !resultingView ? "Δ " + base : base;
     }
 
     private String laneUnit(int lane) {
@@ -377,7 +451,8 @@ class GraphEditor extends Region {
      *  section/piece switch, load, add and delete. */
     private void syncLaneButtons() {
         app.setLaneButtonMode(activeGeo() ? 1
-            : activeSc() != null || activeBridge() != null ? 2 : 0);
+            : activeSc() != null || activeBridge() != null ? 2 : 0,
+            activeInfl() != null);
         app.updateBridgeControls();
         // the partial-convert mode is per-strip: any activation change
         // away from its section cancels it (v13.11; any mode v14.0)
@@ -448,9 +523,11 @@ class GraphEditor extends Region {
     }
 
     /** End of the ACTIVE section in its local time — its own ride end
-     *  (the old single-section maxT() semantics, now per section). */
+     *  (the old single-section maxT() semantics, now per section).
+     *  The INFLUENCE surface's end is the compiled duration: delta
+     *  lanes modify the section, they never extend it. */
     private double sectionEnd() {
-        return activeSc() != null
+        return activeSc() != null || activeInfl() != null
             ? sectionDur(activeSection) : BezierBaker.rideEnd(app.lanes);
     }
 
@@ -524,16 +601,40 @@ class GraphEditor extends Region {
         ContextMenu cm = new ContextMenu();
         boolean endsBridge = !sections().isEmpty()
             && sections().get(sections().size() - 1) instanceof BridgeSection;
-        MenuItem force = new MenuItem("Add force section (1 s hold)");
-        force.setOnAction(ev -> addSection(0));
-        MenuItem geo = new MenuItem("Add geo section (1 s hold)");
-        geo.setOnAction(ev -> addSection(1));
-        MenuItem sc = new MenuItem("Add straight/curve section (10 m straight)");
-        sc.setOnAction(ev -> addSection(2));
-        force.setDisable(endsBridge);
-        geo.setDisable(endsBridge);
-        sc.setDisable(endsBridge);
-        cm.getItems().addAll(force, geo, sc);
+        // '+' after a SPEED-CONFLICTED end forks first (v15.2, D101 —
+        // user spec): "Continue speed conflict" lines the new section
+        // up with the DESIGN graphs (the historic behavior);
+        // "Transition to real" starts it at the REAL speed with the
+        // REAL end values — exactly like adding after an unconflicted
+        // section, treating the true curves as the graphs.
+        if (!endsBridge && pieceEndDrifted()) {
+            Menu cont = new Menu("Continue speed conflict ▸");
+            Menu real = new Menu("Transition to real ▸");
+            String[] names = { "Add force section (1 s hold)",
+                "Add geo section (1 s hold)",
+                "Add straight/curve section (10 m straight)" };
+            for (int m = 0; m < 3; m++) {
+                final int mode = m;
+                MenuItem ci = new MenuItem(names[m]);
+                ci.setOnAction(ev -> addSection(mode, false));
+                cont.getItems().add(ci);
+                MenuItem ri = new MenuItem(names[m]);
+                ri.setOnAction(ev -> addSection(mode, true));
+                real.getItems().add(ri);
+            }
+            cm.getItems().addAll(cont, real);
+        } else {
+            MenuItem force = new MenuItem("Add force section (1 s hold)");
+            force.setOnAction(ev -> addSection(0));
+            MenuItem geo = new MenuItem("Add geo section (1 s hold)");
+            geo.setOnAction(ev -> addSection(1));
+            MenuItem sc = new MenuItem("Add straight/curve section (10 m straight)");
+            sc.setOnAction(ev -> addSection(2));
+            force.setDisable(endsBridge);
+            geo.setDisable(endsBridge);
+            sc.setDisable(endsBridge);
+            cm.getItems().addAll(force, geo, sc);
+        }
         List<TrackPiece> pieces = app.coaster.pieces;
         // pieces already INSIDE this bridged run are not bridge/attach
         // targets (v13.4): they're connected — reordering or dissolving
@@ -667,32 +768,44 @@ class GraphEditor extends Region {
             });
     }
 
-    /** Any live bridge EARLIER in this section's RUN? The resolve
-     *  ops are blocked behind one (v14.5, D97 — the user first
-     *  narrowed this to "directly after a bridge", then reversed it
-     *  after testing: the same odd behavior shows up resolving
-     *  ANYWHERE downstream of an unconverted bridge — it re-blends
-     *  against the changed speeds and defeats the resolution.
-     *  Convert the bridge(s) first). */
-    private boolean bridgeUpstream(int k) {
-        int p0 = activePiece;
-        while (p0 > 0) {
-            List<Section> prev = app.coaster.pieces.get(p0 - 1).sections;
-            if (prev.isEmpty() || !(prev.get(prev.size() - 1)
-                    instanceof BridgeSection)) {
-                break;
-            }
-            p0--;
+    /** Is a live BRIDGE the thing directly before section k on the
+     *  run? Only that blocks the resolve ops now (v15.2, D101 — the
+     *  v14.5 whole-run block was relaxed on user rule: with
+     *  transition-to-real, chains resolve safely LEFT TO RIGHT; a
+     *  direct bridge neighbor still loops — it re-blends onto
+     *  whatever the resolution changes). */
+    private boolean leftIsBridge(int k) {
+        if (k > 0) {
+            return sections().get(k - 1) instanceof BridgeSection;
         }
-        for (int p = p0; p <= activePiece; p++) {
-            List<Section> secs = app.coaster.pieces.get(p).sections;
-            int end = p == activePiece ? k : secs.size();
-            for (int i = 0; i < end; i++) {
-                if (secs.get(i) instanceof BridgeSection) return true;
-            }
+        if (activePiece > runStart()) {
+            List<Section> prev =
+                app.coaster.pieces.get(activePiece - 1).sections;
+            return !prev.isEmpty()
+                && prev.get(prev.size() - 1) instanceof BridgeSection;
         }
         return false;
     }
+
+    /** Is the section DIRECTLY left of k itself speed-conflicted?
+     *  (Make-real / re-freeze wait for it; transition-to-real is the
+     *  op that works right of a conflict.) */
+    private boolean leftDrifted(int k) {
+        if (k == 0) return false;   // left is a bridge (blocked) or nothing
+        double[] es = entrySpeeds(activePiece, k - 1);
+        return es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS;
+    }
+
+    /** Does the ACTIVE piece end speed-conflicted (design vs true at
+     *  its last sample)? The '+' menu forks there (v15.2, D101). */
+    private boolean pieceEndDrifted() {
+        TrackCompiler.Span sp = spanOf(sections().size() - 1);
+        if (sp == null || !trueArraysReady()
+                || sp.i1() >= app.trueV.length) return false;
+        int e = Math.min(sp.i1(), app.lastSamples.size() - 1);
+        return Math.abs(app.trueV[e] - app.lastSamples.get(e).v()) > DRIFT_EPS;
+    }
+
 
     /** "Make graphs real" (§5 round B, v14.5 D97): resolve this
      *  section's design/true split KEEPING the shape — lanes re-fit
@@ -1201,6 +1314,10 @@ class GraphEditor extends Region {
             pvOp = null;
             pvActivate = null;
             pvRef = null;
+            // never refuse SILENTLY (v15.4, D102 — the "did nothing"
+            // lesson): say why nothing happened
+            app.statsLabel.setText(
+                "Convert refused — the section is too short to measure.");
             redraw();
             return;
         }
@@ -1816,8 +1933,12 @@ class GraphEditor extends Region {
             ? String.format(Locale.US, " · entered %.1f m/s", es[1])
             : "";
         MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s%s%s",
-            modeName(sec), k + 1, sec.vDesign(), drift, extra));
+            "%s section %d — design %.1f m/s%s%s%s",
+            modeName(sec), k + 1, sec.vDesign(),
+            sec instanceof LaneSection ili && ili.influenced()
+                ? String.format(Locale.US, " (authored %.1f)", ili.vAuthored)
+                : "",
+            drift, extra));
         info.setDisable(true);
         // the per-section Reversed check moved to piece scope in v12.1
         // (Coaster menu > Reverse piece, D71); the ◀ badge still marks
@@ -1831,32 +1952,46 @@ class GraphEditor extends Region {
         split.setDisable(k == 0);   // the piece starts here already
         split.setOnAction(ev -> splitAt(k));
         cm.getItems().add(info);
-        // RESOLVE SPEED CONFLICT (v14.5, D97 — §5 round B, user
-        // spec): a drifted section's submenu offers both ways out —
-        // keep the SHAPE and make the graphs real (re-fit at the true
-        // entry speed), or keep the GRAPHS and re-freeze the speed
-        // (the shape re-derives; the seam kinks honestly — Shift+B
-        // smooths it). ANY unconverted bridge earlier in the run
-        // blocks both (user, after testing: the bridge re-blends
-        // against the changed speeds and defeats the resolution
-        // anywhere downstream — convert the bridge(s) first). The
-        // submenu only exists on drifted sections at all.
+        // RESOLVE SPEED CONFLICT (v14.5 D97; reworked v15.2 D101;
+        // simplified v15.4 D102 — user: the explicit transition-to-
+        // real RESOLVE op is gone, its job is the two-step
+        // "Re-freeze, then B/Shift+B": re-freeze works even directly
+        // right of another conflicted section, and B against a
+        // drifted neighbor matches the TRUE curves once the speed is
+        // re-anchored. The '+' menu's "Transition to real ▸" fork for
+        // ADDING sections stays — user likes it there.) MAKE GRAPHS
+        // REAL keeps the shape and re-fits; it still waits for the
+        // previous section's conflict (its fit reads true curves that
+        // resolution would move). Only a bridge DIRECTLY before the
+        // section blocks everything (it re-blends to chase any
+        // resolution — convert it first).
         if (es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
                 && !(sec instanceof BridgeSection) && !sec.reversed()) {
             Menu resolve = new Menu("Resolve speed conflict");
-            if (bridgeUpstream(k)) {
+            if (leftIsBridge(k)) {
                 MenuItem why = new MenuItem(
-                    "Convert the bridge section(s) earlier on this track first");
+                    "The bridge before this section re-blends to follow "
+                    + "any resolution — convert the bridge first");
                 why.setDisable(true);
                 resolve.getItems().add(why);
             } else {
+                boolean prevConflict = leftDrifted(k);
                 MenuItem real = new MenuItem(
                     "Make graphs real (keep shape)…");
+                real.setDisable(prevConflict);
                 real.setOnAction(ev -> makeGraphsReal(k));
                 MenuItem refr = new MenuItem(
                     "Re-freeze design speed (keep graphs, reshape)");
                 refr.setOnAction(ev -> refreezeSpeed(k));
                 resolve.getItems().addAll(real, refr);
+                if (prevConflict) {
+                    MenuItem why = new MenuItem(
+                        "…make-real waits for the previous section; "
+                        + "re-freeze + Shift+B lines this seam up with "
+                        + "the real ride");
+                    why.setDisable(true);
+                    resolve.getItems().add(why);
+                }
             }
             cm.getItems().add(resolve);
         }
@@ -1886,6 +2021,51 @@ class GraphEditor extends Region {
         // edit, auto re-optimize covers upstream changes, and an
         // optimized bridge's geometry is the march itself — there are
         // no user tangents left to sweep)
+        // INFLUENCE (v15.0, D98; SECTIONS-DESIGN §5.4/5.5): sculpt the
+        // section's RESULTING other-mode graphs with additive delta
+        // lanes. The group offers entry, the edit-surface toggle, the
+        // two views, bake (= convert to the OWN mode: the influence
+        // effect is in the compiled shape) and discard. Reversed
+        // sections refuse entry (§5.3's rule); a reversed piece
+        // carrying influence keeps applying it, editing locked.
+        if (sec instanceof LaneSection lsec) {
+            cm.getItems().add(new SeparatorMenuItem());
+            boolean geoSec = lsec instanceof GeoSection;
+            if (!lsec.influenced()) {
+                MenuItem enter = new MenuItem(geoSec
+                    ? "Influence felt force graphs"
+                    : "Influence resulting geo graphs");
+                enter.setDisable(lsec.reversed);
+                enter.setOnAction(ev -> enterInfluenceUi(k));
+                cm.getItems().add(enter);
+            } else {
+                CheckMenuItem editInf = new CheckMenuItem(geoSec
+                    ? "Edit influence (felt force deltas)"
+                    : "Edit influence (geo rate deltas)");
+                editInf.setSelected(lsec.editInfluence);
+                editInf.setDisable(lsec.reversed);
+                editInf.setOnAction(ev ->
+                    setEditInfluence(k, !lsec.editInfluence));
+                RadioMenuItem vInf = new RadioMenuItem("Influence view");
+                RadioMenuItem vRes = new RadioMenuItem("Resulting view");
+                ToggleGroup vg = new ToggleGroup();
+                vInf.setToggleGroup(vg);
+                vRes.setToggleGroup(vg);
+                (resultingView ? vRes : vInf).setSelected(true);
+                boolean viewsLive = lsec.editInfluence && !lsec.reversed;
+                vInf.setDisable(!viewsLive);
+                vRes.setDisable(!viewsLive);
+                vInf.setOnAction(ev -> { resultingView = false; redraw(); });
+                vRes.setOnAction(ev -> { resultingView = true; redraw(); });
+                MenuItem bake = new MenuItem(
+                    "Bake influence into design graphs…");
+                bake.setDisable(lsec.reversed);
+                bake.setOnAction(ev -> convertSection(k, geoSec));
+                MenuItem disc = new MenuItem("Discard influence");
+                disc.setOnAction(ev -> discardInfluenceUi(k));
+                cm.getItems().addAll(editInf, vInf, vRes, bake, disc);
+            }
+        }
         // CONVERT (v13.7 D81; whole + partial for EVERY convertible
         // mode since v14.0, D89): re-author the shape — or PART of it
         // ("Convert part …" opens the split-line mode) — as editable
@@ -1894,31 +2074,104 @@ class GraphEditor extends Region {
         // next piece: the track stays connected (the v13.7 whole
         // convert split the run — user rule). Reversed sections
         // refuse: their lanes author the opposite direction (§5.3).
+        // Influenced sections refuse the PARTIAL cut (v15.0: the kept
+        // side's ref cannot reproduce the original's sub-arc — bake
+        // or discard the influence first); whole convert bakes it.
         cm.getItems().add(new SeparatorMenuItem());
         boolean isBridge = sec instanceof BridgeSection;
+        boolean influenced = sec instanceof LaneSection li && li.influenced();
         if (!(sec instanceof GeoSection)) {
-            addConvertItems(cm, k, true, isBridge, sec.reversed());
+            addConvertItems(cm, k, true, isBridge, sec.reversed(), influenced);
         }
         if (!(sec instanceof ForceSection)) {
-            addConvertItems(cm, k, false, isBridge, sec.reversed());
+            addConvertItems(cm, k, false, isBridge, sec.reversed(), influenced);
         }
         showMenu(cm, screenX, screenY);
+    }
+
+    /** ENTER influence on section k (v15.0, D98): freeze the authored
+     *  pair, reconcile the operating speed to the true entry, start
+     *  with flat-zero deltas — the fast path keeps the compile
+     *  bitwise until a delta is sculpted. One undo step. */
+    private void enterInfluenceUi(int k) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()
+                || !(secs.get(k) instanceof LaneSection ls)
+                || ls.influenced() || ls.reversed) return;
+        pushUndoSnapshot();
+        if (k != activeSection) setActiveSection(k);
+        // speeds untouched (v15.4, D102); the delta lanes span the
+        // section — a node at 0 and at the compiled end
+        Coaster.enterInfluence(ls, durOf(activePiece, k));
+        resultingView = false;   // the spec'd default: Influence view
+        if (activeLane == 2) setActiveLane(0);   // roll has no deltas
+        app.lanes = lanesFor(ls);
+        selIdx = -1;
+        selSet.clear();
+        syncLaneButtons();
+        app.rebuildTrack();      // base curves + spans
+        refreshOffset();
+        redraw();
+    }
+
+    /** Toggle which surface section k's strip edits (design lanes vs
+     *  influence deltas) — both stay live, the influence keeps
+     *  applying either way (user spec: "able to go back and edit
+     *  original design mode"). */
+    private void setEditInfluence(int k, boolean on) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()
+                || !(secs.get(k) instanceof LaneSection ls)
+                || !ls.influenced() || ls.reversed) return;
+        if (k != activeSection) setActiveSection(k);
+        if (on && activeLane == 2) setActiveLane(0);   // no roll deltas
+        ls.editInfluence = on;
+        app.lanes = lanesFor(ls);
+        selIdx = -1;
+        selSet.clear();
+        axisLock = 0;
+        handleViewExpand = false;
+        syncLaneButtons();
+        refreshOffset();
+        redraw();
+    }
+
+    /** DISCARD influence on section k: deltas + operating speed drop,
+     *  the authored pair governs — bitwise the un-influenced document
+     *  (gated). One undo step. */
+    private void discardInfluenceUi(int k) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()
+                || !(secs.get(k) instanceof LaneSection ls)
+                || !ls.influenced()) return;
+        pushUndoSnapshot();
+        if (k != activeSection) setActiveSection(k);
+        Coaster.discardInfluence(ls);
+        app.lanes = lanesFor(ls);
+        selIdx = -1;
+        selSet.clear();
+        syncLaneButtons();
+        app.rebuildTrack();
+        refreshOffset();
+        redraw();
     }
 
     /** The convert pair for one target mode: whole ("Convert [whole
      *  bridge] to X section") + partial ("Convert part to X
      *  section…"), v14.0 D89. */
     private void addConvertItems(ContextMenu cm, int k, boolean toGeo,
-                                 boolean isBridge, boolean reversed) {
+                                 boolean isBridge, boolean reversed,
+                                 boolean influenced) {
         String mode = toGeo ? "geo" : "force";
         MenuItem whole = new MenuItem(isBridge
             ? "Convert whole bridge to " + mode + " section"
             : "Convert to " + mode + " section");
         whole.setDisable(reversed);
         whole.setOnAction(ev -> convertSection(k, toGeo));
-        MenuItem part = new MenuItem(
-            "Convert part to " + mode + " section…");
-        part.setDisable(reversed);
+        MenuItem part = new MenuItem(influenced
+            ? "Convert part… (bake or discard influence first)"
+            : "Convert part to " + mode + " section…");
+        part.setDisable(reversed || influenced);
         part.setOnAction(ev -> beginPartialConvert(k, toGeo));
         cm.getItems().addAll(whole, part);
     }
@@ -1970,7 +2223,14 @@ class GraphEditor extends Region {
      *  after geo: the felt end forces (compiled Gv/Gl at design speed)
      *  + the final roll rate. Geo after force: the RESULTING end
      *  pitch/yaw rates + the authored roll rate. */
-    private void addSection(int mode) {
+    private void addSection(int mode) { addSection(mode, false); }
+
+    /** real = the "Transition to real" fork (v15.2, D101): the new
+     *  section starts at the TRUE end speed holding the TRUE end
+     *  state — as if the conflicted section's real curves were its
+     *  design graphs. false = "Continue speed conflict", the historic
+     *  design-profile continuation. Identical when nothing drifted. */
+    private void addSection(int mode, boolean real) {
         pushUndoSnapshot();
         List<Section> secs = sections();
         Section prevSec = secs.get(secs.size() - 1);
@@ -1981,31 +2241,40 @@ class GraphEditor extends Region {
         int endIdx = endSp != null && app.lastSamples != null
             && endSp.i1() < app.lastSamples.size() ? endSp.i1() : -1;
         FVDIntegrator.Sample end = endIdx >= 0 ? app.lastSamples.get(endIdx) : null;
-        double vEnd = end != null ? end.v() : prevSec.vDesign();
-        // authored roll only reads WITH the chain from a non-reversed
-        // lane section; otherwise (reversed D67, or s/c which has no
-        // roll lane) use the compiled resulting roll at the piece end
-        double rollEnd = prev != null && !prev.reversed
+        boolean tru = real && endIdx >= 0 && trueArraysReady()
+            && endIdx < app.trueV.length;
+        double vEnd = tru ? app.trueV[endIdx]
+            : end != null ? end.v() : prevSec.vDesign();
+        // authored roll only reads WITH the chain from a non-reversed,
+        // UN-influenced lane section on the DESIGN fork; otherwise
+        // (reversed D67, influenced D98, s/c, or the REAL fork) use
+        // the compiled resulting/true roll
+        double rollEnd = !tru && prev != null && !prev.reversed
+                && !prev.influenced()
             ? prev.lanes.get(2).get(prev.lanes.get(2).size() - 1).val
-            : (app.resultRates != null && endIdx >= 0
+            : (endIdx >= 0 && app.resultRates != null
                 && endIdx < app.resultRates.length
-                ? app.resultRates[endIdx][3] : 0);
+                ? (tru ? app.trueRates : app.resultRates)[endIdx][3] : 0);
         Section added;
         if (mode == 2) {
             // straight/curve: a straight IS the seamless continuation
             added = StraightCurveSection.straight(10, vEnd);
-        } else if (prev != null && !prev.reversed
+        } else if (!tru && prev != null && !prev.reversed && !prev.influenced()
                 && (mode == 1) == prev instanceof GeoSection) {
             added = Coaster.continuation(prev, vEnd);
         } else if (mode == 1) {
             double[] endRates = app.resultRates != null && endIdx >= 0
                 && endIdx < app.resultRates.length
-                ? app.resultRates[endIdx] : new double[4];
+                ? (tru ? app.trueRates : app.resultRates)[endIdx]
+                : new double[4];
             added = new GeoSection(
                 LaneSection.holdLanes(endRates[1], endRates[2], rollEnd), vEnd);
         } else {
-            added = Coaster.holdSection(
-                end != null ? end.Gv() : 1, end != null ? end.Gl() : 0, rollEnd, vEnd);
+            double gvEnd = tru ? app.trueFelt[endIdx][0]
+                : end != null ? end.Gv() : 1;
+            double glEnd = tru ? app.trueFelt[endIdx][1]
+                : end != null ? end.Gl() : 0;
+            added = Coaster.holdSection(gvEnd, glEnd, rollEnd, vEnd);
         }
         secs.add(added);
         activeSection = sections().size() - 1;
@@ -2051,7 +2320,13 @@ class GraphEditor extends Region {
                 // plus its faint element separators
                 if (rs.sec() instanceof LaneSection ls
                         && (ls instanceof GeoSection) == actGeo
-                        && !ls.reversed) {
+                        && !ls.reversed && !ls.influenced()
+                        // a TILTED piece's force felt deviates from
+                        // its lanes (v15.2) — derived there too; geo
+                        // rates are rotation-invariant and stay true
+                        && !(!actGeo && pieceTilted(rs.piece()))) {
+                    // an INFLUENCED strip's authored lanes no longer
+                    // tell the truth — draw derived, like reversed
                     drawAuthoredStrip(gc, ls, rs.t0(), rs.dur());
                 } else {
                     drawDerivedStrip(gc, rs.t0(), rs.dur());
@@ -2200,6 +2475,26 @@ class GraphEditor extends Region {
         // at the right edge of the run's window
         double rT0 = runT0(), rT1 = rT0 + runDur();
         double vt0 = viewStart(), vt1 = viewEnd();
+        // DESIGN view of an INFLUENCED section (v15.0, D98): the
+        // drawn design curves are the AUTHORED lanes, which the
+        // influence deliberately deviates from — the split reference
+        // inside its strip is the authored curve, so the true stroke
+        // shows exactly what influencing added (the user's "see the
+        // laterals along with the original graph of no laterals").
+        // derivedAt (== the compiled curves) equals the truth there
+        // and would never split.
+        LaneSection inflDesign = activeInfl() == null ? activeInfluenced() : null;
+        if (inflDesign == null && activeInfl() == null && !activeGeo()
+                && pieceTilted(activePiece)
+                && sections().get(activeSection) instanceof ForceSection fsT
+                && !fsT.reversed) {
+            // TILTED piece, force view (v15.2): the drawn lanes are the
+            // authored felt, which the rigid tilt deviates from — same
+            // authored-reference rule as influence
+            inflDesign = fsT;
+        }
+        TrackCompiler.Span inflSpan = inflDesign != null
+            ? spanOf(activeSection) : null;
         gc.setLineWidth(1);
         gc.setGlobalAlpha(TRUE_STROKE_ALPHA);
         for (int L = 0; L < LANES; L++) {
@@ -2216,7 +2511,12 @@ class GraphEditor extends Region {
                     started = false;
                     continue;
                 }
-                double dy = valToY(L, derivedAt(i, L));
+                double ref = inflSpan != null
+                        && t >= inflSpan.t0() - 1e-9
+                        && t <= inflSpan.t1() + 1e-9
+                    ? BezierBaker.evalAt(inflDesign.lanes.get(L), t - tOff)
+                    : derivedAt(i, L);
+                double dy = valToY(L, ref);
                 double ty = valToY(L, trueAt(i, L));
                 if (Math.abs(ty - dy) <= TRUE_SPLIT_PX) {
                     started = false;
@@ -2274,7 +2574,8 @@ class GraphEditor extends Region {
         double best = 1e9;
         for (int L = 0; L < LANES; L++) {
             for (BezierBaker.Node n : app.lanes.get(L)) {
-                best = Math.min(best, Math.hypot(x - ltToX(n.t), y - valToY(L, n.val)));
+                best = Math.min(best, Math.hypot(x - ltToX(n.t),
+                    y - valToY(L, n.val + dispOff(L, n.t))));
             }
         }
         return best;
@@ -2346,6 +2647,9 @@ class GraphEditor extends Region {
                     : rs.sec() instanceof BridgeSection
                         ? (dirty ? "bridge !" : "bridge") : "force")
                 + (rs.sec().reversed() ? " ◀" : "")
+                // influence mark (v15.0, D98)
+                + (rs.sec() instanceof LaneSection li && li.influenced()
+                    ? " fx" : "")
                 // §5.2 drift hint: entered at a different speed than
                 // it was designed for (badge menu shows the numbers)
                 + (es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
@@ -3345,7 +3649,8 @@ class GraphEditor extends Region {
                     gestureStartX = e.getX();
                     gestureStartY = e.getY();
                     gestureNodeT = active().get(hit).t;
-                    gestureNodeV = active().get(hit).val;
+                    gestureNodeV = active().get(hit).val
+                        + dispOff(activeLane, active().get(hit).t);
                     if (e.isShiftDown()) {
                         selSet.add(hit);               // shift+click adds
                     } else if (!selSet.contains(hit)) {
@@ -3401,7 +3706,8 @@ class GraphEditor extends Region {
                             gestureStartX = e.getX();
                             gestureStartY = e.getY();
                             gestureNodeT = active().get(ni).t;
-                            gestureNodeV = active().get(ni).val;
+                            gestureNodeV = active().get(ni).val
+                                + dispOff(activeLane, active().get(ni).t);
                             dragWinT0 = viewStart();   // freeze the window,
                             dragWinT1 = viewEnd();     // like beginGesture
                             pendingSnapshot = null;    // insert already pushed
@@ -3556,10 +3862,15 @@ class GraphEditor extends Region {
                 }
             }
             // a bridge/s-c strip's DERIVED curves take hover readouts
-            // too (v13.5) — unless the cursor owns a drag handle there
+            // too (v13.5) — unless the cursor owns a drag handle there.
+            // The influence surface's dotted RESULTING curves join in
+            // (v15.0: the compiled curves ARE base+delta) — Influence
+            // view only; in Resulting view the lane hover owns the sum.
             int dl = -1;
             double dlt = 0, dlv = 0;
-            if ((activeSc() != null || activeBridge() != null)
+            if ((activeSc() != null || activeBridge() != null
+                    || (activeInfl() != null && !resultingView
+                        && Double.isNaN(t)))
                     && canvas.getCursor() != Cursor.H_RESIZE
                     && app.resultRates != null && app.lastSamples != null
                     && app.resultRates.length > 0
@@ -3712,7 +4023,8 @@ class GraphEditor extends Region {
                     int first = -1;   // primary = EARLIEST node in the box
                     for (int i = 0; i < lane.size(); i++) {
                         double px = ltToX(lane.get(i).t);
-                        double py = valToY(activeLane, lane.get(i).val);
+                        double py = valToY(activeLane, lane.get(i).val
+                            + dispOff(activeLane, lane.get(i).t));
                         if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
                             selSet.add(i);
                             if (first < 0) first = i;
@@ -3864,6 +4176,10 @@ class GraphEditor extends Region {
 
     void setActiveLane(int lane) {
         if (lane == activeLane) return;
+        // the influence surface has NO roll deltas (v15.4, D102):
+        // lane 2 is inert there — the button disables, and every
+        // other path (1/2/3 keys, dimmed-lane clicks) refuses too
+        if (lane == 2 && activeInfl() != null) return;
         activeLane = lane;
         selIdx = -1;
         selSet.clear();
@@ -3893,6 +4209,13 @@ class GraphEditor extends Region {
     }
 
     private void insertHoldAfterSelected() {
+        if (activeInfl() != null) {
+            // the hold-insert SHIFTS everything later — deltas can't
+            // extend the section, so the shift has nowhere to go
+            app.statsLabel.setText("Influence deltas never extend the "
+                + "section — Append adds nodes up to its end instead.");
+            return;
+        }
         pushUndoSnapshot();
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node sel = lane.get(selIdx);
@@ -3921,11 +4244,22 @@ class GraphEditor extends Region {
     }
 
     void appendSecond() {
-        pushUndoSnapshot();
         // only the ACTIVE lane gets a real node; the other lanes keep
         // holding their final value (dotted line) without extra nodes
         double newEnd = BezierBaker.rideEnd(app.lanes) + 1.0;
         List<BezierBaker.Node> lane = active();
+        if (activeInfl() != null) {
+            // the influence wall is absolute: append lands AT most on
+            // the section end, and refuses when there is no room
+            double wall = sectionEnd();
+            if (lane.get(lane.size() - 1).t >= wall - MIN_GAP) {
+                app.statsLabel.setText(
+                    "The influence surface ends with its section.");
+                return;
+            }
+            newEnd = Math.min(newEnd, wall);
+        }
+        pushUndoSnapshot();
         BezierBaker.Node last = lane.get(lane.size() - 1);
         BezierBaker.Node np = new BezierBaker.Node(newEnd, last.val);
         // appended transitions default to the sinusoidal ease
@@ -4051,18 +4385,49 @@ class GraphEditor extends Region {
 
     void matchBoundary(int idx) {
         List<BezierBaker.Node> lane = active();
-        boolean start = idx == 0 && hasNeighborBefore() && lane.size() >= 2;
+        boolean infl = activeInfl() != null;
+        // on the INFLUENCE surface the edge "boundary" is simply NO
+        // influence (v15.5, D102) — no neighbor needed, no seam probe
+        boolean start = idx == 0 && lane.size() >= 2
+            && (infl || hasNeighborBefore());
         boolean end = idx == lane.size() - 1 && idx > 0
-            && hasNeighborAfter();
+            && (infl || hasNeighborAfter());
         if (!start && !end) return;
         refreshOffset();
-        if (boundaryState(start ? activeSection - 1 : activeSection + 1,
-                !start, activeLane) == null) return;
+        if (!infl) {
+            if (end && rightRealAnchored()) {
+                // matching THIS side would chase the next section's real
+                // anchor in a loop (v15.2, D101 — user rule: only the
+                // RIGHT side of a conflicted→real seam matches)
+                app.statsLabel.setText("This seam matches from the other "
+                    + "side — B the NEXT section's first node.");
+                return;
+            }
+            if (boundaryState(start ? activeSection - 1 : activeSection + 1,
+                    !start, activeLane) == null) return;
+        }
         pushUndoSnapshot();
-        refreezeSeamSpeed(start);
+        if (!infl) refreezeSeamSpeed(start);
         applyBoundaryMatch(activeLane, start);
         redraw();
         app.rebuildTrack();
+    }
+
+    /** Is the NEXT section anchored to the TRUE seam speed while this
+     *  section's design end has drifted off it (v15.2, D101 — the
+     *  transition-to-real state)? Matching toward it from this side
+     *  would feedback-chase. */
+    private boolean rightRealAnchored() {
+        if (activeSection + 1 >= sections().size()) return false;
+        TrackCompiler.Span sp = spanOf(activeSection);
+        if (sp == null || !trueArraysReady()) return false;
+        int e = Math.min(sp.i1(), app.lastSamples.size() - 1);
+        if (e >= app.trueV.length) return false;
+        double vDes = app.lastSamples.get(e).v();
+        double vTru = app.trueV[e];
+        double nx = sections().get(activeSection + 1).vDesign();
+        return Math.abs(vTru - vDes) > DRIFT_EPS
+            && Math.abs(nx - vTru) < Math.abs(nx - vDes);
     }
 
     /** Boundary matching first makes the seam's DESIGN SPEEDS agree
@@ -4096,7 +4461,22 @@ class GraphEditor extends Region {
         }
         if (upSpan == null) return;
         int i1 = Math.min(upSpan.i1(), app.lastSamples.size() - 1);
-        double v = FvdDesigner.clamp(app.lastSamples.get(i1).v(), 1, 100);
+        double v = app.lastSamples.get(i1).v();
+        // REAL-anchORED downstream (v15.2, D101): a section lined up
+        // with a drifted neighbor's TRUE curves (transition-to-real /
+        // the '+' real fork) keeps chasing the REAL seam speed — the
+        // design profile is the side it deliberately left. Which
+        // anchor a section follows is read off which speed its
+        // vDesign already sits nearer.
+        if (trueArraysReady() && i1 < app.trueV.length) {
+            double vTrue = app.trueV[i1];
+            if (Math.abs(vTrue - v) > DRIFT_EPS
+                    && Math.abs(down.vDesign() - vTrue)
+                       < Math.abs(down.vDesign() - v)) {
+                v = vTrue;
+            }
+        }
+        v = FvdDesigner.clamp(v, 1, 100);
         if (Math.abs(v - down.vDesign()) > 1e-9) down.vDesign(v);
     }
 
@@ -4107,17 +4487,26 @@ class GraphEditor extends Region {
     void matchBoundaryAll() {
         List<BezierBaker.Node> lane = active();
         if (selIdx < 0) return;
-        boolean start = selIdx == 0 && hasNeighborBefore();
+        boolean infl = activeInfl() != null;
+        boolean start = selIdx == 0
+            && (infl || hasNeighborBefore());
         boolean end = selIdx == active().size() - 1 && selIdx > 0
-            && hasNeighborAfter();
+            && (infl || hasNeighborAfter());
         if (!start && !end) return;
         refreshOffset();
-        // nullity is uniform across lanes (it only means "no compiled
-        // data yet" at a cross-mode boundary) — probe once
-        if (boundaryState(start ? activeSection - 1 : activeSection + 1,
-                !start, 0) == null) return;
+        if (!infl) {
+            if (end && rightRealAnchored()) {
+                app.statsLabel.setText("This seam matches from the other "
+                    + "side — Shift+B the NEXT section's first node.");
+                return;
+            }
+            // nullity is uniform across lanes (it only means "no
+            // compiled data yet" at a cross-mode boundary) — probe once
+            if (boundaryState(start ? activeSection - 1 : activeSection + 1,
+                    !start, 0) == null) return;
+        }
         pushUndoSnapshot();
-        refreezeSeamSpeed(start);
+        if (!infl) refreezeSeamSpeed(start);
         for (int L = 0; L < LANES; L++) applyBoundaryMatch(L, start);
         redraw();
         app.rebuildTrack();
@@ -4129,6 +4518,17 @@ class GraphEditor extends Region {
     private boolean applyBoundaryMatch(int laneIdx, boolean startEdge) {
         List<BezierBaker.Node> ln = app.lanes.get(laneIdx);
         if (ln.size() < 2) return false;
+        // INFLUENCE surface (v15.5, D102 — user rule): B on a delta
+        // EDGE node returns it to NO INFLUENCE — value 0, FLAT facing
+        // handle. (The v15.0 neighbor-minus-base match nudged the node
+        // by the base sampling residual; the honest boundary default
+        // for a delta is simply zero.)
+        if (activeInfl() != null) {
+            BezierBaker.Node n = ln.get(startEdge ? 0 : ln.size() - 1);
+            n.val = 0;
+            if (startEdge) n.outDv = 0; else n.inDv = 0;
+            return true;
+        }
         if (startEdge) {
             if (!hasNeighborBefore()) return false;
             double[] vs = boundaryState(activeSection - 1, false, laneIdx);
@@ -4163,13 +4563,34 @@ class GraphEditor extends Region {
         // it needs no Section object (spanOf's flattened index already
         // reaches the neighboring piece's spans)
         Section nbSec = k >= 0 && k < secs.size() ? secs.get(k) : null;
+        // REAL-CURVE matching (v15.2, D101): a REAL-ANCHORED section
+        // (its vDesign sits on the TRUE seam speed, not the drifted
+        // left neighbor's design end — the transition-to-real state)
+        // matches that neighbor's TRUE curves: authored/analytic paths
+        // describe the design side it deliberately left, so it goes
+        // sampled on the true arrays, slope converted onto REAL time
+        // (dG/dt_real = dG/dt_axis · v_true / v_design at the seam).
+        boolean real = false;
+        double realScale = 1;
+        if (!atStart && activeSection > 0 && trueArraysReady()) {
+            TrackCompiler.Span pv = spanOf(activeSection - 1);
+            if (pv != null) {
+                int ip = Math.min(pv.i1(), app.lastSamples.size() - 1);
+                double vDes = app.lastSamples.get(ip).v();
+                double vTru = app.trueV[ip];
+                double our = secs.get(activeSection).vDesign();
+                real = Math.abs(vTru - vDes) > DRIFT_EPS
+                    && Math.abs(our - vTru) < Math.abs(our - vDes);
+                realScale = vTru / Math.max(0.1, vDes);
+            }
+        }
         // a REVERSED neighbor's authored lanes run against the chain
         // (values at the wrong end, roll/Gl signs flipped) — its
         // boundary state comes from the compiled curves instead (D67);
         // a straight/curve neighbor has no lanes at all — likewise
-        if (nbSec instanceof LaneSection nb
+        if (!real && nbSec instanceof LaneSection nb
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
-                && !nb.reversed) {
+                && !nb.reversed && !nb.influenced()) {
             List<BezierBaker.Node> ln = nb.lanes.get(laneIdx);
             if (atStart) {
                 BezierBaker.Node n0 = ln.get(0);
@@ -4198,8 +4619,15 @@ class GraphEditor extends Region {
         // ~0.1 °/s per Shift+B round-trip without ever settling.
         // Analytic targets are exact AT the fixed point, so a re-press
         // changes nothing and the seam stays put.
-        if (laneIdx < 2 && nbSec instanceof LaneSection nbl
-                && !nbl.reversed) {
+        if (!real && laneIdx < 2 && nbSec instanceof LaneSection nbl
+                && !nbl.reversed
+                // an influenced neighbor's authored lanes don't
+                // describe its actual curves — sampled path (v15.0)
+                && !nbl.influenced()
+                // a TILTED piece's authored force targets live in the
+                // design frame; the analytic inversion mixes them with
+                // the world seam frame — sampled path there (v15.2)
+                && !pieceTilted(activePiece)) {
             return crossModeFromLanes(nbl, k, atStart, laneIdx);
         }
         // sample CLEAR of the seam (v10.2): bodyRates' central
@@ -4229,13 +4657,16 @@ class GraphEditor extends Region {
         }
         int at = atStart ? i0 : i1;
         if (!activeGeo() && laneIdx < 2) {
-            return forceTargetFromRates(laneIdx, atStart, tB, i0, i1, at);
+            return forceTargetFromRates(laneIdx, atStart, tB, i0, i1, at,
+                real, realScale);
         }
         double span = app.resultRates[i1][0] - app.resultRates[i0][0];
-        double slope = span < 1e-9 ? 0
-            : (derivedAt(i1, laneIdx) - derivedAt(i0, laneIdx)) / span;
-        double val = derivedAt(at, laneIdx)
+        double a0 = real ? trueAt(i0, laneIdx) : derivedAt(i0, laneIdx);
+        double a1 = real ? trueAt(i1, laneIdx) : derivedAt(i1, laneIdx);
+        double slope = span < 1e-9 ? 0 : (a1 - a0) / span;
+        double val = (real ? trueAt(at, laneIdx) : derivedAt(at, laneIdx))
             - slope * (app.resultRates[at][0] - tB);
+        if (real) slope *= realScale;   // design axis → real time
         return new double[]{ val, slope };
     }
 
@@ -4355,13 +4786,17 @@ class GraphEditor extends Region {
      *  with v' = −g·T.y from the design energy profile and
      *  axis' = Ω×axis). */
     private double[] forceTargetFromRates(int laneIdx, boolean atStart,
-                                          double tB, int i0, int i1, int at) {
+                                          double tB, int i0, int i1, int at,
+                                          boolean real, double realScale) {
         int comp = laneIdx + 1;   // resultRates rows: {t, pitch, yaw, roll}
-        double[][] rr = app.resultRates;
+        // real (v15.2, D101): the TRUE rate rows + the real-time slope
+        // conversion — matching a drifted neighbor's true curves
+        double[][] rr = real ? app.trueRates : app.resultRates;
         double span = rr[i1][0] - rr[i0][0];
         double slopeR = span < 1e-9 ? 0
             : (rr[i1][comp] - rr[i0][comp]) / span;
         double rateDeg = rr[at][comp] - slopeR * (rr[at][0] - tB);
+        if (real) slopeR *= realScale;
         // the ACTIVE side's design state at the seam: the entry is
         // exactly vDesign on the chained entry pose; the end is the
         // compiled end sample (both move as the section reshapes — the
@@ -4422,6 +4857,9 @@ class GraphEditor extends Region {
     private double endLimitFor(int nodeIdx) {
         List<BezierBaker.Node> lane = active();
         if (nodeIdx != lane.size() - 1) return Double.MAX_VALUE;
+        // the influence surface's wall is ABSOLUTE (no started-at-end
+        // exemption): deltas modify the section, they never extend it
+        if (activeInfl() != null) return sectionEnd();
         double end = 0;
         for (List<BezierBaker.Node> ln : app.lanes) {
             if (ln == lane) continue;
@@ -4494,7 +4932,8 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> lane = active();
         for (int i = 0; i < lane.size(); i++) {
             double px = ltToX(lane.get(i).t);
-            double py = valToY(activeLane, lane.get(i).val);
+            double py = valToY(activeLane, lane.get(i).val
+                + dispOff(activeLane, lane.get(i).t));
             if (Math.hypot(x - px, y - py) <= NODE_HIT) return i;
         }
         return -1;
@@ -4521,12 +4960,14 @@ class GraphEditor extends Region {
     private int[] hitOtherLane(double x, double y) {
         int bestLane = -1, bestNode = -1;
         double best = NODE_HIT + 3;   // slightly forgiving on dimmed app.lanes
+        boolean noRoll = activeInfl() != null;   // lane 2 inert (v15.4)
         for (int L = 0; L < LANES; L++) {
-            if (L == activeLane) continue;
+            if (L == activeLane || (noRoll && L == 2)) continue;
             List<BezierBaker.Node> lane = app.lanes.get(L);
             for (int i = 0; i < lane.size(); i++) {
                 double d = Math.hypot(x - ltToX(lane.get(i).t),
-                                      y - valToY(L, lane.get(i).val));
+                                      y - valToY(L, lane.get(i).val
+                                          + dispOff(L, lane.get(i).t)));
                 if (d < best) { best = d; bestLane = L; bestNode = i; }
             }
         }
@@ -4537,8 +4978,9 @@ class GraphEditor extends Region {
         double t = xToLt(x);
         double bestCurve = 7;
         for (int L = 0; L < LANES; L++) {
-            if (L == activeLane) continue;
-            double d = Math.abs(y - valToY(L, BezierBaker.evalAt(app.lanes.get(L), t)));
+            if (L == activeLane || (noRoll && L == 2)) continue;
+            double d = Math.abs(y - valToY(L,
+                BezierBaker.evalAt(app.lanes.get(L), t) + dispOff(L, t)));
             if (d < bestCurve) { bestCurve = d; bestLane = L; }
         }
         return bestLane >= 0 ? new int[]{ bestLane, -1 } : null;
@@ -4551,14 +4993,21 @@ class GraphEditor extends Region {
     private double[] knobPos(int idx, boolean out) {
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(idx);
+        // Resulting view offsets knobs by the base at the NODE's time
+        // (v15.4, D102 — user spec): the whole node+handle assembly
+        // translates rigidly, so handle ANGLES read identically in
+        // both influence views (offsetting at the knob's own time bent
+        // them along the base curve).
         if (out) {
             if (idx >= lane.size() - 1 || n.lockedOut()) return null;
             double dt = BezierBaker.effOutDt(n, lane.get(idx + 1));
-            return new double[]{ ltToX(n.t + dt), valToY(activeLane, n.val + n.outDv) };
+            return new double[]{ ltToX(n.t + dt), valToY(activeLane,
+                n.val + n.outDv + dispOff(activeLane, n.t)) };
         } else {
             if (idx <= 0 || lane.get(idx - 1).lockedOut()) return null;
             double dt = BezierBaker.effInDt(lane.get(idx - 1), n);
-            return new double[]{ ltToX(n.t + dt), valToY(activeLane, n.val + n.inDv) };
+            return new double[]{ ltToX(n.t + dt), valToY(activeLane,
+                n.val + n.inDv + dispOff(activeLane, n.t)) };
         }
     }
 
@@ -4595,10 +5044,15 @@ class GraphEditor extends Region {
                 }
             }
             // value: global absolute grid (0.0 G, 3.6 G, 124 deg/s ...)
-            // by default, or Δ from the previous node (Options toggle)
+            // by default, or Δ from the previous node (Options toggle).
+            // The influence RESULTING VIEW snaps in DISPLAY space: the
+            // RESULTING value lands on the grid — that is the curve
+            // under the cursor (newVal is display-space throughout;
+            // the write-back below converts to the delta).
             double vStep = snapVal(activeLane);
             if (app.settings.snapVRelative() && dragNodeIdx > 0) {
-                double pv = lane.get(dragNodeIdx - 1).val;
+                double pv = lane.get(dragNodeIdx - 1).val
+                    + dispOff(activeLane, lane.get(dragNodeIdx - 1).t);
                 newVal = pv + Math.round((newVal - pv) / vStep) * vStep;
             } else {
                 newVal = Math.round(newVal / vStep) * vStep;
@@ -4625,6 +5079,10 @@ class GraphEditor extends Region {
         // the section end is a WALL: only a node that began the gesture
         // already at the end may drag past it to extend the section
         if (newT > dragEndLimit) newT = dragEndLimit;
+
+        // Resulting view: the cursor tracked the DISPLAYED curve —
+        // write back the DELTA underneath it (v15.0, D98)
+        newVal -= dispOff(activeLane, newT);
 
         if (selSet.size() > 1 && selSet.contains(dragNodeIdx)) {
             moveGroupBy(newT - n.t, newVal - n.val);
@@ -4755,8 +5213,10 @@ class GraphEditor extends Region {
             double curDt = (dragHandleIsOut ? 1 : -1) * oldFrac * segLen;
             double slope = oldDv / curDt;   // value units per second
 
-            double nx = ltToX(n.t), ny = valToY(activeLane, n.val);
-            double kx = ltToX(n.t + curDt), ky = valToY(activeLane, n.val + oldDv);
+            double nx = ltToX(n.t), ny = valToY(activeLane,
+                n.val + dispOff(activeLane, n.t));
+            double kx = ltToX(n.t + curDt), ky = valToY(activeLane,
+                n.val + oldDv + dispOff(activeLane, n.t));
             double dirX = kx - nx, dirY = ky - ny;
             double dirLen = Math.hypot(dirX, dirY);
             if (dirLen < 1e-6) return;
@@ -4773,7 +5233,8 @@ class GraphEditor extends Region {
             newFrac = FvdDesigner.clamp((dragHandleIsOut ? dt : -dt) / segLen,
                             MIN_FRAC, BezierBaker.MAX_FRAC);
             if (snap) newFrac = snapFrac(newFrac);
-            newDv = yToVal(activeLane, y) - n.val;
+            newDv = yToVal(activeLane, y) - n.val
+                - dispOff(activeLane, n.t);
         }
 
         if (dragHandleIsOut) { n.outFrac = newFrac; n.outDv = newDv; }
@@ -4823,7 +5284,8 @@ class GraphEditor extends Region {
         List<double[]> poly = BezierBaker.polyline(lane);
         double bestD2 = 9 * 9;
         double bestT = Double.NaN;
-        double px0 = ltToX(poly.get(0)[0]), py0 = valToY(activeLane, poly.get(0)[1]);
+        double px0 = ltToX(poly.get(0)[0]), py0 = valToY(activeLane,
+            poly.get(0)[1] + dispOff(activeLane, poly.get(0)[0]));
         // the dotted hold-final-value extension is insertable too
         double laneEnd = lane.get(lane.size() - 1).t;
         boolean extended = laneEnd < sectionEnd() - 1e-9;
@@ -4832,7 +5294,8 @@ class GraphEditor extends Region {
             double t1 = i < poly.size() ? poly.get(i)[0] : sectionEnd();
             double v1 = i < poly.size() ? poly.get(i)[1] : lane.get(lane.size() - 1).val;
             double t0 = i < poly.size() ? poly.get(i - 1)[0] : laneEnd;
-            double px1 = ltToX(t1), py1 = valToY(activeLane, v1);
+            double px1 = ltToX(t1), py1 = valToY(activeLane,
+                v1 + dispOff(activeLane, t1));
             double segX = px1 - px0, segY = py1 - py0;
             double len2 = segX * segX + segY * segY;
             double u = len2 < 1e-9 ? 0
@@ -5330,15 +5793,18 @@ class GraphEditor extends Region {
         if (prev != null) {
             dtField = new TextField(String.format(Locale.US, "%.3f", n.t - prev.t));
             grid.addRow(row++, new Label("Transition time (s)"), dtField);
-        } else if (activeSection == 0) {
+        } else if (activeSection == 0 && activeInfl() == null) {
             // node 0 of the FIRST section: the ride's start speed lives
-            // here too (same value as the Coaster-menu spinner)
+            // here too (same value as the Coaster-menu spinner). Not on
+            // the influence surface — its node 0 is just a delta.
             v0Field = new TextField(String.format(Locale.US, "%.3f", app.coaster.v0));
             grid.addRow(row++, new Label("Start speed (m/s)"), v0Field);
         }
-        // vertical axis is the GLOBAL value, not a delta
+        // vertical axis is the GLOBAL value, not a delta — except on
+        // the influence surface, where the value IS the delta
         valField = new TextField(String.format(Locale.US, "%.3f", n.val));
-        grid.addRow(row++, new Label("Value (" + laneUnit(activeLane).trim() + ")"), valField);
+        grid.addRow(row++, new Label((activeInfl() != null ? "Delta ("
+            : "Value (") + laneUnit(activeLane).trim() + ")"), valField);
         if (prev != null) {
             inField = new TextField(String.format(Locale.US, "%.3f", n.inFrac));
             grid.addRow(row++, new Label("In handle"), inField);
@@ -5448,6 +5914,7 @@ class GraphEditor extends Region {
             updateResScale();
             return;
         }
+        LaneSection infl = activeInfl();
         for (int L = 0; L < LANES; L++) {
             double lo = defMin(L), hi = defMax(L);
             for (double[] p : BezierBaker.polyline(app.lanes.get(L))) {
@@ -5459,6 +5926,16 @@ class GraphEditor extends Region {
             double eB = BezierBaker.evalAt(app.lanes.get(L), t1 - tOff);
             lo = Math.min(lo, Math.min(eA, eB));
             hi = Math.max(hi, Math.max(eA, eB));
+            if (infl != null) {
+                // the influence surface also shows the RESULTING
+                // curves (dotted behind, or as the ridden curve in
+                // Resulting view) — fit them like a lane (v15.0)
+                for (double[] p : influenceSum(infl, L)) {
+                    if (tOff + p[0] < t0 || tOff + p[0] > t1) continue;
+                    lo = Math.min(lo, p[1]);
+                    hi = Math.max(hi, p[1]);
+                }
+            }
             // expanded-handle view: include the selected node's knobs
             if (handleViewExpand && L == activeLane
                     && selIdx >= 0 && selIdx < app.lanes.get(L).size()) {
@@ -5533,12 +6010,17 @@ class GraphEditor extends Region {
     }
 
     /** The overlay quantity at compiled sample i: resulting pitch/yaw
-     *  rates over a force section, felt Gv/Gl over a geo one. */
+     *  rates over a force section, felt Gv/Gl over a geo one. While
+     *  the INFLUENCE surface is edited the overlays show the TRUE
+     *  values of the other mode (v15.0, D98 — user spec: "the
+     *  resulting graphs drop down should display the true values"). */
     private double resValueAt(int i, int comp) {
+        boolean tru = activeInfl() != null && trueArraysReady();
         if (activeGeo()) {
+            if (tru) return app.trueFelt[i][comp - 1];
             return comp == 1 ? app.lastSamples.get(i).Gv() : app.lastSamples.get(i).Gl();
         }
-        return app.resultRates[i][comp];
+        return tru ? app.trueRates[i][comp] : app.resultRates[i][comp];
     }
 
     private double resToY(double v) {
@@ -5631,7 +6113,11 @@ class GraphEditor extends Region {
         gc.setStroke(Color.rgb(70, 75, 90));
         gc.setLineWidth(1);
         gc.strokeLine(MARGIN_LEFT, zy, w - marginRight(), zy);
-        if (activeLane == 0 && !activeGeo()) {   // 1 g reference: force mode only
+        // 1 g reference: force mode only — and not while editing
+        // DELTAS around zero (Influence view), where 1 g means nothing;
+        // the Resulting view shows real felt sums and keeps it
+        if (activeLane == 0 && !activeGeo()
+                && !(activeInfl() != null && !resultingView)) {
             double oy = valToY(0, 1);
             gc.setStroke(Color.rgb(60, 90, 65));
             gc.strokeLine(MARGIN_LEFT, oy, w - marginRight(), oy);
@@ -5777,7 +6263,8 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> lane = active();
         for (int i = 0; i < lane.size(); i++) {
             double px = ltToX(lane.get(i).t);
-            double py = valToY(activeLane, lane.get(i).val);
+            double py = valToY(activeLane, lane.get(i).val
+                + dispOff(activeLane, lane.get(i).t));
             boolean isSel = (i == selIdx);
             boolean isDragged = (i == dragNodeIdx);
 
@@ -5799,10 +6286,17 @@ class GraphEditor extends Region {
                 // unit. Position clamped INTO the plot so the readout
                 // stays readable while dragging past the bounds.
                 BezierBaker.Node nd = lane.get(i);
+                // Resulting view: the readout leads with the RESULTING
+                // value under the node and carries the delta along
+                double off = dispOff(activeLane, nd.t);
+                String vTxt = off != 0
+                    ? String.format("%.2f%s (Δ %+.2f)", nd.val + off,
+                        laneUnit(activeLane), nd.val)
+                    : String.format("%.2f%s", nd.val, laneUnit(activeLane));
                 String txt = i == 0
-                    ? String.format("t=%.2fs  %.2f%s", nd.t, nd.val, laneUnit(activeLane))
-                    : String.format("Δt=%.2fs  %.2f%s",
-                        nd.t - lane.get(i - 1).t, nd.val, laneUnit(activeLane));
+                    ? String.format("t=%.2fs  %s", nd.t, vTxt)
+                    : String.format("Δt=%.2fs  %s",
+                        nd.t - lane.get(i - 1).t, vTxt);
                 double tw = txt.length() * 6.5;   // approx width at 11 px
                 double tx = FvdDesigner.clamp(px + 8, MARGIN_LEFT + 4, w - marginRight() - tw - 4);
                 double ty = FvdDesigner.clamp(py - 20, MARGIN_TOP + 4, MARGIN_TOP + plotHeight() - 16);
@@ -5811,9 +6305,11 @@ class GraphEditor extends Region {
         }
 
         // insert preview: translucent white dot riding the curve, with
-        // the lane's value at that point alongside
+        // the lane's value at that point alongside (the DISPLAYED
+        // curve: base+delta in the influence Resulting view)
         if (!Double.isNaN(hoverT)) {
-            double hv = BezierBaker.evalAt(lane, hoverT);
+            double hv = BezierBaker.evalAt(lane, hoverT)
+                + dispOff(activeLane, hoverT);
             double hx = ltToX(hoverT);
             double hy = valToY(activeLane, hv);
             gc.setGlobalAlpha(0.5);
@@ -5833,7 +6329,11 @@ class GraphEditor extends Region {
                 hoverTxt = String.format("%.2f%s", hv, laneUnit(activeLane));
             }
             // §5.2: the true value rides along once it visibly differs
-            hoverTxt += trueSuffix(tOff + hoverT, activeLane, hoverSlope);
+            // (not on the influence surface — its deltas aren't the
+            // quantity the true arrays measure; the overlays carry true)
+            if (activeInfl() == null) {
+                hoverTxt += trueSuffix(tOff + hoverT, activeLane, hoverSlope);
+            }
             gc.fillText(hoverTxt, hx + 8, hy - 6);
             gc.setGlobalAlpha(1.0);
         }
@@ -5846,7 +6346,8 @@ class GraphEditor extends Region {
                  : (dragNodeIdx >= 0 ? shiftAxis : 0);
         if (selIdx >= 0 && lock != 0) {
             double lx = ltToX(lane.get(selIdx).t);
-            double ly = valToY(activeLane, lane.get(selIdx).val);
+            double ly = valToY(activeLane, lane.get(selIdx).val
+                + dispOff(activeLane, lane.get(selIdx).t));
             gc.setGlobalAlpha(0.5);
             gc.setLineWidth(1.5);
             if (lock == 1) {
@@ -5934,7 +6435,8 @@ class GraphEditor extends Region {
             gc.rotate(90);
             gc.setFont(Font.font(11));
             gc.setTextAlign(TextAlignment.CENTER);
-            gc.fillText(activeGeo() ? "Resulting G (g)" : "Resulting rate (°/s)", 0, 0);
+            gc.fillText((activeInfl() != null ? "True resulting " : "Resulting ")
+                + (activeGeo() ? "G (g)" : "rate (°/s)"), 0, 0);
             gc.restore();
         }
 
@@ -5954,6 +6456,36 @@ class GraphEditor extends Region {
     }
 
     private void strokeLaneCurve(GraphicsContext gc, int laneIdx) {
+        // INFLUENCE surface (v15.0, D98): Resulting view replaces the
+        // lane rendering wholesale (nodes ride base+delta); Influence
+        // view draws the RESULTING graph dotted behind the normal
+        // delta-lane rendering, then falls through to it.
+        LaneSection infl = activeInfl();
+        if (infl != null && laneIdx == 2) {
+            // ROLL takes no deltas (v15.4, D102): its strip shows only
+            // the RESULTING roll, dotted, in either influence view
+            List<double[]> sum = influenceSum(infl, 2);
+            gc.setStroke(laneColor(2));
+            gc.setLineWidth(1.4);
+            gc.setLineDashes(4, 5);
+            strokeSeries(gc, toPixels(sum, 2, false));
+            gc.setLineDashes((double[]) null);
+            gc.setLineWidth(2);
+            return;
+        }
+        if (infl != null && resultingView) {
+            strokeResultingLane(gc, infl, laneIdx);
+            return;
+        }
+        if (infl != null) {
+            List<double[]> sum = influenceSum(infl, laneIdx);
+            gc.setStroke(laneColor(laneIdx));
+            gc.setLineWidth(1.4);
+            gc.setLineDashes(4, 5);
+            strokeSeries(gc, toPixels(sum, laneIdx, false));
+            gc.setLineDashes((double[]) null);
+            gc.setLineWidth(2);
+        }
         List<BezierBaker.Node> lane = app.lanes.get(laneIdx);
         // zero-line fill first (from the baked polyline + hold extension;
         // the true bezier stroke sits on top of its edge)
@@ -6023,11 +6555,112 @@ class GraphEditor extends Region {
         }
     }
 
+    /** The RESULTING series base(t)+delta(t) over the influence
+     *  surface's stretch, (t, value) rows on the base grid (falls back
+     *  to the bare delta before the first compile). */
+    private List<double[]> influenceSum(LaneSection infl, int laneIdx) {
+        List<double[]> dpoly = BezierBaker.polyline(app.lanes.get(laneIdx));
+        double end = sectionEnd();
+        List<double[]> out = new ArrayList<>();
+        double[][] rows = infl.baseCurves;
+        if (rows == null) {
+            for (double[] p : dpoly) out.add(new double[]{ p[0], p[1] });
+            return out;
+        }
+        for (double[] row : rows) {
+            if (row[0] > end + 1e-9) break;
+            out.add(new double[]{ row[0],
+                row[laneIdx + 1] + TrackCompiler.polyAt(dpoly, row[0]) });
+        }
+        if (out.isEmpty() || out.get(out.size() - 1)[0] < end - 1e-9) {
+            out.add(new double[]{ end,
+                infl.baseValAt(laneIdx, end) + TrackCompiler.polyAt(dpoly, end) });
+        }
+        return out;
+    }
+
+    /** (t, value) rows → pixel series; ofBase = the BASE guide (rows
+     *  read straight from baseCurves). */
+    private List<double[]> toPixels(List<double[]> series, int laneIdx,
+                                    boolean unused) {
+        List<double[]> pts = new ArrayList<>(series.size());
+        for (double[] p : series) {
+            pts.add(new double[]{ ltToX(p[0]), valToY(laneIdx, p[1]) });
+        }
+        return pts;
+    }
+
+    private void strokeSeries(GraphicsContext gc, List<double[]> pts) {
+        if (pts.size() < 2) return;
+        gc.beginPath();
+        for (int i = 0; i < pts.size(); i++) {
+            double[] p = pts.get(i);
+            if (i == 0) gc.moveTo(p[0], p[1]); else gc.lineTo(p[0], p[1]);
+        }
+        gc.stroke();
+    }
+
+    /** RESULTING VIEW (v15.0, D98): one curve per lane — base+delta
+     *  drawn as a sampled polyline the nodes ride; the BASE draws as
+     *  a faint dashed guide underneath and the fill spans guide →
+     *  curve, tinting exactly what the delta adds or removes. Solid
+     *  through the authored delta range, dotted (implied hold) past
+     *  the last delta node — the lane conventions, transplanted. */
+    private void strokeResultingLane(GraphicsContext gc, LaneSection infl,
+                                     int laneIdx) {
+        List<BezierBaker.Node> lane = app.lanes.get(laneIdx);
+        List<double[]> sum = influenceSum(infl, laneIdx);
+        List<double[]> pts = toPixels(sum, laneIdx, false);
+        // base guide series (same t grid, base only)
+        List<double[]> guide = new ArrayList<>(sum.size());
+        for (double[] p : sum) {
+            guide.add(new double[]{ ltToX(p[0]),
+                valToY(laneIdx, infl.baseValAt(laneIdx, p[0])) });
+        }
+        // fill between curve and guide
+        if (pts.size() >= 2) {
+            gc.setFill(laneColor(laneIdx).deriveColor(0, 1, 1, LANE_FILL_ALPHA));
+            gc.beginPath();
+            gc.moveTo(pts.get(0)[0], pts.get(0)[1]);
+            for (int i = 1; i < pts.size(); i++) gc.lineTo(pts.get(i)[0], pts.get(i)[1]);
+            for (int i = guide.size() - 1; i >= 0; i--) {
+                gc.lineTo(guide.get(i)[0], guide.get(i)[1]);
+            }
+            gc.closePath();
+            gc.fill();
+        }
+        // the guide itself, faint + dashed
+        double keepAlpha = gc.getGlobalAlpha();
+        gc.setGlobalAlpha(keepAlpha * 0.5);
+        gc.setStroke(laneColor(laneIdx));
+        gc.setLineWidth(1);
+        gc.setLineDashes(3, 5);
+        strokeSeries(gc, guide);
+        gc.setLineDashes((double[]) null);
+        gc.setGlobalAlpha(keepAlpha);
+        // the resulting curve: solid to the last delta node, dotted after
+        double lastT = lane.get(lane.size() - 1).t;
+        gc.setStroke(laneColor(laneIdx));
+        gc.setLineWidth(2);
+        List<double[]> solid = new ArrayList<>();
+        List<double[]> held = new ArrayList<>();
+        for (int i = 0; i < sum.size(); i++) {
+            if (sum.get(i)[0] <= lastT + 1e-9) solid.add(pts.get(i));
+            if (sum.get(i)[0] >= lastT - 1e-9) held.add(pts.get(i));
+        }
+        strokeSeries(gc, solid);
+        if (held.size() >= 2) {
+            gc.setLineDashes(3, 7);
+            strokeSeries(gc, held);
+            gc.setLineDashes((double[]) null);
+        }
+    }
+
     private void drawHandles(GraphicsContext gc, int idx) {
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(idx);
         double nx = ltToX(n.t);
-        double ny = valToY(activeLane, n.val);
+        double ny = valToY(activeLane, n.val + dispOff(activeLane, n.t));
         outEdgeMarker = null;
         inEdgeMarker = null;
 
