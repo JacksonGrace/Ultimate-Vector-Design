@@ -108,6 +108,36 @@ public class BezierBaker {
         lane.remove(i);
     }
 
+    /** Segment x-gaps of a lane — the pre-edit snapshot for
+     *  {@link #rescaleDvToGaps}. */
+    public static double[] segGaps(List<Node> lane) {
+        double[] g = new double[Math.max(0, lane.size() - 1)];
+        for (int i = 0; i < g.length; i++) {
+            g[i] = lane.get(i + 1).t - lane.get(i).t;
+        }
+        return g;
+    }
+
+    /** After node x-moves changed some segment runs, rescale the dv
+     *  offsets of the handles FACING each changed segment so they keep
+     *  their SLOPES (v16.1, D105 — the removeBridging rule applied to
+     *  node moves, user re-spec 2026-07-12; supersedes D63's "kinks
+     *  accepted": fractions already rescale the handles' x-runs with
+     *  the segment, dv now rides along, so a smooth joint's two
+     *  handles stay collinear through any horizontal move). Node
+     *  count must be unchanged since the snapshot. */
+    public static void rescaleDvToGaps(List<Node> lane, double[] oldGaps) {
+        int n = Math.min(oldGaps.length, lane.size() - 1);
+        for (int i = 0; i < n; i++) {
+            double now = lane.get(i + 1).t - lane.get(i).t;
+            double old = oldGaps[i];
+            if (old < 1e-12 || Math.abs(now - old) < 1e-12) continue;
+            double r = now / old;
+            lane.get(i).outDv *= r;
+            lane.get(i + 1).inDv *= r;
+        }
+    }
+
     /** Out-handle time offset in SECONDS for segment a->b, from the fraction. */
     public static double effOutDt(Node a, Node b) {
         return clamp(a.outFrac, 0, MAX_FRAC) * (b.t - a.t);

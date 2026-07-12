@@ -886,6 +886,60 @@
     on a meters axis (slopes read /m). (h) influence entry is
     grayed on a distance section (and the domain radios gray on an
     influenced one) with the reason in the item text.
+    [PARTLY SUPERSEDED same day, v16.1: domain switching is a REFIT
+    with a density preview now (D104), influence works on distance
+    sections (D107), and (a)'s "nodes slide" no longer applies — see
+    #41/#72.]
+
+41. **v16.1 round gates (scratch DomainGate rewritten; D104-D107).**
+    14 checks, all passed 2026-07-12: (40a/40b unchanged — the
+    all-TIME baseline and the 2.6e-12 m distance circle ride the same
+    build). (40d REWORKED) domain conversion is a REFIT that
+    CONVERGES: the 407 m layout round-trips time→distance→time within
+    3.47 m at coarse density (2 m / 0.1 s) and 0.24 m at fine (0.4 m /
+    0.02 s). (40f) convertDomain carries vDesign + vPinned; (40g)
+    reversed refuses; (40i) an influenced section converts with its
+    influence CAPTURED (output plain distance lanes); (40j) FVDD3
+    byte-identical round trip incl. the v16.1 axis flags (fields 6-7);
+    (40k) '+' continuation = 10 m DISTANCE hold carrying the axis
+    flags; (40l) partial convert on distance lanes, end dev 0.06 m.
+    (41a) SLOPE-PRESERVING MOVES (D105): segGaps/rescaleDvToGaps keep
+    both facing handle slopes exact through a node re-time. (41b)
+    TILTED REFREEZE (D106, the user's bug): a bridged piece pitched 8°
+    refreezes from 4.64 m/s max interior drift to 0.017 m/s, felt
+    split 0, pitchDeg baked to 0, entry pose preserved to 1e-9. (41c)
+    GLOBAL AXES (D107): pitched-entry geo with global yaw 15°/s +
+    global roll 0 = the upward SPIRAL — elevation and bank held to
+    <0.03°, heading turns exactly 120°; the same lanes under LOCAL
+    axes drift elevation 22° (the inclined-loop contrast). (41d)
+    global roll bank == the lane integral on level track (80.00°).
+    (41e) DISTANCE INFLUENCE: entering is bitwise (zero deltas), and a
+    6°/s yaw delta lands resulting == base + delta at mid-arc.
+
+72. v16.1 feel round (untested by the user yet): (a) drag a node with
+    BANKED handles left/right: the handles stay in line (slopes hold;
+    arrow nudges and the dialog too). (b) zoom into part of the graph,
+    open the badge menu and flip Domain or the meters view, or click a
+    strip of the other domain: the window stays put, its ends lined up
+    across the units. (c) Domain radios now open the NODE DENSITY
+    window (meters spacing for →distance): crank the density and the
+    refit hugs the dashed originals; Cancel restores exactly. (d) the
+    old exact-shape role: "View in meters/seconds" — unchanged, and it
+    works on INFLUENCED sections now too. (e) pitch a bridged-in piece
+    (bridge panel or Placement rows), watch ≠v appear (even when only
+    the interior splits — the info line says "true splits inside"),
+    then Re-freeze design speed: pitch/roll read 0 after (baked into
+    the natural orientation), the thin true strokes VANISH completely,
+    and the graphs kept their shapes. Tilting the ride's FIRST piece
+    now also shows the conflict. (f) badge menu > Roll: global on a
+    force/geo section — a pitched turn with roll rate 0 spirals with
+    the rails level to the horizon (the same section on local rolls
+    with the track); geo sections also get Yaw/pitch: global =
+    heading/elevation rates. B on a global-axis section politely
+    refuses (stats bar). (g) influence a DISTANCE section: deltas
+    author over meters, the wall is the section length, A appends
+    10 m, and the meters/seconds view swap keeps working while
+    influencing.
 
 ## The historical headless harness (context, not a prescription)
 

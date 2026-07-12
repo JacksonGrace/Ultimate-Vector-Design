@@ -172,12 +172,18 @@ public final class DesignIO {
                 // still pairs the lanes with the speed they were
                 // authored at; the `infl` line restores the operating
                 // speed on load.
-                out.printf(Locale.US, "section %s %.4f %s %d %d%n",
+                // fields 6-7 (v16.1, D107): global roll / global
+                // yaw-pitch axis flags; missing = 0 = local (the
+                // historic behavior — old files unchanged, old readers
+                // ignore the extra fields)
+                out.printf(Locale.US, "section %s %.4f %s %d %d %d %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
                     fs.influenced() ? fs.vAuthored : fs.vDesign,
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
                     fs.reversed ? 1 : 0,
-                    fs.vPinned ? 1 : 0);
+                    fs.vPinned ? 1 : 0,
+                    fs.rollGlobal ? 1 : 0,
+                    fs.yawPitchGlobal ? 1 : 0);
                 for (int lane = 0; lane < 3; lane++) {
                     out.println("lane " + lane);
                     for (BezierBaker.Node n : fs.lanes.get(lane)) {
@@ -308,6 +314,13 @@ public final class DesignIO {
                     if (parts.length > 4) curSection.reversed(parts[4].equals("1"));
                     // v14.5 pinned design speed; missing = off
                     if (parts.length > 5) curSection.vPinned(parts[5].equals("1"));
+                    // v16.1 axis flags; missing = local (D107)
+                    if (curSection instanceof LaneSection ls6) {
+                        ls6.rollGlobal = parts.length > 6
+                            && parts[6].equals("1");
+                        ls6.yawPitchGlobal = parts.length > 7
+                            && parts[7].equals("1");
+                    }
                     curPiece.sections.add(curSection);
                     curLane = -1;
                     curDLane = -1;

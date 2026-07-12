@@ -470,6 +470,35 @@ class GraphEditor extends Region {
         return a - ss.get(lo).s() <= ss.get(hi).s() - a ? lo : hi;
     }
 
+    /** Convert a GLOBAL axis coordinate to the OTHER domain's through
+     *  the compiled samples (t↔s), linearly extrapolated past the
+     *  ride ends — zoom windows survive an axis flip with their ends
+     *  lined up (v16.1). fromDist = the coordinate's current domain. */
+    private double mapGlobalAxis(double x, boolean fromDist) {
+        List<FVDIntegrator.Sample> ss = app.lastSamples;
+        if (ss == null || ss.size() < 2) return x;
+        int lo = 0, hi = ss.size() - 1;
+        double first = fromDist ? ss.get(0).s() : ss.get(0).t();
+        double last = fromDist ? ss.get(hi).s() : ss.get(hi).t();
+        if (x <= first) {
+            hi = 1;
+        } else if (x >= last) {
+            lo = hi - 1;
+        } else {
+            while (hi - lo > 1) {
+                int mid = (lo + hi) >>> 1;
+                double v = fromDist ? ss.get(mid).s() : ss.get(mid).t();
+                if (v <= x) lo = mid; else hi = mid;
+            }
+        }
+        double a = fromDist ? ss.get(lo).s() : ss.get(lo).t();
+        double b = fromDist ? ss.get(hi).s() : ss.get(hi).t();
+        double ya = fromDist ? ss.get(lo).t() : ss.get(lo).s();
+        double yb = fromDist ? ss.get(hi).t() : ss.get(hi).s();
+        double u = Math.abs(b - a) < 1e-12 ? 0 : (x - a) / (b - a);
+        return ya + u * (yb - ya);   // u outside [0,1] extrapolates
+    }
+
     /** Global ride time → the current axis coordinate (POV marker and
      *  other time-sourced positions). Identity on the time axis. */
     private double axisOfTime(double gt) {
@@ -495,8 +524,7 @@ class GraphEditor extends Region {
     private void refreshWarp() {
         List<Section> secs = sections();
         Section s = activeSection < secs.size() ? secs.get(activeSection) : null;
-        if (!(s instanceof LaneSection ls) || !ls.viewOtherDomain()
-                || ls.influenced()) {
+        if (!(s instanceof LaneSection ls) || !ls.viewOtherDomain()) {
             warpMap = null;
             return;
         }
@@ -713,8 +741,21 @@ class GraphEditor extends Region {
      *  The INFLUENCE surface's end is the compiled duration: delta
      *  lanes modify the section, they never extend it. */
     private double sectionEnd() {
-        return activeSc() != null || activeInfl() != null
-            ? sectionDur(activeSection) : BezierBaker.rideEnd(app.lanes);
+        if (activeSc() != null) return sectionDur(activeSection);
+        LaneSection infl = activeInfl();
+        if (infl != null) {
+            // NATIVE units always (v16.1 — sectionDur is axis units,
+            // which diverge under a cross-domain view): the delta
+            // wall is the section's own extent — authored length for
+            // DISTANCE, the compiled duration for TIME
+            if (infl.domain() == Section.Domain.DISTANCE) {
+                return BezierBaker.rideEnd(infl.lanes);
+            }
+            TrackCompiler.Span isp = spanOf(activeSection);
+            return isp != null ? isp.t1() - isp.t0()
+                : BezierBaker.rideEnd(infl.lanes);
+        }
+        return BezierBaker.rideEnd(app.lanes);
     }
 
     private double ltToX(double localT) { return tToX(tOff + warpFwd(localT)); }
@@ -991,13 +1032,12 @@ class GraphEditor extends Region {
         return false;
     }
 
-    /** Is the section DIRECTLY left of k itself speed-conflicted?
-     *  (Make-real / re-freeze wait for it; transition-to-real is the
-     *  op that works right of a conflict.) */
+    /** Is the section DIRECTLY left of k itself speed-conflicted
+     *  (anywhere in its span, v16.1)? Make-real waits for it;
+     *  transition-to-real is the op that works right of a conflict. */
     private boolean leftDrifted(int k) {
         if (k == 0) return false;   // left is a bridge (blocked) or nothing
-        double[] es = entrySpeeds(activePiece, k - 1);
-        return es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS;
+        return sectionDrifted(activePiece, k - 1);
     }
 
     /** Does the ACTIVE piece end speed-conflicted (design vs true at
@@ -1486,6 +1526,10 @@ class GraphEditor extends Region {
     private int pvPiece = -1, pvSec = -1;   // the preview's own activation
     private boolean pvApplying;             // restore-in-progress guard
     private double pvSpacing = Coaster.NODE_SPACING_DEFAULT;   // sticky
+    // DISTANCE-target fits space nodes in METERS (v16.1, D104) —
+    // separate sticky value + its own slider range
+    private double pvSpacingDist = Coaster.NODE_SPACING_DEFAULT_DIST;
+    private boolean pvDist = false;         // target domain is DISTANCE
     private boolean pvAdaptive = false;     // "Optimal placement"
     private double pvTol = 0.01;            // fraction of the lane range
     private TextField pvField;
@@ -1504,15 +1548,24 @@ class GraphEditor extends Region {
 
     private void beginDensityPreview(int k, boolean toGeo, ConvertOp op,
                                      Runnable activate) {
-        beginDensityPreview(k, toGeo, false, op, activate);
+        beginDensityPreview(k, toGeo, false, false, op, activate);
+    }
+
+    private void beginDensityPreview(int k, boolean toGeo, boolean useTrue,
+                                     ConvertOp op, Runnable activate) {
+        beginDensityPreview(k, toGeo, useTrue, false, op, activate);
     }
 
     /** useTrue: draw the TRUE curves as the reference — for ops whose
      *  fit targets the real ride (bridge converts, make-real; v14.5,
-     *  D97) rather than the design profile. */
+     *  D97) rather than the design profile. distTarget: the fit
+     *  spaces nodes in METERS (domain conversions to DISTANCE,
+     *  v16.1 — the popup relabels and re-ranges). */
     private void beginDensityPreview(int k, boolean toGeo, boolean useTrue,
+                                     boolean distTarget,
                                      ConvertOp op, Runnable activate) {
         cancelDensityPreview();          // one preview at a time
+        pvDist = distTarget;
         captureReference(k, toGeo, useTrue);
         pvBefore = snapshot();
         pvOp = op;
@@ -1541,7 +1594,8 @@ class GraphEditor extends Region {
         app.applyDocState(pvBefore);
         pvApplying = false;
         pvBefore = snapshot();
-        boolean ok = pvOp.apply(pvSpacing, pvAdaptive ? pvTol : 0);
+        boolean ok = pvOp.apply(pvDist ? pvSpacingDist : pvSpacing,
+            pvAdaptive ? pvTol : 0);
         if (ok && pvActivate != null) pvActivate.run();
         activePiece = (int) FvdDesigner.clamp(activePiece, 0,
             app.coaster.pieces.size() - 1);
@@ -1729,6 +1783,14 @@ class GraphEditor extends Region {
             pvSlider.setValue(Math.log10(FvdDesigner.clamp(
                 pvTol * 100, 0.01, 10)));
             pvField.setText(String.format(Locale.US, "%.2f", pvTol * 100));
+        } else if (pvDist) {
+            // DISTANCE target (v16.1): meters, the ×10 range
+            pvLabel.setText("Node spacing (m)");
+            pvSlider.setMin(Math.log10(0.2));
+            pvSlider.setMax(Math.log10(20.0));
+            pvSlider.setValue(Math.log10(FvdDesigner.clamp(
+                pvSpacingDist, 0.2, 20.0)));
+            pvField.setText(String.format(Locale.US, "%.2f", pvSpacingDist));
         } else {
             pvLabel.setText("Node spacing (s)");
             pvSlider.setMin(Math.log10(0.02));
@@ -1743,6 +1805,8 @@ class GraphEditor extends Region {
     private void setPvValue(double v) {
         if (pvAdaptive) {
             pvTol = FvdDesigner.clamp(v, 0.01, 10) / 100.0;
+        } else if (pvDist) {
+            pvSpacingDist = FvdDesigner.clamp(v, 0.2, 20.0);
         } else {
             pvSpacing = FvdDesigner.clamp(v, 0.02, 2.0);
         }
@@ -1798,7 +1862,9 @@ class GraphEditor extends Region {
             gc.beginPath();
             boolean started = false;
             for (double[] row : pvRef) {
-                double x = tToX(row[0]);
+                // rows are keyed by ride TIME; a distance-target
+                // preview plots on the meters axis (v16.1)
+                double x = tToX(axisOfTime(row[0]));
                 double y = valToY(lane, row[lane + 1]);
                 if (!started) {
                     gc.moveTo(x, y);
@@ -2142,13 +2208,17 @@ class GraphEditor extends Region {
                 s.totalLen(), s.elements.size())
             : "";
         // §5.2: a drifted section's info line carries the TRUE entry
-        // speed next to the design speed (the badge's ≠v, spelled out)
+        // speed next to the design speed (the badge's ≠v, spelled
+        // out); a split that only develops INSIDE — a tilted piece —
+        // says so instead (v16.1, D106)
         double[] es = entrySpeeds(activePiece, k);
+        boolean drifted = sectionDrifted(activePiece, k);
         String drift = es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
             ? String.format(Locale.US, " · entered %.1f m/s", es[1])
-            : "";
+            : drifted && !(sec instanceof BridgeSection)
+                ? " · true splits inside" : "";
         MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s%s%s%s%s",
+            "%s section %d — design %.1f m/s%s%s%s%s%s",
             modeName(sec), k + 1, sec.vDesign(),
             sec instanceof LaneSection ili && ili.influenced()
                 ? String.format(Locale.US, " (authored %.1f)", ili.vAuthored)
@@ -2156,6 +2226,10 @@ class GraphEditor extends Region {
             sec instanceof LaneSection
                 && sec.domain() == Section.Domain.DISTANCE
                 ? " · distance (m)" : "",
+            sec instanceof LaneSection lgx && lgx.globalAxes()
+                ? (lgx.rollGlobal && lgx.yawPitchGlobal
+                    ? " · global axes" : lgx.rollGlobal
+                    ? " · global roll" : " · global yaw/pitch") : "",
             drift, extra));
         info.setDisable(true);
         // the per-section Reversed check moved to piece scope in v12.1
@@ -2182,13 +2256,17 @@ class GraphEditor extends Region {
             boolean isSc = sec instanceof StraightCurveSection;
             boolean infl = sec instanceof LaneSection li0 && li0.influenced();
             boolean nd = sec.domain() == Section.Domain.DISTANCE;
-            RadioMenuItem domT = new RadioMenuItem("Domain: time (s)");
-            RadioMenuItem domD = new RadioMenuItem("Domain: distance (m)");
+            RadioMenuItem domT = new RadioMenuItem("Domain: time (s)"
+                + (infl && nd ? " (captures influence)…" : nd ? "…" : ""));
+            RadioMenuItem domD = new RadioMenuItem("Domain: distance (m)"
+                + (infl && !nd ? " (captures influence)…" : !nd ? "…" : ""));
             ToggleGroup dg = new ToggleGroup();
             domT.setToggleGroup(dg);
             domD.setToggleGroup(dg);
             (nd ? domD : domT).setSelected(true);
-            if (isSc || infl) {
+            if (isSc || sec.reversed()) {
+                // s/c is inherently meters; reversed refuses like
+                // every refit (the fit reads the chain direction)
                 domT.setDisable(true);
                 domD.setDisable(true);
             } else {
@@ -2199,16 +2277,46 @@ class GraphEditor extends Region {
                 ? "View in seconds (edit through the time axis)"
                 : "View in meters (edit through the distance axis)");
             viewOther.setSelected(sec.viewOtherDomain());
-            viewOther.setDisable(infl);
             viewOther.setOnAction(ev ->
                 setViewOtherDomain(k, !sec.viewOtherDomain()));
             cm.getItems().addAll(domT, domD, viewOther);
-            if (infl) {
-                MenuItem why = new MenuItem(
-                    "…domain options wait for the influence — bake or "
-                    + "discard it first");
-                why.setDisable(true);
-                cm.getItems().add(why);
+            // AXIS radios (v16.1, D107 — the promised slot): roll for
+            // both lane modes, yaw/pitch for geo (toggled together).
+            // Local = the historic body-frame behavior; global roll =
+            // bank held vs the horizon (rate 0 spirals level through
+            // pitched turns), global yaw/pitch = heading/elevation
+            // rates about the world axes. Influenced sections park
+            // the toggles (bake or discard first — the delta
+            // machinery reads body rates).
+            if (sec instanceof LaneSection lax) {
+                RadioMenuItem rollL = new RadioMenuItem(
+                    "Roll: local (about the track)");
+                RadioMenuItem rollG = new RadioMenuItem(
+                    "Roll: global (bank vs horizon)");
+                ToggleGroup rg = new ToggleGroup();
+                rollL.setToggleGroup(rg);
+                rollG.setToggleGroup(rg);
+                (lax.rollGlobal ? rollG : rollL).setSelected(true);
+                rollL.setDisable(infl);
+                rollG.setDisable(infl);
+                rollL.setOnAction(ev -> setAxisFlags(k, false, null));
+                rollG.setOnAction(ev -> setAxisFlags(k, true, null));
+                cm.getItems().addAll(rollL, rollG);
+                if (lax instanceof GeoSection) {
+                    RadioMenuItem ypL = new RadioMenuItem(
+                        "Yaw/pitch: local (track axes)");
+                    RadioMenuItem ypG = new RadioMenuItem(
+                        "Yaw/pitch: global (heading/elevation)");
+                    ToggleGroup yg = new ToggleGroup();
+                    ypL.setToggleGroup(yg);
+                    ypG.setToggleGroup(yg);
+                    (lax.yawPitchGlobal ? ypG : ypL).setSelected(true);
+                    ypL.setDisable(infl);
+                    ypG.setDisable(infl);
+                    ypL.setOnAction(ev -> setAxisFlags(k, null, false));
+                    ypG.setOnAction(ev -> setAxisFlags(k, null, true));
+                    cm.getItems().addAll(ypL, ypG);
+                }
             }
         }
         // RESOLVE SPEED CONFLICT (v14.5 D97; reworked v15.2 D101;
@@ -2224,8 +2332,7 @@ class GraphEditor extends Region {
         // resolution would move). Only a bridge DIRECTLY before the
         // section blocks everything (it re-blends to chase any
         // resolution — convert it first).
-        if (es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
-                && !(sec instanceof BridgeSection) && !sec.reversed()) {
+        if (drifted && !(sec instanceof BridgeSection) && !sec.reversed()) {
             Menu resolve = new Menu("Resolve speed conflict");
             if (leftIsBridge(k)) {
                 MenuItem why = new MenuItem(
@@ -2291,14 +2398,14 @@ class GraphEditor extends Region {
             cm.getItems().add(new SeparatorMenuItem());
             boolean geoSec = lsec instanceof GeoSection;
             if (!lsec.influenced()) {
-                boolean distSec =
-                    lsec.domain() == Section.Domain.DISTANCE;
+                // distance sections take influence since v16.1 (the
+                // two-pass runs over arc); GLOBAL-AXIS sections refuse
+                // (the base extraction reads body rates, D107)
                 MenuItem enter = new MenuItem((geoSec
                     ? "Influence felt force graphs"
                     : "Influence resulting geo graphs")
-                    // the delta machinery is time-parameterized (v16.0)
-                    + (distSec ? " (time-domain sections only)" : ""));
-                enter.setDisable(lsec.reversed || distSec);
+                    + (lsec.globalAxes() ? " (local-axis sections only)" : ""));
+                enter.setDisable(lsec.reversed || lsec.globalAxes());
                 enter.setOnAction(ev -> enterInfluenceUi(k));
                 cm.getItems().add(enter);
             } else {
@@ -2361,12 +2468,17 @@ class GraphEditor extends Region {
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)
                 || ls.influenced() || ls.reversed
-                || ls.domain() == Section.Domain.DISTANCE) return;
+                || ls.globalAxes()) return;
         pushUndoSnapshot();
         if (k != activeSection) setActiveSection(k);
         // speeds untouched (v15.4, D102); the delta lanes span the
-        // section — a node at 0 and at the compiled end
-        Coaster.enterInfluence(ls, durOf(activePiece, k));
+        // section's NATIVE axis — a node at 0 and at the end (the
+        // compiled duration for TIME sections, the authored length
+        // for DISTANCE ones, v16.1)
+        Coaster.enterInfluence(ls,
+            ls.domain() == Section.Domain.DISTANCE
+                ? BezierBaker.rideEnd(ls.lanes)
+                : durOf(activePiece, k));
         resultingView = false;   // the spec'd default: Influence view
         if (activeLane == 2) setActiveLane(0);   // roll has no deltas
         app.lanes = lanesFor(ls);
@@ -2420,25 +2532,61 @@ class GraphEditor extends Region {
         redraw();
     }
 
-    /** SWITCH section k's authoring domain (v16.0, D103): the exact
-     *  node map — shape, speeds and conflicts preserved; no preview
-     *  needed (nothing is refit). One undo step. */
+    /** CONVERT section k's authoring domain (v16.1, D104 — user
+     *  re-spec: a same-mode carpet REFIT through the density preview,
+     *  replacing v16.0's exact node map; the exact-shape role belongs
+     *  to the cross-domain VIEW). Influenced sections convert their
+     *  RESULTING curves (influence captured, not preserved); reversed
+     *  refuse, the convert rule. A manual zoom survives: the window's
+     *  ends line up in the new units. */
     private void switchDomainUi(int k, Section.Domain to) {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)
-                || ls.domain() == to || ls.influenced()) return;
-        pushUndoSnapshot();
-        if (k != activeSection) setActiveSection(k);
-        if (app.coaster.switchLaneDomain(activePiece, k,
-                FvdDesigner.INTEGRATE_DT)) {
-            selIdx = -1;
-            selSet.clear();
-            viewT0 = 0;
-            viewT1 = -1;   // the x-axis just changed units
-            app.rebuildTrack();
-            refreshOffset();
+                || ls.domain() == to || ls.reversed()) return;
+        boolean wasDist = axisDist();
+        double w0 = viewT0, w1 = viewT1;
+        int piece = activePiece;
+        boolean toGeo = ls instanceof GeoSection;   // same mode
+        beginDensityPreview(k, toGeo, false,
+            to == Section.Domain.DISTANCE,
+            (sp, tol) -> app.coaster.convertDomain(piece, k,
+                FvdDesigner.INTEGRATE_DT, sp, tol),
+            () -> {
+                activePiece = piece;
+                activeSection = k;
+            });
+        // domain settings keep the zoom (v16.1, user rule): the
+        // preview's auto-fit reset is undone with the old window's
+        // ends mapped into the new axis units
+        if (pvBefore != null && w1 > 0) {
+            boolean nowDist = axisDist();
+            viewT0 = nowDist == wasDist ? w0 : mapGlobalAxis(w0, wasDist);
+            viewT1 = nowDist == wasDist ? w1 : mapGlobalAxis(w1, wasDist);
+            if (viewT1 - viewT0 < 1e-9) {
+                viewT0 = 0;
+                viewT1 = -1;
+            }
+            lastAxisDist = nowDist;
+            redraw();
         }
+    }
+
+    /** Set section k's axis flags (v16.1, D107); null = leave alone.
+     *  One undo step; no-ops skip the push. */
+    private void setAxisFlags(int k, Boolean rollGlobal, Boolean ypGlobal) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()
+                || !(secs.get(k) instanceof LaneSection ls)
+                || ls.influenced()) return;
+        boolean nr = rollGlobal != null ? rollGlobal : ls.rollGlobal;
+        boolean ny = ypGlobal != null ? ypGlobal : ls.yawPitchGlobal;
+        if (nr == ls.rollGlobal && ny == ls.yawPitchGlobal) return;
+        pushUndoSnapshot();
+        ls.rollGlobal = nr;
+        ls.yawPitchGlobal = ny;
+        app.rebuildTrack();
+        refreshOffset();
         redraw();
     }
 
@@ -2450,13 +2598,10 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()) return;
         Section sec = secs.get(k);
-        if (sec instanceof BridgeSection
-                || (sec instanceof LaneSection li && li.influenced())) return;
+        if (sec instanceof BridgeSection) return;
         sec.viewOtherDomain(on);
-        if (k == activeSection) {
-            viewT0 = 0;
-            viewT1 = -1;   // auto-fit the new axis
-        }
+        // no zoom reset (v16.1): redraw's axis-flip mapper lines the
+        // window ends up in the new units
         refreshOffset();
         redraw();
     }
@@ -2626,6 +2771,9 @@ class GraphEditor extends Region {
                 if (rs.sec() instanceof LaneSection ls
                         && (ls instanceof GeoSection) == actGeo
                         && !ls.reversed && !ls.influenced()
+                        // global-axis lanes are not the plot's body
+                        // quantities — derived, like reversed (v16.1)
+                        && !ls.globalAxes()
                         // authored lanes draw directly only when their
                         // native domain IS the plot's axis (v16.0) —
                         // otherwise the compiled samples carry the
@@ -2762,6 +2910,37 @@ class GraphEditor extends Region {
             && app.trueFelt.length == app.lastSamples.size();
     }
 
+    /** Max design/true SPEED split anywhere in piece p section k's
+     *  span (v16.1, D106): drift used to be tested at the ENTRY
+     *  only, which missed splits that develop INSIDE — a TILTED
+     *  run-START piece has a matching entry speed but tilted heights
+     *  everywhere after it (the user's "changing the start section
+     *  should generate a conflict"). Callers exclude bridges (their
+     *  design-side speed blend legitimately leaves the pure-energy
+     *  profile mid-span). */
+    private double sectionDrift(int p, int k) {
+        TrackCompiler.Span sp = spanAt(p, k);
+        if (sp == null || app.trueV == null || app.lastSamples == null) {
+            return 0;
+        }
+        int i1 = Math.min(sp.i1(),
+            Math.min(app.trueV.length, app.lastSamples.size()) - 1);
+        double worst = 0;
+        for (int i = sp.i0(); i <= i1; i++) {
+            worst = Math.max(worst,
+                Math.abs(app.trueV[i] - app.lastSamples.get(i).v()));
+        }
+        return worst;
+    }
+
+    /** Is piece p section k speed-conflicted (anywhere in its span)?
+     *  Bridges never are — their mid-span design blend is by design. */
+    private boolean sectionDrifted(int p, int k) {
+        return !(app.coaster.pieces.get(p).sections.get(k)
+                instanceof BridgeSection)
+            && sectionDrift(p, k) > DRIFT_EPS;
+    }
+
     /** {design v, true v} at piece p section k's first compiled
      *  sample, or null before a compile. The two differing is the §5
      *  DRIFT: the section's design speed no longer matches the energy
@@ -2831,7 +3010,9 @@ class GraphEditor extends Region {
                         && t >= inflSpan.t0() - 1e-9
                         && t <= inflSpan.t1() + 1e-9
                     ? BezierBaker.evalAt(inflDesign.lanes.get(L),
-                        t - inflSpan.t0())
+                        inflDesign.domain() == Section.Domain.DISTANCE
+                            ? app.lastSamples.get(i).s() - inflSpan.s0()
+                            : t - inflSpan.t0())
                     : derivedAt(i, L);
                 double dy = valToY(L, ref);
                 double ty = valToY(L, trueAt(i, L));
@@ -2971,10 +3152,10 @@ class GraphEditor extends Region {
                 // influence mark (v15.0, D98)
                 + (rs.sec() instanceof LaneSection li && li.influenced()
                     ? " fx" : "")
-                // §5.2 drift hint: entered at a different speed than
-                // it was designed for (badge menu shows the numbers)
-                + (es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
-                    ? " ≠v" : "");
+                // §5.2 drift hint — ANYWHERE in the span since v16.1
+                // (D106: a tilted run-start piece splits inside while
+                // its entry matches); badge menu shows the numbers
+                + (sectionDrifted(rs.piece(), rs.section()) ? " ≠v" : "");
             double bw = label.length() * 6 + 10;
             double x0 = Math.max(tToX(off), MARGIN_LEFT);
             double x1 = Math.min(tToX(off + dur), w - marginRight());
@@ -4577,12 +4758,16 @@ class GraphEditor extends Region {
         BezierBaker.Node sel = lane.get(selIdx);
         double tc = sel.t;
         double stepX = appendStep();   // 1 s of ride / 10 m of track (v16.0)
-        // every lane's later nodes move by the hold (fractional handles
-        // keep all shapes; a foreign segment spanning tc stretches)
+        // every lane's later nodes move by the hold; a FOREIGN segment
+        // spanning tc stretches — its facing handles keep their slopes
+        // (v16.1, D105). The active lane's spanning segment is rebuilt
+        // by the hold insertion below and skips the rescale.
         for (List<BezierBaker.Node> ln : app.lanes) {
+            double[] gaps = ln == lane ? null : BezierBaker.segGaps(ln);
             for (BezierBaker.Node m : ln) {
                 if (m.t > tc + 1e-9) m.t += stepX;
             }
+            if (gaps != null) BezierBaker.rescaleDvToGaps(ln, gaps);
         }
         // the selected node's outgoing transition moves to the new node;
         // selected -> new is a flat hold
@@ -4744,6 +4929,7 @@ class GraphEditor extends Region {
     void matchBoundary(int idx) {
         List<BezierBaker.Node> lane = active();
         boolean infl = activeInfl() != null;
+        if (!infl && refuseGlobalMatch()) return;
         // on the INFLUENCE surface the edge "boundary" is simply NO
         // influence (v15.5, D102) — no neighbor needed, no seam probe
         boolean start = idx == 0 && lane.size() >= 2
@@ -4769,6 +4955,21 @@ class GraphEditor extends Region {
         applyBoundaryMatch(activeLane, start);
         redraw();
         app.rebuildTrack();
+    }
+
+    /** B/Shift+B on a GLOBAL-axis section refuses with a hint (v16.1,
+     *  D107): its lane values are world rates / bank targets, not the
+     *  seam's body-rate quantities the matcher computes. */
+    private boolean refuseGlobalMatch() {
+        List<Section> secs = sections();
+        if (activeSection < secs.size()
+                && secs.get(activeSection) instanceof LaneSection ls
+                && ls.globalAxes()) {
+            app.statsLabel.setText("Boundary matching needs local-axis "
+                + "lanes — this section authors global rates.");
+            return true;
+        }
+        return false;
     }
 
     /** Is the NEXT section anchored to the TRUE seam speed while this
@@ -4846,6 +5047,7 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> lane = active();
         if (selIdx < 0) return;
         boolean infl = activeInfl() != null;
+        if (!infl && refuseGlobalMatch()) return;
         boolean start = selIdx == 0
             && (infl || hasNeighborBefore());
         boolean end = selIdx == active().size() - 1 && selIdx > 0
@@ -4948,7 +5150,10 @@ class GraphEditor extends Region {
         // a straight/curve neighbor has no lanes at all — likewise
         if (!real && nbSec instanceof LaneSection nb
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
-                && !nb.reversed && !nb.influenced()) {
+                && !nb.reversed && !nb.influenced()
+                // GLOBAL-axis lanes are not body rates (v16.1) —
+                // sampled path, like reversed/influenced
+                && !nb.globalAxes()) {
             // slopes read in the NEIGHBOR's native x units and convert
             // to OURS at the seam design speed (v16.0, D103) — values
             // are unit-identical across domains
@@ -4988,8 +5193,9 @@ class GraphEditor extends Region {
         if (!real && laneIdx < 2 && nbSec instanceof LaneSection nbl
                 && !nbl.reversed
                 // an influenced neighbor's authored lanes don't
-                // describe its actual curves — sampled path (v15.0)
-                && !nbl.influenced()
+                // describe its actual curves — sampled path (v15.0);
+                // global-axis lanes aren't body rates either (v16.1)
+                && !nbl.influenced() && !nbl.globalAxes()
                 // a TILTED piece's authored force targets live in the
                 // design frame; the analytic inversion mixes them with
                 // the world seam frame — sampled path there (v15.2)
@@ -5532,11 +5738,15 @@ class GraphEditor extends Region {
             }
         }
         dT = FvdDesigner.clamp(dT, Math.min(lo, 0), Math.max(hi, 0));
+        double[] gaps = BezierBaker.segGaps(lane);
         for (int i : selSet) {
             BezierBaker.Node m = lane.get(i);
             if (i > 0) m.t += dT;
             m.val += dV;
         }
+        // handles facing a squished/stretched segment keep their
+        // SLOPES — dv rides the run (v16.1, D105)
+        BezierBaker.rescaleDvToGaps(lane, gaps);
         redraw();
         app.rebuildTrack();
     }
@@ -5596,6 +5806,7 @@ class GraphEditor extends Region {
                     : lane.get(idx + 1).t - minGap();
             newT = FvdDesigner.clamp(newT, lo, hi);
         }
+        double[] gaps = BezierBaker.segGaps(lane);
         if (app.rippleT || app.rippleV) {
             // shift everything after the node by the same deltas on the
             // enabled axes: time keeps later transitions, value
@@ -5608,6 +5819,11 @@ class GraphEditor extends Region {
         }
         n.t = newT;
         n.val = newVal;
+        // handles facing the squished/stretched segments keep their
+        // SLOPES — dv rescales with the run (v16.1, D105; the
+        // removeBridging rule on node moves — smooth joints no longer
+        // kink when a node slides horizontally)
+        BezierBaker.rescaleDvToGaps(lane, gaps);
         // a level run's height is steerable from EITHER END (v10.6):
         // enforcement propagates left-to-right, so a move of the RIGHT
         // end writes its value back through the run first; interior
@@ -6502,12 +6718,24 @@ class GraphEditor extends Region {
         double w = canvas.getWidth(), h = canvas.getHeight();
         if (w <= 0 || h <= 0 || plotWidth() <= 0 || plotHeight() <= 0) return;
         enforceLocks();           // before updateScale sees the handles
-        // an AXIS DOMAIN change re-scales the whole x-axis: any manual
-        // zoom window is meaningless in the new units — auto-fit
+        // an AXIS DOMAIN change re-scales the whole x-axis: a manual
+        // zoom window's ENDS line up with their counterparts in the
+        // new units (v16.1, user rule — flips used to reset to
+        // auto-fit and "snap to the whole piece"); auto-fit stays
+        // auto-fit
         if (axisDist() != lastAxisDist) {
+            if (viewT1 > 0) {
+                double n0 = mapGlobalAxis(viewT0, lastAxisDist);
+                double n1 = mapGlobalAxis(viewT1, lastAxisDist);
+                if (n1 - n0 > 1e-9) {
+                    viewT0 = n0;
+                    viewT1 = n1;
+                } else {
+                    viewT0 = 0;
+                    viewT1 = -1;   // degenerate map: fall back
+                }
+            }
             lastAxisDist = axisDist();
-            viewT0 = 0;
-            viewT1 = -1;
         }
         refreshOffset();          // section offsets before any x mapping
         // the cross-domain warp map follows the compile — except while

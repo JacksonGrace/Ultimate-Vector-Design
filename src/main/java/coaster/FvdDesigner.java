@@ -214,7 +214,8 @@ public class FvdDesigner extends Application {
                     boolean pinned, BridgeSection bridge,
                     List<List<BezierBaker.Node>> dlanes,
                     double vAuthored, boolean editInfl,
-                    boolean dist, boolean viewOther) {}
+                    boolean dist, boolean viewOther,
+                    boolean rollG, boolean ypG) {}
 
     /** Deep copy of a 3-lane node-list set (null-safe). */
     private static List<List<BezierBaker.Node>> copyLanes(
@@ -250,7 +251,8 @@ public class FvdDesigner extends Application {
                 if (s instanceof BridgeSection bs) {
                     secs.add(new SecState(null, null, bs.vDesign, 3,
                         bs.reversed, false, bs.copy(),
-                        null, Double.NaN, false, false, false));
+                        null, Double.NaN, false, false, false,
+                        false, false));
                     continue;
                 }
                 if (s instanceof StraightCurveSection sc) {
@@ -259,7 +261,7 @@ public class FvdDesigner extends Application {
                     for (StraightCurveSection.Element e : sc.elements) els.add(e.copy());
                     secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed,
                         sc.vPinned, null, null, Double.NaN, false,
-                        true, sc.viewOtherDomain));
+                        true, sc.viewOtherDomain, false, false));
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
@@ -267,7 +269,8 @@ public class FvdDesigner extends Application {
                     fs instanceof GeoSection ? 1 : 0, fs.reversed,
                     fs.vPinned, null,
                     copyLanes(fs.deltaLanes), fs.vAuthored, fs.editInfluence,
-                    fs.domain == Section.Domain.DISTANCE, fs.viewOtherDomain));
+                    fs.domain == Section.Domain.DISTANCE, fs.viewOtherDomain,
+                    fs.rollGlobal, fs.yawPitchGlobal));
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
@@ -301,10 +304,12 @@ public class FvdDesigner extends Application {
                 sec.reversed(st.reversed());
                 sec.vPinned(st.pinned());
                 if (sec instanceof LaneSection ls) {
-                    // domain + view flag ride the snapshot (v16.0)
+                    // domain + view + axis flags ride the snapshot
                     ls.domain = st.dist() ? Section.Domain.DISTANCE
                                           : Section.Domain.TIME;
                     ls.viewOtherDomain = st.viewOther();
+                    ls.rollGlobal = st.rollG();
+                    ls.yawPitchGlobal = st.ypG();
                     if (st.dlanes() != null) {
                         // influence state rides the snapshot (v15.0, D98)
                         ls.deltaLanes = st.dlanes();

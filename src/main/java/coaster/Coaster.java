@@ -75,6 +75,11 @@ public class Coaster {
         LaneSection out = prev instanceof GeoSection
             ? new GeoSection(lanes, vDesign) : new ForceSection(lanes, vDesign);
         out.domain(prev.domain());
+        // axis flags carry (v16.1, D107): a hold of the end state only
+        // CONTINUES seamlessly under the same axis semantics (global
+        // roll: a zero-rate hold keeps the bank vs the horizon)
+        out.rollGlobal = prev.rollGlobal;
+        out.yawPitchGlobal = prev.yawPitchGlobal;
         return out;
     }
 
@@ -652,6 +657,15 @@ public class Coaster {
         }
         TrackCompiler.Span sp = r.spans().get(spanIdx);
         double vTrue = Math.max(0.5, r.trueV()[sp.i0()]);
+        // TILTED piece (v16.1, D106 — the refreezeSpeed rationale):
+        // the fit below reads the REAL (tilted) samples, so the tilt
+        // must be BAKED or the compile would rigidly tilt the fitted
+        // section a second time. Baking keeps the entry pose exactly;
+        // the fitted lanes reproduce the real shape from that frame
+        // (for s/c nothing to fit — its shape is gravity-free, so
+        // baking alone leaves the geometry identical and the refrozen
+        // speed closes the whole split).
+        if (piece.pitchDeg != 0 || piece.rollDeg != 0) piece.bakeTilt();
         if (sec instanceof StraightCurveSection) {
             sec.vDesign(vTrue);
             sec.vPinned(false);   // resolved: re-join the speed flow
@@ -673,6 +687,19 @@ public class Coaster {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
+        // ORIENTATION resolution (v16.1, D106 — the user's "refreeze
+        // isn't fully resolving"): a TILTED piece's split is only
+        // partly speed — the rigid tilt keeps the design solve in the
+        // UNTILTED frame, so the felt orientation and the interior
+        // speed profile (tilted heights vs design heights) stay split
+        // however the entry speed is re-anchored; the old op fixed the
+        // entry point only and the curves re-diverged right after it.
+        // BAKE the tilt first: the entry pose is unchanged, generation
+        // resumes FROM the real frame, gravity re-solves there —
+        // "keep graphs, reshape" now covers orientation too and the
+        // whole design/real split closes. Piece-scoped by nature (the
+        // tilt is a piece property): sibling sections re-solve too.
+        if (piece.pitchDeg != 0 || piece.rollDeg != 0) piece.bakeTilt();
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
@@ -755,73 +782,38 @@ public class Coaster {
         return map[lo][to] + u * (map[hi][to] - map[lo][to]);
     }
 
-    /** SWITCH a force/geo section's authoring DOMAIN (v16.0, D103 —
-     *  time ↔ distance) WITHOUT changing the track or its speeds: each
-     *  node's x maps through the section's own design-speed profile
-     *  (t_i → s(t_i) or back — a NONLINEAR map off the compiled span,
-     *  NOT a uniform scale), fracs stay, VALUES transfer exactly, and
-     *  handle dv rescales by v̄_segment/v(node) (chain rule
-     *  dG/ds = (dG/dt)/v — the fractional handles' segment rescale
-     *  supplies the v̄ part, this supplies the v(node) part). The
-     *  user's 2026-07-09 rule: NO carpet refit, no density preview.
-     *  Between nodes a cubic-in-t composed with s(t) is not a cubic in
-     *  s, so the interior matches exactly only at constant speed —
-     *  sub-fit-residual in practice, zero unattainable in theory.
-     *  vDesign/vPinned/reversed/locks untouched: speed conflicts
-     *  PERSIST through the switch (user rule). Influenced sections
-     *  refuse — their delta machinery is time-parameterized (bake or
-     *  discard first, like partial convert). */
-    public boolean switchLaneDomain(int pieceIdx, int secIdx, double dt) {
+    /** DOMAIN CONVERSION (v16.1, D104 — user re-spec 2026-07-12,
+     *  REPLACING v16.0's exact node map): a same-mode carpet REFIT
+     *  into the OTHER domain through the standard convert engine —
+     *  density preview, uniform/adaptive placement, the works. The
+     *  exact-shape role belongs to the cross-domain VIEW now (which
+     *  warps without refitting); the conversion re-authors, and
+     *  CONVERGES onto the original shape as the density rises (gated).
+     *  vDesign/vPinned carry — speed conflicts persist; an INFLUENCED
+     *  section's resulting curves are CAPTURED and the output is a
+     *  plain section (the whole-convert rule: influence folded in,
+     *  not preserved); reversed sections refuse (the fit reads the
+     *  chain direction, the convert rule). */
+    public boolean convertDomain(int pieceIdx, int secIdx, double dt,
+                                 double spacing, double adaptTol) {
         TrackPiece piece = pieces.get(pieceIdx);
-        if (!(piece.sections.get(secIdx) instanceof LaneSection ls)
-                || ls.influenced()) return false;
+        Section sec = piece.sections.get(secIdx);
+        if (!(sec instanceof LaneSection ls) || sec.reversed()) return false;
+        boolean toDist = ls.domain() == Section.Domain.TIME;
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
             spanIdx += pieces.get(p).sections.size();
         }
         TrackCompiler.Span sp = r.spans().get(spanIdx);
-        if (sp.i1() - sp.i0() < 2) return false;   // too short to map
-        double[][] map = sectionMap(r.samples(), sp, ls.reversed());
-        if (map.length < 2) return false;
-        boolean toDist = ls.domain() == Section.Domain.TIME;
-        for (List<BezierBaker.Node> lane : ls.lanes) {
-            mapLaneAxis(lane, map, toDist);
-        }
-        ls.domain(toDist ? Section.Domain.DISTANCE : Section.Domain.TIME);
-        ls.viewOtherDomain(false);   // the native axis IS the new display
+        if (sp.i1() - sp.i0() < 4) return false;   // too short to measure
+        LaneSection conv = convertToLanes(
+            r.samples().subList(sp.i0(), sp.i1() + 1),
+            ls.vDesign(), ls instanceof GeoSection, dt, spacing, adaptTol,
+            toDist ? Section.Domain.DISTANCE : Section.Domain.TIME);
+        conv.vPinned = sec.vPinned();
+        piece.sections.set(secIdx, conv);
         return true;
-    }
-
-    /** One lane through the domain map: x re-parameterized, dv scaled
-     *  so node slopes obey the chain rule (see switchLaneDomain). */
-    private static void mapLaneAxis(List<BezierBaker.Node> lane,
-                                    double[][] map, boolean toDist) {
-        int n = lane.size();
-        double[] newX = new double[n];
-        double[] vAt = new double[n];
-        int from = toDist ? 0 : 1;
-        for (int i = 0; i < n; i++) {
-            double x = lane.get(i).t;
-            newX[i] = mapCol(map, from, toDist ? 1 : 0, x);
-            vAt[i] = Math.max(0.5, mapCol(map, from, 2, x));
-        }
-        for (int i = 0; i < n; i++) {
-            BezierBaker.Node nd = lane.get(i);
-            if (i < n - 1) {
-                double dxOld = lane.get(i + 1).t - nd.t;
-                double ratio = Math.abs(dxOld) < 1e-12 ? 1
-                    : (newX[i + 1] - newX[i]) / dxOld;   // v̄ of the segment
-                nd.outDv *= toDist ? ratio / vAt[i] : ratio * vAt[i];
-            }
-            if (i > 0) {
-                double dxOld = nd.t - lane.get(i - 1).t;
-                double ratio = Math.abs(dxOld) < 1e-12 ? 1
-                    : (newX[i] - newX[i - 1]) / dxOld;
-                nd.inDv *= toDist ? ratio / vAt[i] : ratio * vAt[i];
-            }
-        }
-        for (int i = 0; i < n; i++) lane.get(i).t = newX[i];
     }
 
     /** SPEED RECONCILE for same-piece chains (v14.1, D95 — user
@@ -1032,6 +1024,25 @@ public class Coaster {
                                              double vDesign, boolean toGeo,
                                              double dt, double spacing,
                                              double adaptTol) {
+        return convertToLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
+            Section.Domain.TIME);
+    }
+
+    /** Default node spacing for DISTANCE-domain fits (m) — the time
+     *  default's ×10 sibling (v16.1, D104). */
+    public static final double NODE_SPACING_DEFAULT_DIST = 1.0;
+
+    /** Convert with a TARGET DOMAIN (v16.1, D104): DISTANCE fits the
+     *  node carpet over the section's ARC instead of the re-timed
+     *  clock — spacing is then in METERS, the duration is the exact
+     *  arc (distance lanes Newton-land, no dt-grid rounding), and the
+     *  fit constants scale ×10 (min transition 0.1 m, insert gap
+     *  0.2 m, slope window cap 1.5 m). */
+    public static LaneSection convertToLanes(List<FVDIntegrator.Sample> s,
+                                             double vDesign, boolean toGeo,
+                                             double dt, double spacing,
+                                             double adaptTol,
+                                             Section.Domain outDom) {
         int n = s.size();
         double vD = Math.max(1, vDesign);
         double y0 = s.get(0).pos().y();
@@ -1092,25 +1103,42 @@ public class Coaster {
                 val[i][2] = rate[i][2];
             }
         }
-        // lane sections integrate on WHOLE dt steps (while t <= end —
-        // the D50 cadence), silently dropping a fractional tail: up to
-        // 10 ms ≈ a quarter meter of track at speed, which was the
-        // entire end error of the first fit. Land the duration ON the
-        // grid (nearest, so ≤ 5 ms of shape is cut or held — the
-        // unavoidable quantum every lane section shares), nudged up a
-        // hair so the accumulated t <= end comparison keeps the final
-        // step.
-        double dur = Math.max(dt,
-            Math.round(Math.max(0.1, tG[n - 1]) / dt) * dt) * (1 + 1e-9);
+        // fit axis per target domain (v16.1, D104): TIME = the
+        // re-timed clock, DISTANCE = the section-local arc
+        double[] xG = tG;
+        double xScale = 1;
+        double dur;
+        if (outDom == Section.Domain.DISTANCE) {
+            xG = new double[n];
+            double s0 = s.get(0).s();
+            for (int i = 0; i < n; i++) xG[i] = s.get(i).s() - s0;
+            xScale = 10;
+            // EXACT arc: distance lanes Newton-land on their end — no
+            // dt-grid quantum to round onto
+            dur = Math.max(0.1, xG[n - 1]);
+        } else {
+            // lane sections integrate on WHOLE dt steps (while t <=
+            // end — the D50 cadence), silently dropping a fractional
+            // tail: up to 10 ms ≈ a quarter meter of track at speed,
+            // which was the entire end error of the first fit. Land
+            // the duration ON the grid (nearest, so ≤ 5 ms of shape
+            // is cut or held — the unavoidable quantum every lane
+            // section shares), nudged up a hair so the accumulated
+            // t <= end comparison keeps the final step.
+            dur = Math.max(dt,
+                Math.round(Math.max(0.1, tG[n - 1]) / dt) * dt) * (1 + 1e-9);
+        }
         List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
         for (int c = 0; c < 3; c++) {
             lanes.add(adaptTol > 0
-                ? fitLaneAdaptive(tG, val, c, dur, adaptTol)
-                : fitLaneUniform(tG, val, c, dur,
-                    Math.max(0.01, spacing)));
+                ? fitLaneAdaptive(xG, val, c, dur, adaptTol, xScale)
+                : fitLaneUniform(xG, val, c, dur,
+                    Math.max(0.01 * xScale, spacing), xScale));
         }
-        return toGeo ? new GeoSection(lanes, vD)
-                     : new ForceSection(lanes, vD);
+        LaneSection out = toGeo ? new GeoSection(lanes, vD)
+                                : new ForceSection(lanes, vD);
+        out.domain(outDom);
+        return out;
     }
 
     /** Uniform fit: endpoints pinned at 0 and dur, interior nodes
@@ -1118,10 +1146,13 @@ public class Coaster {
      *  closest to the target spacing (v14.0, D90 — the fit's error
      *  scales with spacing⁴; the density dialog owns the knob). */
     private static List<BezierBaker.Node> fitLaneUniform(double[] tG,
-            double[][] val, int c, double dur, double spacing) {
+            double[][] val, int c, double dur, double spacing,
+            double xScale) {
         int nNodes = Math.max(2, (int) Math.round(dur / spacing) + 1);
-        // MIN transition 0.01 s: never fit segments the editor refuses
-        nNodes = Math.min(nNodes, 1 + (int) Math.floor(dur / 0.01 + 1e-9));
+        // MIN transition (0.01 s / 0.1 m): never fit segments the
+        // editor refuses
+        nNodes = Math.min(nNodes,
+            1 + (int) Math.floor(dur / (0.01 * xScale) + 1e-9));
         List<BezierBaker.Node> lane = new ArrayList<>(nNodes);
         for (int k = 0; k < nNodes; k++) {
             double t = dur * k / (nNodes - 1);
@@ -1176,7 +1207,8 @@ public class Coaster {
      *  curve evaluates in closed form. A flat lane is just its two
      *  endpoints; each lane gets only the nodes IT needs. */
     private static List<BezierBaker.Node> fitLaneAdaptive(double[] tG,
-            double[][] val, int c, double dur, double tol) {
+            double[][] val, int c, double dur, double tol,
+            double xScale) {
         int n = tG.length;
         double lo = Double.MAX_VALUE, hi = -Double.MAX_VALUE;
         for (int i = 0; i < n; i++) {
@@ -1189,17 +1221,17 @@ public class Coaster {
         lane.add(new BezierBaker.Node(0, valAtT(tG, val, c, 0)));
         lane.add(new BezierBaker.Node(dur, valAtT(tG, val, c, dur)));
         for (int guard = 0; guard < 400; guard++) {
-            fitHandles(lane, tG, val, c, dtData);
+            fitHandles(lane, tG, val, c, dtData, xScale);
             double worst = eps, worstT = -1;
             int seg = 0;
             for (int i = 0; i < n; i++) {
                 double t = Math.min(tG[i], dur);
                 while (seg < lane.size() - 2
                         && lane.get(seg + 1).t <= t) seg++;
-                // respect the editor's INSERT_GAP: never propose a
-                // node on top of an existing one
-                if (t - lane.get(seg).t < 0.02
-                        || lane.get(seg + 1).t - t < 0.02) continue;
+                // respect the editor's INSERT_GAP (0.02 s / 0.2 m):
+                // never propose a node on top of an existing one
+                if (t - lane.get(seg).t < 0.02 * xScale
+                        || lane.get(seg + 1).t - t < 0.02 * xScale) continue;
                 double err = Math.abs(
                     fittedVal(lane.get(seg), lane.get(seg + 1), t)
                     - val[i][c]);
@@ -1214,7 +1246,7 @@ public class Coaster {
             lane.add(at, new BezierBaker.Node(worstT,
                 valAtT(tG, val, c, worstT)));
         }
-        fitHandles(lane, tG, val, c, dtData);
+        fitHandles(lane, tG, val, c, dtData, xScale);
         return lane;
     }
 
@@ -1223,7 +1255,8 @@ public class Coaster {
      *  the D87 lesson — sample-scale windows sit inside the rate
      *  extraction's own smear). */
     private static void fitHandles(List<BezierBaker.Node> lane,
-            double[] tG, double[][] val, int c, double dtData) {
+            double[] tG, double[][] val, int c, double dtData,
+            double xScale) {
         BezierBaker.applyDefaultHandles(lane);
         for (int k = 0; k < lane.size(); k++) {
             BezierBaker.Node nd = lane.get(k);
@@ -1231,7 +1264,7 @@ public class Coaster {
             double gapR = k < lane.size() - 1
                 ? lane.get(k + 1).t - nd.t : Double.MAX_VALUE;
             double h = Math.max(2 * dtData,
-                Math.min(0.15, Math.min(gapL, gapR) / 3));
+                Math.min(0.15 * xScale, Math.min(gapL, gapR) / 3));
             double t0 = Math.max(0, nd.t - h);
             double t1 = Math.min(tG[tG.length - 1], nd.t + h);
             double slope = t1 - t0 < 1e-9 ? 0

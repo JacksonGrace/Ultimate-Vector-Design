@@ -365,6 +365,7 @@ public final class TrackCompiler {
         FVDIntegrator.Options opts = new FVDIntegrator.Options();
         opts.dt = dt;
         opts.v0 = fs.vDesign;
+        opts.rollGlobal = fs.rollGlobal;   // v16.1, D107
         if (fs.reversed) {
             // canonical frame at the ENTRY HEIGHT: energy is
             // height-relative but float rounding is not — this keeps
@@ -396,18 +397,22 @@ public final class TrackCompiler {
         if (gs.reversed) {
             GeoIntegrator.Result rr = dist
                 ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
-                    new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY)
+                    new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
+                    gs.rollGlobal, gs.yawPitchGlobal)
                 : GeoIntegrator.integrate(kfs, dt,
-                    gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY);
+                    gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
+                    gs.rollGlobal, gs.yawPitchGlobal);
             return reverseAndPlace(rr.samples(), entry);
         }
         // quaternion-native (the §2 amendment): the exit orientation
         // is the integrated q itself, not a frame round-trip
         GeoIntegrator.Result r = dist
             ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
-                entry.pos(), entry.orient())
+                entry.pos(), entry.orient(),
+                gs.rollGlobal, gs.yawPitchGlobal)
             : GeoIntegrator.integrate(kfs, dt, gs.vDesign,
-                entry.pos(), entry.orient());
+                entry.pos(), entry.orient(),
+                gs.rollGlobal, gs.yawPitchGlobal);
         FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
         TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t());
@@ -447,15 +452,20 @@ public final class TrackCompiler {
      *  reshaping. */
     static Centerline influencedLane(LaneSection ls, TrackPose entry,
                                      double dt, boolean isGeo) {
-        // DISTANCE-domain sections take no influence (v16.0): the
-        // two-pass re-time machinery is time-parameterized end to end.
-        // The UI refuses entry; a hand-edited file falls back to the
-        // plain path here (influence lines ignored, geometry honest).
-        if (ls.domain() == Section.Domain.DISTANCE) {
+        // GLOBAL-AXIS sections take no influence (v16.1, D107): the
+        // two-pass base extraction reads BODY rates. The UI refuses
+        // entry; a hand-edited file falls back to the plain path here.
+        if (ls.globalAxes()) {
             ls.baseCurves = null;
             return isGeo ? geoLane((GeoSection) ls, entry, dt)
                          : forceLane((ForceSection) ls, entry, dt);
         }
+        // DISTANCE sections run the two-pass over ARC (v16.1, D107 —
+        // the v16.0 mutual exclusion lifted): base rows and delta
+        // lanes key by section-local METERS, and no re-time exists at
+        // all (arc is speed-invariant — the operating profile only
+        // moves the values, never the axis).
+        boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(ls.lanes, 0.05);
         if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored) {
             Centerline line = isGeo ? geoLane((GeoSection) ls, entry, dt)
@@ -463,7 +473,7 @@ public final class TrackCompiler {
             // base guides off the very samples on show (identity
             // re-time); reversed strips never edit influence — skip
             ls.baseCurves = ls.reversed ? null
-                : buildBase(line.samples(), kfs, isGeo, null, null);
+                : buildBase(line.samples(), kfs, isGeo, null, null, distAxis);
             return line;
         }
         // REF at the AUTHORED speed (canonical frame when reversed,
@@ -472,8 +482,11 @@ public final class TrackCompiler {
         Quat q0 = ls.reversed ? Quat.IDENTITY : entry.orient();
         List<FVDIntegrator.Sample> ref;
         if (isGeo) {
-            ref = GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, q0)
-                .samples();
+            ref = distAxis
+                ? GeoIntegrator.integrateDist(kfs, dt, ls.vAuthored, pos0, q0)
+                    .samples()
+                : GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, q0)
+                    .samples();
         } else {
             FVDIntegrator.Options opts = new FVDIntegrator.Options();
             opts.dt = dt;
@@ -483,10 +496,12 @@ public final class TrackCompiler {
                 opts.startHeading = entry.T();
                 opts.startUp = entry.U();
             }
-            ref = FVDIntegrator.integrateTrack(kfs, opts);
+            ref = distAxis ? FVDIntegrator.integrateTrackDist(kfs, opts)
+                           : FVDIntegrator.integrateTrack(kfs, opts);
         }
         int n = ref.size();
-        // operating profile + re-timed clock along the ref
+        // operating profile (+ the re-timed clock for TIME sections;
+        // a DISTANCE section's axis IS the arc — no re-time)
         double yEntry = ref.get(0).pos().y();
         double vApply = Math.max(0.5, ls.vDesign);
         double[] tStar = new double[n];
@@ -500,11 +515,16 @@ public final class TrackCompiler {
                     + ds / Math.max(0.5, (vStar[i] + vStar[i - 1]) / 2);
             }
         }
-        double[][] base = buildBase(ref, kfs, isGeo, tStar, vStar);
-        // duration lands ON the dt grid (the convert rounding recipe —
-        // lane integration drops fractional tails)
-        double dur = Math.max(dt,
-            Math.round(Math.max(0.1, tStar[n - 1]) / dt) * dt) * (1 + 1e-9);
+        double[][] base = buildBase(ref, kfs, isGeo,
+            distAxis ? null : tStar, vStar, distAxis);
+        // TIME durations land ON the dt grid (the convert rounding
+        // recipe — lane integration drops fractional tails); DISTANCE
+        // sections Newton-land, so the arc is exact
+        double dur = distAxis
+            ? Math.max(0.1, ref.get(n - 1).s())
+            : Math.max(dt,
+                Math.round(Math.max(0.1, tStar[n - 1]) / dt) * dt)
+                * (1 + 1e-9);
         // synthesized keyframes: base + the delta CURVES (bakeLane's
         // polylines with held ends — exactly what the editor draws)
         List<double[]> d0 = BezierBaker.polyline(ls.deltaLanes.get(0));
@@ -518,7 +538,7 @@ public final class TrackCompiler {
                 base[i][2] + polyAt(d1, base[i][0]),
                 base[i][3] + polyAt(d2, base[i][0])));
         }
-        // final keyframe exactly at the rounded duration
+        // final keyframe exactly at the end
         synth.add(new FVDIntegrator.Keyframe(dur,
             LaneSection.baseAt(base, 0, dur) + polyAt(d0, dur),
             LaneSection.baseAt(base, 1, dur) + polyAt(d1, dur),
@@ -534,36 +554,42 @@ public final class TrackCompiler {
                 o2.startHeading = entry.T();
                 o2.startUp = entry.U();
             }
-            List<FVDIntegrator.Sample> out = FVDIntegrator.integrateTrack(synth, o2);
+            List<FVDIntegrator.Sample> out = distAxis
+                ? FVDIntegrator.integrateTrackDist(synth, o2)
+                : FVDIntegrator.integrateTrack(synth, o2);
             if (ls.reversed) return reverseAndPlace(out, entry);
             FVDIntegrator.Sample last = out.get(out.size() - 1);
             return new Centerline(out, new TrackPose(last.pos(),
                 Quat.fromFrame(last.T(), last.U()),
                 entry.s0() + last.s(), entry.t0() + last.t()));
         }
-        GeoIntegrator.Result r2 = GeoIntegrator.integrate(
-            synth, dt, ls.vDesign, pos0, q0);
+        GeoIntegrator.Result r2 = distAxis
+            ? GeoIntegrator.integrateDist(synth, dt, ls.vDesign, pos0, q0)
+            : GeoIntegrator.integrate(synth, dt, ls.vDesign, pos0, q0);
         if (ls.reversed) return reverseAndPlace(r2.samples(), entry);
         FVDIntegrator.Sample last = r2.samples().get(r2.samples().size() - 1);
         return new Centerline(r2.samples(), new TrackPose(last.pos(), r2.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t()));
     }
 
-    /** BASE rows {t*, lane0, lane1, lane2} in the delta lanes' units,
-     *  analytic per ref sample. tStar/vStar null = identity re-time
-     *  (the fast path: the operating profile IS the ref profile, so
-     *  the clock is the samples' own time and every scale is 1). */
+    /** BASE rows {x, lane0, lane1, lane2} in the delta lanes' units,
+     *  analytic per ref sample; x = the section's NATIVE axis — the
+     *  re-timed clock t* (TIME) or the local arc (DISTANCE, v16.1).
+     *  tStar/vStar null = identity re-time (the fast path: the
+     *  operating profile IS the ref profile). */
     private static double[][] buildBase(List<FVDIntegrator.Sample> ref,
             List<FVDIntegrator.Keyframe> kfs, boolean isGeo,
-            double[] tStar, double[] vStar) {
+            double[] tStar, double[] vStar, boolean distAxis) {
         int n = ref.size();
         double[][] base = new double[n][4];
         for (int i = 0; i < n; i++) {
             FVDIntegrator.Sample sm = ref.get(i);
             double vd = Math.max(0.1, sm.v());
             double scale = vStar == null ? 1 : vStar[i] / vd;
-            double roll = FVDIntegrator.interpAt(kfs, sm.t()).rollRateDeg();
-            base[i][0] = tStar == null ? sm.t() : tStar[i];
+            double roll = FVDIntegrator.interpAt(kfs,
+                distAxis ? sm.s() : sm.t()).rollRateDeg();
+            base[i][0] = distAxis ? sm.s()
+                : tStar == null ? sm.t() : tStar[i];
             if (isGeo) {
                 // geo section: deltas are FELT G — the §5.1 identity
                 double r2 = scale * scale;

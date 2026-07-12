@@ -39,6 +39,24 @@ public sealed abstract class LaneSection implements Section
     /** Cross-domain view flag (v16.0) — see Section.viewOtherDomain. */
     public boolean viewOtherDomain = false;
 
+    /** GLOBAL-AXIS authoring (v16.1, D107 — user spec 2026-07-12).
+     *  rollGlobal: the roll lane's rate integrates to a BANK TARGET vs
+     *  the HORIZON, enforced by the s/c GLOBAL projection after every
+     *  step — rate 0 HOLDS the bank through pitched turns (an upward
+     *  turn spirals level instead of tilting into an inclined loop);
+     *  the roll term leaves Ω. yawPitchGlobal (geo sections; the two
+     *  toggle together per user): lanes 0/1 rotate about the WORLD
+     *  vertical / the heading's horizontal right — heading and
+     *  elevation rates — instead of the body frame. Defaults false =
+     *  the historic local behavior, bitwise. */
+    public boolean rollGlobal = false;
+    public boolean yawPitchGlobal = false;
+
+    /** Any global-axis flag set? Such lanes are NOT body rates: the
+     *  editor's analytic matching and authored-strip drawing fall
+     *  back to the compiled curves, and influence refuses. */
+    public boolean globalAxes() { return rollGlobal || yawPitchGlobal; }
+
     // ---------- INFLUENCE (v15.0, D98; SECTIONS-DESIGN §5.4) ----------
     // Sparse DELTA lanes in the OTHER mode's units (force section →
     // pitch/yaw/roll °/s, geo section → Gv/Gl g; lane 2 is the shared

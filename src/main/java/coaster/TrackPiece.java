@@ -91,6 +91,22 @@ public final class TrackPiece {
         return new TrackPose(new Vec3(x, y, z), q);
     }
 
+    /** BAKE every orientation delta into the base orientation (v16.1,
+     *  D106 — the resolve ops' orientation resolution; the D100
+     *  split/reverse corner as an explicit op): the entry pose is
+     *  IDENTICAL afterwards, but genPose == entryPose from here on,
+     *  so sections generate FROM the real frame — force sections
+     *  re-solve against gravity there and the tilt's design/real
+     *  orientation split closes. Yaw folds in too (the split/reverse
+     *  convention: the natural orientation is redefined as the
+     *  current one; zeroing the deltas afterwards changes nothing). */
+    public void bakeTilt() {
+        baseOrient = entryPose().orient();
+        yawDeg = 0;
+        pitchDeg = 0;
+        rollDeg = 0;
+    }
+
     /** The rigid TILT the pitch/roll deltas add on top of genPose():
      *  entryPose().orient() == tilt().mul(genPose().orient()) by
      *  construction (identical axis math). Returns Quat.IDENTITY —

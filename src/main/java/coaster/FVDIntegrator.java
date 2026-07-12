@@ -53,6 +53,33 @@ public class FVDIntegrator {
         public Vec3 startHeading = new Vec3(1, 0, 0);
         public Vec3 startUp = new Vec3(0, 1, 0);   // entry-pose seeding (Phase 1)
         public double friction = 0;   // crude per-second speed bleed factor
+        /** GLOBAL roll (v16.1, D107): the roll lane integrates to a
+         *  BANK TARGET vs the horizon, enforced by an algebraic
+         *  post-step projection (the s/c GLOBAL pattern) — the roll
+         *  term leaves Ω. false = the historic local roll, bitwise. */
+        public boolean rollGlobal = false;
+    }
+
+    /** Signed bank of U vs the level up at T (rad; roll-lane sign),
+     *  or NaN on near-vertical track (no defined bank — the caller
+     *  holds off, the s/c rule). */
+    static double bankOfTU(Vec3 T, Vec3 U) {
+        double horiz2 = 1 - T.y() * T.y();
+        if (horiz2 < 1e-6) return Double.NaN;
+        Vec3 ul = new Vec3(-T.y() * T.x(), horiz2, -T.y() * T.z()).normalize();
+        return Math.atan2(ul.cross(U).dot(T), U.dot(ul));
+    }
+
+    /** The GLOBAL-roll projection: rotate U about T so the bank vs
+     *  the horizon equals the target — a pure T-roll never bends the
+     *  spine (position/T untouched). Sub-1e-12 corrections skipped;
+     *  vertical track held (NaN bank). */
+    static Vec3 projectBank(Vec3 T, Vec3 U, double targetBank) {
+        double bank = bankOfTU(T, U);
+        if (Double.isNaN(bank)) return U;
+        double d = targetBank - bank;
+        if (Math.abs(d) < 1e-12) return U;
+        return U.rotate(T, d);
     }
 
     /** RK4 state: position + two frame vectors (R is derived). */
@@ -95,7 +122,7 @@ public class FVDIntegrator {
      *  omega and the advance direction come from unit vectors even when
      *  RK4 hands us a mid-stage (slightly denormalized) state. */
     private static Deriv deriv(State st, double t, List<Keyframe> kfs,
-                               double v0, double y0) {
+                               double v0, double y0, boolean rollGlobal) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T); // frame convention: T x R = U, R x U = T, U x T = R
@@ -106,8 +133,10 @@ public class FVDIntegrator {
 
         double omegaU = (G0 * (kf.Gv() - U.y())) / vSafe;
         double omegaR = (G0 * (kf.Gl() - R.y())) / vSafe;
+        // GLOBAL roll: the twist is the post-step projection's, not Ω's
         Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU))
-                      .add(T.scale(Math.toRadians(kf.rollRateDeg())));
+                      .add(T.scale(rollGlobal ? 0
+                          : Math.toRadians(kf.rollRateDeg())));
 
         return new Deriv(T.scale(v), omega.cross(T), omega.cross(U));
     }
@@ -135,16 +164,25 @@ public class FVDIntegrator {
         double s = 0;
         List<Sample> samples = new ArrayList<>();
 
+        // GLOBAL roll (v16.1, D107): the bank target = the entry bank
+        // plus the roll lane's exact integral (steps land on the
+        // 0.05 s keyframe grid, so per-step trapezoids are exact);
+        // enforced by projection after every step. A vertical entry
+        // binds the reference lazily at the first defined bank.
+        boolean rG = opts.rollGlobal;
+        double bank0 = rG ? bankOfTU(T, U) : 0;
+        double cumRoll = 0;
+
         double t = 0;
         while (t <= totalTime) {
             Keyframe kf = interpAt(keyframes, t);
             samples.add(new Sample(t, s, pos, T, U, R, v, kf.Gv(), kf.Gl()));
 
             State y = new State(pos, T, U);
-            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0);
-            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, opts.v0, y0);
-            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, opts.v0, y0);
-            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, opts.v0, y0);
+            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG);
+            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG);
+            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG);
+            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, opts.v0, y0, rG);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
@@ -156,6 +194,17 @@ public class FVDIntegrator {
                 k1.dU().add(k2.dU().scale(2)).add(k3.dU().scale(2)).add(k4.dU())
                     .scale(dt / 6));
             U = U.sub(T.scale(U.dot(T))).normalize();   // re-orthonormalize
+            if (rG) {
+                cumRoll += Math.toRadians(kf.rollRateDeg()
+                    + interpAt(keyframes, t + dt).rollRateDeg()) / 2 * dt;
+                if (Double.isNaN(bank0)) {
+                    double b = bankOfTU(T, U);
+                    if (!Double.isNaN(b)) bank0 = b - cumRoll;
+                }
+                if (!Double.isNaN(bank0)) {
+                    U = projectBank(T, U, bank0 + cumRoll);
+                }
+            }
             R = U.cross(T);
 
             s += newPos.sub(pos).length();
@@ -188,7 +237,7 @@ public class FVDIntegrator {
     private record DDeriv(Vec3 dPos, Vec3 dT, Vec3 dU, double dS) {}
 
     private static DDeriv derivDist(DState st, List<Keyframe> kfs,
-                                    double v0, double y0) {
+                                    double v0, double y0, boolean rollGlobal) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T);
@@ -199,7 +248,8 @@ public class FVDIntegrator {
         double omegaU = (G0 * (kf.Gv() - U.y())) / v;
         double omegaR = (G0 * (kf.Gl() - R.y())) / v;
         Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU))
-                      .add(T.scale(Math.toRadians(kf.rollRateDeg())));
+                      .add(T.scale(rollGlobal ? 0
+                          : Math.toRadians(kf.rollRateDeg())));
 
         return new DDeriv(T.scale(v), omega.cross(T), omega.cross(U), v);
     }
@@ -213,11 +263,12 @@ public class FVDIntegrator {
     }
 
     private static DState rk4Dist(DState y, List<Keyframe> kfs,
-                                  double v0, double y0, double h) {
-        DDeriv k1 = derivDist(y, kfs, v0, y0);
-        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0);
-        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0);
-        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0);
+                                  double v0, double y0, double h,
+                                  boolean rollGlobal) {
+        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -258,25 +309,47 @@ public class FVDIntegrator {
         double t = 0;
         List<Sample> samples = new ArrayList<>();
         int guard = 0;
+        boolean rG = opts.rollGlobal;
+        double bank0 = rG ? bankOfTU(T, U) : 0;
+        double cumRoll = 0;
 
         while (st.s() < totalLen - 1e-9 && guard++ < 500_000) {
             addSampleDist(samples, st, t, keyframes, opts.v0, y0);
             double v = Math.max(0.5, speedAt(st.pos(), opts.v0, y0));
+            double sPrev = st.s();
+            double hUsed;
             if (st.s() + v * dt < totalLen - 1e-12) {
-                st = rk4Dist(st, keyframes, opts.v0, y0, dt);
+                st = rk4Dist(st, keyframes, opts.v0, y0, dt, rG);
                 t += dt;
+                hUsed = dt;
             } else {
                 // land the last step EXACTLY on the lane end (v barely
                 // changes inside one step — two refinements reach noise)
                 double h = (totalLen - st.s()) / v;
                 DState end = st;
                 for (int it = 0; it < 3; it++) {
-                    end = rk4Dist(st, keyframes, opts.v0, y0, h);
+                    end = rk4Dist(st, keyframes, opts.v0, y0, h, rG);
                     double vEnd = Math.max(0.5, speedAt(end.pos(), opts.v0, y0));
                     h += (totalLen - end.s()) / vEnd;
                 }
                 st = new DState(end.pos(), end.T(), end.U(), totalLen);
                 t += h;
+                hUsed = h;
+            }
+            if (rG) {
+                cumRoll += Math.toRadians(
+                    interpAt(keyframes, sPrev).rollRateDeg()
+                    + interpAt(keyframes, st.s()).rollRateDeg()) / 2 * hUsed;
+                if (Double.isNaN(bank0)) {
+                    double b = bankOfTU(st.T(), st.U());
+                    if (!Double.isNaN(b)) bank0 = b - cumRoll;
+                }
+                if (!Double.isNaN(bank0)) {
+                    Vec3 pu = projectBank(st.T(), st.U(), bank0 + cumRoll);
+                    if (pu != st.U()) {
+                        st = new DState(st.pos(), st.T(), pu, st.s());
+                    }
+                }
             }
         }
         addSampleDist(samples, st, t, keyframes, opts.v0, y0);

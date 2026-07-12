@@ -3689,3 +3689,137 @@ the roll half needs a spec question answered first (see the session
 summary): the code's force/geo roll rotates about the LOCAL T axis
 (s/c's "RATE" semantics; bank drifts through pitched turns), which
 the message called "currently global".
+
+## D104. Domain conversion becomes a carpet REFIT; the VIEW owns
+##       exact-shape (v16.1 — user re-spec 2026-07-12)
+
+The user's answer to the D103 conflict flag REVERSED the recorded
+2026-07-09 node-map rule, with a clean division of labor: the
+CROSS-DOMAIN VIEW is the exact-shape mechanism ("keeps the shape
+EXACTLY the same, the bezier graphs themselves warping a little"),
+and domain CONVERSION is now a same-mode carpet refit through the
+standard convert engine — density preview, uniform/adaptive
+placement, dashed reference, one undo step. Coaster.switchLaneDomain
+and its node map were REMOVED (implemented in v16.0, replaced same
+day — the v13.9-quintic pattern); Coaster.sectionMap/mapCol SURVIVE
+as the view warp's map. convertToLanes gained a target-Domain
+overload: DISTANCE fits the carpet over the section-local ARC
+(spacing in METERS — the preview relabels, range 0.2-20 m, sticky
+default 1 m), the duration is the EXACT arc (distance lanes
+Newton-land; no dt rounding), and the fit constants scale x10.
+Convergence gated (#40d): the 407 m default layout round-trips
+time to distance and back within 3.47 m at coarse density and 0.24 m
+at fine — "with a high node density the shape converges", the user's
+acceptance test. vDesign/vPinned carry (conflicts persist); an
+INFLUENCED section's resulting curves are CAPTURED and the output is
+plain (the whole-convert rule — influence folded in, not preserved);
+reversed sections refuse like every refit. Zoom survives the switch:
+the old window's ends map through the t/s samples (D106's zoom rule
+applied here too).
+
+## D105. Node moves keep handle SLOPES (dv rides the squish) —
+##       supersedes D63's "kinks accepted" (v16.1, user re-spec)
+
+The user asked for the removeBridging rule (D86) on ordinary node
+moves: fractions already rescale a handle's x-run when its segment
+squishes, and dv now rescales WITH it (BezierBaker.segGaps +
+rescaleDvToGaps — snapshot the runs, mutate, rescale facing dv by
+newRun/oldRun), so a smooth joint's handles stay collinear through
+any horizontal move. He identified the history himself: this
+behavior existed "very far back", was lost around the D62 rigid-
+absolute-handles attempt and its D63 revert ("kinks accepted" was
+recorded as the user rule then; 2026-07-12 supersedes it — the D62
+version pinned ABSOLUTE knobs, which is still rejected; slopes are
+the invariant, not knob positions). Applied in moveNode (drags,
+nudges, dialog, ripple), moveGroupBy, and the hold-insert's foreign-
+lane shifts (the active lane's spanning segment is rebuilt by the
+hold and skips it). Gated #41a: slopes exact through a re-time.
+NOTE: v6's "squish preserves shape" invariant (TESTING #6) is now
+"squish preserves slopes" for MOVES — bake-time squish semantics
+(fractional handles) are untouched.
+
+## D106. Refreeze bakes the tilt; conflicts detected ANYWHERE in a
+##       span; zoom survives axis flips (v16.1)
+
+THE USER'S BUG ("refreeze design speed isn't fully resolving — I had
+adjusted the pitch of the section after a bridge"): his diagnosis was
+exactly right. A TILTED piece's design solve stays in the UNTILTED
+frame (D100's rigid tilt), so its design/real split is only PARTLY
+speed: re-anchoring the entry speed fixed one point and the interior
+profile (tilted heights vs design heights) plus the felt orientation
+re-diverged immediately after it. Fix per his spec ("silently also
+resolve the orientation conflict... just changing speed and
+orientation"): refreezeSpeed BAKES the piece tilt first
+(TrackPiece.bakeTilt — the D100 split/reverse corner as an explicit
+op: baseOrient := the full entry orientation, deltas zeroed; the
+entry pose is IDENTICAL, generation resumes from the real frame and
+gravity re-solves there), then re-freezes at the fresh true entry.
+Gated #41b: a bridged piece pitched 8 deg goes from 4.64 m/s max
+interior drift to 0.017 with the entry pose preserved to 1e-9.
+makeGraphsReal bakes too (its fit reads the REAL samples — without
+the bake the compile re-tilted the fitted section a second time, the
+same family of bug, latent). Piece-scoped by nature: sibling
+sections re-solve (the tilt is a piece property).
+- CONFLICT DETECTION moved from entry-only to ANYWHERE IN THE SPAN
+  (GraphEditor.sectionDrift): a tilted run-START piece has a matching
+  entry but splits inside — no drift badge, no resolve submenu (the
+  user's "if the start section is changed, a speed conflict should be
+  generated", read as: orientation changes must surface). Bridges
+  excluded (their design-side speed blend legitimately leaves the
+  pure-energy profile mid-span). The info line says "true splits
+  inside" when the entry matches but the interior does not.
+- ZOOM SURVIVES AXIS FLIPS (user rule: "adjusting domain settings or
+  selecting a section with another domain should not change the
+  zoom"): a manual window's ENDS map through the global t/s samples
+  (GraphEditor.mapGlobalAxis, linear extrapolation past the ride
+  ends) instead of resetting to auto-fit — on flips from activation
+  changes, the view toggle, and domain conversions alike; auto-fit
+  stays auto-fit.
+
+## D107. GLOBAL/LOCAL axes: geo yaw/pitch (heading/elevation) and
+##       roll (bank vs horizon) for both lane modes (v16.1)
+
+The second half of the user's 2026-07-12 spec, built once he
+confirmed the roll question (he had misspoken: current roll IS local
+— about T, the s/c RATE semantics). Two per-section flags in the
+badge-menu settings block (radios; defaults LOCAL = the historic
+behavior, bitwise — gated by #40a riding the same build):
+- rollGlobal (force + geo): the roll lane's rate integrates to a
+  BANK-VS-HORIZON target (entry bank + exact per-step trapezoid of
+  the lane — steps land on the keyframe grid), enforced by the s/c
+  GLOBAL projection after every step; the roll term leaves Omega.
+  Rate 0 = bank HELD through pitched turns: the user's example — an
+  upward turn makes an "upwards spiral", not an "inclined loop".
+  Vertical track has no bank: the projection holds off (the s/c
+  rule), the reference binding lazily on a vertical entry.
+- yawPitchGlobal (geo only, toggled together): lanes 0/1 rotate
+  about the WORLD vertical / the heading's horizontal axis — heading
+  and elevation rates (Omega = yaw*Yhat + pitch*hhat with hhat =
+  (-T.z, 0, T.x) normalized, the TrackPiece delta axis; +pitch pulls
+  up in both conventions; vertical T falls back to body axes for the
+  step).
+Felt Gv/Gl record the BODY components of Omega (identical arithmetic
+to the lane values when local — the local path stays bitwise). Gated
+#41c: pitched-entry global yaw 15 deg/s spirals with elevation AND
+bank held to < 0.3 deg while the same lanes under local axes drift
+elevation by 22 deg; #41d: global roll's bank equals the lane
+integral exactly on level track. FVDD3: section-line fields 6-7
+(missing = local — old files unchanged); DocState carries both.
+Global-axis lanes are NOT body rates, so: B/Shift+B refuse with a
+stats hint (the analytic matcher computes body-rate targets; sampled
+matching from the OTHER side still works), inactive strips draw
+DERIVED (the reversed rule), influence refuses entry (the base
+extraction reads body rates), and '+' same-mode continuations CARRY
+the flags (a zero-rate hold only continues seamlessly under the same
+axis semantics). Converts produce local sections as ever.
+
+Also v16.1: INFLUENCE + DISTANCE mutual exclusion LIFTED (the user's
+ask; the reason for it was exactly what he guessed — the two-pass
+was time-parameterized): influencedLane runs the two-pass over ARC
+for distance sections — base rows and delta lanes key by section-
+local METERS and there is NO re-time at all (arc is speed-invariant);
+the delta wall is the authored length; the cross-domain view warps
+influenced strips too (the influenced guard came off refreshWarp).
+Gated #41e: zero deltas bitwise, resulting == base + delta at
+mid-arc. Domain conversion of an influenced section captures the
+influence (D104).
