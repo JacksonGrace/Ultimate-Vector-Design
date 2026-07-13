@@ -313,6 +313,7 @@ class GraphEditor extends Region {
             setActiveSection(k);
             return;
         }
+        dropActiveView();   // leaving = back to the true domain (v16.2)
         activePiece = p;
         activeSection = (int) FvdDesigner.clamp(k, 0, sections().size() - 1);
         app.lanes = lanesFor(sections().get(activeSection));
@@ -333,6 +334,7 @@ class GraphEditor extends Region {
     void setActivePiece(int p) {
         p = (int) FvdDesigner.clamp(p, 0, app.coaster.pieces.size() - 1);
         if (p == activePiece) return;
+        dropActiveView();   // leaving = back to the true domain (v16.2)
         activePiece = p;
         activeSection = 0;
         app.lanes = lanesFor(sections().get(0));
@@ -762,10 +764,20 @@ class GraphEditor extends Region {
 
     private double xToLt(double x) { return warpInv(xToT(x) - tOff); }
 
+    /** Leaving a section drops its cross-domain view (v16.2, user
+     *  rule: returning to a section always shows its TRUE domain). */
+    private void dropActiveView() {
+        List<Section> secs = sections();
+        if (activeSection < secs.size()) {
+            secs.get(activeSection).viewOtherDomain(false);
+        }
+    }
+
     void setActiveSection(int k) {
         List<Section> secs = sections();
         k = (int) FvdDesigner.clamp(k, 0, secs.size() - 1);
         if (k == activeSection && app.lanes == lanesFor(secs.get(k))) return;
+        if (k != activeSection) dropActiveView();
         activeSection = k;
         app.lanes = lanesFor(secs.get(k));
         selIdx = -1;
@@ -834,35 +846,28 @@ class GraphEditor extends Region {
         // "Transition to real" starts it at the REAL speed with the
         // REAL end values — exactly like adding after an unconflicted
         // section, treating the true curves as the graphs.
+        // ONE combined lane-section entry since v16.2 (user spec): the
+        // dialog holds every option — force/geo, domain, axes, the
+        // conflict fork, and the (lockable) starting design speed
+        MenuItem lane = new MenuItem("Add force/geometric section…");
+        lane.setDisable(endsBridge);
+        lane.setOnAction(ev -> showAddLaneDialog());
         if (!endsBridge && pieceEndDrifted()) {
-            Menu cont = new Menu("Continue speed conflict ▸");
-            Menu real = new Menu("Transition to real ▸");
-            // the REAL fork always builds fresh TIME holds; the design
-            // continuation carries the previous section's domain (v16.0)
-            String[] realNames = { "Add force section (1 s hold)",
-                "Add geo section (1 s hold)",
-                "Add straight/curve section (10 m straight)" };
-            for (int m = 0; m < 3; m++) {
-                final int mode = m;
-                MenuItem ci = new MenuItem(addLabel(m));
-                ci.setOnAction(ev -> addSection(mode, false));
-                cont.getItems().add(ci);
-                MenuItem ri = new MenuItem(realNames[m]);
-                ri.setOnAction(ev -> addSection(mode, true));
-                real.getItems().add(ri);
-            }
-            cm.getItems().addAll(cont, real);
+            // s/c keeps its two-way fork here; force/geo pick theirs
+            // INSIDE the dialog
+            MenuItem scC = new MenuItem(
+                "Add straight/curve (10 m) — continue speed conflict");
+            scC.setOnAction(ev -> addSection(2, false));
+            MenuItem scR = new MenuItem(
+                "Add straight/curve (10 m) — transition to real");
+            scR.setOnAction(ev -> addSection(2, true));
+            cm.getItems().addAll(lane, scC, scR);
         } else {
-            MenuItem force = new MenuItem(addLabel(0));
-            force.setOnAction(ev -> addSection(0));
-            MenuItem geo = new MenuItem(addLabel(1));
-            geo.setOnAction(ev -> addSection(1));
-            MenuItem sc = new MenuItem(addLabel(2));
+            MenuItem sc = new MenuItem(
+                "Add straight/curve section (10 m straight)");
             sc.setOnAction(ev -> addSection(2));
-            force.setDisable(endsBridge);
-            geo.setDisable(endsBridge);
             sc.setDisable(endsBridge);
-            cm.getItems().addAll(force, geo, sc);
+            cm.getItems().addAll(lane, sc);
         }
         List<TrackPiece> pieces = app.coaster.pieces;
         // pieces already INSIDE this bridged run are not bridge/attach
@@ -918,22 +923,6 @@ class GraphEditor extends Region {
             cm.getItems().add(attach);
         }
         showMenu(cm, screenX, screenY);
-    }
-
-    /** The '+' item label for one mode: a SAME-MODE continuation after
-     *  a distance-domain section is a 10 m hold, not a 1 s one
-     *  (v16.0 — Coaster.continuation carries the domain). */
-    private String addLabel(int mode) {
-        if (mode == 2) return "Add straight/curve section (10 m straight)";
-        List<Section> secs = sections();
-        Section prevSec = secs.get(secs.size() - 1);
-        boolean distHold = prevSec instanceof LaneSection pl
-            && pl.domain() == Section.Domain.DISTANCE
-            && !pl.reversed() && !pl.influenced()
-            && (mode == 1) == (prevSec instanceof GeoSection);
-        String hold = distHold ? "10 m hold" : "1 s hold";
-        return mode == 1 ? "Add geo section (" + hold + ")"
-                         : "Add force section (" + hold + ")";
     }
 
     /** Append a live-following bridge from the ACTIVE piece's end to
@@ -1032,13 +1021,6 @@ class GraphEditor extends Region {
         return false;
     }
 
-    /** Is the section DIRECTLY left of k itself speed-conflicted
-     *  (anywhere in its span, v16.1)? Make-real waits for it;
-     *  transition-to-real is the op that works right of a conflict. */
-    private boolean leftDrifted(int k) {
-        if (k == 0) return false;   // left is a bridge (blocked) or nothing
-        return sectionDrifted(activePiece, k - 1);
-    }
 
     /** Does the ACTIVE piece end speed-conflicted (design vs true at
      *  its last sample)? The '+' menu forks there (v15.2, D101). */
@@ -1738,6 +1720,14 @@ class GraphEditor extends Region {
             pvPopup.show(canvas.getScene().getWindow(), at.getX(), at.getY());
             pvPopup.setY(at.getY() - pvPopup.getHeight() - 8);
         }
+        // ride/fly keys keep working while the popup holds key focus
+        // (v16.2, user report — forwarded to the viewport)
+        if (pvPopup.getScene() != null) {
+            pvPopup.getScene().addEventFilter(KeyEvent.KEY_PRESSED,
+                e -> app.forwardViewKey(e, true));
+            pvPopup.getScene().addEventFilter(KeyEvent.KEY_RELEASED,
+                e -> app.forwardViewKey(e, false));
+        }
         hookPvFocus();
     }
 
@@ -2256,30 +2246,24 @@ class GraphEditor extends Region {
             boolean isSc = sec instanceof StraightCurveSection;
             boolean infl = sec instanceof LaneSection li0 && li0.influenced();
             boolean nd = sec.domain() == Section.Domain.DISTANCE;
-            RadioMenuItem domT = new RadioMenuItem("Domain: time (s)"
-                + (infl && nd ? " (captures influence)…" : nd ? "…" : ""));
-            RadioMenuItem domD = new RadioMenuItem("Domain: distance (m)"
-                + (infl && !nd ? " (captures influence)…" : !nd ? "…" : ""));
-            ToggleGroup dg = new ToggleGroup();
-            domT.setToggleGroup(dg);
-            domD.setToggleGroup(dg);
-            (nd ? domD : domT).setSelected(true);
-            if (isSc || sec.reversed()) {
-                // s/c is inherently meters; reversed refuses like
-                // every refit (the fit reads the chain direction)
-                domT.setDisable(true);
-                domD.setDisable(true);
-            } else {
-                domT.setOnAction(ev -> switchDomainUi(k, Section.Domain.TIME));
-                domD.setOnAction(ev -> switchDomainUi(k, Section.Domain.DISTANCE));
+            // conversion is an ACTION, not a state to toggle (v16.2,
+            // user spec): one button for the only direction that
+            // exists — s/c is inherently meters and shows none
+            if (!isSc) {
+                MenuItem domConv = new MenuItem("Convert to "
+                    + (nd ? "time" : "distance") + " domain…"
+                    + (infl ? " (captures influence)" : ""));
+                domConv.setDisable(sec.reversed());
+                domConv.setOnAction(ev -> switchDomainUi(k,
+                    nd ? Section.Domain.TIME : Section.Domain.DISTANCE));
+                cm.getItems().add(domConv);
             }
-            CheckMenuItem viewOther = new CheckMenuItem(nd
-                ? "View in seconds (edit through the time axis)"
-                : "View in meters (edit through the distance axis)");
+            CheckMenuItem viewOther = new CheckMenuItem("View in "
+                + (nd ? "time" : "distance") + " domain");
             viewOther.setSelected(sec.viewOtherDomain());
             viewOther.setOnAction(ev ->
                 setViewOtherDomain(k, !sec.viewOtherDomain()));
-            cm.getItems().addAll(domT, domD, viewOther);
+            cm.getItems().add(viewOther);
             // AXIS radios (v16.1, D107 — the promised slot): roll for
             // both lane modes, yaw/pitch for geo (toggled together).
             // Local = the historic body-frame behavior; global roll =
@@ -2317,6 +2301,27 @@ class GraphEditor extends Region {
                     ypG.setOnAction(ev -> setAxisFlags(k, null, true));
                     cm.getItems().addAll(ypL, ypG);
                 }
+                // BAKE to the other axis semantics KEEPING the shape
+                // (v16.2, user spec): the convert engine re-fits the
+                // same compiled curves as lanes meaning the other
+                // thing — the radios above just REINTERPRET (shape
+                // changes), these preserve it to the fit residual.
+                MenuItem bakeRoll = new MenuItem("Bake roll to "
+                    + (lax.rollGlobal ? "local" : "global")
+                    + " (keep shape)…");
+                bakeRoll.setDisable(lax.reversed);
+                bakeRoll.setOnAction(ev ->
+                    bakeAxesUi(k, !lax.rollGlobal, lax.yawPitchGlobal));
+                cm.getItems().add(bakeRoll);
+                if (lax instanceof GeoSection) {
+                    MenuItem bakeYp = new MenuItem("Bake yaw/pitch to "
+                        + (lax.yawPitchGlobal ? "local" : "global")
+                        + " (keep shape)…");
+                    bakeYp.setDisable(lax.reversed);
+                    bakeYp.setOnAction(ev ->
+                        bakeAxesUi(k, lax.rollGlobal, !lax.yawPitchGlobal));
+                    cm.getItems().add(bakeYp);
+                }
             }
         }
         // RESOLVE SPEED CONFLICT (v14.5 D97; reworked v15.2 D101;
@@ -2341,23 +2346,20 @@ class GraphEditor extends Region {
                 why.setDisable(true);
                 resolve.getItems().add(why);
             } else {
-                boolean prevConflict = leftDrifted(k);
+                // make-real works right of another conflict too since
+                // v16.2 (user rule) — it fits THIS section's true
+                // curves as they are now; the left conflict stays its
+                // own, downstream conflicts stay theirs (pins +
+                // piece-firsts survive the reconcile), and downstream
+                // track re-chains with only the fit-residual
+                // reorientation. Only a direct bridge still blocks.
                 MenuItem real = new MenuItem(
                     "Make graphs real (keep shape)…");
-                real.setDisable(prevConflict);
                 real.setOnAction(ev -> makeGraphsReal(k));
                 MenuItem refr = new MenuItem(
                     "Re-freeze design speed (keep graphs, reshape)");
                 refr.setOnAction(ev -> refreezeSpeed(k));
                 resolve.getItems().addAll(real, refr);
-                if (prevConflict) {
-                    MenuItem why = new MenuItem(
-                        "…make-real waits for the previous section; "
-                        + "re-freeze + Shift+B lines this seam up with "
-                        + "the real ride");
-                    why.setDisable(true);
-                    resolve.getItems().add(why);
-                }
             }
             cm.getItems().add(resolve);
         }
@@ -2572,6 +2574,27 @@ class GraphEditor extends Region {
         }
     }
 
+    /** BAKE section k's shape into the other axis semantics (v16.2 —
+     *  user spec): the convert engine re-fits the compiled curves as
+     *  lanes carrying the target flags, through the density preview.
+     *  Same mode, same domain; zoom kept like the domain convert. */
+    private void bakeAxesUi(int k, boolean toRollG, boolean toYpG) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()
+                || !(secs.get(k) instanceof LaneSection ls)
+                || ls.reversed()) return;
+        int piece = activePiece;
+        boolean toGeo = ls instanceof GeoSection;
+        beginDensityPreview(k, toGeo, false,
+            ls.domain() == Section.Domain.DISTANCE,
+            (sp, tol) -> app.coaster.bakeAxes(piece, k, toRollG, toYpG,
+                FvdDesigner.INTEGRATE_DT, sp, tol),
+            () -> {
+                activePiece = piece;
+                activeSection = k;
+            });
+    }
+
     /** Set section k's axis flags (v16.1, D107); null = leave alone.
      *  One undo step; no-ops skip the push. */
     private void setAxisFlags(int k, Boolean rollGlobal, Boolean ypGlobal) {
@@ -2740,6 +2763,218 @@ class GraphEditor extends Region {
                               // a window that ends before it
         syncLaneButtons();
         app.rebuildTrack();   // spans before layout: s/c widths need them
+        refreshOffset();
+        redraw();
+    }
+
+    /** The ADD FORCE/GEOMETRIC SECTION dialog (v16.2, user spec — one
+     *  entry, every option): mode, domain, axis semantics, the
+     *  conflict fork (shown only after a drifted end), and the
+     *  starting DESIGN SPEED behind a padlock — locked (default) it
+     *  tracks what the choice implies (design end vs true end);
+     *  unlocked, a custom value creates a DELIBERATE conflict (the
+     *  section pins so the reconcile leaves it alone; B/Shift+B then
+     *  line the REAL graphs up across the seam). Add-only for now —
+     *  existing sections keep their badge-menu settings. */
+    private void showAddLaneDialog() {
+        List<Section> secs = sections();
+        Section prevSec = secs.get(secs.size() - 1);
+        LaneSection prev = prevSec instanceof LaneSection pl ? pl : null;
+        // auto speeds for the padlock display
+        TrackCompiler.Span endSp = spanOf(secs.size() - 1);
+        int endIdx = endSp != null && app.lastSamples != null
+            && endSp.i1() < app.lastSamples.size() ? endSp.i1() : -1;
+        double vCont = endIdx >= 0 ? app.lastSamples.get(endIdx).v()
+                                   : prevSec.vDesign();
+        double vReal = endIdx >= 0 && trueArraysReady()
+            && endIdx < app.trueV.length ? app.trueV[endIdx] : vCont;
+        boolean drifted = pieceEndDrifted();
+
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Add force/geometric section");
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        int row = 0;
+
+        ToggleGroup mg = new ToggleGroup();
+        RadioButton mForce = new RadioButton("Force");
+        RadioButton mGeo = new RadioButton("Geometric");
+        mForce.setToggleGroup(mg);
+        mGeo.setToggleGroup(mg);
+        (prev instanceof GeoSection ? mGeo : mForce).setSelected(true);
+        grid.addRow(row++, new Label("Type"), new HBox(10, mForce, mGeo));
+
+        ToggleGroup dg = new ToggleGroup();
+        RadioButton dTime = new RadioButton("Time (1 s)");
+        RadioButton dDist = new RadioButton("Distance (10 m)");
+        dTime.setToggleGroup(dg);
+        dDist.setToggleGroup(dg);
+        (prev != null && prev.domain() == Section.Domain.DISTANCE
+            ? dDist : dTime).setSelected(true);
+        grid.addRow(row++, new Label("Domain"), new HBox(10, dTime, dDist));
+
+        ToggleGroup rg = new ToggleGroup();
+        RadioButton rLocal = new RadioButton("Local");
+        RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
+        rLocal.setToggleGroup(rg);
+        rGlobal.setToggleGroup(rg);
+        (prev != null && prev.rollGlobal ? rGlobal : rLocal).setSelected(true);
+        grid.addRow(row++, new Label("Roll axis"), new HBox(10, rLocal, rGlobal));
+
+        ToggleGroup yg = new ToggleGroup();
+        RadioButton yLocal = new RadioButton("Local");
+        RadioButton yGlobal = new RadioButton("Global (heading/elevation)");
+        yLocal.setToggleGroup(yg);
+        yGlobal.setToggleGroup(yg);
+        (prev != null && prev.yawPitchGlobal ? yGlobal : yLocal).setSelected(true);
+        Label ypLbl = new Label("Yaw/pitch axis");
+        HBox ypRow = new HBox(10, yLocal, yGlobal);
+        grid.addRow(row++, ypLbl, ypRow);
+        Runnable syncYp = () -> {
+            boolean geoOn = mGeo.isSelected();
+            yLocal.setDisable(!geoOn);
+            yGlobal.setDisable(!geoOn);
+        };
+        syncYp.run();
+
+        ToggleGroup cg = new ToggleGroup();
+        RadioButton cCont = new RadioButton("Continue speed conflict");
+        RadioButton cReal = new RadioButton("Transition to real");
+        cCont.setToggleGroup(cg);
+        cReal.setToggleGroup(cg);
+        cCont.setSelected(true);
+        if (drifted) {
+            grid.addRow(row++, new Label("Seam"), new HBox(10, cCont, cReal));
+        }
+
+        TextField vField = new TextField(
+            String.format(Locale.US, "%.2f", vCont));
+        vField.setPrefColumnCount(6);
+        vField.setDisable(true);
+        ToggleButton vLock = new ToggleButton("🔒");
+        vLock.setFocusTraversable(false);
+        vLock.selectedProperty().addListener((o, was, sel) -> {
+            vLock.setText(sel ? "🔓" : "🔒");
+            vField.setDisable(!sel);
+            if (!sel) {   // re-locked: track the auto value again
+                vField.setText(String.format(Locale.US, "%.2f",
+                    cReal.isSelected() ? vReal : vCont));
+            }
+        });
+        cg.selectedToggleProperty().addListener((o, was, sel) -> {
+            if (!vLock.isSelected()) {   // locked speed follows the fork
+                vField.setText(String.format(Locale.US, "%.2f",
+                    cReal.isSelected() ? vReal : vCont));
+            }
+        });
+        mg.selectedToggleProperty().addListener((o, was, sel) -> syncYp.run());
+        grid.addRow(row++, new Label("Design speed (m/s)"),
+            new HBox(6, vField, vLock));
+
+        Button add = new Button("Add");
+        add.setDefaultButton(true);
+        Button cancel = new Button("Cancel");
+        cancel.setCancelButton(true);
+        HBox buttons = new HBox(8, add, cancel);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        grid.add(buttons, 0, row, 2, 1);
+        add.setOnAction(ev -> {
+            double vCustom = Double.NaN;
+            if (vLock.isSelected()) {
+                vCustom = FvdDesigner.clamp(
+                    parseOr(vField, cReal.isSelected() ? vReal : vCont),
+                    1, 100);
+            }
+            addLaneSection(mGeo.isSelected(),
+                drifted && cReal.isSelected(), dDist.isSelected(),
+                rGlobal.isSelected(),
+                mGeo.isSelected() && yGlobal.isSelected(), vCustom);
+            dlg.close();
+        });
+        cancel.setOnAction(ev -> dlg.close());
+        dlg.setScene(new Scene(grid));
+        dlg.show();
+    }
+
+    /** Append a lane section with the dialog's full option set
+     *  (v16.2). Hold values: the compiled (or true) end state in the
+     *  new section's own semantics — GLOBAL-axis lanes hold ZERO
+     *  rates (the straight/held-bank continuation, the s/c-straight
+     *  precedent); a clean same-mode same-axis design continuation
+     *  still copies the authored end values exactly. vCustom NaN =
+     *  the auto speed; a custom speed PINS the section (a deliberate
+     *  conflict the reconcile must not close). */
+    private void addLaneSection(boolean geo, boolean real, boolean dist,
+                                boolean rollG, boolean ypG, double vCustom) {
+        pushUndoSnapshot();
+        List<Section> secs = sections();
+        Section prevSec = secs.get(secs.size() - 1);
+        LaneSection prev = prevSec instanceof LaneSection pl ? pl : null;
+        TrackCompiler.Span endSp = spanOf(secs.size() - 1);
+        int endIdx = endSp != null && app.lastSamples != null
+            && endSp.i1() < app.lastSamples.size() ? endSp.i1() : -1;
+        FVDIntegrator.Sample end = endIdx >= 0
+            ? app.lastSamples.get(endIdx) : null;
+        boolean tru = real && endIdx >= 0 && trueArraysReady()
+            && endIdx < app.trueV.length;
+        double vAuto = tru ? app.trueV[endIdx]
+            : end != null ? end.v() : prevSec.vDesign();
+        double vEnd = Double.isNaN(vCustom) ? vAuto : vCustom;
+        double rollEnd = rollG ? 0   // global hold = keep the bank
+            : !tru && prev != null && !prev.reversed && !prev.influenced()
+                && !prev.rollGlobal
+            ? prev.lanes.get(2).get(prev.lanes.get(2).size() - 1).val
+            : (endIdx >= 0 && app.resultRates != null
+                && endIdx < app.resultRates.length
+                ? (tru ? app.trueRates : app.resultRates)[endIdx][3] : 0);
+        double v0h, v1h;
+        boolean cleanSame = !tru && prev != null && !prev.reversed
+            && !prev.influenced() && geo == prev instanceof GeoSection
+            && prev.rollGlobal == rollG
+            && prev.yawPitchGlobal == (geo && ypG);
+        if (geo && ypG) {
+            v0h = 0;   // straight continuation: zero heading/elevation
+            v1h = 0;   // rates — seamless position + tangent
+        } else if (cleanSame) {
+            v0h = prev.lanes.get(0).get(prev.lanes.get(0).size() - 1).val;
+            v1h = prev.lanes.get(1).get(prev.lanes.get(1).size() - 1).val;
+        } else if (geo) {
+            double[] er = app.resultRates != null && endIdx >= 0
+                && endIdx < app.resultRates.length
+                ? (tru ? app.trueRates : app.resultRates)[endIdx]
+                : new double[4];
+            v0h = er[1];
+            v1h = er[2];
+        } else {
+            v0h = tru ? app.trueFelt[endIdx][0] : end != null ? end.Gv() : 1;
+            v1h = tru ? app.trueFelt[endIdx][1] : end != null ? end.Gl() : 0;
+        }
+        List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(
+            v0h, v1h, rollEnd, dist ? Coaster.CONT_HOLD_DIST : 1);
+        LaneSection added = geo ? new GeoSection(lanes, vEnd)
+                                : new ForceSection(lanes, vEnd);
+        added.domain(dist ? Section.Domain.DISTANCE : Section.Domain.TIME);
+        added.rollGlobal = rollG;
+        added.yawPitchGlobal = geo && ypG;
+        if (!Double.isNaN(vCustom) && Math.abs(vCustom - vAuto) > 1e-6) {
+            added.vPinned = true;   // deliberate conflict — keep it
+        }
+        secs.add(added);
+        activeSection = sections().size() - 1;
+        app.lanes = lanesFor(added);
+        selIdx = -1;
+        selSet.clear();
+        elSel = -1;
+        axisLock = 0;
+        handleViewExpand = false;
+        viewT0 = 0;
+        viewT1 = -1;
+        syncLaneButtons();
+        app.rebuildTrack();
         refreshOffset();
         redraw();
     }
@@ -2989,8 +3224,14 @@ class GraphEditor extends Region {
         TrackCompiler.Span inflSpan = inflDesign != null
             ? spanOf(activeSection) : null;
         gc.setLineWidth(1);
-        gc.setGlobalAlpha(TRUE_STROKE_ALPHA);
+        // the ACTIVE lane's true stroke draws at full strength; the
+        // other lanes' fade like their design curves do (v16.2, user
+        // rule — full-strength strokes on unselected lanes cluttered
+        // the plot). No lane surface (s/c, bridge) = all full.
+        boolean laneSurface = activeSc() == null && activeBridge() == null;
         for (int L = 0; L < LANES; L++) {
+            gc.setGlobalAlpha(laneSurface && L != activeLane
+                ? TRUE_STROKE_ALPHA * INACTIVE_ALPHA : TRUE_STROKE_ALPHA);
             boolean rateSrc = activeGeo() || L == 2;
             gc.setStroke(laneColor(L));
             gc.beginPath();
@@ -5019,6 +5260,10 @@ class GraphEditor extends Region {
             upSpan = spanOf(activeSection);
         }
         if (upSpan == null) return;
+        // a PINNED design speed is a DELIBERATE conflict (custom-speed
+        // adds, stitched bridge converts) — B must line the REAL
+        // graphs up around it, never close it (v16.2, user rule)
+        if (down.vPinned()) return;
         int i1 = Math.min(upSpan.i1(), app.lastSamples.size() - 1);
         double v = app.lastSamples.get(i1).v();
         // REAL-anchORED downstream (v15.2, D101): a section lined up
@@ -5123,25 +5368,36 @@ class GraphEditor extends Region {
         // it needs no Section object (spanOf's flattened index already
         // reaches the neighboring piece's spans)
         Section nbSec = k >= 0 && k < secs.size() ? secs.get(k) : null;
-        // REAL-CURVE matching (v15.2, D101): a REAL-ANCHORED section
-        // (its vDesign sits on the TRUE seam speed, not the drifted
-        // left neighbor's design end — the transition-to-real state)
-        // matches that neighbor's TRUE curves: authored/analytic paths
-        // describe the design side it deliberately left, so it goes
-        // sampled on the true arrays, slope converted onto REAL time
-        // (dG/dt_real = dG/dt_axis · v_true / v_design at the seam).
+        // REAL-CURVE matching, GENERALIZED (v16.2 — user rule: B
+        // ALWAYS lines the REAL graphs up; v15.2's real-anchored case
+        // was the special case): whenever the seam still carries a
+        // design/true split after the re-freeze attempt (pinned
+        // deliberate conflicts, piece-firsts, custom-speed adds),
+        // targets come from the TRUE arrays and convert into OUR
+        // design values through the CURVATURE identity — true v is
+        // continuous across any seam (energy), so real-graph
+        // continuity IS curvature continuity, and the design rate
+        // that reproduces a true rate ω_t at our design speed v_d is
+        // ω_d = ω_t·v_d/v_t (felt via G = ω_d·v_d/g + axis.y; slopes
+        // carry one more v_d/v_t for the clock).
         boolean real = false;
-        double realScale = 1;
-        if (!atStart && activeSection > 0 && trueArraysReady()) {
-            TrackCompiler.Span pv = spanOf(activeSection - 1);
-            if (pv != null) {
-                int ip = Math.min(pv.i1(), app.lastSamples.size() - 1);
-                double vDes = app.lastSamples.get(ip).v();
-                double vTru = app.trueV[ip];
-                double our = secs.get(activeSection).vDesign();
-                real = Math.abs(vTru - vDes) > DRIFT_EPS
-                    && Math.abs(our - vTru) < Math.abs(our - vDes);
-                realScale = vTru / Math.max(0.1, vDes);
+        double realScale = 1;   // sample-axis slope → per-true-time
+        double rReal = 1;       // true rate → OUR design rate
+        if (trueArraysReady()) {
+            TrackCompiler.Span seamSp0 = atStart ? spanOf(activeSection)
+                : activeSection > 0 ? spanOf(activeSection - 1) : null;
+            if (seamSp0 != null) {
+                int ip = Math.min(seamSp0.i1(), app.lastSamples.size() - 1);
+                if (ip < app.trueV.length) {
+                    double vDes = app.lastSamples.get(ip).v();
+                    double vTru = Math.max(0.1, app.trueV[ip]);
+                    real = Math.abs(vTru - vDes) > DRIFT_EPS;
+                    realScale = vTru / Math.max(0.1, vDes);
+                    double vOurs = atStart ? vDes   // our design END
+                        : Math.max(0.5,
+                            secs.get(activeSection).vDesign());
+                    rReal = vOurs / vTru;
+                }
             }
         }
         // a REVERSED neighbor's authored lanes run against the chain
@@ -5230,7 +5486,7 @@ class GraphEditor extends Region {
         int at = atStart ? i0 : i1;
         if (!activeGeo() && laneIdx < 2) {
             return forceTargetFromRates(laneIdx, atStart, tB, i0, i1, at,
-                real, realScale);
+                real, realScale, rReal);
         }
         double span = app.resultRates[i1][0] - app.resultRates[i0][0];
         double a0 = real ? trueAt(i0, laneIdx) : derivedAt(i0, laneIdx);
@@ -5238,7 +5494,13 @@ class GraphEditor extends Region {
         double slope = span < 1e-9 ? 0 : (a1 - a0) / span;
         double val = (real ? trueAt(at, laneIdx) : derivedAt(at, laneIdx))
             - slope * (app.resultRates[at][0] - tB);
-        if (real) slope *= realScale;   // design axis → real time
+        if (real) {
+            // true rate → OUR design rate (the κ identity, v16.2);
+            // slope: sample axis → true time, then the same rate
+            // factor plus the true→design clock factor
+            val *= rReal;
+            slope *= realScale * rReal * rReal;
+        }
         // sampled slopes are per SECOND — onto our native x (v16.0)
         slope = domSlope(slope, false, activeDistNative(),
             seamDesignV(atStart));
@@ -5381,16 +5643,22 @@ class GraphEditor extends Region {
      *  axis' = Ω×axis). */
     private double[] forceTargetFromRates(int laneIdx, boolean atStart,
                                           double tB, int i0, int i1, int at,
-                                          boolean real, double realScale) {
+                                          boolean real, double realScale,
+                                          double rReal) {
         int comp = laneIdx + 1;   // resultRates rows: {t, pitch, yaw, roll}
-        // real (v15.2, D101): the TRUE rate rows + the real-time slope
-        // conversion — matching a drifted neighbor's true curves
+        // real (v15.2, D101; generalized v16.2): the TRUE rate rows,
+        // converted into OUR design rates via the κ identity (rReal =
+        // v_design_ours / v_true at the seam — 1 for the anchored
+        // case, so D101's behavior is unchanged there)
         double[][] rr = real ? app.trueRates : app.resultRates;
         double span = rr[i1][0] - rr[i0][0];
         double slopeR = span < 1e-9 ? 0
             : (rr[i1][comp] - rr[i0][comp]) / span;
         double rateDeg = rr[at][comp] - slopeR * (rr[at][0] - tB);
-        if (real) slopeR *= realScale;
+        if (real) {
+            rateDeg *= rReal;
+            slopeR *= realScale * rReal * rReal;
+        }
         // the ACTIVE side's design state at the seam: the entry is
         // exactly vDesign on the chained entry pose; the end is the
         // compiled end sample (both move as the section reshapes — the

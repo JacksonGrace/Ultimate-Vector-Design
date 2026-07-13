@@ -1043,6 +1043,29 @@ public class Coaster {
                                              double dt, double spacing,
                                              double adaptTol,
                                              Section.Domain outDom) {
+        return convertToLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
+            outDom, false, false);
+    }
+
+    /** Measured GLOBAL rates clamp here (°/s) — near-vertical track
+     *  has no defined heading/bank and the finite differences can
+     *  spike; the cap keeps a requested bake finite instead of
+     *  crawling or crashing (v16.2, user rule: guard, don't refuse). */
+    private static final double GLOBAL_RATE_CAP = 3600;
+
+    /** Convert with target AXIS FLAGS too (v16.2 — the "bake
+     *  global/local" ops): global-axis lanes take the measured
+     *  world-angle rates — heading/elevation for yaw/pitch, the
+     *  bank-vs-horizon rate for roll — instead of body rates, so the
+     *  fitted section reproduces the same shape under the other
+     *  semantics (to the fit residual; vertical stretches are the
+     *  documented edge case). */
+    public static LaneSection convertToLanes(List<FVDIntegrator.Sample> s,
+                                             double vDesign, boolean toGeo,
+                                             double dt, double spacing,
+                                             double adaptTol,
+                                             Section.Domain outDom,
+                                             boolean toRollG, boolean toYpG) {
         int n = s.size();
         double vD = Math.max(1, vDesign);
         double y0 = s.get(0).pos().y();
@@ -1103,6 +1126,56 @@ public class Coaster {
                 val[i][2] = rate[i][2];
             }
         }
+        // GLOBAL-axis target lanes (v16.2): replace the body-rate
+        // columns with measured world-angle rates per arc, scaled
+        // onto the target energy profile. Angles unwrap cumulatively;
+        // vertical samples hold the previous value (no defined
+        // heading/bank — the integrator's projection holds off there
+        // too), and rates cap at GLOBAL_RATE_CAP.
+        if (toRollG || (toGeo && toYpG)) {
+            double[] head = new double[n];
+            double[] elev = new double[n];
+            double[] bank = new double[n];
+            for (int i = 0; i < n; i++) {
+                Vec3 T = s.get(i).T();
+                elev[i] = Math.asin(Math.max(-1, Math.min(1, T.y())));
+                double h2 = 1 - T.y() * T.y();
+                double hPrev = i > 0 ? head[i - 1] : 0;
+                double h = h2 > 1e-6 ? Math.atan2(-T.z(), T.x()) : hPrev;
+                while (h - hPrev > Math.PI) h -= 2 * Math.PI;
+                while (h - hPrev < -Math.PI) h += 2 * Math.PI;
+                head[i] = h;
+                double bPrev = i > 0 ? bank[i - 1] : 0;
+                double b = FVDIntegrator.bankOfTU(T, s.get(i).U());
+                if (Double.isNaN(b)) b = bPrev;
+                while (b - bPrev > Math.PI) b -= 2 * Math.PI;
+                while (b - bPrev < -Math.PI) b += 2 * Math.PI;
+                bank[i] = b;
+            }
+            for (int i = 0; i < n; i++) {
+                int a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
+                double ds = s.get(b).s() - s.get(a).s();
+                if (ds < 1e-9) {
+                    if (toGeo && toYpG) {
+                        val[i][0] = i > 0 ? val[i - 1][0] : 0;
+                        val[i][1] = i > 0 ? val[i - 1][1] : 0;
+                    }
+                    if (toRollG) val[i][2] = i > 0 ? val[i - 1][2] : 0;
+                    continue;
+                }
+                double vG = vGs[i];
+                if (toGeo && toYpG) {
+                    val[i][0] = capRate(Math.toDegrees(
+                        (elev[b] - elev[a]) / ds) * vG);
+                    val[i][1] = capRate(Math.toDegrees(
+                        (head[b] - head[a]) / ds) * vG);
+                }
+                if (toRollG) {
+                    val[i][2] = capRate(Math.toDegrees(
+                        (bank[b] - bank[a]) / ds) * vG);
+                }
+            }
+        }
         // fit axis per target domain (v16.1, D104): TIME = the
         // re-timed clock, DISTANCE = the section-local arc
         double[] xG = tG;
@@ -1138,7 +1211,41 @@ public class Coaster {
         LaneSection out = toGeo ? new GeoSection(lanes, vD)
                                 : new ForceSection(lanes, vD);
         out.domain(outDom);
+        out.rollGlobal = toRollG;
+        out.yawPitchGlobal = toGeo && toYpG;
         return out;
+    }
+
+    private static double capRate(double r) {
+        return Math.max(-GLOBAL_RATE_CAP, Math.min(GLOBAL_RATE_CAP, r));
+    }
+
+    /** BAKE a section's shape into the other AXIS semantics (v16.2 —
+     *  user spec): same mode, same domain, the target flags, via the
+     *  convert engine (density preview drives spacing/adaptTol).
+     *  Shape preserved to the fit residual — vertical stretches are
+     *  the accepted edge case (rates cap instead of crashing).
+     *  Influenced sections capture; reversed refuse. */
+    public boolean bakeAxes(int pieceIdx, int secIdx, boolean toRollG,
+                            boolean toYpG, double dt, double spacing,
+                            double adaptTol) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        Section sec = piece.sections.get(secIdx);
+        if (!(sec instanceof LaneSection ls) || sec.reversed()) return false;
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        TrackCompiler.Span sp = r.spans().get(spanIdx);
+        if (sp.i1() - sp.i0() < 4) return false;
+        LaneSection conv = convertToLanes(
+            r.samples().subList(sp.i0(), sp.i1() + 1),
+            ls.vDesign(), ls instanceof GeoSection, dt, spacing, adaptTol,
+            ls.domain(), toRollG, toYpG);
+        conv.vPinned = sec.vPinned();
+        piece.sections.set(secIdx, conv);
+        return true;
     }
 
     /** Uniform fit: endpoints pinned at 0 and dur, interior nodes

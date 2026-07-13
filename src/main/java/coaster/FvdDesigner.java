@@ -506,6 +506,24 @@ public class FvdDesigner extends Application {
         }
     }
 
+    /** Ride/fly MOVEMENT keys arriving at a POPUP's scene (v16.2 —
+     *  the density window is its own window and can hold key focus,
+     *  which parked W/S while it was open, user report): forward
+     *  them to the viewport so the camera keeps moving. The popup's
+     *  field is numeric-only, so consuming letters costs nothing. */
+    void forwardViewKey(KeyEvent e, boolean pressed) {
+        if (!(viewport.flyActive
+                || (viewport.povActive && viewport.povCaptured))) return;
+        KeyCode c = e.getCode();
+        boolean movement = c == KeyCode.W || c == KeyCode.S
+            || c == KeyCode.SHIFT || c == KeyCode.CONTROL
+            || (viewport.flyActive && (c == KeyCode.A || c == KeyCode.D));
+        if (!movement) return;
+        if (pressed) viewport.moveKeys.add(c);
+        else viewport.moveKeys.remove(c);
+        e.consume();
+    }
+
     /** Delegates kept so the split moved no call sites: the pipeline
      *  entry, the marker sync and the POV toggle live in Viewport3D. */
     void rebuildTrack() { viewport.rebuildTrack(); }

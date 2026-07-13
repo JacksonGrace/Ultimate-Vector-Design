@@ -941,6 +941,39 @@
     10 m, and the meters/seconds view swap keeps working while
     influencing.
 
+42. **v16.2 gates (DomainGate extension; D108).** 5 checks, all
+    passed 2026-07-12: (a) bake local→global on a bent geo section
+    keeps the shape to 6 mm over 106 m (flags set); (b) baking back
+    global→local round-trips within 6 mm; (c) a force section's roll
+    bake local→global holds 0.4 m; (d) make-real RIGHT OF a pinned
+    conflict resolves only its own section (A 11.0→11.0 m/s drift
+    kept, B→0.000, C stays pinned and split); (e) a vertical-loop
+    bake stays finite (rates cap at 3600 °/s), compiles, no crash.
+
+73. v16.2 feel round (untested by the user yet): (a) with the node
+    density window open, ride/fly W/S still move the camera. (b) the
+    badge menu now reads "Convert to … domain…" (one action) and
+    "View in … domain"; leave a viewed section and come back — it
+    shows its true domain again. (c) unselected lanes' thin true
+    strokes are faint now; the active lane's stays bold. (d) ⊕ >
+    "Add force/geometric section…": one dialog — type, domain (1 s /
+    10 m), axes, the conflict fork (only after a drifted end), and
+    the design-speed padlock: locked tracks your fork choice;
+    unlock, type a slower speed, Add — the section arrives with ≠v
+    (deliberate, survives edits), and B/Shift+B on its FIRST node
+    lines the REAL curves up with the previous section (re-press =
+    no creep). Try every combo: force/geo × time/distance ×
+    local/global. (e) "Bake roll to global (keep shape)…" (and
+    yaw/pitch on geo): the density window opens, the track stays
+    put, and the section now authors in the other axis semantics;
+    bake back — still the same track. KNOWN LIMITS (by design, say
+    if they chafe): B refuses ON a global-axis section (match from
+    the local side); a global|global seam has no B side yet (bake
+    one side local first); vertical stretches bake imprecisely
+    (capped, documented). (f) "Make graphs real" now works right
+    after another conflicted section — it resolves only itself; the
+    neighbors keep their ≠v.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

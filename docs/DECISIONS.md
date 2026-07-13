@@ -3823,3 +3823,79 @@ influenced strips too (the influenced guard came off refreshWarp).
 Gated #41e: zero deltas bitwise, resulting == base + delta at
 mid-arc. Domain conversion of an influenced section captures the
 influence (D104).
+
+## D108. v16.2 organizational round: axis BAKES, the Add dialog with
+##       lockable design speed, B = real-graph matching EVERYWHERE,
+##       make-real right of conflicts, visual/menu cleanups
+##       (user list 2026-07-12, evening)
+
+- **BAKE AXES (keep shape)**: Coaster.bakeAxes — the convert engine
+  re-fits a section's compiled curves as lanes meaning the OTHER
+  axis semantics (same mode, same domain, density preview; the
+  radios above them still just REINTERPRET). Global-axis targets
+  take measured world-angle rates — heading/elevation per arc for
+  yaw/pitch, the bank-vs-horizon rate for roll — unwrapped
+  cumulatively, vertical samples holding the previous angle, rates
+  capped at 3600 deg/s (the user's guard-don't-refuse rule; a
+  vertical fixture bakes finite, gated #42e). Shape preservation
+  gated #42a-c: geo local→global 6 mm over 106 m, round trip 6 mm,
+  force roll bake 0.4 m. Influenced sections capture; reversed
+  refuse.
+- **ADD FORCE/GEOMETRIC SECTION dialog** replaces the separate '+'
+  force/geo items (and the "(1 s hold)" labels everywhere): type,
+  domain (1 s / 10 m hold), roll + yaw/pitch axes (defaults carried
+  from the previous lane section), the conflict fork (shown only
+  after a drifted end — s/c keeps its two menu forks), and the
+  STARTING DESIGN SPEED behind a padlock: locked (default) it
+  TRACKS what the fork implies (design end vs true end, live on the
+  radio flip); unlocked = a custom speed = a DELIBERATE conflict —
+  the section pins (vPinned) so the reconcile leaves it alone.
+  Add-only for now (existing sections keep the badge settings).
+  Hold values: same-mode same-axis clean continuations copy the
+  authored end values exactly (the old rule); global-axis lanes
+  hold ZERO rates (the straight/held-bank continuation — the s/c
+  straight precedent); everything else holds the compiled (or
+  true) end state.
+- **B/Shift+B = REAL-GRAPH MATCHING, generalized** (user rule: "B
+  should ALWAYS line up real graphs"): true v is continuous across
+  every seam (energy), so real-graph continuity IS curvature
+  continuity — whenever a seam still carries a design/true split
+  after the re-freeze attempt, targets come from the TRUE arrays
+  and convert into OUR design values by the kappa identity
+  (rate_design = rate_true * v_design/v_true; slopes carry one more
+  such factor for the clock; rReal = 1 reduces to D101's anchored
+  case bitwise). refreezeSeamSpeed now SKIPS vPinned sections — a
+  deliberate conflict is matched AROUND, never closed.
+  SMOOTHABILITY REPORT (the user asked): every force/geo seam is
+  B-smoothable across any mode/domain/speed combination — analytic
+  when the seam speeds agree, true-sampled when split; s/c, bridge,
+  reversed and influenced neighbors are sampled (smooth to sampling
+  accuracy). NOT currently B-able: pressing B ON a global-axis
+  section (its lanes aren't body rates — refused with a hint; match
+  from the LOCAL side instead, which works sampled), therefore a
+  GLOBAL|GLOBAL seam has no B side today (workaround: bake one side
+  to local, match, bake back; analytic world-rate targets are a
+  possible future round), B toward a real-anchored next section
+  from the conflicted side (the D101 feedback refusal), and seams
+  sitting exactly on vertical track under global axes (no defined
+  heading/bank). The rReal slope factor is analytic-only (editor
+  code is not headlessly gateable) — feel-verify with walkthrough
+  #73 and re-press idempotence.
+- **Make-real right of a conflict** (user rule): the leftDrifted
+  wait is GONE — make-real fits THIS section's true curves as they
+  are now; the left conflict stays its own, pinned/piece-first
+  downstream conflicts survive the reconcile untouched, and
+  downstream track re-chains with only the fit-residual
+  reorientation (gated #42d: A 11.0->11.0 m/s, B->0.000, C pinned
+  and split). Only a DIRECT bridge neighbor still blocks.
+- **Cleanups**: domain conversion is a single ACTION item ("Convert
+  to time/distance domain...") instead of radios, the view check is
+  "View in time/distance domain", and LEAVING a section always
+  drops its cross-domain view (returning shows the true domain);
+  ride/fly movement keys are FORWARDED from the density popup's
+  scene (the popup held key focus and parked W/S — user report);
+  the true companion strokes of UNSELECTED lanes fade like their
+  design curves (full strength cluttered the plot — user).
+
+Gated #42 (5 checks) on top of #40/#41; the full Phase2Gate suite
+re-run green. Walkthrough #73.

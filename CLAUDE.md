@@ -332,7 +332,12 @@ Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     continuation() carries the domain AND axis flags
                     (10 m hold after a distance section);
                     partialConvertSection cuts distance lanes by ARC
-                    fraction, kept half stays native.
+                    fraction, kept half stays native. bakeAxes
+                    (v16.2, D108): same-mode same-domain refit into
+                    the OTHER axis semantics — convertToLanes'
+                    flag overload measures world-angle rates
+                    (heading/elevation/bank per arc, unwrapped,
+                    capped 3600 °/s).
 TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
                     section at vDesign (force = unchanged bake+RK4;
                     geo = GeoIntegrator; s/c = ScIntegrator — both
@@ -650,17 +655,20 @@ its predecessor; one undo step; press rank nodes/knobs > '+' > badges
 > curve insert (D57). An open '+'/badge menu dismisses on the next
 graph click (JavaFX auto-hide misses the canvas — openMenu field).
 A dashed line + circled '+' past the ride
-end opens the add-section menu: the LANE modes append a 1 s HOLD of the
-ride's end state (same-mode = final lane values via
-Coaster.continuation, now mode-generic — and DOMAIN-carrying since
-v16.0: after a distance section the same-mode hold is 10 m of track,
-label says so; force-after-geo = felt end
-Gv/Gl + final roll; geo-after-force = resulting end pitch/yaw +
-authored roll; after an s/c or reversed section the roll comes from
-the compiled resulting rates), and "straight/curve" appends a 10 m
-STRAIGHT (a straight IS the seamless continuation); vDesign frozen at
-the piece-end design speed per §0; bridge + attach-piece stay
-disabled placeholders. TIME/DISTANCE DOMAIN (v16.0, D103): the plot's
+end opens the add-section menu: ONE "Add force/geometric section…"
+item since v16.2 (D108) opening a DIALOG — type, domain (the new
+section HOLDS the ride's end state for 1 s / 10 m; same-mode
+same-axis holds copy the authored end values exactly, global-axis
+holds start at ZERO rates = the straight/held-bank continuation,
+everything else holds the compiled/true end state), roll + yaw/pitch
+axes (defaults carried), the conflict fork (shown only after a
+drifted end; s/c keeps two menu forks), and the STARTING DESIGN
+SPEED behind a padlock — locked tracks what the fork implies;
+unlocked = a DELIBERATE conflict (the section PINS so the reconcile
+keeps it; B lines the real graphs up). "straight/curve" appends a
+10 m STRAIGHT (a straight IS the seamless continuation); vDesign
+frozen at the piece-end design speed per §0; bridge + attach-piece
+stay disabled placeholders. TIME/DISTANCE DOMAIN (v16.0, D103): the plot's
 x-axis follows the ACTIVE section's DISPLAY domain — seconds, or
 METERS over a distance-domain force/geo section or an s/c section
 (which now lays out LINEARLY in meters when active; elements at true
@@ -670,12 +678,15 @@ coordinate (same-mode inactive strips draw authored lanes only when
 their native domain IS the axis; overlays/true strokes/POV marker/
 hovers all axis-generic, seam trims speed-scaled on meters). The
 badge menu's SECTION SETTINGS block (top, after the info line)
-holds the Domain radios — switching = Coaster.convertDomain's
+holds "Convert to time/distance domain…" — ONE action item since
+v16.2 (was radios) = Coaster.convertDomain's
 same-mode carpet REFIT through the density preview (v16.1 D104,
 replacing v16.0's exact node map; meters spacing for →distance;
 converges with density; speeds/pins/conflicts carry; influenced
 sections capture their influence; reversed + s/c refuse) — the
-cross-domain VIEW check ("View in meters/seconds"): a pure view
+cross-domain VIEW check ("View in time/distance domain" —
+auto-DROPS when you leave the section, v16.2: returning always
+shows the true domain): a pure view
 and THE exact-shape mechanism (D104), native lanes untouched, the
 strip warps through the section's compiled map (ltToX/xToLt are
 the choke points — the dispOff precedent x-flavored; the map
@@ -690,7 +701,19 @@ pitched turns) and Yaw/pitch local|global for geo
 (heading/elevation rates about the world axes). Global-axis lanes
 aren't body rates: B/Shift+B refuse with a hint, inactive strips
 draw derived, influence refuses, '+' continuations carry the
-flags. ZOOM SURVIVES every axis flip (v16.1, D106): a manual
+flags. "Bake roll / yaw-pitch to global|local (keep shape)…"
+(v16.2, D108 — Coaster.bakeAxes): the convert engine re-fits the
+SAME compiled shape as lanes meaning the other semantics (radios
+reinterpret, bakes preserve — 6 mm on the gated geo fixture;
+world-angle rates measured/unwrapped per arc, capped 3600 °/s so
+vertical stretches stay finite). B/Shift+B match the REAL graphs
+EVERYWHERE since v16.2 (D108): any seam still split after the
+re-freeze attempt takes TRUE-array targets converted by the κ
+identity into OUR design values (rate ×v_d/v_t, slope one more
+factor for the clock) — and refreezeSeamSpeed SKIPS vPinned
+sections (deliberate conflicts are matched around, never closed).
+Make-real works right of another conflict (only a direct bridge
+blocks). ZOOM SURVIVES every axis flip (v16.1, D106): a manual
 window's ends map through the global t↔s samples (mapGlobalAxis)
 — activation changes, view toggles and domain conversions alike.
 Distance ergonomics: the element-length step (default 1 m) is THE
