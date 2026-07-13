@@ -2170,8 +2170,12 @@ class GraphEditor extends Region {
         List<RunSec> rl = runLayout();
         if (runIdx < 0 || runIdx >= rl.size()) return;
         RunSec rs = rl.get(runIdx);
-        if (rs.piece() != activePiece) {
+        if (rs.piece() != activePiece || rs.section() != activeSection) {
+            // the FIRST click on an inactive badge only ACTIVATES the
+            // section (v16.4, user rule: section settings open only on
+            // a highlighted section) — click again for the menu
             activateRunSec(rs.piece(), rs.section());
+            return;
         }
         showSectionMenu(rs.section(), screenX, screenY);
     }
@@ -2264,64 +2268,14 @@ class GraphEditor extends Region {
             viewOther.setOnAction(ev ->
                 setViewOtherDomain(k, !sec.viewOtherDomain()));
             cm.getItems().add(viewOther);
-            // AXIS radios (v16.1, D107 — the promised slot): roll for
-            // both lane modes, yaw/pitch for geo (toggled together).
-            // Local = the historic body-frame behavior; global roll =
-            // bank held vs the horizon (rate 0 spirals level through
-            // pitched turns), global yaw/pitch = heading/elevation
-            // rates about the world axes. Influenced sections park
-            // the toggles (bake or discard first — the delta
-            // machinery reads body rates).
-            if (sec instanceof LaneSection lax) {
-                RadioMenuItem rollL = new RadioMenuItem(
-                    "Roll: local (about the track)");
-                RadioMenuItem rollG = new RadioMenuItem(
-                    "Roll: global (bank vs horizon)");
-                ToggleGroup rg = new ToggleGroup();
-                rollL.setToggleGroup(rg);
-                rollG.setToggleGroup(rg);
-                (lax.rollGlobal ? rollG : rollL).setSelected(true);
-                rollL.setDisable(infl);
-                rollG.setDisable(infl);
-                rollL.setOnAction(ev -> setAxisFlags(k, false, null));
-                rollG.setOnAction(ev -> setAxisFlags(k, true, null));
-                cm.getItems().addAll(rollL, rollG);
-                if (lax instanceof GeoSection) {
-                    RadioMenuItem ypL = new RadioMenuItem(
-                        "Yaw/pitch: local (track axes)");
-                    RadioMenuItem ypG = new RadioMenuItem(
-                        "Yaw/pitch: global (heading/elevation)");
-                    ToggleGroup yg = new ToggleGroup();
-                    ypL.setToggleGroup(yg);
-                    ypG.setToggleGroup(yg);
-                    (lax.yawPitchGlobal ? ypG : ypL).setSelected(true);
-                    ypL.setDisable(infl);
-                    ypG.setDisable(infl);
-                    ypL.setOnAction(ev -> setAxisFlags(k, null, false));
-                    ypG.setOnAction(ev -> setAxisFlags(k, null, true));
-                    cm.getItems().addAll(ypL, ypG);
-                }
-                // BAKE to the other axis semantics KEEPING the shape
-                // (v16.2, user spec): the convert engine re-fits the
-                // same compiled curves as lanes meaning the other
-                // thing — the radios above just REINTERPRET (shape
-                // changes), these preserve it to the fit residual.
-                MenuItem bakeRoll = new MenuItem("Bake roll to "
-                    + (lax.rollGlobal ? "local" : "global")
-                    + " (keep shape)…");
-                bakeRoll.setDisable(lax.reversed);
-                bakeRoll.setOnAction(ev ->
-                    bakeAxesUi(k, !lax.rollGlobal, lax.yawPitchGlobal));
-                cm.getItems().add(bakeRoll);
-                if (lax instanceof GeoSection) {
-                    MenuItem bakeYp = new MenuItem("Bake yaw/pitch to "
-                        + (lax.yawPitchGlobal ? "local" : "global")
-                        + " (keep shape)…");
-                    bakeYp.setDisable(lax.reversed);
-                    bakeYp.setOnAction(ev ->
-                        bakeAxesUi(k, lax.rollGlobal, !lax.yawPitchGlobal));
-                    cm.getItems().add(bakeYp);
-                }
+            // ORIENTATION SETTINGS (v16.4, user spec): the axis
+            // radios + bake actions condensed into ONE dialog —
+            // switch (reinterpret) and/or bake (keep shape), with the
+            // buttons relabeling live as the radios change.
+            if (sec instanceof LaneSection) {
+                MenuItem orient = new MenuItem("Orientation settings…");
+                orient.setOnAction(ev -> showOrientationDialog(k));
+                cm.getItems().add(orient);
             }
         }
         // RESOLVE SPEED CONFLICT (v14.5 D97; reworked v15.2 D101;
@@ -2613,6 +2567,96 @@ class GraphEditor extends Region {
         redraw();
     }
 
+    /** The ORIENTATION SETTINGS dialog (v16.4, user spec — the axis
+     *  radios + bake actions condensed to one window): pick the
+     *  target semantics, then SWITCH (reinterpret the lanes — the
+     *  shape changes) or BAKE (the convert engine keeps the track
+     *  and re-fits the lanes). Button labels track the radios LIVE.
+     *  Influenced sections can BAKE (captures the influence) but not
+     *  switch; reversed can switch but not bake (the fit rule). */
+    private void showOrientationDialog(int k) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()
+                || !(secs.get(k) instanceof LaneSection ls)) return;
+        boolean geo = ls instanceof GeoSection;
+        boolean infl = ls.influenced();
+
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Orientation settings — "
+            + (geo ? "geo" : "force") + " section " + (k + 1));
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        int row = 0;
+
+        ToggleGroup rg = new ToggleGroup();
+        RadioButton rL = new RadioButton("Local (about the track)");
+        RadioButton rG = new RadioButton("Global (bank vs horizon)");
+        rL.setToggleGroup(rg);
+        rG.setToggleGroup(rg);
+        (ls.rollGlobal ? rG : rL).setSelected(true);
+        grid.addRow(row++, new Label("Roll"), new HBox(10, rL, rG));
+
+        RadioButton yL = new RadioButton("Local (track axes)");
+        RadioButton yG = new RadioButton("Global (heading/elevation)");
+        if (geo) {
+            ToggleGroup yg = new ToggleGroup();
+            yL.setToggleGroup(yg);
+            yG.setToggleGroup(yg);
+            (ls.yawPitchGlobal ? yG : yL).setSelected(true);
+            grid.addRow(row++, new Label("Yaw/pitch"), new HBox(10, yL, yG));
+        }
+
+        Label note = new Label(
+            "Switch reinterprets the lanes (the shape changes);\n"
+            + "Bake keeps the track and re-fits the lanes."
+            + (infl ? "\nInfluenced: baking folds the influence in;"
+                + " switching waits for it." : ""));
+        note.setStyle("-fx-text-fill: rgb(130,135,150);"
+            + " -fx-font-size: 11px;");
+        grid.add(note, 0, row++, 2, 1);
+
+        Button apply = new Button();
+        Button bake = new Button();
+        Button close = new Button("Close");
+        close.setCancelButton(true);
+        Runnable sync = () -> {
+            boolean nr = rG.isSelected();
+            boolean ny = geo && yG.isSelected();
+            boolean changed = nr != ls.rollGlobal || ny != ls.yawPitchGlobal;
+            String target = "roll " + (nr ? "global" : "local")
+                + (geo ? " + yaw/pitch " + (ny ? "global" : "local") : "");
+            apply.setText("Switch to " + target);
+            bake.setText("Bake shape to " + target + "…");
+            apply.setDisable(!changed || infl);
+            bake.setDisable(!changed || ls.reversed);
+        };
+        rL.setOnAction(e2 -> sync.run());
+        rG.setOnAction(e2 -> sync.run());
+        yL.setOnAction(e2 -> sync.run());
+        yG.setOnAction(e2 -> sync.run());
+        apply.setOnAction(e2 -> {
+            dlg.close();
+            setAxisFlags(k, rG.isSelected(),
+                geo ? yG.isSelected() : null);
+        });
+        bake.setOnAction(e2 -> {
+            dlg.close();
+            bakeAxesUi(k, rG.isSelected(),
+                geo ? yG.isSelected() : ls.yawPitchGlobal);
+        });
+        close.setOnAction(e2 -> dlg.close());
+        HBox buttons = new HBox(8, apply, bake, close);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        grid.add(buttons, 0, row, 2, 1);
+        sync.run();
+        dlg.setScene(new Scene(grid));
+        dlg.show();
+    }
+
     /** Toggle section k's cross-domain VIEW (v16.0): purely visual —
      *  the native lanes/elements stay put, the plot's axis flips and
      *  the strip warps onto it. Session state (DocState, not saved),
@@ -2866,7 +2910,12 @@ class GraphEditor extends Region {
             }
         });
         cg.selectedToggleProperty().addListener((o, was, sel) -> {
-            if (!vLock.isSelected()) {   // locked speed follows the fork
+            // changing the seam choice RE-LOCKS the speed (v16.4,
+            // user rule) — the padlock snaps back to tracking the
+            // new fork's implied value
+            if (vLock.isSelected()) {
+                vLock.setSelected(false);   // its listener refreshes
+            } else {
                 vField.setText(String.format(Locale.US, "%.2f",
                     cReal.isSelected() ? vReal : vCont));
             }

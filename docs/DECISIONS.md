@@ -3970,3 +3970,42 @@ the 42c probe story; Phase2Gate 253). Walkthrough #74. The user's
 truncated geo-to-force custom-speed report ("even after shift+B it
 seems that there…") is expected to be the two-sided detection bug —
 re-test with #74(b).
+
+## D110. v16.4: sub-step roll feed-forward (the bake residual closed),
+##       Orientation Settings dialog, badge two-click, dialog re-lock
+##       (user feedback round 2026-07-12, night)
+
+- **SUB-STEP FEED-FORWARD for global roll** (the user still saw a
+  converging offset on local<->global roll bakes; D109 had identified
+  the projection's step-cadence lag as the residual): Omega now
+  carries the BODY roll rate implied by the lane's bank rate,
+  p = phi' + psi'*sin(theta) (FVDIntegrator.rollTerm, shared with
+  GeoIntegrator.omegaFor; psi' reads off the U/R part of Omega — a
+  T-roll never moves T, so no circularity). The frame twists WITHIN
+  steps like a local-roll original and the post-step projection only
+  corrects O(dt^2). Result: the force roll-only bake residual fell
+  0.408 m -> 0.008 m (51x, gate 42c tightened to 0.05); the geo
+  3-lane bake stays 4 mm; local paths are op-for-op identical
+  (bitwise — 40a + Phase2Gate's 253 green). Felt is untouched by the
+  feed-forward (a T-term contributes to neither Omega.U nor Omega.R).
+- **ORIENTATION SETTINGS dialog** (user spec): the roll/yaw-pitch
+  radios and both bake actions condensed from six badge-menu items
+  into one "Orientation settings..." window — target radios plus
+  "Switch to <target>" (reinterpret; shape changes) and "Bake shape
+  to <target>..." (the convert engine keeps the track), both labels
+  tracking the radios LIVE. Influenced sections can BAKE (captures)
+  but not switch; reversed can switch but not bake; no-change
+  targets disable both.
+- **Badge two-click** (user rule "only able to press section
+  settings if section is highlighted"): clicking an INACTIVE
+  section's badge now only activates it; the menu opens on a click
+  while active.
+- **Add dialog: changing the seam fork RE-LOCKS the design speed**
+  (the padlock snaps back to tracking the new fork's implied value;
+  an unlocked custom value is deliberately dropped — picking a
+  different seam basis invalidates it).
+- (The user also clarified the earlier "remove 1s/10m" item meant
+  the Add dialog's domain radio labels — already done in v16.3.)
+
+Gates re-run green (DomainGate 19 with the tightened 42c;
+Phase2Gate 253). Walkthrough #75.

@@ -1002,6 +1002,25 @@
     refusal anywhere now explains itself on the stats bar. (e) the
     Add dialog's domain radios read just "Time"/"Distance".
 
+44. **v16.4 gates (DomainGate re-run; D110).** The sub-step roll
+    feed-forward rides the existing checks: 42c (force roll-only
+    bake) falls 0.408 → 0.008 m and its bound tightens to 0.05; the
+    geo bake stays 4 mm; local paths bitwise (40a + Phase2Gate's 253
+    green). All passed 2026-07-12 (night).
+
+75. v16.4 feel round (untested by the user yet): (a) re-test the
+    local↔global roll bake on your banked curve — the converging
+    offset should be gone (both directions, ~millimeters now).
+    (b) badge menu > "Orientation settings…": one window — flip the
+    radios and watch BOTH buttons relabel live ("Switch to …" /
+    "Bake shape to …"); Switch reshapes, Bake keeps the track; Close
+    changes nothing. On an influenced section only Bake is offered
+    (it captures); on a reversed one only Switch. (c) clicking an
+    INACTIVE section's badge now just activates it — click again
+    for the menu. (d) in the Add dialog, unlock the speed, type a
+    value, then flip Continue/Transition: the padlock re-locks and
+    shows the new fork's value.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

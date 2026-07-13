@@ -84,8 +84,12 @@ public final class GeoIntegrator {
             base = U.scale(Math.toRadians(kf.Gl()))
                 .add(R.scale(-Math.toRadians(kf.Gv())));
         }
-        return rollGlobal ? base
-            : base.add(T.scale(Math.toRadians(kf.rollRateDeg())));
+        // GLOBAL roll: the sub-step feed-forward body rate (v16.4,
+        // D110 — FVDIntegrator.rollTerm; the projection corrects the
+        // O(dt²) rest). Felt is untouched: a T-term contributes to
+        // neither Ω·U nor Ω·R.
+        return base.add(T.scale(
+            FVDIntegrator.rollTerm(kf, T, base, rollGlobal)));
     }
 
     private static Deriv deriv(State st, double t, List<FVDIntegrator.Keyframe> kfs,

@@ -133,12 +133,32 @@ public class FVDIntegrator {
 
         double omegaU = (G0 * (kf.Gv() - U.y())) / vSafe;
         double omegaR = (G0 * (kf.Gl() - R.y())) / vSafe;
-        // GLOBAL roll: the twist is the post-step projection's, not Ω's
-        Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU))
-                      .add(T.scale(rollGlobal ? 0
-                          : Math.toRadians(kf.rollRateDeg())));
+        Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU));
+        omega = omega.add(T.scale(
+            rollTerm(kf, T, omega, rollGlobal)));
 
         return new Deriv(T.scale(v), omega.cross(T), omega.cross(U));
+    }
+
+    /** The Ω roll term (rad/s). LOCAL: the lane verbatim (the
+     *  historic expression, bitwise). GLOBAL (v16.4, D110 — the
+     *  SUB-STEP feed-forward): the BODY roll rate implied by the
+     *  lane's bank rate, p = φ' + ψ'·sinθ, with ψ' read off the U/R
+     *  part of Ω (a T-roll never moves T — no circularity). The
+     *  frame then twists WITHIN steps like a local-roll original and
+     *  the post-step projection only corrects O(dt²) — without this
+     *  the felt solver read stale banks mid-step, the 0.2% shape
+     *  drift on roll-only bakes (the 42c floor). Vertical: 0 (the
+     *  projection holds off there anyway). */
+    static double rollTerm(Keyframe kf, Vec3 T, Vec3 omegaUR,
+                           boolean rollGlobal) {
+        double rate = Math.toRadians(kf.rollRateDeg());
+        if (!rollGlobal) return rate;
+        double horiz2 = T.x() * T.x() + T.z() * T.z();
+        if (horiz2 <= 1e-6) return 0;
+        Vec3 tp = omegaUR.cross(T);
+        double psp = (T.z() * tp.x() - T.x() * tp.z()) / horiz2;
+        return rate + psp * T.y();   // sinθ = T.y
     }
 
     private static State advance(State y, Deriv k, double h) {
@@ -247,9 +267,9 @@ public class FVDIntegrator {
 
         double omegaU = (G0 * (kf.Gv() - U.y())) / v;
         double omegaR = (G0 * (kf.Gl() - R.y())) / v;
-        Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU))
-                      .add(T.scale(rollGlobal ? 0
-                          : Math.toRadians(kf.rollRateDeg())));
+        Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU));
+        omega = omega.add(T.scale(
+            rollTerm(kf, T, omega, rollGlobal)));
 
         return new DDeriv(T.scale(v), omega.cross(T), omega.cross(U), v);
     }

@@ -715,8 +715,15 @@ SAME compiled shape as lanes meaning the other semantics (radios
 reinterpret, bakes preserve — ANALYTIC world rates since v16.3
 [D109, the D99 lesson again: the v16.2 angle differencing
 low-passed corners]: geo 3-lane bake 4 mm/106 m; force roll-only
-bakes keep ~0.2% from the projection's step cadence — an
-integrator artifact, not extraction). B/Shift+B match the REAL
+bakes 8 mm since v16.4 [D110, was 0.408 m]: Ω carries the SUB-STEP
+feed-forward body roll p = φ' + ψ'·sinθ — FVDIntegrator.rollTerm,
+shared with omegaFor — so the frame twists within steps and the
+projection only corrects O(dt²); local paths op-identical). The
+axis radios + both bakes live in ONE "Orientation settings…"
+dialog since v16.4 (Switch = reinterpret, Bake = keep shape,
+labels tracking the radios live; influenced bakes-only, reversed
+switches-only). Badges are TWO-CLICK (v16.4): an inactive
+section's badge first activates, the menu opens while active. B/Shift+B match the REAL
 graphs EVERYWHERE (v16.2, completed v16.3 D109): the split test is
 TWO-SIDED — either side's design/true split at the seam routes to
 TRUE-array targets converted by the κ identity into OUR design
