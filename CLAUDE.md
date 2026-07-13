@@ -720,9 +720,10 @@ feed-forward body roll p = φ' + ψ'·sinθ — FVDIntegrator.rollTerm,
 shared with omegaFor — so the frame twists within steps and the
 projection only corrects O(dt²); local paths op-identical). The
 axis radios + both bakes live in ONE "Orientation settings…"
-dialog since v16.4 (Switch = reinterpret, Bake = keep shape,
-labels tracking the radios live; influenced bakes-only, reversed
-switches-only). Badges are TWO-CLICK (v16.4): an inactive
+dialog since v16.4 ("Switch to This Orientation (same graphs,
+change shape)" / "Bake This Orientation (convert graphs, keep
+shape)" — fixed labels per user, enabled when the radios differ
+from current; influenced bakes-only, reversed switches-only). Badges are TWO-CLICK (v16.4): an inactive
 section's badge first activates, the menu opens while active. B/Shift+B match the REAL
 graphs EVERYWHERE (v16.2, completed v16.3 D109): the split test is
 TWO-SIDED — either side's design/true split at the seam routes to

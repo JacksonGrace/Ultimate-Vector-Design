@@ -2623,14 +2623,14 @@ class GraphEditor extends Region {
         Button bake = new Button();
         Button close = new Button("Close");
         close.setCancelButton(true);
+        // fixed labels (v16.4 final, user wording); the radios pick
+        // the target, the buttons just enable when it differs
+        apply.setText("Switch to This Orientation (same graphs, change shape)");
+        bake.setText("Bake This Orientation (convert graphs, keep shape)");
         Runnable sync = () -> {
             boolean nr = rG.isSelected();
             boolean ny = geo && yG.isSelected();
             boolean changed = nr != ls.rollGlobal || ny != ls.yawPitchGlobal;
-            String target = "roll " + (nr ? "global" : "local")
-                + (geo ? " + yaw/pitch " + (ny ? "global" : "local") : "");
-            apply.setText("Switch to " + target);
-            bake.setText("Bake shape to " + target + "…");
             apply.setDisable(!changed || infl);
             bake.setDisable(!changed || ls.reversed);
         };
