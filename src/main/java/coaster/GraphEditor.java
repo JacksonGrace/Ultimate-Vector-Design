@@ -2809,8 +2809,8 @@ class GraphEditor extends Region {
         grid.addRow(row++, new Label("Type"), new HBox(10, mForce, mGeo));
 
         ToggleGroup dg = new ToggleGroup();
-        RadioButton dTime = new RadioButton("Time (1 s)");
-        RadioButton dDist = new RadioButton("Distance (10 m)");
+        RadioButton dTime = new RadioButton("Time");
+        RadioButton dDist = new RadioButton("Distance");
         dTime.setToggleGroup(dg);
         dDist.setToggleGroup(dg);
         (prev != null && prev.domain() == Section.Domain.DISTANCE
@@ -2952,6 +2952,25 @@ class GraphEditor extends Region {
         } else {
             v0h = tru ? app.trueFelt[endIdx][0] : end != null ? end.Gv() : 1;
             v1h = tru ? app.trueFelt[endIdx][1] : end != null ? end.Gl() : 0;
+        }
+        // κ-MATCHED hold values (v16.3, user spec): a CUSTOM design
+        // speed re-expresses the held end state at that speed so the
+        // REAL graphs line up with the previous section from the
+        // start — rates scale by v_d/v_t, felt targets by (v_d/v_t)²
+        // about the gravity components (the same identity B uses).
+        // B/Shift+B afterwards only re-aims handles, never positions.
+        double rH = vEnd / Math.max(0.1, vAuto);
+        if (Math.abs(rH - 1) > 1e-9) {
+            if (geo) {
+                v0h *= rH;
+                v1h *= rH;
+            } else {
+                double uy = end != null ? end.U().y() : 1;
+                double ry = end != null ? end.R().y() : 0;
+                v0h = (v0h - uy) * rH * rH + uy;
+                v1h = (v1h - ry) * rH * rH + ry;
+            }
+            rollEnd *= rH;
         }
         List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(
             v0h, v1h, rollEnd, dist ? Coaster.CONT_HOLD_DIST : 1);
@@ -5170,64 +5189,38 @@ class GraphEditor extends Region {
     void matchBoundary(int idx) {
         List<BezierBaker.Node> lane = active();
         boolean infl = activeInfl() != null;
-        if (!infl && refuseGlobalMatch()) return;
         // on the INFLUENCE surface the edge "boundary" is simply NO
         // influence (v15.5, D102) — no neighbor needed, no seam probe
         boolean start = idx == 0 && lane.size() >= 2
             && (infl || hasNeighborBefore());
         boolean end = idx == lane.size() - 1 && idx > 0
             && (infl || hasNeighborAfter());
-        if (!start && !end) return;
+        if (!start && !end) {
+            // B never fails silently (v16.3, user rule)
+            app.statsLabel.setText("B matches a section-EDGE node to its "
+                + "boundary — select a lane's FIRST or LAST node, with a "
+                + "neighboring section on that side.");
+            return;
+        }
         refreshOffset();
         if (!infl) {
-            if (end && rightRealAnchored()) {
-                // matching THIS side would chase the next section's real
-                // anchor in a loop (v15.2, D101 — user rule: only the
-                // RIGHT side of a conflicted→real seam matches)
-                app.statsLabel.setText("This seam matches from the other "
-                    + "side — B the NEXT section's first node.");
+            // (the v15.2 real-anchored refusal is GONE, v16.3: both
+            // sides of every seam real-match now; the left side may
+            // shift the seam and re-press to converge — documented)
+            matchHint = null;
+            if (boundaryState(start ? activeSection - 1 : activeSection + 1,
+                    !start, activeLane) == null) {
+                app.statsLabel.setText(matchHint != null ? matchHint
+                    : "Nothing to match yet — no compiled curves at "
+                    + "this boundary.");
                 return;
             }
-            if (boundaryState(start ? activeSection - 1 : activeSection + 1,
-                    !start, activeLane) == null) return;
         }
         pushUndoSnapshot();
         if (!infl) refreezeSeamSpeed(start);
         applyBoundaryMatch(activeLane, start);
         redraw();
         app.rebuildTrack();
-    }
-
-    /** B/Shift+B on a GLOBAL-axis section refuses with a hint (v16.1,
-     *  D107): its lane values are world rates / bank targets, not the
-     *  seam's body-rate quantities the matcher computes. */
-    private boolean refuseGlobalMatch() {
-        List<Section> secs = sections();
-        if (activeSection < secs.size()
-                && secs.get(activeSection) instanceof LaneSection ls
-                && ls.globalAxes()) {
-            app.statsLabel.setText("Boundary matching needs local-axis "
-                + "lanes — this section authors global rates.");
-            return true;
-        }
-        return false;
-    }
-
-    /** Is the NEXT section anchored to the TRUE seam speed while this
-     *  section's design end has drifted off it (v15.2, D101 — the
-     *  transition-to-real state)? Matching toward it from this side
-     *  would feedback-chase. */
-    private boolean rightRealAnchored() {
-        if (activeSection + 1 >= sections().size()) return false;
-        TrackCompiler.Span sp = spanOf(activeSection);
-        if (sp == null || !trueArraysReady()) return false;
-        int e = Math.min(sp.i1(), app.lastSamples.size() - 1);
-        if (e >= app.trueV.length) return false;
-        double vDes = app.lastSamples.get(e).v();
-        double vTru = app.trueV[e];
-        double nx = sections().get(activeSection + 1).vDesign();
-        return Math.abs(vTru - vDes) > DRIFT_EPS
-            && Math.abs(nx - vTru) < Math.abs(nx - vDes);
     }
 
     /** Boundary matching first makes the seam's DESIGN SPEEDS agree
@@ -5290,25 +5283,34 @@ class GraphEditor extends Region {
      *  (v10.4 user spec), as ONE undo step. */
     void matchBoundaryAll() {
         List<BezierBaker.Node> lane = active();
-        if (selIdx < 0) return;
+        if (selIdx < 0) {
+            app.statsLabel.setText("Shift+B needs a selected section-EDGE "
+                + "node (a lane's first or last).");
+            return;
+        }
         boolean infl = activeInfl() != null;
-        if (!infl && refuseGlobalMatch()) return;
         boolean start = selIdx == 0
             && (infl || hasNeighborBefore());
         boolean end = selIdx == active().size() - 1 && selIdx > 0
             && (infl || hasNeighborAfter());
-        if (!start && !end) return;
+        if (!start && !end) {
+            app.statsLabel.setText("Shift+B matches section-EDGE nodes to "
+                + "their boundary — select a lane's FIRST or LAST node, "
+                + "with a neighboring section on that side.");
+            return;
+        }
         refreshOffset();
         if (!infl) {
-            if (end && rightRealAnchored()) {
-                app.statsLabel.setText("This seam matches from the other "
-                    + "side — Shift+B the NEXT section's first node.");
-                return;
-            }
             // nullity is uniform across lanes (it only means "no
             // compiled data yet" at a cross-mode boundary) — probe once
+            matchHint = null;
             if (boundaryState(start ? activeSection - 1 : activeSection + 1,
-                    !start, 0) == null) return;
+                    !start, 0) == null) {
+                app.statsLabel.setText(matchHint != null ? matchHint
+                    : "Nothing to match yet — no compiled curves at "
+                    + "this boundary.");
+                return;
+            }
         }
         pushUndoSnapshot();
         if (!infl) refreezeSeamSpeed(start);
@@ -5389,22 +5391,45 @@ class GraphEditor extends Region {
             if (seamSp0 != null) {
                 int ip = Math.min(seamSp0.i1(), app.lastSamples.size() - 1);
                 if (ip < app.trueV.length) {
-                    double vDes = app.lastSamples.get(ip).v();
+                    double vDesSeam = app.lastSamples.get(ip).v();
                     double vTru = Math.max(0.1, app.trueV[ip]);
-                    real = Math.abs(vTru - vDes) > DRIFT_EPS;
-                    realScale = vTru / Math.max(0.1, vDes);
-                    double vOurs = atStart ? vDes   // our design END
-                        : Math.max(0.5,
+                    // the seam is REAL-matched when EITHER side is
+                    // split there (v16.3 — the v16.2 test read only
+                    // the sampled side, so B from the UNCONFLICTED
+                    // side of a seam matched the conflicted
+                    // neighbor's DESIGN lanes, the user's report):
+                    // our side = the section whose node moves;
+                    // their side = the neighbor's design speed.
+                    double vOurs, vTheirs;
+                    if (atStart) {
+                        vOurs = vDesSeam;   // our design END
+                        Section nx = activeSection + 1 < secs.size()
+                            ? secs.get(activeSection + 1) : null;
+                        vTheirs = nx != null
+                            ? Math.max(0.5, nx.vDesign()) : vDesSeam;
+                    } else {
+                        vOurs = Math.max(0.5,
                             secs.get(activeSection).vDesign());
+                        vTheirs = vDesSeam;   // prev design end
+                    }
+                    real = Math.abs(vTru - vOurs) > DRIFT_EPS
+                        || Math.abs(vTru - vTheirs) > DRIFT_EPS;
+                    realScale = vTru / Math.max(0.1, vTheirs);
                     rReal = vOurs / vTru;
                 }
             }
         }
+        // GLOBAL-axis lane on OUR side (v16.3 — B works there now):
+        // targets come from the WORLD-rate matcher below, never the
+        // authored/analytic body-rate paths
+        LaneSection actLs = secs.get(activeSection) instanceof LaneSection al
+            ? al : null;
+        boolean wg = actLs != null && laneWorld(actLs, laneIdx);
         // a REVERSED neighbor's authored lanes run against the chain
         // (values at the wrong end, roll/Gl signs flipped) — its
         // boundary state comes from the compiled curves instead (D67);
         // a straight/curve neighbor has no lanes at all — likewise
-        if (!real && nbSec instanceof LaneSection nb
+        if (!real && !wg && nbSec instanceof LaneSection nb
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
                 && !nb.reversed && !nb.influenced()
                 // GLOBAL-axis lanes are not body rates (v16.1) —
@@ -5446,7 +5471,7 @@ class GraphEditor extends Region {
         // ~0.1 °/s per Shift+B round-trip without ever settling.
         // Analytic targets are exact AT the fixed point, so a re-press
         // changes nothing and the seam stays put.
-        if (!real && laneIdx < 2 && nbSec instanceof LaneSection nbl
+        if (!real && !wg && laneIdx < 2 && nbSec instanceof LaneSection nbl
                 && !nbl.reversed
                 // an influenced neighbor's authored lanes don't
                 // describe its actual curves — sampled path (v15.0);
@@ -5484,6 +5509,32 @@ class GraphEditor extends Region {
             i0 = Math.max(i1 - 5, 0);
         }
         int at = atStart ? i0 : i1;
+        if (wg) {
+            // WORLD-RATE matching (v16.3 — closes the global-axis /
+            // global-global seam gap, user request): the neighbor's
+            // world-angle rates, ANALYTIC per sample off its TRUE
+            // body rates (Coaster.worldRates — no differencing bias),
+            // fitted and extrapolated to the seam like the body-rate
+            // path, then scaled into OUR design lane by the same
+            // rReal/realScale factors. Vertical seams refuse (no
+            // defined heading/bank), with the reason on the stats bar.
+            double w0 = worldLaneAt(i0, laneIdx, actLs);
+            double w1 = worldLaneAt(i1, laneIdx, actLs);
+            double wAt = worldLaneAt(at, laneIdx, actLs);
+            if (Double.isNaN(w0) || Double.isNaN(w1) || Double.isNaN(wAt)) {
+                matchHint = "No defined heading/bank on vertical track — "
+                    + "global-axis matching can't read this seam.";
+                return null;
+            }
+            double spanW = app.resultRates[i1][0] - app.resultRates[i0][0];
+            double slopeW = spanW < 1e-9 ? 0 : (w1 - w0) / spanW;
+            double valW = wAt - slopeW * (app.resultRates[at][0] - tB);
+            valW *= rReal;
+            slopeW *= realScale * rReal * rReal;
+            slopeW = domSlope(slopeW, false, activeDistNative(),
+                seamDesignV(atStart));
+            return new double[]{ valW, slopeW };
+        }
         if (!activeGeo() && laneIdx < 2) {
             return forceTargetFromRates(laneIdx, atStart, tB, i0, i1, at,
                 real, realScale, rReal);
@@ -5710,6 +5761,29 @@ class GraphEditor extends Region {
         return b instanceof LaneSection
             && (a instanceof GeoSection) == (b instanceof GeoSection);
     }
+
+    /** Does lane laneIdx of a section author WORLD rates (v16.3)?
+     *  Lane 2 follows rollGlobal; lanes 0/1 follow yawPitchGlobal on
+     *  geo sections (a force section's Gv/Gl are always felt). */
+    private static boolean laneWorld(LaneSection ls, int laneIdx) {
+        return laneIdx == 2 ? ls.rollGlobal
+            : ls instanceof GeoSection && ls.yawPitchGlobal;
+    }
+
+    /** Lane value at compiled sample i in the ACTIVE section's axis
+     *  semantics, off the TRUE arrays: analytic world-angle rates
+     *  where the lane is global (NaN on vertical track), trueAt
+     *  otherwise. */
+    private double worldLaneAt(int i, int laneIdx, LaneSection act) {
+        if (act == null || !laneWorld(act, laneIdx)) return trueAt(i, laneIdx);
+        double[] wr = Coaster.worldRates(app.lastSamples.get(i),
+            app.trueRates[i][1], app.trueRates[i][2], app.trueRates[i][3]);
+        return wr[laneIdx];
+    }
+
+    /** Why the last boundaryState probe refused, for the stats bar
+     *  (v16.3 — B never fails silently); null = no specific reason. */
+    private String matchHint;
 
     /** Convert a boundary SLOPE between authoring domains at the seam
      *  design speed (v16.0, D103 — the chain rule): per-meter × v =

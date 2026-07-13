@@ -3899,3 +3899,74 @@ influence (D104).
 
 Gated #42 (5 checks) on top of #40/#41; the full Phase2Gate suite
 re-run green. Walkthrough #73.
+
+## D109. v16.3: analytic world rates (the D99 lesson, again), B/Shift+B
+##       completed — two-sided real detection, world-rate matcher for
+##       global lanes, never-silent refusals; kappa-matched custom-speed
+##       adds (user feedback round 2026-07-12, late)
+
+- **THE BAKE BIAS was the D99 bug's twin**, as the user suspected
+  ("I remember this happened before"): v16.2's global-rate extraction
+  finite-differenced heading/elevation/bank angles over +-1 sample —
+  the same low-pass that once made converts "converge to a slightly
+  different spot". Now ANALYTIC (Coaster.worldRates, shared by bakes
+  AND the matcher): Omega is known per sample (kappa-identity body
+  pitch/yaw + measured roll), and the Euler-rate relations give
+  theta' = (Omega x T).y/cos(theta), psi' from the heading quotient,
+  and phi' = Omega.T MINUS psi'*sin(theta) — the transport sign is
+  FLIPPED from the aircraft convention by our up-Y world; the wrong
+  (+) sign sent the 42c force-roll bake 121 m off and was pinned down
+  by probing phi' against d(bank)/dt directly (matches to 2 decimals
+  everywhere; the probe is the ground truth, not the textbook).
+  NEAR-VERTICAL HOLD-OFF: past ~81 deg elevation the exact rates
+  amplify by 1/cos^2 and a capped spike in a BANK-RATE lane
+  INTEGRATES into a garbage bank target downstream — world rates
+  read NaN there; bakes hold the angle (rate 0, matching the
+  integrator's own vertical hold-off), matchers refuse with the
+  reason. Results: geo 3-lane bake 4 mm over 106 m (was 6);
+  force roll-only bake 0.408 m — IDENTICAL to the differencing
+  version, so that residual is NOT extraction: it is the
+  step-boundary projection lag (the bank projection applies between
+  dt steps while a local-roll original twists within them), an
+  integrator-fidelity artifact of the same class as accepted
+  march/septic differences. Documented; shrink-by-sub-step is a
+  possible future refinement if it matters in feel.
+- **B/Shift+B detection is TWO-SIDED now** (the user's report: B
+  from the UNCONFLICTED side of a seam matched the conflicted
+  neighbor's DESIGN lanes): the real test used to read only the
+  sampled side's split; it now asks whether EITHER side is split at
+  the seam — our side = the section whose node moves (its design
+  edge speed vs true), their side = the neighbor's design speed vs
+  true. Either split routes to the TRUE arrays with rReal =
+  v_design_ours/v_true (1 for a clean us). The v15.2 real-anchored
+  REFUSAL is gone — both directions match; the left side may shift
+  the seam slightly and re-press to converge (the documented mild
+  iteration; the user predicted "it'll change but should converge").
+- **WORLD-RATE MATCHER** (user request — the global-global gap): B
+  works ON global-axis lanes now. Per-lane (laneWorld: lane 2
+  follows rollGlobal, lanes 0/1 follow yawPitchGlobal on geo): the
+  neighbor's world-angle rates come analytic per sample off its
+  TRUE body rates, fitted/extrapolated to the seam like the
+  body-rate path, scaled by the same rReal/realScale factors.
+  Every seam combination now has a working B side EXCEPT vertical
+  seams under global axes (no defined heading/bank — refused with
+  the reason).
+- **B NEVER FAILS SILENTLY** (user rule): every refusal posts a
+  stats-bar explanation — non-edge node selected, no neighbor on
+  that side, no compiled curves yet, vertical global seam
+  (boundaryState plants matchHint; callers fall back to a generic
+  line).
+- **Kappa-matched custom-speed adds**: a section added with an
+  edited (unlocked) design speed after any section now scales its
+  held end state onto that speed — rates x v_d/v_t, felt targets x
+  (v_d/v_t)^2 about the gravity components — so its REAL graphs
+  line up with the previous section's from the moment it appears;
+  B/Shift+B afterwards only re-aims handles (the user's
+  clarification), never moves positions. The dialog's domain radios
+  dropped the "(1 s)/(10 m)" suffixes.
+
+Gates re-run green (DomainGate 19 checks incl. the tightened 42a +
+the 42c probe story; Phase2Gate 253). Walkthrough #74. The user's
+truncated geo-to-force custom-speed report ("even after shift+B it
+seems that there…") is expected to be the two-sided detection bug —
+re-test with #74(b).

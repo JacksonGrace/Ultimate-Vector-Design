@@ -973,6 +973,34 @@
     (capped, documented). (f) "Make graphs real" now works right
     after another conflicted section — it resolves only itself; the
     neighbors keep their ≠v.
+    [(e)'s global-B limits are GONE in v16.3 — see #74.]
+
+43. **v16.3 gates (DomainGate re-run; D109).** The analytic
+    world-rate rework rides the existing checks: 42a geo bake
+    tightens 6→4 mm; 42c's probe pinned the φ' transport SIGN
+    (+121 m wrong-sign shape error → 0.408 m, now the documented
+    step-boundary projection lag, identical to the old differencing
+    floor); 42e still finite through a vertical loop (world rates
+    hold off past ~81° elevation instead of integrating a capped
+    spike into the bank target). All 19 + Phase2Gate's 253 green
+    2026-07-12 (late).
+
+74. v16.3 feel round (untested by the user yet): (a) re-test the
+    banked angled curve bake — geo bakes should sit within
+    millimeters now; a force section's roll-only bake keeps a small
+    (~0.2%) offset from the projection's step cadence — say if that
+    still reads as "a different spot". (b) add a custom-speed
+    section (unlocked padlock) after a clean section: its REAL
+    curves line up immediately (same height); B/Shift+B then only
+    re-aim handles. Re-run your geo→force custom-speed test — the
+    two-sided detection fix should close what you saw. (c) Shift+B
+    from the UNCONFLICTED side of a conflicted seam now matches the
+    neighbor's REAL curves (re-press converges); the conflicted
+    side keeps working as before. (d) B works ON global-axis
+    sections now (world-rate targets) — try a global|global seam
+    both directions; only a vertical seam refuses, and every
+    refusal anywhere now explains itself on the stats bar. (e) the
+    Add dialog's domain radios read just "Time"/"Distance".
 
 ## The historical headless harness (context, not a prescription)
 

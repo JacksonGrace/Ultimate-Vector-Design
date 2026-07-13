@@ -699,21 +699,38 @@ Roll local|global for both lane modes (global = the roll lane
 integrates a bank-vs-horizon target; rate 0 spirals level through
 pitched turns) and Yaw/pitch local|global for geo
 (heading/elevation rates about the world axes). Global-axis lanes
-aren't body rates: B/Shift+B refuse with a hint, inactive strips
-draw derived, influence refuses, '+' continuations carry the
-flags. "Bake roll / yaw-pitch to global|local (keep shape)…"
+aren't body rates: inactive strips draw derived, influence
+refuses, '+' continuations carry the flags — but B/Shift+B WORK on
+them since v16.3 (D109): the WORLD-RATE matcher reads the
+neighbor's heading/elevation/bank rates analytically
+(Coaster.worldRates — Ω per sample via the κ identity, Euler-rate
+relations with φ' = Ω·T − ψ'·sinθ; the transport sign is FLIPPED
+from the aircraft convention by the up-Y world, probed against
+d(bank)/dt; NaN past ~81° elevation — a capped bank-rate spike
+would INTEGRATE into a garbage target, the 42c 121 m lesson), so
+every seam combination incl. global|global matches except vertical
+seams. "Bake roll / yaw-pitch to global|local (keep shape)…"
 (v16.2, D108 — Coaster.bakeAxes): the convert engine re-fits the
 SAME compiled shape as lanes meaning the other semantics (radios
-reinterpret, bakes preserve — 6 mm on the gated geo fixture;
-world-angle rates measured/unwrapped per arc, capped 3600 °/s so
-vertical stretches stay finite). B/Shift+B match the REAL graphs
-EVERYWHERE since v16.2 (D108): any seam still split after the
-re-freeze attempt takes TRUE-array targets converted by the κ
-identity into OUR design values (rate ×v_d/v_t, slope one more
-factor for the clock) — and refreezeSeamSpeed SKIPS vPinned
-sections (deliberate conflicts are matched around, never closed).
-Make-real works right of another conflict (only a direct bridge
-blocks). ZOOM SURVIVES every axis flip (v16.1, D106): a manual
+reinterpret, bakes preserve — ANALYTIC world rates since v16.3
+[D109, the D99 lesson again: the v16.2 angle differencing
+low-passed corners]: geo 3-lane bake 4 mm/106 m; force roll-only
+bakes keep ~0.2% from the projection's step cadence — an
+integrator artifact, not extraction). B/Shift+B match the REAL
+graphs EVERYWHERE (v16.2, completed v16.3 D109): the split test is
+TWO-SIDED — either side's design/true split at the seam routes to
+TRUE-array targets converted by the κ identity into OUR design
+values (rate ×v_d/v_t, slope one more factor for the clock); the
+v15.2 real-anchored refusal is GONE (the unconflicted side matches
+the conflicted neighbor's real curves, re-press converges);
+refreezeSeamSpeed SKIPS vPinned sections (deliberate conflicts are
+matched around, never closed); every refusal posts a stats-bar
+reason (matchHint — B never fails silently). A custom-speed ⊕ add
+arrives with κ-MATCHED hold values (rates ×v_d/v_t, felt ×(v_d/
+v_t)² about gravity), so its real graphs line up at creation and B
+only re-aims handles. Make-real works right of another conflict
+(only a direct bridge blocks). ZOOM SURVIVES every axis flip
+(v16.1, D106): a manual
 window's ends map through the global t↔s samples (mapGlobalAxis)
 — activation changes, view toggles and domain conversions alike.
 Distance ergonomics: the element-length step (default 1 m) is THE

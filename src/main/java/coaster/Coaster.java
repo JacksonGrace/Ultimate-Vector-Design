@@ -1126,54 +1126,27 @@ public class Coaster {
                 val[i][2] = rate[i][2];
             }
         }
-        // GLOBAL-axis target lanes (v16.2): replace the body-rate
-        // columns with measured world-angle rates per arc, scaled
-        // onto the target energy profile. Angles unwrap cumulatively;
-        // vertical samples hold the previous value (no defined
-        // heading/bank — the integrator's projection holds off there
-        // too), and rates cap at GLOBAL_RATE_CAP.
+        // GLOBAL-axis target lanes: ANALYTIC world-angle rates since
+        // v16.3 (the D99 lesson re-applied — the v16.2 finite
+        // differences of heading/elevation/bank low-passed the rate
+        // corners exactly like the old frame differencing, the
+        // user's "converges to a slightly different spot"): Ω is
+        // known per sample (the κ-identity body pitch/yaw + measured
+        // roll, already in rate[] at the target profile), and the
+        // Euler-rate relations give the world rates exactly —
+        //   θ' = (Ω×T)·ŷ / cosθ,   ψ' = (T.z·T'x − T.x·T'z)/horiz²,
+        //   φ' = Ω·T + ψ'·sinθ.
+        // Vertical samples (cosθ → 0) have no heading/bank: capped.
         if (toRollG || (toGeo && toYpG)) {
-            double[] head = new double[n];
-            double[] elev = new double[n];
-            double[] bank = new double[n];
             for (int i = 0; i < n; i++) {
-                Vec3 T = s.get(i).T();
-                elev[i] = Math.asin(Math.max(-1, Math.min(1, T.y())));
-                double h2 = 1 - T.y() * T.y();
-                double hPrev = i > 0 ? head[i - 1] : 0;
-                double h = h2 > 1e-6 ? Math.atan2(-T.z(), T.x()) : hPrev;
-                while (h - hPrev > Math.PI) h -= 2 * Math.PI;
-                while (h - hPrev < -Math.PI) h += 2 * Math.PI;
-                head[i] = h;
-                double bPrev = i > 0 ? bank[i - 1] : 0;
-                double b = FVDIntegrator.bankOfTU(T, s.get(i).U());
-                if (Double.isNaN(b)) b = bPrev;
-                while (b - bPrev > Math.PI) b -= 2 * Math.PI;
-                while (b - bPrev < -Math.PI) b += 2 * Math.PI;
-                bank[i] = b;
-            }
-            for (int i = 0; i < n; i++) {
-                int a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
-                double ds = s.get(b).s() - s.get(a).s();
-                if (ds < 1e-9) {
-                    if (toGeo && toYpG) {
-                        val[i][0] = i > 0 ? val[i - 1][0] : 0;
-                        val[i][1] = i > 0 ? val[i - 1][1] : 0;
-                    }
-                    if (toRollG) val[i][2] = i > 0 ? val[i - 1][2] : 0;
-                    continue;
-                }
-                double vG = vGs[i];
+                FVDIntegrator.Sample sm = s.get(i);
+                double[] wr = worldRates(sm,
+                    rate[i][0], rate[i][1], rate[i][2]);
                 if (toGeo && toYpG) {
-                    val[i][0] = capRate(Math.toDegrees(
-                        (elev[b] - elev[a]) / ds) * vG);
-                    val[i][1] = capRate(Math.toDegrees(
-                        (head[b] - head[a]) / ds) * vG);
+                    val[i][0] = capRate(wr[0]);
+                    val[i][1] = capRate(wr[1]);
                 }
-                if (toRollG) {
-                    val[i][2] = capRate(Math.toDegrees(
-                        (bank[b] - bank[a]) / ds) * vG);
-                }
+                if (toRollG) val[i][2] = capRate(wr[2]);
             }
         }
         // fit axis per target domain (v16.1, D104): TIME = the
@@ -1217,7 +1190,45 @@ public class Coaster {
     }
 
     private static double capRate(double r) {
+        if (Double.isNaN(r)) return 0;
         return Math.max(-GLOBAL_RATE_CAP, Math.min(GLOBAL_RATE_CAP, r));
+    }
+
+    /** WORLD-angle rates {elevation', heading', bank'} (deg/s) at a
+     *  sample, ANALYTIC from its body rates (deg/s) — the Euler-rate
+     *  relations the global-axis lanes author in (v16.3, D109):
+     *  Ω = yaw·U − pitch·R + roll·T; θ' = (Ω×T)·ŷ/cosθ; ψ' from the
+     *  atan2(−T.z, T.x) quotient; φ' = Ω·T − ψ'·sinθ (the transport
+     *  term is exactly why local roll 0 drifts bank through pitched
+     *  turns; MINUS — our up-Y world flips the aircraft-convention
+     *  sign, probed numerically against d(bank)/dt to 2 decimals).
+     *  Vertical track: heading'/bank' come back NaN (no
+     *  defined heading or bank there — callers cap or refuse). Shared
+     *  by the bake extraction and the editor's world-rate matcher. */
+    static double[] worldRates(FVDIntegrator.Sample sm, double pitchDeg,
+                               double yawDeg, double rollDeg) {
+        Vec3 T = sm.T(), U = sm.U(), R = sm.R();
+        Vec3 om = U.scale(Math.toRadians(yawDeg))
+            .add(R.scale(-Math.toRadians(pitchDeg)))
+            .add(T.scale(Math.toRadians(rollDeg)));
+        Vec3 tp = om.cross(T);
+        double horiz2 = T.x() * T.x() + T.z() * T.z();
+        double cosTh = Math.sqrt(Math.max(horiz2, 0));
+        // NEAR-VERTICAL HOLD-OFF (v16.3, the 42c lesson): the exact
+        // ψ'/φ' amplify by 1/cos²θ toward vertical, and a capped spike
+        // in a BANK-RATE lane integrates into a garbage bank target
+        // downstream of the loop (measured: 121 m of track error).
+        // Past ~81° elevation the rates read NaN — bakes hold the
+        // angle (rate 0, matching the integrator's own vertical
+        // hold-off), matchers refuse with the reason.
+        boolean ok = cosTh > 0.15;
+        double thp = ok ? tp.y() / cosTh : Double.NaN;
+        double psp = ok
+            ? (T.z() * tp.x() - T.x() * tp.z()) / horiz2 : Double.NaN;
+        double php = ok ? om.dot(T) - psp * T.y()   // sinθ = T.y
+                        : Double.NaN;
+        return new double[]{ Math.toDegrees(thp), Math.toDegrees(psp),
+            Math.toDegrees(php) };
     }
 
     /** BAKE a section's shape into the other AXIS semantics (v16.2 —
