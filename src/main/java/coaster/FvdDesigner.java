@@ -215,7 +215,8 @@ public class FvdDesigner extends Application {
                     List<List<BezierBaker.Node>> dlanes,
                     double vAuthored, boolean editInfl,
                     boolean dist, boolean viewOther,
-                    boolean rollG, boolean ypG) {}
+                    boolean rollG, boolean ypG,
+                    boolean inflRollG, boolean inflYpG) {}
 
     /** Deep copy of a 3-lane node-list set (null-safe). */
     private static List<List<BezierBaker.Node>> copyLanes(
@@ -252,7 +253,7 @@ public class FvdDesigner extends Application {
                     secs.add(new SecState(null, null, bs.vDesign, 3,
                         bs.reversed, false, bs.copy(),
                         null, Double.NaN, false, false, false,
-                        false, false));
+                        false, false, false, false));
                     continue;
                 }
                 if (s instanceof StraightCurveSection sc) {
@@ -261,7 +262,8 @@ public class FvdDesigner extends Application {
                     for (StraightCurveSection.Element e : sc.elements) els.add(e.copy());
                     secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed,
                         sc.vPinned, null, null, Double.NaN, false,
-                        true, sc.viewOtherDomain, false, false));
+                        true, sc.viewOtherDomain, false, false,
+                        false, false));
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
@@ -270,7 +272,8 @@ public class FvdDesigner extends Application {
                     fs.vPinned, null,
                     copyLanes(fs.deltaLanes), fs.vAuthored, fs.editInfluence,
                     fs.domain == Section.Domain.DISTANCE, fs.viewOtherDomain,
-                    fs.rollGlobal, fs.yawPitchGlobal));
+                    fs.rollGlobal, fs.yawPitchGlobal,
+                    fs.inflRollGlobal, fs.inflYawPitchGlobal));
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
@@ -315,6 +318,8 @@ public class FvdDesigner extends Application {
                         ls.deltaLanes = st.dlanes();
                         ls.vAuthored = st.vAuthored();
                         ls.editInfluence = st.editInfl();
+                        ls.inflRollGlobal = st.inflRollG();
+                        ls.inflYawPitchGlobal = st.inflYpG();
                     }
                 } else if (sec instanceof StraightCurveSection scv) {
                     scv.viewOtherDomain = st.viewOther();

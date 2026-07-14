@@ -1021,6 +1021,53 @@
     value, then flip Continue/Transition: the padlock re-locks and
     shows the new fork's value.
 
+45. **v16.5 gates (DomainGate extension; D111-D112).** All passed
+    2026-07-14: AREA-MATCHED FITS (D111) ride the whole suite — 40d
+    re-baselined ("area-matched refit: round trips at cm scale",
+    coarse 3.47 → 0.019 m, fine 0.24 → 0.27; residuals are no longer
+    density-monotone since the matcher, not spacing, sets the floor;
+    the old 0.02 s "fine" leg now takes the documented sub-grid
+    skip), 40l end dev 0.065 m, 42a-c bake residuals hold 4-7 mm,
+    and the probe matrix (scratch ConvEndProbe) reads: uniform 0.1 s
+    force→geo 0.617→0.019 m, force→force 0.824→0.017; uniform 0.05 s
+    0.0095→0.0025 / 0.017→0.0045; DISTANCE targets 1.6-7.6 mm;
+    geo-source fits 0.2-1.0 mm; adaptive force-source rows keep a
+    ~0.1-0.2 m through-the-solution floor (documented, D111 — fine
+    uniform is the max-fidelity setting there). INFLUENCE ORIENTATION
+    (D112): (45a) influence entry + discard on a GLOBAL-ROLL force
+    section are bitwise, defaults mirror the roll choice; (45b) the
+    zero-delta two-pass at a hand-split speed pair keeps the
+    global-roll shape to 0.078 m / 83 m (the D110 projection-cadence
+    class; the UI never splits the pair); (45c) a +10°/s heading
+    delta on a 48° climb turns EXACTLY 60.00° under global influence
+    axes vs 39.75° local — the cos(elevation) contrast; (45d) FVDD3
+    round trip byte-identical with the `infl` flags. DomainGate 24
+    checks + Phase2Gate 253 green. (Also learned: geo fixtures with
+    sustained yaw+bank climb until they STALL and creep — the old
+    bent-geo probe fixture's convert numbers were stall artifacts;
+    fixtures must dive first.)
+
+76. v16.5 feel round (untested by the user yet): (a) CONVERT
+    ACCURACY — re-run whatever convert bothered you: at normal
+    densities the converted track should land ON the original's
+    endpoint now (mm-cm, not "very close"); crank density and watch
+    it converge. On violent layouts EVEN SPACING now lands closer
+    than Optimal placement — say if that reads wrong. The nudged
+    nodes sit within ~1e-3 of the original curves (invisible).
+    (b) INFLUENCE ORIENTATION — influence a section, keep "Edit
+    influence" on, open the badge menu: the entry reads "Influence
+    orientation settings…"; its radios set what the DELTAS integrate
+    about (force section: roll + yaw/pitch; geo section: roll).
+    Try a yaw delta on a climbing section under global vs local
+    yaw/pitch — global turns the compass exactly, local turns less
+    the steeper you climb. Fresh influence mirrors the section's
+    roll choice. (c) GLOBAL-AXIS sections now accept influence, and
+    "Orientation settings…" on an influenced section's DESIGN
+    surface allows Switch too. (d) ⊕ after a conflicted end: the
+    straight/curve entry is ONE item — hover/click reveals Continue/
+    Transition. (e) undo/save-load: influence axis choices survive
+    both.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

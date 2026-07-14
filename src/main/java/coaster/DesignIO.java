@@ -195,8 +195,13 @@ public final class DesignIO {
                 if (fs.influenced()) {
                     // INFLUENCE (v15.0, D98): operating speed + delta
                     // lanes in the exact `n` grammar; missing = the
-                    // section loads uninfluenced (old files, old apps)
-                    out.printf(Locale.US, "infl %.4f%n", fs.vDesign);
+                    // section loads uninfluenced (old files, old apps).
+                    // Fields 2-3 (v16.5, D112): the influence axis
+                    // flags — missing = local (historic), old readers
+                    // ignore extra fields on known lines.
+                    out.printf(Locale.US, "infl %.4f %d %d%n", fs.vDesign,
+                        fs.inflRollGlobal ? 1 : 0,
+                        fs.inflYawPitchGlobal ? 1 : 0);
                     for (int lane = 0; lane < 3; lane++) {
                         out.println("dlane " + lane);
                         for (BezierBaker.Node n : fs.deltaLanes.get(lane)) {
@@ -346,6 +351,11 @@ public final class DesignIO {
                     // operating speed rides this line (§5.6 mapping)
                     ls.vAuthored = ls.vDesign;
                     ls.vDesign = clamp(Double.parseDouble(parts[1]), 0.5, 100);
+                    // v16.5 influence axis flags; missing = local
+                    ls.inflRollGlobal = parts.length > 2
+                        && parts[2].equals("1");
+                    ls.inflYawPitchGlobal = parts.length > 3
+                        && parts[3].equals("1");
                     // scaffolding only: the dlane blocks that follow
                     // replace these; a file with no dn lines heals to
                     // lone (0,0) nodes in the post-load validation

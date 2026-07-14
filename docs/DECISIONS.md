@@ -4009,3 +4009,106 @@ re-test with #74(b).
 
 Gates re-run green (DomainGate 19 with the tightened 42c;
 Phase2Gate 253). Walkthrough #75.
+
+## D111. v16.5: AREA-MATCHED convert fits — the endpoint lands ON the
+##        original (user request round 2026-07-13/14)
+
+User: "It still seems like ALL converts converge to a point that isn't
+quite where the original track was... look very deeply into the
+possible solutions... just improvements to the placements of the nodes
+[and maybe handles?], nothing else extra."
+
+- **Root cause measured, theory confirmed**: the fit put nodes exactly
+  ON the extracted data with the data's slopes, but the cubic BETWEEN
+  nodes doesn't integrate to the data's area — and a rate lane's
+  integral IS the turned angle, so signed per-segment area residuals
+  accumulate into an end-pose miss no pointwise density fully kills.
+  The pitch-lane integral error predicted the default layout's
+  convert end miss almost linearly (0.058 deg <-> 0.62 m at 0.1 s
+  uniform).
+- **The fix (Coaster.matchSegmentAreas)**: after each lane fits,
+  nudge the NODE VALUES so every segment's weighted area matches the
+  data's — handles keep their slopes and 1/3 fracs (the closed-form
+  evaluation property survives). E_k integrates (data − BAKED
+  polyline)·w — the exact curve RK4 consumes, so the 0.05-grid bias
+  cancels — with w = 1/v^p for the force inversion (per g(G−axis.y)/v)
+  and arc-axis lookups (per ds/v): the unweighted first cut REGRESSED
+  adaptive force fits. The bidiagonal constraint system solves
+  LEAST-NORM (A^T(AA^T)^{-1}E, tridiagonal Thomas, O(N)), iterated
+  with 0.7-damped re-baked passes (response moments drift past 100%
+  error at one bake cell per segment — undamped it blew a 0.05 s
+  carpet up to 177 m), every pass competing on peak |cumulative
+  error| with the BEST state shipping (the raw fit is pass 0's
+  entry). Sub-bake-grid carpets (median gap < 0.6 cells) skip the
+  pass — attribution is noise there and chasing it measurably hurt.
+- **Probed and REJECTED**: handle-FRACTION knob (zero area authority
+  wherever end slopes are parallel — reflection symmetry, most of a
+  smooth carpet); forward substitution with a pinned start (its
+  alternating homogeneous mode random-walks over long carpets — −89 g
+  at the tail of a 269-segment fit); smoothing/centering/capping that
+  walk (each biased some fixture worse than no matching).
+- **Adaptive fits grew an AREA criterion + length cap**: segments
+  whose mean signed deviation beats eps/2, and non-flat segments
+  longer than 0.6*xScale, take midpoint nodes (flat stretches keep
+  bare endpoints).
+- **Measured (endpoint miss, 407 m default layout / 140 m geo
+  fixture)**: uniform 0.1 s force->geo 0.617 -> 0.019 m (33x),
+  force->force 0.824 -> 0.017 (48x); uniform 0.05 s 0.0095 -> 0.0025
+  / 0.017 -> 0.0045; DISTANCE targets 1.6-7.6 mm; geo-source fits
+  0.2-1.0 mm (up to 30x); the domain round trip (gate 40d) coarse
+  3.47 -> 0.019 m (180x). KNOWN FLOOR: adaptive carpets of violent
+  FORCE layouts keep ~0.1-0.2 m of through-the-solution residual
+  (fit shape <-> speed profile feedback, invisible to any lane-local
+  metric — proved by best-state selection not recovering it); fine
+  UNIFORM spacing is the max-fidelity setting there, said so in Help.
+  40d re-baselined: round trips land at cm scale but are no longer
+  density-MONOTONE (the matcher, not spacing, sets the floor).
+- Also learned: geo fixtures with sustained yaw+bank CLIMB until they
+  stall (the D107 upward-spiral effect) — the old 42a fixture creeps
+  at the 0.1 m/s floor and its convert comparisons were stall
+  artifacts (15 deg end-tangent reads at HEAD too); test fixtures
+  must dive first. Converting stalled/creeping track remains
+  undefined-ish (extraction reads garbage in creep) — pre-existing,
+  out of scope.
+
+## D112. v16.5: influence orientation settings + global-axis influence,
+##        one-item s/c conflict fork (same round)
+
+- **Influence gains its own AXIS SEMANTICS** (user spec: "make
+  'Orientation Settings...' bring up the settings for the influencing
+  graph... geo influencing... for both roll orientations of force
+  sections, and force influencing... for all orientations of geo
+  sections"): LaneSection.inflRollGlobal/inflYawPitchGlobal say how
+  the two-pass integrates base + delta AS the other mode — a force
+  section's geo influence picks roll + yaw/pitch axes, a geo
+  section's force influence picks roll (the force integrator's only
+  choice). Independent of the section's OWN flags: buildBase derives
+  body pitch/yaw from the kappa identity (felt is honest under any
+  flags, D107), converts the roll lane between bank rate and body
+  roll through the transport relation p = phi' + psi'*sin(theta),
+  and emits world heading/elevation rates via Coaster.worldRates
+  when the influence is global-axis (NaN near vertical = hold, the
+  bake rule). Pass 2 runs under the influence flags; the ref runs
+  under the section's. Entry defaults MIRROR the section's roll
+  choice (zero deltas then reproduce the ref without conversion);
+  yaw/pitch starts local.
+- **Global-axis sections take influence now** (the D107 refusal is
+  gone — it existed only because the base read body rates), and the
+  orientation dialog's SWITCH works on influenced sections (same
+  reason). While a strip edits influence, the badge item relabels
+  "Influence orientation settings..." and the dialog configures the
+  influence axes — switch only, no bake (the delta lanes are the
+  user's; "Bake influence into design graphs..." stays the exit).
+- **File**: `infl` line fields 2-3 = the two flags; missing = local =
+  historic. Undo snapshots carry them (SecState +2 fields).
+- **'+' menu s/c fork collapsed** (user: "don't need an entire pop
+  out window if just two options"): over a conflicted end the
+  straight/curve entry is ONE submenu revealing "Continue speed
+  conflict" / "Transition to real" — was two top-level items.
+- Gated #45 (a: global-roll influence entry + discard bitwise, b:
+  zero-delta two-pass shape v-invariant at a hand-split pair
+  (0.078 m/83 m — the D110 projection-cadence class), c: +10 deg/s
+  heading delta on a 48-deg climb turns EXACTLY 60.00 deg under
+  global axes vs 39.75 local — the cos(elevation) contrast, d: FVDD3
+  byte-identical round trip with flags). DomainGate 24 checks +
+  Phase2Gate 253 green. Walkthrough #76.

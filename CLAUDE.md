@@ -103,10 +103,14 @@ LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     speed, unlike s/c). AXIS flags rollGlobal /
                     yawPitchGlobal (v16.1, D107 — local defaults =
                     historic, bitwise; globalAxes() sections aren't
-                    body rates: sampled matching, derived strips,
-                    no influence). INFLUENCE state (v15.0, D98;
+                    body rates: sampled matching, derived strips).
+                    INFLUENCE state (v15.0, D98;
                     distance sections join in v16.1 — the two-pass
-                    runs over ARC; global-axis sections refuse):
+                    runs over ARC; GLOBAL-AXIS sections join in
+                    v16.5 D112, with their own influence axis flags
+                    inflRollGlobal/inflYawPitchGlobal — how the
+                    two-pass integrates base+delta AS the other
+                    mode; entry mirrors the section's roll choice):
                     deltaLanes
                     (OTHER-mode delta lanes; null = uninfluenced) +
                     vAuthored (frozen authored speed — the vDesign
@@ -293,6 +297,16 @@ Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     the auto-reoptimize pass (v13.14), the CONVERT
                     engine (convertToLanes uniform/adaptive fits +
                     whole/partial ops + scCutClamp, v14.0 D89/D90;
+                    AREA-MATCHED since v16.5 D111 —
+                    matchSegmentAreas nudges node values ~1e-3 so
+                    every segment's weighted integral equals the
+                    data's against the BAKED polyline: least-norm
+                    tridiagonal solve, damped re-baked passes,
+                    best-state on peak cumulative error, sub-grid
+                    carpets skip; endpoints land mm-cm, 2-180×
+                    closer — adaptive force carpets keep a ~0.1-0.2 m
+                    through-the-solution floor, fine UNIFORM is the
+                    max-fidelity setting there;
                     pitch/yaw extraction ANALYTIC off the recorded
                     felt since v15.1 D99 — the κ identity, exact;
                     only roll is measured, ±1 sample — and converts
@@ -361,7 +375,8 @@ TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
                     via the §5.1 identity, roll from the bake —
                     re-timed by the convert trapezoid onto t*, then
                     base+delta integrates AS the other mode
-                    (force→GeoIntegrator, geo→FVDIntegrator) at the
+                    (force→GeoIntegrator, geo→FVDIntegrator) under
+                    the INFLUENCE axis flags at the
                     operating speed, so resulting == base + delta
                     EXACTLY and shape is operating-speed-invariant;
                     all-zero deltas at vDesign==vAuthored take the
@@ -544,8 +559,9 @@ source tree — they won't compile against the current time-domain API.
   meters; every old file says "time" there and loads unchanged;
   the cross-domain VIEW flag is deliberately NOT saved) holding
   `lane`/`n` lines (force/geo; an
-  INFLUENCED section, v15.0 D98, appends `infl vApply` — the
-  OPERATING speed; the section line keeps the AUTHORED speed so old
+  INFLUENCED section, v15.0 D98, appends `infl vApply [rollG ypG]` —
+  the OPERATING speed + the v16.5 influence axis flags (missing =
+  local); the section line keeps the AUTHORED speed so old
   readers pair the lanes with the speed they were designed at — plus
   `dlane k`/`dn …` delta-lane lines in the exact `n` grammar;
   missing = uninfluenced, empty dlane blocks heal to a single (0,0)
@@ -666,7 +682,9 @@ drifted end; s/c keeps two menu forks), and the STARTING DESIGN
 SPEED behind a padlock — locked tracks what the fork implies;
 unlocked = a DELIBERATE conflict (the section PINS so the reconcile
 keeps it; B lines the real graphs up). "straight/curve" appends a
-10 m STRAIGHT (a straight IS the seamless continuation); vDesign
+10 m STRAIGHT (a straight IS the seamless continuation; over a
+conflicted end it is ONE submenu revealing Continue/Transition,
+v16.5); vDesign
 frozen at the piece-end design speed per §0; bridge + attach-piece
 stay disabled placeholders. TIME/DISTANCE DOMAIN (v16.0, D103): the plot's
 x-axis follows the ACTIVE section's DISPLAY domain — seconds, or
@@ -699,8 +717,8 @@ Roll local|global for both lane modes (global = the roll lane
 integrates a bank-vs-horizon target; rate 0 spirals level through
 pitched turns) and Yaw/pitch local|global for geo
 (heading/elevation rates about the world axes). Global-axis lanes
-aren't body rates: inactive strips draw derived, influence
-refuses, '+' continuations carry the flags — but B/Shift+B WORK on
+aren't body rates: inactive strips draw derived, '+' continuations
+carry the flags, influence WORKS since v16.5 (D112) — but B/Shift+B WORK on
 them since v16.3 (D109): the WORLD-RATE matcher reads the
 neighbor's heading/elevation/bank rates analytically
 (Coaster.worldRates — Ω per sample via the κ identity, Euler-rate
@@ -723,7 +741,14 @@ axis radios + both bakes live in ONE "Orientation settings…"
 dialog since v16.4 ("Switch to This Orientation (same graphs,
 change shape)" / "Bake This Orientation (convert graphs, keep
 shape)" — fixed labels per user, enabled when the radios differ
-from current; influenced bakes-only, reversed switches-only). Badges are TWO-CLICK (v16.4): an inactive
+from current; reversed switches-only; influenced sections SWITCH
+too since v16.5). While a strip EDITS INFLUENCE the same badge
+item reads "Influence orientation settings…" and configures the
+INFLUENCE integration's axes instead (v16.5, D112: force section →
+roll + yaw/pitch, geo section → roll; switch only — "Bake
+influence into design graphs…" stays the exit; fresh influence
+mirrors the section's roll choice; `infl` fields 2-3, undo
+carries them). Badges are TWO-CLICK (v16.4): an inactive
 section's badge first activates, the menu opens while active. B/Shift+B match the REAL
 graphs EVERYWHERE (v16.2, completed v16.3 D109): the split test is
 TWO-SIDED — either side's design/true split at the seam routes to
@@ -1232,9 +1257,10 @@ focus and returns, still open in place, when focus comes back
 (v14.4, D96). One undo step back;
 a whole-converted bridge attaches its target (connected); a
 PART-converted bridge keeps following its cut; residuals
-gated TESTING #23/#31 (mm–2 cm on geo/s-c fixtures; 0.3% across the
-whole 407 m default layout — the carpet rounding its roll spikes;
-"delete nodes to taste", D78, now literally a slider). 3D meshes are
+gated TESTING #23/#31/#45 (area-matched since v16.5 D111: endpoints
+land mm–cm, 2-180× closer; adaptive force carpets keep a ~0.1-0.2 m
+through-the-solution floor — fine UNIFORM is the max-fidelity
+setting; "delete nodes to taste", D78, now literally a slider). 3D meshes are
 PER PIECE (v13.2): inactive pieces render DESATURATED (gradient
 texture or solid color), meshes never span a piece boundary — a
 clean bridge/attach seam abuts flush and reads as one track, a fresh

@@ -109,6 +109,12 @@ public class Coaster {
         ls.vAuthored = ls.vDesign;
         ls.deltaLanes = LaneSection.zeroDeltaLanes(dur);
         ls.editInfluence = true;
+        // influence axis defaults (v16.5, D112): mirror the section's
+        // roll semantics — with zero deltas the base then reproduces
+        // the ref without representation conversion; yaw/pitch start
+        // local (force sections have no ypG of their own to mirror)
+        ls.inflRollGlobal = ls.rollGlobal;
+        ls.inflYawPitchGlobal = false;
     }
 
     /** DISCARD influence: deltas + the operating speed drop, the
@@ -121,6 +127,8 @@ public class Coaster {
         ls.deltaLanes = null;
         ls.baseCurves = null;
         ls.editInfluence = false;
+        ls.inflRollGlobal = false;
+        ls.inflYawPitchGlobal = false;
     }
 
     /** SPLIT a piece before section sectionIdx (v12.0, D70; exact
@@ -1176,10 +1184,18 @@ public class Coaster {
         }
         List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
         for (int c = 0; c < 3; c++) {
-            lanes.add(adaptTol > 0
+            // area-match weight (v16.5, D111): the integral a lane
+            // error feeds into the turned angle — 1 for time-axis
+            // rates, an extra 1/v per arc-axis lookup (∫rate ds/v)
+            // and per force inversion (ω = g(G−axis.y)/v)
+            int wPow = (outDom == Section.Domain.DISTANCE ? 1 : 0)
+                + (!toGeo && c < 2 ? 1 : 0);
+            List<BezierBaker.Node> lane = adaptTol > 0
                 ? fitLaneAdaptive(xG, val, c, dur, adaptTol, xScale)
                 : fitLaneUniform(xG, val, c, dur,
-                    Math.max(0.01 * xScale, spacing), xScale));
+                    Math.max(0.01 * xScale, spacing), xScale);
+            matchSegmentAreas(lane, xG, val, c, vGs, wPow);
+            lanes.add(lane);
         }
         LaneSection out = toGeo ? new GeoSection(lanes, vD)
                                 : new ForceSection(lanes, vD);
@@ -1315,6 +1331,241 @@ public class Coaster {
         return lane;
     }
 
+
+    /** Per-segment INTEGRAL matching (v16.5, D111 — the user's "all
+     *  converts converge to a point that isn't quite the original"):
+     *  nodes on the data with the data's slopes still let the curve
+     *  BETWEEN nodes integrate slightly off the data's area — and
+     *  what a rate lane integrates into is the turned angle, so
+     *  signed per-segment residuals accumulate into an end-pose miss
+     *  that no pointwise density fully kills (measured: the
+     *  pitch-lane integral error predicts the default layout's
+     *  convert end miss almost linearly). The fix nudges the NODE
+     *  VALUES: handles keep their slopes and 1/3 fracs (the
+     *  closed-form property survives), and a segment's weighted area
+     *  responds to its end values through the shift bases g0/g1, so
+     *  the constraints form the bidiagonal system c0·δv_k +
+     *  c1·δv_{k+1} = E_k — solved LEAST-NORM (δv = Aᵀ(AAᵀ)⁻¹E, AAᵀ
+     *  tridiagonal, Thomas O(N)): the cumulative angle is then
+     *  pinned at EVERY node, which position accuracy needs, at the
+     *  smallest possible nudges — 1e-3-unit scale at high densities.
+     *  E_k integrates (data − BAKED curve)·w — the very polyline the
+     *  integrator consumes, so the 0.05-grid bias cancels too — with
+     *  w = 1/v^p because the angle a lane error feeds is ∫err·g/v dt
+     *  for force targets and ∫err/v ds on an arc axis (the
+     *  unweighted first cut REGRESSED adaptive force fits: long
+     *  segments span real speed change). ITERATED with DAMPED
+     *  re-baked passes: the smooth-basis response moments drift off
+     *  what the keyframe-sampled polyline actually does as segments
+     *  shrink toward the bake cell — a few percent at 2-3 cells per
+     *  segment, PAST 100% at one cell, where the undamped iteration
+     *  measurably diverged (a 0.05 s carpet blew up to 177 m).
+     *  Scaling each pass's solution by 0.7 keeps the fixed point and
+     *  contracts for any response error in (−57%, +186%); every
+     *  pass's measurement competes on peak |cumulative error| and
+     *  the BEST state ships (the raw fit is pass 0's entry), so a
+     *  lane the matcher cannot help keeps its pointwise fit. Probed
+     *  and REJECTED along the way: a handle-fraction knob (symmetric
+     *  fractions have zero area authority wherever the end slopes
+     *  are parallel); forward substitution with a pinned start (its
+     *  alternating homogeneous mode random-walks over long carpets —
+     *  −89 g at the tail of a 269-segment fit); smoothing/centering/
+     *  capping that walk (each biased some fixture worse than no
+     *  matching at all). KNOWN FLOOR: adaptive carpets of violent
+     *  FORCE layouts keep ~0.1-0.2 m of through-the-solution residual
+     *  (407 m torture layout) that no lane-local metric can rank —
+     *  fine UNIFORM spacing is the max-fidelity setting there. */
+    private static void matchSegmentAreas(List<BezierBaker.Node> lane,
+            double[] tG, double[][] val, int c, double[] vG, int wPow) {
+        int nn = lane.size();
+        if (nn < 2) return;
+        // SUB-GRID carpets skip the pass: nodes packed finer than the
+        // 0.05 bake grid can't be told apart by the baked polyline —
+        // attribution AND response are noise there, and both chasing
+        // it and constraining coarsened node subsets measurably
+        // WORSENED a 0.02 s carpet. Spacing AT the grid still
+        // converges under the damping+guard (measured 3× better than
+        // unmatched), so only genuinely finer carpets bail; the
+        // pointwise fit alone already behaves at such densities.
+        double[] gaps = new double[nn - 1];
+        for (int k = 0; k + 1 < nn; k++) {
+            gaps[k] = lane.get(k + 1).t - lane.get(k).t;
+        }
+        java.util.Arrays.sort(gaps);
+        if (gaps[gaps.length / 2] < 0.6 * 0.05) return;
+        int ns = nn - 1;
+        double[] eA = new double[ns];
+        double[] c0A = new double[ns];
+        double[] c1A = new double[ns];
+        double[] diag = new double[ns];
+        double[] rhs = new double[ns];
+        double[] dv = new double[nn];
+        double[] best = new double[nn];
+        for (int k = 0; k < nn; k++) best[k] = lane.get(k).val;
+        double bestCum = Double.MAX_VALUE;
+        double prevWorst = Double.MAX_VALUE;
+        // 9th pass measures the 8th application; nothing unmeasured
+        for (int pass = 0; pass < 9; pass++) {
+            // bake THIS lane exactly as the compiler will (0.05 grid
+            // in axis units; every convert lane ends at dur, so the
+            // grid matches the final 3-lane bake)
+            List<List<BezierBaker.Node>> tmp = new ArrayList<>(3);
+            for (int i = 0; i < 3; i++) tmp.add(lane);
+            List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(tmp, 0.05);
+            double worst = 0;
+            double cum = 0, maxCum = 0;
+            for (int k = 0; k < ns; k++) {
+                BezierBaker.Node a = lane.get(k), b = lane.get(k + 1);
+                if (b.t - a.t < 1e-9) {   // can't occur in fits
+                    eA[k] = 0;
+                    c0A[k] = c1A[k] = 1e-6;
+                    continue;
+                }
+                double[] ec = segMoments(kfs, tG, val, c, vG, wPow,
+                    a.t, b.t);
+                eA[k] = ec[0];
+                c0A[k] = ec[1];
+                c1A[k] = Math.max(1e-12, ec[2]);
+                worst = Math.max(worst, Math.abs(ec[0]));
+                cum += ec[0];
+                maxCum = Math.max(maxCum, Math.abs(cum));
+            }
+            // BEST-STATE tracking (v16.5, D111): the position-relevant
+            // metric is the peak |cumulative error| across nodes (an
+            // interior angle bound the lever arm multiplies) — the
+            // matcher can lower every segment's error while
+            // REDISTRIBUTING that cumulative worse (measured 0.03 →
+            // 0.19 m on an adaptive force→geo fit). Every pass's
+            // measurement competes; the best state is what ships, so
+            // a lane the matcher can't help keeps its pointwise fit.
+            if (maxCum < bestCum) {
+                bestCum = maxCum;
+                for (int k = 0; k < nn; k++) best[k] = lane.get(k).val;
+            }
+            if (worst >= prevWorst) break;   // stalled/diverging
+            if (worst < 1e-9) break;         // converged
+            if (pass == 8) break;            // measurement-only tail
+            // LEAST-NORM solve of the bidiagonal system A·δv = E
+            // (N constraints, N+1 nodes): δv = Aᵀ(AAᵀ)⁻¹E, with AAᵀ
+            // tridiagonal — Thomas, O(N). Forward substitution with a
+            // pinned start was tried first and REJECTED: its solution
+            // rides an alternating homogeneous mode that random-walks
+            // over long carpets and blew up at the tail (−89 g on a
+            // 269-segment fit); the minimum-norm solution spreads the
+            // same corrections at the smallest possible amplitude.
+            for (int k = 0; k < ns; k++) {
+                diag[k] = c0A[k] * c0A[k] + c1A[k] * c1A[k];
+                rhs[k] = eA[k];
+            }
+            for (int k = 1; k < ns; k++) {   // forward eliminate
+                double m = c1A[k - 1] * c0A[k] / diag[k - 1];
+                diag[k] -= m * c1A[k - 1] * c0A[k];
+                rhs[k] -= m * rhs[k - 1];
+            }
+            rhs[ns - 1] /= diag[ns - 1];     // back substitute (y)
+            for (int k = ns - 2; k >= 0; k--) {
+                rhs[k] = (rhs[k] - c1A[k] * c0A[k + 1] * rhs[k + 1])
+                    / diag[k];
+            }
+            dv[0] = c0A[0] * rhs[0];
+            for (int k = 1; k < ns; k++) {
+                dv[k] = c1A[k - 1] * rhs[k - 1] + c0A[k] * rhs[k];
+            }
+            dv[ns] = c1A[ns - 1] * rhs[ns - 1];
+            for (int k = 0; k < nn; k++) {
+                lane.get(k).val += 0.7 * dv[k];
+            }
+            prevWorst = worst;
+        }
+        // ship the best measured state (pass 0 measured the raw fit,
+        // so "no matching" always competes)
+        for (int k = 0; k < nn; k++) lane.get(k).val = best[k];
+    }
+
+    /** One segment's weighted error + response moments {E, c0, c1}:
+     *    E  = ∫ (data(x) − baked(x)) · w(x) dx     over [x0, x1]
+     *    c0 = ∫ g0(u) · w(x) dx,   c1 = ∫ g1(u) · w(x) dx
+     *  with u = (x−x0)/(x1−x0) (1/3 fracs keep the time cubic linear),
+     *  g0 = (1−u)²(1+2u) / g1 = u²(3−2u) the value-cubic's response
+     *  to shifting the left/right node value (handles riding along),
+     *  and w = 1/vG(x)^p. Trapezoid on the UNION of the data and bake
+     *  grids — both curves are polylines there. */
+    private static double[] segMoments(List<FVDIntegrator.Keyframe> kfs,
+            double[] tG, double[][] val, int c, double[] vG, int wPow,
+            double x0, double x1) {
+        double e = 0, c0 = 0, c1 = 0;
+        int i = 0, j = 0;
+        while (i < tG.length && tG[i] <= x0) i++;
+        while (j < kfs.size() && kfs.get(j).t() <= x0) j++;
+        double x = x0;
+        double[] f = integrand(kfs, tG, val, c, vG, wPow, x0, x0, x1);
+        while (x < x1) {
+            double xd = i < tG.length ? tG[i] : Double.MAX_VALUE;
+            double xk = j < kfs.size() ? kfs.get(j).t() : Double.MAX_VALUE;
+            double xn = Math.min(x1, Math.min(xd, xk));
+            if (xn > x) {
+                double[] fn = integrand(kfs, tG, val, c, vG, wPow,
+                    xn, x0, x1);
+                double hh = (xn - x) / 2;
+                e += (f[0] + fn[0]) * hh;
+                c0 += (f[1] + fn[1]) * hh;
+                c1 += (f[2] + fn[2]) * hh;
+                f = fn;
+                x = xn;
+            }
+            if (xd <= xn) i++;
+            if (xk <= xn) j++;
+        }
+        return new double[]{ e, c0, c1 };
+    }
+
+    /** Integrand triple {(data−baked)·w, g0·w, g1·w} at x. */
+    private static double[] integrand(List<FVDIntegrator.Keyframe> kfs,
+            double[] tG, double[][] val, int c, double[] vG, int wPow,
+            double x, double x0, double x1) {
+        double w = 1;
+        if (wPow > 0) {
+            double v = Math.max(0.5, gridAt(tG, vG, x));
+            w = wPow == 1 ? 1 / v : 1 / (v * v);
+        }
+        double u = Math.max(0, Math.min(1, (x - x0) / (x1 - x0)));
+        double g0 = (1 - u) * (1 - u) * (1 + 2 * u);
+        return new double[]{
+            (valAtT(tG, val, c, x) - kfVal(kfs, x)) * w,
+            g0 * w,
+            (1 - g0) * w };   // g1 = u²(3−2u) = 1 − g0
+    }
+
+    /** Linear read of the baked Gv channel at x (clamped ends — the
+     *  bake writes one lane's values into all three slots here). */
+    private static double kfVal(List<FVDIntegrator.Keyframe> kfs, double x) {
+        if (x <= kfs.get(0).t()) return kfs.get(0).Gv();
+        int hi = kfs.size() - 1;
+        if (x >= kfs.get(hi).t()) return kfs.get(hi).Gv();
+        int lo = 0;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (kfs.get(mid).t() <= x) lo = mid; else hi = mid;
+        }
+        double u = (x - kfs.get(lo).t())
+            / Math.max(1e-12, kfs.get(hi).t() - kfs.get(lo).t());
+        return kfs.get(lo).Gv() + u * (kfs.get(hi).Gv() - kfs.get(lo).Gv());
+    }
+
+    /** Linear read of a paired (xs, ys) grid at x (clamped ends). */
+    private static double gridAt(double[] xs, double[] ys, double x) {
+        if (x <= xs[0]) return ys[0];
+        int hi = xs.length - 1;
+        if (x >= xs[hi]) return ys[hi];
+        int lo = 0;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (xs[mid] <= x) lo = mid; else hi = mid;
+        }
+        return ys[lo] + (ys[hi] - ys[lo])
+            * (x - xs[lo]) / Math.max(1e-12, xs[hi] - xs[lo]);
+    }
+
     /** ADAPTIVE fit (v14.0, D90 — the dialog's "Optimal placement"):
      *  start from the two endpoints and repeatedly insert a node at
      *  the worst-fitting sample until the lane tracks its data within
@@ -1322,8 +1573,10 @@ public class Coaster {
      *  data; slopes are node-scale local differences (window bounded
      *  by the neighbor gaps — the D87 lesson); handles stay C1 at 1/3
      *  fracs, so the segment time-cubic is exactly linear and the
-     *  curve evaluates in closed form. A flat lane is just its two
-     *  endpoints; each lane gets only the nodes IT needs. */
+     *  curve evaluates in closed form (the final area-match pass only
+     *  nudges node VALUES — the property survives, v16.5 D111). A
+     *  flat lane is just its two endpoints; each lane gets only the
+     *  nodes IT needs. */
     private static List<BezierBaker.Node> fitLaneAdaptive(double[] tG,
             double[][] val, int c, double dur, double tol,
             double xScale) {
@@ -1341,24 +1594,71 @@ public class Coaster {
         for (int guard = 0; guard < 400; guard++) {
             fitHandles(lane, tG, val, c, dtData, xScale);
             double worst = eps, worstT = -1;
+            // per-segment SIGNED deviation area + peak (v16.5, D111):
+            // a long segment can pass the pointwise test while its
+            // deviation accumulates real turned-angle error inside —
+            // the post-fit area match zeroes each segment's TOTAL,
+            // but the correction bump's within-segment SHAPE is free,
+            // and its residual moment grows with h². Non-flat
+            // segments therefore cap their LENGTH (midpoint nodes),
+            // and any segment whose mean signed deviation beats half
+            // the tolerance splits too; flat stretches keep their
+            // bare-endpoint economy.
+            double[] segE = new double[lane.size() - 1];
+            double[] segPeak = new double[lane.size() - 1];
+            double fePrev = 0;
+            int segPrev = -1;
+            double tPrev = 0;
             int seg = 0;
             for (int i = 0; i < n; i++) {
                 double t = Math.min(tG[i], dur);
                 while (seg < lane.size() - 2
                         && lane.get(seg + 1).t <= t) seg++;
+                double fe = fittedVal(lane.get(seg), lane.get(seg + 1), t)
+                    - val[i][c];
+                if (seg == segPrev) {
+                    segE[seg] += (fe + fePrev) / 2 * (t - tPrev);
+                }
+                segPeak[seg] = Math.max(segPeak[seg], Math.abs(fe));
+                fePrev = fe;
+                segPrev = seg;
+                tPrev = t;
                 // respect the editor's INSERT_GAP (0.02 s / 0.2 m):
                 // never propose a node on top of an existing one
                 if (t - lane.get(seg).t < 0.02 * xScale
                         || lane.get(seg + 1).t - t < 0.02 * xScale) continue;
-                double err = Math.abs(
-                    fittedVal(lane.get(seg), lane.get(seg + 1), t)
-                    - val[i][c]);
+                double err = Math.abs(fe);
                 if (err > worst) {
                     worst = err;
                     worstT = t;
                 }
             }
-            if (worstT < 0) break;
+            if (worstT < 0) {
+                // pointwise satisfied — worst offending segment by
+                // its mean deviation, then by capped length
+                double worstMean = eps * 0.5;
+                for (int k = 0; k + 1 < lane.size(); k++) {
+                    double h = lane.get(k + 1).t - lane.get(k).t;
+                    if (h < 2.5 * 0.02 * xScale) continue;   // no room
+                    double mean = Math.abs(segE[k]) / h;
+                    if (mean > worstMean) {
+                        worstMean = mean;
+                        worstT = (lane.get(k).t + lane.get(k + 1).t) / 2;
+                    }
+                }
+                if (worstT < 0) {
+                    double worstH = 0.6 * xScale;
+                    for (int k = 0; k + 1 < lane.size(); k++) {
+                        double h = lane.get(k + 1).t - lane.get(k).t;
+                        if (h > worstH && segPeak[k] > 0.1 * eps) {
+                            worstH = h;
+                            worstT = (lane.get(k).t
+                                + lane.get(k + 1).t) / 2;
+                        }
+                    }
+                }
+                if (worstT < 0) break;
+            }
             int at = 1;
             while (at < lane.size() && lane.get(at).t < worstT) at++;
             lane.add(at, new BezierBaker.Node(worstT,

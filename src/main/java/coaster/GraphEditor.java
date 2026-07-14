@@ -853,15 +853,17 @@ class GraphEditor extends Region {
         lane.setDisable(endsBridge);
         lane.setOnAction(ev -> showAddLaneDialog());
         if (!endsBridge && pieceEndDrifted()) {
-            // s/c keeps its two-way fork here; force/geo pick theirs
-            // INSIDE the dialog
-            MenuItem scC = new MenuItem(
-                "Add straight/curve (10 m) — continue speed conflict");
+            // ONE s/c entry even over a conflicted end since v16.5
+            // (user spec — two top-level items doubled the menu):
+            // clicking/hovering it reveals the same two seam
+            // choices the force/geo dialog forks on
+            Menu sc = new Menu("Add straight/curve section (10 m straight)");
+            MenuItem scC = new MenuItem("Continue speed conflict");
             scC.setOnAction(ev -> addSection(2, false));
-            MenuItem scR = new MenuItem(
-                "Add straight/curve (10 m) — transition to real");
+            MenuItem scR = new MenuItem("Transition to real");
             scR.setOnAction(ev -> addSection(2, true));
-            cm.getItems().addAll(lane, scC, scR);
+            sc.getItems().addAll(scC, scR);
+            cm.getItems().addAll(lane, sc);
         } else {
             MenuItem sc = new MenuItem(
                 "Add straight/curve section (10 m straight)");
@@ -2269,11 +2271,15 @@ class GraphEditor extends Region {
                 setViewOtherDomain(k, !sec.viewOtherDomain()));
             cm.getItems().add(viewOther);
             // ORIENTATION SETTINGS (v16.4, user spec): the axis
-            // radios + bake actions condensed into ONE dialog —
-            // switch (reinterpret) and/or bake (keep shape), with the
-            // buttons relabeling live as the radios change.
-            if (sec instanceof LaneSection) {
-                MenuItem orient = new MenuItem("Orientation settings…");
+            // radios + bake actions condensed into ONE dialog.
+            // While the strip EDITS INFLUENCE (v16.5, D112 — user
+            // spec) the same entry relabels and configures the
+            // INFLUENCE integration's axes instead.
+            if (sec instanceof LaneSection lor) {
+                boolean inflSurf = lor.influenced() && lor.editInfluence;
+                MenuItem orient = new MenuItem(inflSurf
+                    ? "Influence orientation settings…"
+                    : "Orientation settings…");
                 orient.setOnAction(ev -> showOrientationDialog(k));
                 cm.getItems().add(orient);
             }
@@ -2355,13 +2361,12 @@ class GraphEditor extends Region {
             boolean geoSec = lsec instanceof GeoSection;
             if (!lsec.influenced()) {
                 // distance sections take influence since v16.1 (the
-                // two-pass runs over arc); GLOBAL-AXIS sections refuse
-                // (the base extraction reads body rates, D107)
-                MenuItem enter = new MenuItem((geoSec
+                // two-pass runs over arc); GLOBAL-AXIS sections since
+                // v16.5 (D112 — the base converts representations)
+                MenuItem enter = new MenuItem(geoSec
                     ? "Influence felt force graphs"
-                    : "Influence resulting geo graphs")
-                    + (lsec.globalAxes() ? " (local-axis sections only)" : ""));
-                enter.setDisable(lsec.reversed || lsec.globalAxes());
+                    : "Influence resulting geo graphs");
+                enter.setDisable(lsec.reversed);
                 enter.setOnAction(ev -> enterInfluenceUi(k));
                 cm.getItems().add(enter);
             } else {
@@ -2423,8 +2428,7 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)
-                || ls.influenced() || ls.reversed
-                || ls.globalAxes()) return;
+                || ls.influenced() || ls.reversed) return;
         pushUndoSnapshot();
         if (k != activeSection) setActiveSection(k);
         // speeds untouched (v15.4, D102); the delta lanes span the
@@ -2549,13 +2553,13 @@ class GraphEditor extends Region {
             });
     }
 
-    /** Set section k's axis flags (v16.1, D107); null = leave alone.
-     *  One undo step; no-ops skip the push. */
+    /** Set section k's axis flags (v16.1, D107; influenced sections
+     *  switch too since v16.5 — the two-pass ref honors the flags);
+     *  null = leave alone. One undo step; no-ops skip the push. */
     private void setAxisFlags(int k, Boolean rollGlobal, Boolean ypGlobal) {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()
-                || !(secs.get(k) instanceof LaneSection ls)
-                || ls.influenced()) return;
+                || !(secs.get(k) instanceof LaneSection ls)) return;
         boolean nr = rollGlobal != null ? rollGlobal : ls.rollGlobal;
         boolean ny = ypGlobal != null ? ypGlobal : ls.yawPitchGlobal;
         if (nr == ls.rollGlobal && ny == ls.yawPitchGlobal) return;
@@ -2567,24 +2571,57 @@ class GraphEditor extends Region {
         redraw();
     }
 
+    /** Set section k's INFLUENCE axis flags (v16.5, D112) — the
+     *  semantics the two-pass integrates base + delta under; null =
+     *  leave alone. One undo step; no-ops skip the push. */
+    private void setInflAxisFlags(int k, Boolean rollGlobal, Boolean ypGlobal) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()
+                || !(secs.get(k) instanceof LaneSection ls)
+                || !ls.influenced()) return;
+        boolean nr = rollGlobal != null ? rollGlobal : ls.inflRollGlobal;
+        boolean ny = ypGlobal != null ? ypGlobal : ls.inflYawPitchGlobal;
+        if (nr == ls.inflRollGlobal && ny == ls.inflYawPitchGlobal) return;
+        pushUndoSnapshot();
+        ls.inflRollGlobal = nr;
+        ls.inflYawPitchGlobal = ny;
+        app.rebuildTrack();
+        refreshOffset();
+        redraw();
+    }
+
     /** The ORIENTATION SETTINGS dialog (v16.4, user spec — the axis
      *  radios + bake actions condensed to one window): pick the
      *  target semantics, then SWITCH (reinterpret the lanes — the
      *  shape changes) or BAKE (the convert engine keeps the track
-     *  and re-fits the lanes). Button labels track the radios LIVE.
-     *  Influenced sections can BAKE (captures the influence) but not
-     *  switch; reversed can switch but not bake (the fit rule). */
+     *  and re-fits the lanes). Influenced sections switch too since
+     *  v16.5 (the two-pass honors the flags); reversed can switch
+     *  but not bake (the fit rule). On the INFLUENCE-editing surface
+     *  (v16.5, D112 — user spec) the dialog configures the INFLUENCE
+     *  integration's axes instead: a force section's geo deltas pick
+     *  roll + yaw/pitch, a geo section's force deltas pick roll (the
+     *  force integrator's only axis choice) — switch only, no bake
+     *  (the delta lanes are yours; "Bake influence into design
+     *  graphs…" is the exit that converts them). */
     private void showOrientationDialog(int k) {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)) return;
         boolean geo = ls instanceof GeoSection;
         boolean infl = ls.influenced();
+        boolean inflSurf = infl && ls.editInfluence;
+        // which semantics the radios describe: the section's own, or
+        // the influence integration's (= the OTHER mode's)
+        boolean ypRow = inflSurf ? !geo : geo;
+        boolean rollNow = inflSurf ? ls.inflRollGlobal : ls.rollGlobal;
+        boolean ypNow = inflSurf ? ls.inflYawPitchGlobal
+                                 : ls.yawPitchGlobal;
 
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
         dlg.initModality(Modality.WINDOW_MODAL);
-        dlg.setTitle("Orientation settings — "
+        dlg.setTitle((inflSurf ? "Influence orientation settings — "
+                               : "Orientation settings — ")
             + (geo ? "geo" : "force") + " section " + (k + 1));
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -2597,24 +2634,25 @@ class GraphEditor extends Region {
         RadioButton rG = new RadioButton("Global (bank vs horizon)");
         rL.setToggleGroup(rg);
         rG.setToggleGroup(rg);
-        (ls.rollGlobal ? rG : rL).setSelected(true);
+        (rollNow ? rG : rL).setSelected(true);
         grid.addRow(row++, new Label("Roll"), new HBox(10, rL, rG));
 
         RadioButton yL = new RadioButton("Local (track axes)");
         RadioButton yG = new RadioButton("Global (heading/elevation)");
-        if (geo) {
+        if (ypRow) {
             ToggleGroup yg = new ToggleGroup();
             yL.setToggleGroup(yg);
             yG.setToggleGroup(yg);
-            (ls.yawPitchGlobal ? yG : yL).setSelected(true);
+            (ypNow ? yG : yL).setSelected(true);
             grid.addRow(row++, new Label("Yaw/pitch"), new HBox(10, yL, yG));
         }
 
-        Label note = new Label(
-            "Switch reinterprets the lanes (the shape changes);\n"
+        Label note = new Label(inflSurf
+            ? "These set the axes the influence deltas integrate\n"
+            + "about (the base curves convert automatically)."
+            : "Switch reinterprets the lanes (the shape changes);\n"
             + "Bake keeps the track and re-fits the lanes."
-            + (infl ? "\nInfluenced: baking folds the influence in;"
-                + " switching waits for it." : ""));
+            + (infl ? "\nInfluenced: baking folds the influence in." : ""));
         note.setStyle("-fx-text-fill: rgb(130,135,150);"
             + " -fx-font-size: 11px;");
         grid.add(note, 0, row++, 2, 1);
@@ -2629,9 +2667,9 @@ class GraphEditor extends Region {
         bake.setText("Bake This Orientation (convert graphs, keep shape)");
         Runnable sync = () -> {
             boolean nr = rG.isSelected();
-            boolean ny = geo && yG.isSelected();
-            boolean changed = nr != ls.rollGlobal || ny != ls.yawPitchGlobal;
-            apply.setDisable(!changed || infl);
+            boolean ny = ypRow && yG.isSelected();
+            boolean changed = nr != rollNow || ny != ypNow;
+            apply.setDisable(!changed);
             bake.setDisable(!changed || ls.reversed);
         };
         rL.setOnAction(e2 -> sync.run());
@@ -2640,8 +2678,13 @@ class GraphEditor extends Region {
         yG.setOnAction(e2 -> sync.run());
         apply.setOnAction(e2 -> {
             dlg.close();
-            setAxisFlags(k, rG.isSelected(),
-                geo ? yG.isSelected() : null);
+            if (inflSurf) {
+                setInflAxisFlags(k, rG.isSelected(),
+                    ypRow ? yG.isSelected() : null);
+            } else {
+                setAxisFlags(k, rG.isSelected(),
+                    geo ? yG.isSelected() : null);
+            }
         });
         bake.setOnAction(e2 -> {
             dlg.close();
@@ -2649,7 +2692,8 @@ class GraphEditor extends Region {
                 geo ? yG.isSelected() : ls.yawPitchGlobal);
         });
         close.setOnAction(e2 -> dlg.close());
-        HBox buttons = new HBox(8, apply, bake, close);
+        HBox buttons = inflSurf ? new HBox(8, apply, close)
+                                : new HBox(8, apply, bake, close);
         buttons.setAlignment(Pos.CENTER_RIGHT);
         grid.add(buttons, 0, row, 2, 1);
         sync.run();

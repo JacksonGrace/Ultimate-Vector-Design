@@ -452,14 +452,12 @@ public final class TrackCompiler {
      *  reshaping. */
     static Centerline influencedLane(LaneSection ls, TrackPose entry,
                                      double dt, boolean isGeo) {
-        // GLOBAL-AXIS sections take no influence (v16.1, D107): the
-        // two-pass base extraction reads BODY rates. The UI refuses
-        // entry; a hand-edited file falls back to the plain path here.
-        if (ls.globalAxes()) {
-            ls.baseCurves = null;
-            return isGeo ? geoLane((GeoSection) ls, entry, dt)
-                         : forceLane((ForceSection) ls, entry, dt);
-        }
+        // GLOBAL-AXIS sections take influence since v16.5 (D112): the
+        // ref runs under the section's OWN flags, the base rows come
+        // out in the INFLUENCE flags' semantics (worldRates + the
+        // transport term convert between roll representations), and
+        // pass 2 integrates under the influence flags — any section ×
+        // influence orientation combination compiles.
         // DISTANCE sections run the two-pass over ARC (v16.1, D107 —
         // the v16.0 mutual exclusion lifted): base rows and delta
         // lanes key by section-local METERS, and no re-time exists at
@@ -473,25 +471,27 @@ public final class TrackCompiler {
             // base guides off the very samples on show (identity
             // re-time); reversed strips never edit influence — skip
             ls.baseCurves = ls.reversed ? null
-                : buildBase(line.samples(), kfs, isGeo, null, null, distAxis);
+                : buildBase(line.samples(), kfs, ls, isGeo, null, null,
+                    distAxis);
             return line;
         }
         // REF at the AUTHORED speed (canonical frame when reversed,
-        // the D67 rule)
+        // the D67 rule), under the section's OWN axis flags
         Vec3 pos0 = ls.reversed ? new Vec3(0, entry.pos().y(), 0) : entry.pos();
         Quat q0 = ls.reversed ? Quat.IDENTITY : entry.orient();
         List<FVDIntegrator.Sample> ref;
         if (isGeo) {
             ref = distAxis
-                ? GeoIntegrator.integrateDist(kfs, dt, ls.vAuthored, pos0, q0)
-                    .samples()
-                : GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, q0)
-                    .samples();
+                ? GeoIntegrator.integrateDist(kfs, dt, ls.vAuthored, pos0, q0,
+                    ls.rollGlobal, ls.yawPitchGlobal).samples()
+                : GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, q0,
+                    ls.rollGlobal, ls.yawPitchGlobal).samples();
         } else {
             FVDIntegrator.Options opts = new FVDIntegrator.Options();
             opts.dt = dt;
             opts.v0 = ls.vAuthored;
             opts.pos0 = pos0;
+            opts.rollGlobal = ls.rollGlobal;
             if (!ls.reversed) {
                 opts.startHeading = entry.T();
                 opts.startUp = entry.U();
@@ -515,7 +515,7 @@ public final class TrackCompiler {
                     + ds / Math.max(0.5, (vStar[i] + vStar[i - 1]) / 2);
             }
         }
-        double[][] base = buildBase(ref, kfs, isGeo,
+        double[][] base = buildBase(ref, kfs, ls, isGeo,
             distAxis ? null : tStar, vStar, distAxis);
         // TIME durations land ON the dt grid (the convert rounding
         // recipe — lane integration drops fractional tails); DISTANCE
@@ -544,12 +544,14 @@ public final class TrackCompiler {
             LaneSection.baseAt(base, 1, dur) + polyAt(d1, dur),
             LaneSection.baseAt(base, 2, dur) + polyAt(d2, dur)));
         ls.baseCurves = base;
-        // pass 2: the OTHER mode's integrator at the operating speed
+        // pass 2: the OTHER mode's integrator at the operating speed,
+        // under the INFLUENCE axis flags (v16.5, D112)
         if (isGeo) {   // geo section + felt-G deltas → force integrator
             FVDIntegrator.Options o2 = new FVDIntegrator.Options();
             o2.dt = dt;
             o2.v0 = ls.vDesign;
             o2.pos0 = pos0;
+            o2.rollGlobal = ls.inflRollGlobal;
             if (!ls.reversed) {
                 o2.startHeading = entry.T();
                 o2.startUp = entry.U();
@@ -564,48 +566,91 @@ public final class TrackCompiler {
                 entry.s0() + last.s(), entry.t0() + last.t()));
         }
         GeoIntegrator.Result r2 = distAxis
-            ? GeoIntegrator.integrateDist(synth, dt, ls.vDesign, pos0, q0)
-            : GeoIntegrator.integrate(synth, dt, ls.vDesign, pos0, q0);
+            ? GeoIntegrator.integrateDist(synth, dt, ls.vDesign, pos0, q0,
+                ls.inflRollGlobal, ls.inflYawPitchGlobal)
+            : GeoIntegrator.integrate(synth, dt, ls.vDesign, pos0, q0,
+                ls.inflRollGlobal, ls.inflYawPitchGlobal);
         if (ls.reversed) return reverseAndPlace(r2.samples(), entry);
         FVDIntegrator.Sample last = r2.samples().get(r2.samples().size() - 1);
         return new Centerline(r2.samples(), new TrackPose(last.pos(), r2.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t()));
     }
 
-    /** BASE rows {x, lane0, lane1, lane2} in the delta lanes' units,
-     *  analytic per ref sample; x = the section's NATIVE axis — the
-     *  re-timed clock t* (TIME) or the local arc (DISTANCE, v16.1).
-     *  tStar/vStar null = identity re-time (the fast path: the
-     *  operating profile IS the ref profile). */
+    /** BASE rows {x, lane0, lane1, lane2} in the delta lanes' units
+     *  AND the INFLUENCE flags' semantics (v16.5, D112), analytic per
+     *  ref sample; x = the section's NATIVE axis — the re-timed clock
+     *  t* (TIME) or the local arc (DISTANCE, v16.1). tStar/vStar null
+     *  = identity re-time (the fast path: the operating profile IS
+     *  the ref profile). Representation conversion: body pitch/yaw
+     *  come from the κ identity regardless of the section's flags
+     *  (felt records Ω's body components honestly, D107); the roll
+     *  lane's meaning follows ls.rollGlobal — bank rate φ' vs body
+     *  roll p — and converts through the transport relation
+     *  p = φ' + ψ'·sinθ (worldRates' φ' line, inverted); world
+     *  heading/elevation rates for a global-axis influence come from
+     *  worldRates. Near-vertical samples have no heading/bank —
+     *  NaN world terms fall back like the bake extraction (hold:
+     *  rate 0). All rates scale by v* / v_d — a fixed shape's angular
+     *  rates, world or body, are linear in traversal speed. */
     private static double[][] buildBase(List<FVDIntegrator.Sample> ref,
-            List<FVDIntegrator.Keyframe> kfs, boolean isGeo,
+            List<FVDIntegrator.Keyframe> kfs, LaneSection ls, boolean isGeo,
             double[] tStar, double[] vStar, boolean distAxis) {
         int n = ref.size();
         double[][] base = new double[n][4];
         for (int i = 0; i < n; i++) {
             FVDIntegrator.Sample sm = ref.get(i);
             double vd = Math.max(0.1, sm.v());
+            double vSafe = Math.max(vd, 0.5);
             double scale = vStar == null ? 1 : vStar[i] / vd;
-            double roll = FVDIntegrator.interpAt(kfs,
+            double rollLane = FVDIntegrator.interpAt(kfs,
                 distAxis ? sm.s() : sm.t()).rollRateDeg();
             base[i][0] = distAxis ? sm.s()
                 : tStar == null ? sm.t() : tStar[i];
+            // body pitch/yaw rates (deg/s) — the κ identity
+            double pitB = Math.toDegrees(FVDIntegrator.G0
+                * (sm.Gv() - sm.U().y()) / vSafe);
+            double yawB = Math.toDegrees(FVDIntegrator.G0
+                * (sm.Gl() - sm.R().y()) / vSafe);
+            // the roll lane in BOTH representations (only the needed
+            // conversion runs; ψ' is roll-independent — Ω's T part
+            // drops out of Ω×T)
+            double rollB, bankR;
+            if (ls.rollGlobal) {
+                bankR = rollLane;
+                double psi = Coaster.worldRates(sm, pitB, yawB, 0)[1];
+                rollB = bankR + (Double.isNaN(psi) ? 0
+                    : psi * sm.T().y());
+            } else {
+                rollB = rollLane;
+                bankR = ls.inflRollGlobal
+                    ? capNaN(Coaster.worldRates(sm, pitB, yawB, rollB)[2])
+                    : 0;   // unused
+            }
             if (isGeo) {
                 // geo section: deltas are FELT G — the §5.1 identity
                 double r2 = scale * scale;
                 base[i][1] = r2 * (sm.Gv() - sm.U().y()) + sm.U().y();
                 base[i][2] = r2 * (sm.Gl() - sm.R().y()) + sm.R().y();
+            } else if (ls.inflYawPitchGlobal) {
+                // force section, GLOBAL-axis influence: elevation +
+                // heading rates
+                double[] wr = Coaster.worldRates(sm, pitB, yawB, rollB);
+                base[i][1] = capNaN(wr[0]) * scale;
+                base[i][2] = capNaN(wr[1]) * scale;
             } else {
-                // force section: deltas are RATES — invert the targets
-                double vSafe = Math.max(vd, 0.5);
-                base[i][1] = Math.toDegrees(FVDIntegrator.G0
-                    * (sm.Gv() - sm.U().y()) / vSafe) * scale;
-                base[i][2] = Math.toDegrees(FVDIntegrator.G0
-                    * (sm.Gl() - sm.R().y()) / vSafe) * scale;
+                // force section, local influence: body rates
+                base[i][1] = pitB * scale;
+                base[i][2] = yawB * scale;
             }
-            base[i][3] = roll * scale;
+            base[i][3] = (ls.inflRollGlobal ? bankR : rollB) * scale;
         }
         return base;
+    }
+
+    /** NaN world rates (vertical track: no heading/bank) hold the
+     *  angle — rate 0, the bake extraction's rule. */
+    private static double capNaN(double r) {
+        return Double.isNaN(r) ? 0 : r;
     }
 
     /** Linear eval of a (t, value) polyline with held ends — the

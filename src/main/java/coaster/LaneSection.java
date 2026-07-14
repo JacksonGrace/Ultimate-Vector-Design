@@ -54,8 +54,22 @@ public sealed abstract class LaneSection implements Section
 
     /** Any global-axis flag set? Such lanes are NOT body rates: the
      *  editor's analytic matching and authored-strip drawing fall
-     *  back to the compiled curves, and influence refuses. */
+     *  back to the compiled curves. */
     public boolean globalAxes() { return rollGlobal || yawPitchGlobal; }
+
+    /** INFLUENCE axis semantics (v16.5, D112 — user spec): how the
+     *  two-pass integrates base + delta AS the other mode. A force
+     *  section's geo influence picks roll and yaw/pitch axes; a geo
+     *  section's force influence picks the roll axis (the force
+     *  integrator's only choice). Independent of the section's OWN
+     *  flags — the base rows convert between representations
+     *  analytically (worldRates + the transport term), so any
+     *  combination of section × influence orientations compiles.
+     *  Defaults mirror the section's roll semantics on entry
+     *  (Coaster.enterInfluence); missing file fields = local =
+     *  the historic behavior. */
+    public boolean inflRollGlobal = false;
+    public boolean inflYawPitchGlobal = false;
 
     // ---------- INFLUENCE (v15.0, D98; SECTIONS-DESIGN §5.4) ----------
     // Sparse DELTA lanes in the OTHER mode's units (force section →
