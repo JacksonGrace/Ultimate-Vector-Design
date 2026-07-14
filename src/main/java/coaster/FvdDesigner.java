@@ -1123,6 +1123,13 @@ public class FvdDesigner extends Application {
             if (matches("pov", e)) togglePov();
             else if (matches("viewTop", e)) viewport.toggleOrthoView(true);
             else if (matches("viewSide", e)) viewport.toggleOrthoView(false);
+            // lane SWITCHING stays live while the density preview is
+            // up (v16.7, user spec — inspect the fitted carpet on
+            // every lane before Apply; still read-only, like the
+            // toolbar lane buttons)
+            else if (matches("lane1", e)) editor.setActiveLane(0);
+            else if (matches("lane2", e)) editor.setActiveLane(1);
+            else if (matches("lane3", e)) editor.setActiveLane(2);
             return;
         }
         if      (matches("undo", e))    editor.undo();

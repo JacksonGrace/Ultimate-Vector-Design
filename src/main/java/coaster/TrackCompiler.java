@@ -464,14 +464,11 @@ public final class TrackCompiler {
         // lanes key by section-local METERS, and no re-time exists at
         // all (arc is speed-invariant — the operating profile only
         // moves the values, never the axis).
-        // PER-METER sections take no influence yet (v16.6, D115 —
-        // the base extraction and delta units are per-second; the UI
-        // refuses entry, a hand-edited file falls back to plain)
-        if (ls.ratePerMeter) {
-            ls.baseCurves = null;
-            return isGeo ? geoLane((GeoSection) ls, entry, dt)
-                         : forceLane((ForceSection) ls, entry, dt);
-        }
+        // PER-METER sections influence too since v16.7 (D117): the
+        // base rows and the delta lanes speak °/m — per-meter rates
+        // are speed-INVARIANT (angle per meter of a fixed shape), so
+        // the operating-speed re-expression is the identity there —
+        // and pass 2 integrates under the perMeter flag.
         boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(ls.lanes, 0.05);
         if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored) {
@@ -492,15 +489,18 @@ public final class TrackCompiler {
         if (isGeo) {
             ref = distAxis
                 ? GeoIntegrator.integrateDist(kfs, dt, ls.vAuthored, pos0, q0,
-                    ls.rollGlobal, ls.yawPitchGlobal).samples()
+                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter)
+                    .samples()
                 : GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, q0,
-                    ls.rollGlobal, ls.yawPitchGlobal).samples();
+                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter)
+                    .samples();
         } else {
             FVDIntegrator.Options opts = new FVDIntegrator.Options();
             opts.dt = dt;
             opts.v0 = ls.vAuthored;
             opts.pos0 = pos0;
             opts.rollGlobal = ls.rollGlobal;
+            opts.rollPerMeter = ls.ratePerMeter;
             if (!ls.reversed) {
                 opts.startHeading = entry.T();
                 opts.startUp = entry.U();
@@ -561,6 +561,7 @@ public final class TrackCompiler {
             o2.v0 = ls.vDesign;
             o2.pos0 = pos0;
             o2.rollGlobal = ls.inflRollGlobal;
+            o2.rollPerMeter = ls.ratePerMeter;
             if (!ls.reversed) {
                 o2.startHeading = entry.T();
                 o2.startUp = entry.U();
@@ -576,9 +577,9 @@ public final class TrackCompiler {
         }
         GeoIntegrator.Result r2 = distAxis
             ? GeoIntegrator.integrateDist(synth, dt, ls.vDesign, pos0, q0,
-                ls.inflRollGlobal, ls.inflYawPitchGlobal)
+                ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter)
             : GeoIntegrator.integrate(synth, dt, ls.vDesign, pos0, q0,
-                ls.inflRollGlobal, ls.inflYawPitchGlobal);
+                ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter);
         if (ls.reversed) return reverseAndPlace(r2.samples(), entry);
         FVDIntegrator.Sample last = r2.samples().get(r2.samples().size() - 1);
         return new Centerline(r2.samples(), new TrackPose(last.pos(), r2.qEnd(),
@@ -606,13 +607,27 @@ public final class TrackCompiler {
             double[] tStar, double[] vStar, boolean distAxis) {
         int n = ref.size();
         double[][] base = new double[n][4];
+        boolean pm = ls.ratePerMeter;
         for (int i = 0; i < n; i++) {
             FVDIntegrator.Sample sm = ref.get(i);
             double vd = Math.max(0.1, sm.v());
             double vSafe = Math.max(vd, 0.5);
             double scale = vStar == null ? 1 : vStar[i] / vd;
+            // °/m rows (v16.7, D117): a per-meter rate is angle per
+            // meter of the FIXED ref shape — invariant under the
+            // operating speed, so the rate scale is 1 and °/s reads
+            // divide by the sample's own design speed
+            double rateDiv = 1;
+            if (pm) {
+                rateDiv = vSafe;
+                scale = 1;
+            }
             double rollLane = FVDIntegrator.interpAt(kfs,
                 distAxis ? sm.s() : sm.t()).rollRateDeg();
+            // per-meter sections author °/m: all conversion math runs
+            // in °/s space, so the lane read converts up front and
+            // the emitted rows divide back down (rateDiv, v16.7)
+            if (pm) rollLane *= vSafe;
             base[i][0] = distAxis ? sm.s()
                 : tStar == null ? sm.t() : tStar[i];
             // body pitch/yaw rates (deg/s) — the κ identity
@@ -637,21 +652,25 @@ public final class TrackCompiler {
             }
             if (isGeo) {
                 // geo section: deltas are FELT G — the §5.1 identity
-                double r2 = scale * scale;
+                // (felt scales with the operating profile even for
+                // per-meter sections: G targets are per-speed)
+                double fScale = vStar == null ? 1 : vStar[i] / vd;
+                double r2 = fScale * fScale;
                 base[i][1] = r2 * (sm.Gv() - sm.U().y()) + sm.U().y();
                 base[i][2] = r2 * (sm.Gl() - sm.R().y()) + sm.R().y();
             } else if (ls.inflYawPitchGlobal) {
                 // force section, GLOBAL-axis influence: elevation +
                 // heading rates
                 double[] wr = Coaster.worldRates(sm, pitB, yawB, rollB);
-                base[i][1] = capNaN(wr[0]) * scale;
-                base[i][2] = capNaN(wr[1]) * scale;
+                base[i][1] = capNaN(wr[0]) * scale / rateDiv;
+                base[i][2] = capNaN(wr[1]) * scale / rateDiv;
             } else {
                 // force section, local influence: body rates
-                base[i][1] = pitB * scale;
-                base[i][2] = yawB * scale;
+                base[i][1] = pitB * scale / rateDiv;
+                base[i][2] = yawB * scale / rateDiv;
             }
-            base[i][3] = (ls.inflRollGlobal ? bankR : rollB) * scale;
+            base[i][3] = (ls.inflRollGlobal ? bankR : rollB)
+                * scale / rateDiv;
         }
         return base;
     }

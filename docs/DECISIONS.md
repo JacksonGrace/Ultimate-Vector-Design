@@ -4216,3 +4216,35 @@ well? For vertical/lateral force, this would be adding g/m..."
 
 Gates: DomainGate 30 checks (45e, 46a-e new) + Phase2Gate 253, all
 green 2026-07-14. Walkthrough #77.
+
+## D117. v16.7 part 1: per-meter polish + per-meter influence
+##        (user feedback round 2026-07-14, afternoon)
+
+- **Axis units + °/m scales** (his "15 °/m lined up with 15 °/s"):
+  the LEFT y-axis title now carries the unit (laneName + laneUnit);
+  the RIGHT resulting axis relabels °/m and rescales (resValueAt ÷
+  that sample's v) when a °/m FORCE section's overlays show rates.
+  °/m lanes get their own default (minimum) scales: roll ±15,
+  geo pitch/yaw ±10 (user numbers; defMin/defMax).
+- **Program-wide ↺ graying + orange changed-radios** (user spec):
+  wireOriginal ties every radio row in the Convert/Orientation/Add
+  dialogs to its ORIGINAL selection — the ↺ grays at the original,
+  a differing selection tints orange rgb(235,150,60); Options-row
+  ↺ buttons gray at their defaults (optionReset overload);
+  Shortcuts already HID theirs at default (kept).
+- **PER-METER INFLUENCE** (user: "the influence graph should also
+  be in per m — maybe this was the hangup?" — it was, and it's the
+  fix): the two-pass emits base rows in °/m for °/m sections (the
+  conversion math runs in °/s space and divides back down; a °/m
+  rate is angle-per-meter of the FIXED ref shape, so the operating-
+  speed re-expression is the IDENTITY — scale 1 — which makes °/m
+  influence cleaner than °/s), delta lanes author °/m
+  (activeRatePM treats every influence-surface lane as a rate),
+  ref + pass-2 integrators run under the section's perMeter flag.
+  Entry bitwise + a 0.5 °/m heading delta lands exactly rate × arc
+  (gate 47a, 60.00°).
+- **Density preview lane switching** (user spec): the 1/2/3 keys
+  pass through the convert-UI key block (the toolbar buttons
+  already worked); still read-only until Apply.
+- **Orientation dialog**: the button parentheticals moved to gray
+  captions UNDER each button (user spec; VBox per button).

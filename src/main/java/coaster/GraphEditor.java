@@ -656,10 +656,15 @@ class GraphEditor extends Region {
             && (ls instanceof GeoSection || lane == 2);
     }
 
-    /** The ACTIVE section's lane, per-meter? */
+    /** The ACTIVE section's lane, per-meter? On the INFLUENCE
+     *  surface every delta lane is a rate (v16.7 — a °/m force
+     *  section's Δpitch/Δyaw author °/m). */
     private boolean activeRatePM(int lane) {
-        return sections().get(activeSection) instanceof LaneSection ls
-            && laneRatePM(ls, lane);
+        if (!(sections().get(activeSection) instanceof LaneSection ls)) {
+            return false;
+        }
+        if (activeInfl() != null) return ls.ratePerMeter;
+        return laneRatePM(ls, lane);
     }
 
     /** The active mode's lane accent color (geo: teal/yellow/orange) —
@@ -672,8 +677,17 @@ class GraphEditor extends Region {
     private static double[] modeDefMin(boolean geo) { return geo ? GEO_DEF_MIN : DEF_MIN; }
     private static double[] modeDefMax(boolean geo) { return geo ? GEO_DEF_MAX : DEF_MAX; }
 
-    private double defMin(int lane) { return modeDefMin(activeGeo())[lane]; }
-    private double defMax(int lane) { return modeDefMax(activeGeo())[lane]; }
+    private double defMin(int lane) {
+        // °/m lanes live at ~1/v the °/s numbers: their own default
+        // (minimum) scales — roll ±15, geo pitch/yaw ±10 (v16.7,
+        // user spec)
+        if (activeRatePM(lane)) return lane == 2 ? -15 : -10;
+        return modeDefMin(activeGeo())[lane];
+    }
+    private double defMax(int lane) {
+        if (activeRatePM(lane)) return lane == 2 ? 15 : 10;
+        return modeDefMax(activeGeo())[lane];
+    }
 
     /** Lane buttons show the active mode's lane names + colors (mode 2
      *  = the no-lane modes: straight/curve AND bridge). The bridge GAP
@@ -2400,11 +2414,10 @@ class GraphEditor extends Region {
                 // distance sections take influence since v16.1 (the
                 // two-pass runs over arc); GLOBAL-AXIS sections since
                 // v16.5 (D112 — the base converts representations)
-                MenuItem enter = new MenuItem((geoSec
+                MenuItem enter = new MenuItem(geoSec
                     ? "Influence felt force graphs"
-                    : "Influence resulting geo graphs")
-                    + (lsec.ratePerMeter ? " (°/s sections only)" : ""));
-                enter.setDisable(lsec.reversed || lsec.ratePerMeter);
+                    : "Influence resulting geo graphs");
+                enter.setDisable(lsec.reversed);
                 enter.setOnAction(ev -> enterInfluenceUi(k));
                 cm.getItems().add(enter);
             } else {
@@ -2467,8 +2480,7 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)
-                || ls.influenced() || ls.reversed
-                || ls.ratePerMeter) return;
+                || ls.influenced() || ls.reversed) return;
         pushUndoSnapshot();
         if (k != activeSection) setActiveSection(k);
         // speeds untouched (v15.4, D102); the delta lanes span the
@@ -2675,6 +2687,7 @@ class GraphEditor extends Region {
         rL.setToggleGroup(rg);
         rG.setToggleGroup(rg);
         (rollNow ? rG : rL).setSelected(true);
+        wireOriginal(rg, rollNow ? rG : rL, null);
         grid.addRow(row++, new Label("Roll"), new HBox(10, rL, rG));
 
         RadioButton yL = new RadioButton("Local (track axes)");
@@ -2684,6 +2697,7 @@ class GraphEditor extends Region {
             yL.setToggleGroup(yg);
             yG.setToggleGroup(yg);
             (ypNow ? yG : yL).setSelected(true);
+            wireOriginal(yg, ypNow ? yG : yL, null);
             grid.addRow(row++, new Label("Yaw/pitch"), new HBox(10, yL, yG));
         }
 
@@ -2693,10 +2707,13 @@ class GraphEditor extends Region {
         Button bake = new Button();
         Button close = new Button("Close");
         close.setCancelButton(true);
-        // fixed labels (v16.4 final, user wording); the radios pick
-        // the target, the buttons just enable when it differs
-        apply.setText("Switch to This Orientation (same graphs, change shape)");
-        bake.setText("Bake This Orientation (convert graphs, keep shape)");
+        // fixed labels (v16.4 final, user wording); the explanations
+        // sit UNDER each button in gray since v16.7 (user spec — they
+        // were parentheticals in the button text)
+        apply.setText("Switch to This Orientation");
+        bake.setText("Bake This Orientation");
+        Label applyCap = grayCaption("same graphs, change shape");
+        Label bakeCap = grayCaption("convert graphs, keep shape");
         Runnable sync = () -> {
             boolean nr = rG.isSelected();
             boolean ny = ypRow && yG.isSelected();
@@ -2724,13 +2741,24 @@ class GraphEditor extends Region {
                 geo ? yG.isSelected() : ls.yawPitchGlobal);
         });
         close.setOnAction(e2 -> dlg.close());
-        HBox buttons = inflSurf ? new HBox(8, apply, close)
-                                : new HBox(8, apply, bake, close);
+        VBox applyBox = new VBox(2, apply, applyCap);
+        applyBox.setAlignment(Pos.CENTER);
+        VBox bakeBox = new VBox(2, bake, bakeCap);
+        bakeBox.setAlignment(Pos.CENTER);
+        HBox buttons = inflSurf ? new HBox(8, applyBox, close)
+                                : new HBox(8, applyBox, bakeBox, close);
         buttons.setAlignment(Pos.CENTER_RIGHT);
         grid.add(buttons, 0, row, 2, 1);
         sync.run();
         dlg.setScene(new Scene(grid));
         dlg.show();
+    }
+
+    /** Small gray caption under a dialog button (v16.7). */
+    private static Label grayCaption(String text) {
+        Label l = new Label(text);
+        l.setStyle("-fx-text-fill: rgb(130,135,150); -fx-font-size: 10px;");
+        return l;
     }
 
     /** Toggle section k's cross-domain VIEW (v16.0): purely visual —
@@ -2788,6 +2816,7 @@ class GraphEditor extends Region {
         sPart.setToggleGroup(sg);
         sWhole.setSelected(true);
         sPart.setDisable(influenced);
+        wireOriginal(sg, sWhole, null);
         grid.addRow(row++, new Label("Convert"),
             new HBox(10, sWhole, sPart), new Label(influenced
                 ? "(part: bake or discard influence first)" : ""));
@@ -2799,7 +2828,11 @@ class GraphEditor extends Region {
         mGeo.setToggleGroup(mg);
         (curGeo ? mGeo : mForce).setSelected(true);
         Button mRst = resetBtn(() -> (curGeo ? mGeo : mForce).setSelected(true));
-        mRst.setDisable(ls == null);   // bridges/s-c have no lane mode
+        if (ls == null) {
+            mRst.setDisable(true);   // bridges/s-c have no lane mode
+        } else {
+            wireOriginal(mg, curGeo ? mGeo : mForce, mRst);
+        }
         grid.addRow(row++, new Label("Type"),
             new HBox(10, mForce, mGeo), mRst);
 
@@ -2809,9 +2842,10 @@ class GraphEditor extends Region {
         dTime.setToggleGroup(dg);
         dDist.setToggleGroup(dg);
         (curDist ? dDist : dTime).setSelected(true);
+        Button dRst = resetBtn(() -> (curDist ? dDist : dTime).setSelected(true));
+        wireOriginal(dg, curDist ? dDist : dTime, dRst);
         grid.addRow(row++, new Label("Domain"),
-            new HBox(10, dTime, dDist),
-            resetBtn(() -> (curDist ? dDist : dTime).setSelected(true)));
+            new HBox(10, dTime, dDist), dRst);
 
         ToggleGroup rg = new ToggleGroup();
         RadioButton rLocal = new RadioButton("Local");
@@ -2819,9 +2853,10 @@ class GraphEditor extends Region {
         rLocal.setToggleGroup(rg);
         rGlobal.setToggleGroup(rg);
         (curRollG ? rGlobal : rLocal).setSelected(true);
+        Button rRst = resetBtn(() -> (curRollG ? rGlobal : rLocal).setSelected(true));
+        wireOriginal(rg, curRollG ? rGlobal : rLocal, rRst);
         grid.addRow(row++, new Label("Roll axis"),
-            new HBox(10, rLocal, rGlobal),
-            resetBtn(() -> (curRollG ? rGlobal : rLocal).setSelected(true)));
+            new HBox(10, rLocal, rGlobal), rRst);
 
         ToggleGroup yg = new ToggleGroup();
         RadioButton yLocal = new RadioButton("Local");
@@ -2830,15 +2865,18 @@ class GraphEditor extends Region {
         yGlobal.setToggleGroup(yg);
         (curYpG ? yGlobal : yLocal).setSelected(true);
         Button yRst = resetBtn(() -> (curYpG ? yGlobal : yLocal).setSelected(true));
+        wireOriginal(yg, curYpG ? yGlobal : yLocal, null);
         grid.addRow(row++, new Label("Yaw/pitch axis"),
             new HBox(10, yLocal, yGlobal), yRst);
         Runnable syncYp = () -> {
             boolean geoOn = mGeo.isSelected();
             yLocal.setDisable(!geoOn);
             yGlobal.setDisable(!geoOn);
-            yRst.setDisable(!geoOn);
+            yRst.setDisable(!geoOn || yg.getSelectedToggle()
+                == (curYpG ? yGlobal : yLocal));
         };
         mg.selectedToggleProperty().addListener((o, w, n2) -> syncYp.run());
+        yg.selectedToggleProperty().addListener((o, w, n2) -> syncYp.run());
         syncYp.run();
 
         ToggleGroup ug = new ToggleGroup();
@@ -2847,9 +2885,10 @@ class GraphEditor extends Region {
         uSec.setToggleGroup(ug);
         uMet.setToggleGroup(ug);
         (curRateM ? uMet : uSec).setSelected(true);
+        Button uRst = resetBtn(() -> (curRateM ? uMet : uSec).setSelected(true));
+        wireOriginal(ug, curRateM ? uMet : uSec, uRst);
         grid.addRow(row++, new Label("Rate units"),
-            new HBox(10, uSec, uMet),
-            resetBtn(() -> (curRateM ? uMet : uSec).setSelected(true)));
+            new HBox(10, uSec, uMet), uRst);
 
         Button go = new Button("Convert");
         go.setDefaultButton(true);
@@ -2883,6 +2922,27 @@ class GraphEditor extends Region {
         b.setFocusTraversable(false);
         b.setOnAction(ev -> r.run());
         return b;
+    }
+
+    /** Wire a radio row to its ORIGINAL selection (v16.7, user
+     *  spec): the ↺ grays while the row sits at the original, and a
+     *  selection that DIFFERS tints orange. reset may be null (rows
+     *  without a ↺). */
+    private static void wireOriginal(ToggleGroup g, Toggle original,
+                                     Button reset) {
+        Runnable sync = () -> {
+            Toggle sel = g.getSelectedToggle();
+            boolean atOrig = sel == original;
+            if (reset != null) reset.setDisable(atOrig);
+            for (Toggle t : g.getToggles()) {
+                if (t instanceof RadioButton rb) {
+                    rb.setStyle(t == sel && !atOrig
+                        ? "-fx-text-fill: rgb(235,150,60);" : "");
+                }
+            }
+        };
+        g.selectedToggleProperty().addListener((o, w, n2) -> sync.run());
+        sync.run();
     }
 
     /** Remove section k of the ACTIVE piece; downstream sections
@@ -3042,6 +3102,7 @@ class GraphEditor extends Region {
         mForce.setToggleGroup(mg);
         mGeo.setToggleGroup(mg);
         (prev instanceof GeoSection ? mGeo : mForce).setSelected(true);
+        wireOriginal(mg, prev instanceof GeoSection ? mGeo : mForce, null);
         grid.addRow(row++, new Label("Type"), new HBox(10, mForce, mGeo));
 
         ToggleGroup dg = new ToggleGroup();
@@ -3051,6 +3112,9 @@ class GraphEditor extends Region {
         dDist.setToggleGroup(dg);
         (prev != null && prev.domain() == Section.Domain.DISTANCE
             ? dDist : dTime).setSelected(true);
+        wireOriginal(dg, prev != null
+            && prev.domain() == Section.Domain.DISTANCE ? dDist : dTime,
+            null);
         grid.addRow(row++, new Label("Domain"), new HBox(10, dTime, dDist));
 
         ToggleGroup rg = new ToggleGroup();
@@ -3059,6 +3123,8 @@ class GraphEditor extends Region {
         rLocal.setToggleGroup(rg);
         rGlobal.setToggleGroup(rg);
         (prev != null && prev.rollGlobal ? rGlobal : rLocal).setSelected(true);
+        wireOriginal(rg, prev != null && prev.rollGlobal ? rGlobal : rLocal,
+            null);
         grid.addRow(row++, new Label("Roll axis"), new HBox(10, rLocal, rGlobal));
 
         // RATE UNITS (v16.6, D115): °/s vs °/m for the rate lanes
@@ -3068,6 +3134,8 @@ class GraphEditor extends Region {
         uSec.setToggleGroup(ug);
         uMet.setToggleGroup(ug);
         (prev != null && prev.ratePerMeter ? uMet : uSec).setSelected(true);
+        wireOriginal(ug, prev != null && prev.ratePerMeter ? uMet : uSec,
+            null);
         grid.addRow(row++, new Label("Rate units"), new HBox(10, uSec, uMet));
 
         ToggleGroup yg = new ToggleGroup();
@@ -3076,6 +3144,8 @@ class GraphEditor extends Region {
         yLocal.setToggleGroup(yg);
         yGlobal.setToggleGroup(yg);
         (prev != null && prev.yawPitchGlobal ? yGlobal : yLocal).setSelected(true);
+        wireOriginal(yg, prev != null && prev.yawPitchGlobal
+            ? yGlobal : yLocal, null);
         Label ypLbl = new Label("Yaw/pitch axis");
         HBox ypRow = new HBox(10, yLocal, yGlobal);
         grid.addRow(row++, ypLbl, ypRow);
@@ -3092,6 +3162,7 @@ class GraphEditor extends Region {
         cCont.setToggleGroup(cg);
         cReal.setToggleGroup(cg);
         cCont.setSelected(true);
+        wireOriginal(cg, cCont, null);
         if (drifted) {
             grid.addRow(row++, new Label("Seam"), new HBox(10, cCont, cReal));
         }
@@ -7474,7 +7545,22 @@ class GraphEditor extends Region {
             if (tru) return app.trueFelt[i][comp - 1];
             return comp == 1 ? app.lastSamples.get(i).Gv() : app.lastSamples.get(i).Gl();
         }
-        return tru ? app.trueRates[i][comp] : app.resultRates[i][comp];
+        double r = tru ? app.trueRates[i][comp] : app.resultRates[i][comp];
+        // a °/m force section shows its resulting rates in °/m too
+        // (v16.7 — both axes speak the section's rate units)
+        if (resRatePM()) {
+            r /= Math.max(0.5, tru ? app.trueV[i]
+                : app.lastSamples.get(i).v());
+        }
+        return r;
+    }
+
+    /** Do the resulting overlays show rates in °/m (v16.7)? Only a
+     *  per-meter FORCE section's overlays are rates. */
+    private boolean resRatePM() {
+        return !activeGeo()
+            && sections().get(activeSection) instanceof LaneSection ls
+            && ls.ratePerMeter;
     }
 
     private double resToY(double v) {
@@ -7686,7 +7772,7 @@ class GraphEditor extends Region {
             String name = activeGeo()
                 ? (hoverResComp == 1 ? "Gv" : "Gl")
                 : (hoverResComp == 1 ? "pitch" : "yaw");
-            String unit = activeGeo() ? "g" : "°/s";
+            String unit = activeGeo() ? "g" : resRatePM() ? "°/m" : "°/s";
             String txt;
             if (hoverSlope) {
                 int ic = sampleIdxAtAxis(hoverResT);
@@ -7909,7 +7995,10 @@ class GraphEditor extends Region {
         gc.rotate(-90);
         gc.setTextAlign(TextAlignment.CENTER);
         gc.setTextBaseline(VPos.CENTER);
-        gc.fillText(laneName(activeLane), 0, 0);
+        // the unit rides the title (v16.7 — a °/m lane's 15 lined up
+        // with a °/s 15 with nothing on the axis saying which)
+        gc.fillText(laneName(activeLane) + " (" + laneUnit(activeLane).trim()
+            + ")", 0, 0);
         gc.restore();
 
         // RIGHT axis for the resulting overlays (v10.3): their shared
@@ -7932,7 +8021,8 @@ class GraphEditor extends Region {
             gc.setFont(Font.font(11));
             gc.setTextAlign(TextAlignment.CENTER);
             gc.fillText((activeInfl() != null ? "True resulting " : "Resulting ")
-                + (activeGeo() ? "G (g)" : "rate (°/s)"), 0, 0);
+                + (activeGeo() ? "G (g)"
+                    : resRatePM() ? "rate (°/m)" : "rate (°/s)"), 0, 0);
             gc.restore();
         }
 
