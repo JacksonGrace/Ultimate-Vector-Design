@@ -102,7 +102,13 @@ LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     section's shape therefore still depends on design
                     speed, unlike s/c). AXIS flags rollGlobal /
                     yawPitchGlobal (v16.1, D107 — local defaults =
-                    historic, bitwise; globalAxes() sections aren't
+                    historic, bitwise) + RATE UNITS ratePerMeter
+                    (v16.6, D115: rate lanes author °/m — consumed
+                    rate = value × v at every stage, global-roll bank
+                    targets integrate over ARC; force Gv/Gl are
+                    TARGETS, untouched; DISTANCE × °/m geo shape is
+                    fully speed-independent, gated 0.08 mm; influence
+                    refuses °/m sections for now; globalAxes() sections aren't
                     body rates: sampled matching, derived strips).
                     INFLUENCE state (v15.0, D98;
                     distance sections join in v16.1 — the two-pass
@@ -297,6 +303,20 @@ Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     the auto-reoptimize pass (v13.14), the CONVERT
                     engine (convertToLanes uniform/adaptive fits +
                     whole/partial ops + scCutClamp, v14.0 D89/D90;
+                    ENTRY-INCLUSIVE since v16.6 D113 — withEntry
+                    prepends the boundary sample to every span-based
+                    convert extraction: a continuation span starts one
+                    dt after its entry (the D84 dropped sample) and
+                    mid-chain converts re-fit one step SHORT, v·dt ≈
+                    0.2-0.3 m of arc — THE user's standing "converges
+                    slightly off" (sole-section gates never saw it);
+                    partial FRACTION axes stay span-only (D89's exact
+                    cuts). FULL-FLAG converts since v16.6 D116: type ×
+                    domain × axes × rate units in ONE convertToLanes
+                    call (convertWholeSection/Bridge, partialConvert*
+                    take the set; gate 46e 0.0002 m — global-axis
+                    targets stay undefined near vertical, the v16.2
+                    cap).
                     AREA-MATCHED since v16.5 D111 —
                     matchSegmentAreas nudges node values ~1e-3 so
                     every segment's weighted integral equals the
@@ -557,6 +577,7 @@ source tree — they won't compile against the current time-domain API.
   reversed` blocks (the domain field — written since Phase 1 — is
   HONORED for force/geo since v16.0 D103: "distance" = lane x in
   meters; every old file says "time" there and loads unchanged;
+  field 8 = ratePerMeter, v16.6 D115, missing = °/s;
   the cross-domain VIEW flag is deliberately NOT saved) holding
   `lane`/`n` lines (force/geo; an
   INFLUENCED section, v15.0 D98, appends `infl vApply [rollG ypG]` —
@@ -696,8 +717,9 @@ coordinate (same-mode inactive strips draw authored lanes only when
 their native domain IS the axis; overlays/true strokes/POV marker/
 hovers all axis-generic, seam trims speed-scaled on meters). The
 badge menu's SECTION SETTINGS block (top, after the info line)
-holds "Convert to time/distance domain…" — ONE action item since
-v16.2 (was radios) = Coaster.convertDomain's
+held "Convert to time/distance domain…" (ONE action item since
+v16.2, was radios) — SUBSUMED in v16.6 (D116) by the unified
+"Convert…" dialog = Coaster.convertDomain's
 same-mode carpet REFIT through the density preview (v16.1 D104,
 replacing v16.0's exact node map; meters spacing for →distance;
 converges with density; speeds/pins/conflicts carry; influenced
@@ -727,7 +749,12 @@ from the aircraft convention by the up-Y world, probed against
 d(bank)/dt; NaN past ~81° elevation — a capped bank-rate spike
 would INTEGRATE into a garbage target, the 42c 121 m lesson), so
 every seam combination incl. global|global matches except vertical
-seams. "Bake roll / yaw-pitch to global|local (keep shape)…"
+seams; local|global ROLL seams convert ANALYTICALLY since v16.6
+(D114 — rollAcrossSeam: exact boundary-sample ψ' by the κ identity +
+the transport term p = φ' + ψ'·sinθ, value exact so re-presses never
+creep; global|global roll and matching-semantics lanes 0/1 take the
+exact authored path now), and °/s|°/m seams convert value + slope at
+the seam speed with the v' product term (D115). "Bake roll / yaw-pitch to global|local (keep shape)…"
 (v16.2, D108 — Coaster.bakeAxes): the convert engine re-fits the
 SAME compiled shape as lanes meaning the other semantics (radios
 reinterpret, bakes preserve — ANALYTIC world rates since v16.3
@@ -1154,8 +1181,12 @@ zero-advance tick, POV froze a frame). Pass A differences WITHIN
 runs (detached pieces' frames no longer poison run-end rates).
 CONVERT (v13.7 D81 — v13.5's bridge-only
 "Unfreeze (edit as geo section)" renamed and UNIFIED; EXPANDED
-v14.0 D89/D90): every badge
-menu ends with a WHOLE + PART pair per target mode — "Convert to
+v14.0 D89/D90; ONE "Convert…" DIALOG since v16.6 D116: Whole/Part
+scope, Type, Domain, Roll axis, Yaw/pitch axis, Rate units — each
+row pre-set to the section's current value with ↺ reset buttons,
+any combination to any other, Part carries the choices into the
+split-line mode, influenced sections gray Part, reversed refuse):
+the pre-v16.6 menu ended with a WHOLE + PART pair per target mode — "Convert to
 geo/force section" (bridges: "Convert whole bridge to …", which
 ATTACHES the next piece so the track stays connected — the v13.7
 whole convert split the run; orphans just convert) and "Convert

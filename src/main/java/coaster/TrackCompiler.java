@@ -366,6 +366,7 @@ public final class TrackCompiler {
         opts.dt = dt;
         opts.v0 = fs.vDesign;
         opts.rollGlobal = fs.rollGlobal;   // v16.1, D107
+        opts.rollPerMeter = fs.ratePerMeter;   // v16.6, D115
         if (fs.reversed) {
             // canonical frame at the ENTRY HEIGHT: energy is
             // height-relative but float rounding is not — this keeps
@@ -398,10 +399,10 @@ public final class TrackCompiler {
             GeoIntegrator.Result rr = dist
                 ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                     new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
-                    gs.rollGlobal, gs.yawPitchGlobal)
+                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter)
                 : GeoIntegrator.integrate(kfs, dt,
                     gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
-                    gs.rollGlobal, gs.yawPitchGlobal);
+                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter);
             return reverseAndPlace(rr.samples(), entry);
         }
         // quaternion-native (the §2 amendment): the exit orientation
@@ -409,10 +410,10 @@ public final class TrackCompiler {
         GeoIntegrator.Result r = dist
             ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
-                gs.rollGlobal, gs.yawPitchGlobal)
+                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter)
             : GeoIntegrator.integrate(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
-                gs.rollGlobal, gs.yawPitchGlobal);
+                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter);
         FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
         TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t());
@@ -463,6 +464,14 @@ public final class TrackCompiler {
         // lanes key by section-local METERS, and no re-time exists at
         // all (arc is speed-invariant — the operating profile only
         // moves the values, never the axis).
+        // PER-METER sections take no influence yet (v16.6, D115 —
+        // the base extraction and delta units are per-second; the UI
+        // refuses entry, a hand-edited file falls back to plain)
+        if (ls.ratePerMeter) {
+            ls.baseCurves = null;
+            return isGeo ? geoLane((GeoSection) ls, entry, dt)
+                         : forceLane((ForceSection) ls, entry, dt);
+        }
         boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(ls.lanes, 0.05);
         if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored) {

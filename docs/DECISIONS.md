@@ -4112,3 +4112,107 @@ possible solutions... just improvements to the placements of the nodes
   global axes vs 39.75 local — the cos(elevation) contrast, d: FVDD3
   byte-identical round trip with flags). DomainGate 24 checks +
   Phase2Gate 253 green. Walkthrough #76.
+
+## D113. v16.6: MID-CHAIN converts lost their entry step — the user's
+##        real "converges off" bug (feedback round 2026-07-14)
+
+User: "an overbanked turn in force of about length 150m... STILL
+getting a significant converging difference... roughly 0.3m."
+
+- Reproduced at 0.20 m ONLY when the section sits MID-CHAIN: a
+  continuation section's span starts one dt AFTER its entry (the
+  compiler drops the sample duplicating the previous exit, D84), so
+  every span-based convert extracted a profile 0.01 s short and
+  SHIFTED — the refit section lost v·dt ≈ 0.2-0.3 m of arc. Sole-
+  section gate fixtures never showed it (their spans start at t=0);
+  the user converts mid-layout, so this was likely THE standing
+  "converges to a point that isn't quite the original" all along —
+  D99's extraction fix and D111's area matching each removed real
+  error layers but not this one.
+- Fix: Coaster.withEntry — the convert extractions include the
+  boundary sample (the section's exact entry state; its felt belongs
+  to the previous section, so a deliberate seam jump reads the old
+  target for one dt-local row — replacing a whole-profile shift). A
+  position-continuity guard keeps DETACHED run-starts (whose spans
+  are complete) from pulling in the previous run's tail. Applied to
+  convertWholeSection, convertDomain, bakeAxes, makeGraphsReal and
+  the LEFT partial-convert half; the partial FRACTION axis stays
+  span-only (D89's exact node cuts must not shift).
+- Overbank repro: 0.20 m -> 2.6-7.2 mm (gate 45e).
+
+## D114. v16.6: B/Shift+B across local|global ROLL seams (same round)
+
+- The neighbor's roll expressed in OUR semantics, EXACT at the
+  boundary sample: frames and felt are exact there, so the heading
+  rate psi' comes from the kappa identity with no differencing, and
+  worldRates' bank line inverts to p = phi' + psi'*sin(theta) (body
+  roll <- bank rate; minus for the reverse). Slope from the same
+  conversion 5 samples inside — the seam value stays exact, so
+  re-presses don't creep. Vertical seams refuse with the stats-bar
+  reason (no defined bank).
+- Bonus exactness: global|global roll seams now match DIRECT from
+  the authored lanes (both are bank rates — the sampled world-rate
+  path was pointless there), and lanes 0/1's exact path keys on
+  YAW/PITCH semantics equality only (a neighbor's roll flag
+  needlessly forced sampling before).
+
+## D115. v16.6: PER-METER rate units (user spec, same round)
+
+User: "could you make RATES able to be between time or distance as
+well? For vertical/lateral force, this would be adding g/m..."
+
+- LaneSection.ratePerMeter: the RATE lanes author °/m — geo
+  pitch/yaw/roll and a force section's roll. Consumed rate =
+  value × v at every integrator stage (both integrators, both
+  domains, global axes included — the global-roll bank target
+  integrates the lane over ARC). NOTE on the "g/m" ask: Gv/Gl are
+  G TARGETS, not rates — they carry no time denominator to swap
+  (a 2 g target is 2 g at any speed), so the flag deliberately
+  leaves them; the Rate-units setting on a force section governs
+  its roll lane. Explained to the user.
+- Distance domain × per-meter GEO = fully speed-independent shape
+  (the s/c property for lanes — gated 0.08 mm between 18 and
+  30 m/s). Per-meter constant pitch: elevation == rate × arc
+  exactly (gate 46a); global per-meter roll: bank == rate × arc
+  (46c).
+- Everywhere the units matter: converts (a toRateM target divides
+  each sample's rate by the profile speed; area weights: ∫val·v dt
+  on time axes → w = v, exactly ∫val ds on arc axes → w = 1), the
+  Add dialog (Rate-units row; per-meter holds divide the °/s end
+  state, κ-matching skipped — per-meter is speed-invariant already),
+  '+' continuations carry the flag, B/Shift+B convert value+slope
+  across mixed-rate seams (× / ÷ v_seam with the product-rule v'
+  term; a per-meter neighbor's authored reads convert up front),
+  section line field 8 in FVDD3 (missing = °/s), undo, badge
+  "· rates °/m", y-axis/readout units, derived strips rescale onto
+  a per-meter axis (÷ that sample's v). DEFERRED (told the user,
+  spec'd "OR"): the cross-rate VIEW (edit °/s seeing °/m nodes);
+  influence on per-meter sections refuses with the reason.
+
+## D116. v16.6: ONE "Convert…" dialog — every combination to every
+##        other (user spec, same round) + UI round items
+
+- The badge menu's four convert items + the separate domain-convert
+  action condensed to ONE "Convert…" opening an Add-style dialog:
+  Whole/Part scope, Type, Domain, Roll axis, Yaw/pitch axis (grayed
+  for force), Rate units — each row pre-set to the section's current
+  value with a ↺ reset button. Whole commits through the density
+  preview; Part closes into the split-line mode CARRYING the chosen
+  output settings. Influenced sections gray Part (the D98 kept-half
+  rule); reversed still refuse the dialog.
+- Engine: convertToLanes grew the full flag set (type × domain ×
+  rollG × ypG × rateM in ONE call — convertWholeSection,
+  convertBridgeWhole, partialConvertSection/Bridge all take it).
+  Gate 46e: force/time/local/°s -> geo/DISTANCE/global/°m in one
+  call, dev 0.0002 m. LESSON re-learned while gating: global-axis
+  targets remain undefined over NEAR-VERTICAL track (T.y ±0.95 broke
+  a first fixture by 35-58 m through the documented hold-off — not
+  a regression, the v16.2 cap; fixtures must stay off vertical).
+- UI round items: the Orientation-settings dialog dropped its gray
+  explainer (redundant with the button parentheticals, user);
+  s/c + bridge strips' TRUE strokes take a MIDDLE weight
+  (TRUE_STROKE_MID 0.55 — they had missed the v16.2 dimming and drew
+  all-bold; user spec "between selected and unselected").
+
+Gates: DomainGate 30 checks (45e, 46a-e new) + Phase2Gate 253, all
+green 2026-07-14. Walkthrough #77.

@@ -1068,6 +1068,52 @@
     Transition. (e) undo/save-load: influence axis choices survive
     both.
 
+46. **v16.6 gates (DomainGate extension; D113-D116).** All passed
+    2026-07-14: (45e) MID-CHAIN convert keeps the section's entry
+    step (D113 — the dropped-boundary-sample bug): the overbanked
+    mid-chain repro falls 0.20 m → 2.6 mm (geo), 7.2 mm (force),
+    3.3 mm (adaptive), arc loss gone. (46a) per-meter constant pitch:
+    elevation == rate × arc to 0.02° over 106 m whatever the speed
+    profile. (46b) DISTANCE + per-meter geo shape is design-speed
+    INVARIANT (0.08 mm between 18 and 30 m/s — the s/c property for
+    lanes). (46c) force per-meter GLOBAL roll: bank == rate × arc
+    (the arc-integral bank target; a LOCAL-roll first draft of the
+    gate mis-measured — bank-vs-horizon drifts from the body-roll
+    integral by transport once a banked Gv=1 track pitches). (46d)
+    convert to per-meter keeps the shape (9.7 mm) + FVDD3
+    byte-identical round trip with section field 8. (46e)
+    ALL-SETTINGS convert in one call — force/time/local/°s →
+    geo/DISTANCE/global-roll+yp/per-meter — dev 0.0002 m (a first
+    fixture cresting at T.y ±0.95 read 35-58 m: the DOCUMENTED
+    near-vertical global-axis hold-off, not a code path — keep gate
+    fixtures off vertical). DomainGate 30 checks + Phase2Gate 253
+    green.
+
+77. v16.6 feel round (untested by the user yet): (a) YOUR OVERBANK —
+    re-run the ~150 m overbanked-turn convert mid-layout: the end
+    point should land ON the original now (mm; it was the section's
+    first integration step going missing on every mid-chain convert,
+    not the fit). (b) badge menu > "Convert…": ONE dialog — Whole or
+    Part, Type, Domain, Roll axis, Yaw/pitch axis (grays for force),
+    Rate units, each row with ↺ back to the section's current
+    setting. Any combination to any other; Part opens the split line
+    carrying your choices; the old per-item entries and the separate
+    domain-convert action are gone. Global-axis targets still blur
+    over near-vertical track (documented cap). (c) RATE UNITS — add
+    or convert a section to °/m: same graphs-over-x editing, values
+    now mean degrees per METER of track (a distance-domain °/m geo
+    section's shape ignores design speed entirely, like s/c). Force
+    Gv/Gl stay G targets — a 2 g target is 2 g at any speed, there is
+    no "g per meter" to author, so Rate units on a force section
+    governs its roll lane. (d) B/Shift+B across a local|global ROLL
+    seam — both directions, re-press = no creep; global|global roll
+    seams are exact now too; °/s|°/m seams convert value + slope.
+    (e) the Orientation dialog lost its gray explainer text. (f) a
+    speed-conflicted s/c section's true strokes now dim like
+    everyone else's — all three at a middle weight (between a lane
+    strip's selected and unselected strokes); say if the level reads
+    wrong.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

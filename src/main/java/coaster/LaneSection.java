@@ -57,6 +57,18 @@ public sealed abstract class LaneSection implements Section
      *  back to the compiled curves. */
     public boolean globalAxes() { return rollGlobal || yawPitchGlobal; }
 
+    /** PER-METER rate units (v16.6, D115 — user spec): the RATE
+     *  lanes' values are °/m instead of °/s — geo pitch/yaw/roll, and
+     *  a force section's roll lane (Gv/Gl are G targets; they carry
+     *  no time denominator to swap, so the flag doesn't touch them).
+     *  The integrators consume value × v at every stage, so a
+     *  per-meter profile puts the same angles into the same meters
+     *  of track whatever the speed. Orthogonal to the DOMAIN (which
+     *  re-parameterizes the x-axis): domain says where a value
+     *  sits, rate units say what the value means. false = the
+     *  historic °/s, bitwise. */
+    public boolean ratePerMeter = false;
+
     /** INFLUENCE axis semantics (v16.5, D112 — user spec): how the
      *  two-pass integrates base + delta AS the other mode. A force
      *  section's geo influence picks roll and yaw/pitch axes; a geo

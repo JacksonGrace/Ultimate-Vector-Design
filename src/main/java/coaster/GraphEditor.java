@@ -645,7 +645,21 @@ class GraphEditor extends Region {
     }
 
     private String laneUnit(int lane) {
+        if (activeRatePM(lane)) return " °/m";
         return activeGeo() ? " °/s" : LANE_UNITS[lane];
+    }
+
+    /** Is this lane of the given section authored PER METER (v16.6,
+     *  D115)? Rate lanes only — geo pitch/yaw/roll, force roll. */
+    static boolean laneRatePM(LaneSection ls, int lane) {
+        return ls.ratePerMeter
+            && (ls instanceof GeoSection || lane == 2);
+    }
+
+    /** The ACTIVE section's lane, per-meter? */
+    private boolean activeRatePM(int lane) {
+        return sections().get(activeSection) instanceof LaneSection ls
+            && laneRatePM(ls, lane);
     }
 
     /** The active mode's lane accent color (geo: teal/yellow/orange) —
@@ -985,6 +999,13 @@ class GraphEditor extends Region {
      *  direction — same round-1 rule as §5.3). One undo step returns
      *  the original. */
     private void convertSection(int k, boolean toGeo) {
+        convertSection(k, toGeo, Section.Domain.TIME, false, false, false);
+    }
+
+    /** Full-settings whole convert (v16.6, D116 — the Convert
+     *  dialog): type/domain/axes/rate units in one engine call. */
+    private void convertSection(int k, boolean toGeo, Section.Domain dom,
+                                boolean rollG, boolean ypG, boolean rateM) {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()) return;
         Section sec = secs.get(k);
@@ -994,10 +1015,11 @@ class GraphEditor extends Region {
         // density preview can re-run it per change (v14.0, D90); a
         // BRIDGE whole-convert routes to convertBridgeWhole in there —
         // the next piece attaches and the track stays connected (D89)
-        beginDensityPreview(k, toGeo,
+        beginDensityPreview(k, toGeo, false,
+            dom == Section.Domain.DISTANCE,
             (sp, tol) ->
             app.coaster.convertWholeSection(piece, k, toGeo,
-                FvdDesigner.INTEGRATE_DT, sp, tol),
+                FvdDesigner.INTEGRATE_DT, sp, tol, dom, rollG, ypG, rateM),
             () -> {
                 activePiece = piece;
                 activeSection = k;
@@ -1424,6 +1446,9 @@ class GraphEditor extends Region {
     // bridge (Coaster.partialConvertBridge).
     private int pcSec = -1;           // section index in mode; -1 off
     private boolean pcToGeo;          // requested lane mode
+    // requested output settings (v16.6, D116 — the Convert dialog)
+    private Section.Domain pcDom = Section.Domain.TIME;
+    private boolean pcRollG, pcYpG, pcRateM;
     private double pcFrac = 0.5;      // split fraction (arc or time)
     private boolean pcLeft = true;    // which side converts
     private boolean pcDragLine = false;
@@ -1435,6 +1460,14 @@ class GraphEditor extends Region {
      *  to clicked nodes), bridge + s/c by ARC (the s/c line clamps
      *  outside blend/ease windows via Coaster.scCutClamp). */
     void beginPartialConvert(int k, boolean toGeo) {
+        beginPartialConvert(k, toGeo, Section.Domain.TIME,
+            false, false, false);
+    }
+
+    /** Full-settings variant (v16.6, D116): the converted side comes
+     *  out with the requested type/domain/axes/rate units. */
+    void beginPartialConvert(int k, boolean toGeo, Section.Domain dom,
+                             boolean rollG, boolean ypG, boolean rateM) {
         if (k < 0 || k >= sections().size()) return;
         Section sec = sections().get(k);
         if (sec.reversed()) return;
@@ -1446,6 +1479,10 @@ class GraphEditor extends Region {
         if (sec.viewOtherDomain()) sec.viewOtherDomain(false);
         pcSec = k;
         pcToGeo = toGeo;
+        pcDom = dom;
+        pcRollG = rollG;
+        pcYpG = ypG;
+        pcRateM = rateM;
         pcFrac = 0.5;
         pcLeft = true;
         pcDragLine = false;
@@ -1471,12 +1508,17 @@ class GraphEditor extends Region {
             return;
         }
         boolean bridge = sections().get(k) instanceof BridgeSection;
+        Section.Domain dom = pcDom;
+        boolean rollG = pcRollG, ypG = pcYpG, rateM = pcRateM;
         ConvertOp op = bridge
             ? (sp, tol) -> app.coaster.partialConvertBridge(piece, k,
-                frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol)
+                frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol,
+                dom, rollG, ypG, rateM)
             : (sp, tol) -> app.coaster.partialConvertSection(piece, k,
-                frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol);
-        beginDensityPreview(k, toGeo, op, () -> {
+                frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol,
+                dom, rollG, ypG, rateM);
+        beginDensityPreview(k, toGeo, false,
+            dom == Section.Domain.DISTANCE, op, () -> {
             if (bridge && !left
                     && piece + 1 < app.coaster.pieces.size()) {
                 activePiece = piece + 1;   // lanes prepend to the next piece
@@ -2214,7 +2256,7 @@ class GraphEditor extends Region {
             : drifted && !(sec instanceof BridgeSection)
                 ? " · true splits inside" : "";
         MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s%s%s%s%s%s",
+            "%s section %d — design %.1f m/s%s%s%s%s%s%s",
             modeName(sec), k + 1, sec.vDesign(),
             sec instanceof LaneSection ili && ili.influenced()
                 ? String.format(Locale.US, " (authored %.1f)", ili.vAuthored)
@@ -2226,6 +2268,8 @@ class GraphEditor extends Region {
                 ? (lgx.rollGlobal && lgx.yawPitchGlobal
                     ? " · global axes" : lgx.rollGlobal
                     ? " · global roll" : " · global yaw/pitch") : "",
+            sec instanceof LaneSection lrm && lrm.ratePerMeter
+                ? " · rates °/m" : "",
             drift, extra));
         info.setDisable(true);
         // the per-section Reversed check moved to piece scope in v12.1
@@ -2255,15 +2299,8 @@ class GraphEditor extends Region {
             // conversion is an ACTION, not a state to toggle (v16.2,
             // user spec): one button for the only direction that
             // exists — s/c is inherently meters and shows none
-            if (!isSc) {
-                MenuItem domConv = new MenuItem("Convert to "
-                    + (nd ? "time" : "distance") + " domain…"
-                    + (infl ? " (captures influence)" : ""));
-                domConv.setDisable(sec.reversed());
-                domConv.setOnAction(ev -> switchDomainUi(k,
-                    nd ? Section.Domain.TIME : Section.Domain.DISTANCE));
-                cm.getItems().add(domConv);
-            }
+            // (the separate "Convert to … domain…" item was subsumed
+            // by the Convert… dialog's Domain row in v16.6, D116)
             CheckMenuItem viewOther = new CheckMenuItem("View in "
                 + (nd ? "time" : "distance") + " domain");
             viewOther.setSelected(sec.viewOtherDomain());
@@ -2363,10 +2400,11 @@ class GraphEditor extends Region {
                 // distance sections take influence since v16.1 (the
                 // two-pass runs over arc); GLOBAL-AXIS sections since
                 // v16.5 (D112 — the base converts representations)
-                MenuItem enter = new MenuItem(geoSec
+                MenuItem enter = new MenuItem((geoSec
                     ? "Influence felt force graphs"
-                    : "Influence resulting geo graphs");
-                enter.setDisable(lsec.reversed);
+                    : "Influence resulting geo graphs")
+                    + (lsec.ratePerMeter ? " (°/s sections only)" : ""));
+                enter.setDisable(lsec.reversed || lsec.ratePerMeter);
                 enter.setOnAction(ev -> enterInfluenceUi(k));
                 cm.getItems().add(enter);
             } else {
@@ -2409,14 +2447,15 @@ class GraphEditor extends Region {
         // side's ref cannot reproduce the original's sub-arc — bake
         // or discard the influence first); whole convert bakes it.
         cm.getItems().add(new SeparatorMenuItem());
-        boolean isBridge = sec instanceof BridgeSection;
-        boolean influenced = sec instanceof LaneSection li && li.influenced();
-        if (!(sec instanceof GeoSection)) {
-            addConvertItems(cm, k, true, isBridge, sec.reversed(), influenced);
-        }
-        if (!(sec instanceof ForceSection)) {
-            addConvertItems(cm, k, false, isBridge, sec.reversed(), influenced);
-        }
+        // ONE "Convert…" entry since v16.6 (D116, user spec): the
+        // dialog holds every output setting — whole/part, type,
+        // domain, axes, rate units — and every combination converts
+        // to every other in one engine call
+        MenuItem convOne = new MenuItem("Convert…"
+            + (sec.reversed() ? " (reversed sections refuse)" : ""));
+        convOne.setDisable(sec.reversed());
+        convOne.setOnAction(ev -> showConvertDialog(k));
+        cm.getItems().add(convOne);
         showMenu(cm, screenX, screenY);
     }
 
@@ -2428,7 +2467,8 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)
-                || ls.influenced() || ls.reversed) return;
+                || ls.influenced() || ls.reversed
+                || ls.ratePerMeter) return;
         pushUndoSnapshot();
         if (k != activeSection) setActiveSection(k);
         // speeds untouched (v15.4, D102); the delta lanes span the
@@ -2647,16 +2687,8 @@ class GraphEditor extends Region {
             grid.addRow(row++, new Label("Yaw/pitch"), new HBox(10, yL, yG));
         }
 
-        Label note = new Label(inflSurf
-            ? "These set the axes the influence deltas integrate\n"
-            + "about (the base curves convert automatically)."
-            : "Switch reinterprets the lanes (the shape changes);\n"
-            + "Bake keeps the track and re-fits the lanes."
-            + (infl ? "\nInfluenced: baking folds the influence in." : ""));
-        note.setStyle("-fx-text-fill: rgb(130,135,150);"
-            + " -fx-font-size: 11px;");
-        grid.add(note, 0, row++, 2, 1);
-
+        // (the gray explainer that used to sit here was REMOVED in
+        // v16.6 — user: redundant with the buttons' parentheticals)
         Button apply = new Button();
         Button bake = new Button();
         Button close = new Button("Close");
@@ -2717,24 +2749,140 @@ class GraphEditor extends Region {
         redraw();
     }
 
-    /** The convert pair for one target mode: whole ("Convert [whole
-     *  bridge] to X section") + partial ("Convert part to X
-     *  section…"), v14.0 D89. */
-    private void addConvertItems(ContextMenu cm, int k, boolean toGeo,
-                                 boolean isBridge, boolean reversed,
-                                 boolean influenced) {
-        String mode = toGeo ? "geo" : "force";
-        MenuItem whole = new MenuItem(isBridge
-            ? "Convert whole bridge to " + mode + " section"
-            : "Convert to " + mode + " section");
-        whole.setDisable(reversed);
-        whole.setOnAction(ev -> convertSection(k, toGeo));
-        MenuItem part = new MenuItem(influenced
-            ? "Convert part… (bake or discard influence first)"
-            : "Convert part to " + mode + " section…");
-        part.setDisable(reversed || influenced);
-        part.setOnAction(ev -> beginPartialConvert(k, toGeo));
-        cm.getItems().addAll(whole, part);
+    /** The unified CONVERT dialog (v16.6, D116 — user spec: all
+     *  convert options in one Add-style window): Whole/Part scope,
+     *  Type, Domain, Roll axis, Yaw/pitch axis (grayed for force),
+     *  Rate units — each row pre-set to the section's CURRENT value
+     *  where one exists, with a ↺ button putting that row back.
+     *  Whole commits through the density preview; Part closes into
+     *  the split-line mode carrying the chosen output settings.
+     *  Influenced sections gray the Part scope (bake or discard
+     *  first — the kept half's ref rule, D98). */
+    private void showConvertDialog(int k) {
+        List<Section> secs = sections();
+        if (k < 0 || k >= secs.size()) return;
+        Section sec = secs.get(k);
+        if (sec.reversed()) return;
+        LaneSection ls = sec instanceof LaneSection l ? l : null;
+        boolean influenced = ls != null && ls.influenced();
+        boolean curGeo = sec instanceof GeoSection;
+        boolean curDist = sec.domain() == Section.Domain.DISTANCE;
+        boolean curRollG = ls != null && ls.rollGlobal;
+        boolean curYpG = ls != null && ls.yawPitchGlobal;
+        boolean curRateM = ls != null && ls.ratePerMeter;
+
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Convert — " + modeName(sec) + " section " + (k + 1));
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        int row = 0;
+
+        ToggleGroup sg = new ToggleGroup();
+        RadioButton sWhole = new RadioButton("Whole");
+        RadioButton sPart = new RadioButton("Part…");
+        sWhole.setToggleGroup(sg);
+        sPart.setToggleGroup(sg);
+        sWhole.setSelected(true);
+        sPart.setDisable(influenced);
+        grid.addRow(row++, new Label("Convert"),
+            new HBox(10, sWhole, sPart), new Label(influenced
+                ? "(part: bake or discard influence first)" : ""));
+
+        ToggleGroup mg = new ToggleGroup();
+        RadioButton mForce = new RadioButton("Force");
+        RadioButton mGeo = new RadioButton("Geometric");
+        mForce.setToggleGroup(mg);
+        mGeo.setToggleGroup(mg);
+        (curGeo ? mGeo : mForce).setSelected(true);
+        Button mRst = resetBtn(() -> (curGeo ? mGeo : mForce).setSelected(true));
+        mRst.setDisable(ls == null);   // bridges/s-c have no lane mode
+        grid.addRow(row++, new Label("Type"),
+            new HBox(10, mForce, mGeo), mRst);
+
+        ToggleGroup dg = new ToggleGroup();
+        RadioButton dTime = new RadioButton("Time");
+        RadioButton dDist = new RadioButton("Distance");
+        dTime.setToggleGroup(dg);
+        dDist.setToggleGroup(dg);
+        (curDist ? dDist : dTime).setSelected(true);
+        grid.addRow(row++, new Label("Domain"),
+            new HBox(10, dTime, dDist),
+            resetBtn(() -> (curDist ? dDist : dTime).setSelected(true)));
+
+        ToggleGroup rg = new ToggleGroup();
+        RadioButton rLocal = new RadioButton("Local");
+        RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
+        rLocal.setToggleGroup(rg);
+        rGlobal.setToggleGroup(rg);
+        (curRollG ? rGlobal : rLocal).setSelected(true);
+        grid.addRow(row++, new Label("Roll axis"),
+            new HBox(10, rLocal, rGlobal),
+            resetBtn(() -> (curRollG ? rGlobal : rLocal).setSelected(true)));
+
+        ToggleGroup yg = new ToggleGroup();
+        RadioButton yLocal = new RadioButton("Local");
+        RadioButton yGlobal = new RadioButton("Global (heading/elevation)");
+        yLocal.setToggleGroup(yg);
+        yGlobal.setToggleGroup(yg);
+        (curYpG ? yGlobal : yLocal).setSelected(true);
+        Button yRst = resetBtn(() -> (curYpG ? yGlobal : yLocal).setSelected(true));
+        grid.addRow(row++, new Label("Yaw/pitch axis"),
+            new HBox(10, yLocal, yGlobal), yRst);
+        Runnable syncYp = () -> {
+            boolean geoOn = mGeo.isSelected();
+            yLocal.setDisable(!geoOn);
+            yGlobal.setDisable(!geoOn);
+            yRst.setDisable(!geoOn);
+        };
+        mg.selectedToggleProperty().addListener((o, w, n2) -> syncYp.run());
+        syncYp.run();
+
+        ToggleGroup ug = new ToggleGroup();
+        RadioButton uSec = new RadioButton("Per second (°/s)");
+        RadioButton uMet = new RadioButton("Per meter (°/m)");
+        uSec.setToggleGroup(ug);
+        uMet.setToggleGroup(ug);
+        (curRateM ? uMet : uSec).setSelected(true);
+        grid.addRow(row++, new Label("Rate units"),
+            new HBox(10, uSec, uMet),
+            resetBtn(() -> (curRateM ? uMet : uSec).setSelected(true)));
+
+        Button go = new Button("Convert");
+        go.setDefaultButton(true);
+        Button cancel = new Button("Cancel");
+        cancel.setCancelButton(true);
+        HBox buttons = new HBox(8, go, cancel);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        grid.add(buttons, 0, row, 3, 1);
+        go.setOnAction(ev -> {
+            dlg.close();
+            boolean toGeo = mGeo.isSelected();
+            Section.Domain dom = dDist.isSelected()
+                ? Section.Domain.DISTANCE : Section.Domain.TIME;
+            boolean rollG = rGlobal.isSelected();
+            boolean ypG = toGeo && yGlobal.isSelected();
+            boolean rateM = uMet.isSelected();
+            if (sWhole.isSelected()) {
+                convertSection(k, toGeo, dom, rollG, ypG, rateM);
+            } else {
+                beginPartialConvert(k, toGeo, dom, rollG, ypG, rateM);
+            }
+        });
+        cancel.setOnAction(ev -> dlg.close());
+        dlg.setScene(new Scene(grid));
+        dlg.show();
+    }
+
+    /** A small ↺ button running the given row reset (v16.6). */
+    private static Button resetBtn(Runnable r) {
+        Button b = new Button("↺");
+        b.setFocusTraversable(false);
+        b.setOnAction(ev -> r.run());
+        return b;
     }
 
     /** Remove section k of the ACTIVE piece; downstream sections
@@ -2913,6 +3061,15 @@ class GraphEditor extends Region {
         (prev != null && prev.rollGlobal ? rGlobal : rLocal).setSelected(true);
         grid.addRow(row++, new Label("Roll axis"), new HBox(10, rLocal, rGlobal));
 
+        // RATE UNITS (v16.6, D115): °/s vs °/m for the rate lanes
+        ToggleGroup ug = new ToggleGroup();
+        RadioButton uSec = new RadioButton("Per second (°/s)");
+        RadioButton uMet = new RadioButton("Per meter (°/m)");
+        uSec.setToggleGroup(ug);
+        uMet.setToggleGroup(ug);
+        (prev != null && prev.ratePerMeter ? uMet : uSec).setSelected(true);
+        grid.addRow(row++, new Label("Rate units"), new HBox(10, uSec, uMet));
+
         ToggleGroup yg = new ToggleGroup();
         RadioButton yLocal = new RadioButton("Local");
         RadioButton yGlobal = new RadioButton("Global (heading/elevation)");
@@ -2985,7 +3142,8 @@ class GraphEditor extends Region {
             addLaneSection(mGeo.isSelected(),
                 drifted && cReal.isSelected(), dDist.isSelected(),
                 rGlobal.isSelected(),
-                mGeo.isSelected() && yGlobal.isSelected(), vCustom);
+                mGeo.isSelected() && yGlobal.isSelected(),
+                uMet.isSelected(), vCustom);
             dlg.close();
         });
         cancel.setOnAction(ev -> dlg.close());
@@ -3002,7 +3160,8 @@ class GraphEditor extends Region {
      *  the auto speed; a custom speed PINS the section (a deliberate
      *  conflict the reconcile must not close). */
     private void addLaneSection(boolean geo, boolean real, boolean dist,
-                                boolean rollG, boolean ypG, double vCustom) {
+                                boolean rollG, boolean ypG, boolean rateM,
+                                double vCustom) {
         pushUndoSnapshot();
         List<Section> secs = sections();
         Section prevSec = secs.get(secs.size() - 1);
@@ -3020,15 +3179,24 @@ class GraphEditor extends Region {
         double rollEnd = rollG ? 0   // global hold = keep the bank
             : !tru && prev != null && !prev.reversed && !prev.influenced()
                 && !prev.rollGlobal
+                // an authored copy only means the same thing in the
+                // same rate units (v16.6)
+                && prev.ratePerMeter == rateM
             ? prev.lanes.get(2).get(prev.lanes.get(2).size() - 1).val
             : (endIdx >= 0 && app.resultRates != null
                 && endIdx < app.resultRates.length
                 ? (tru ? app.trueRates : app.resultRates)[endIdx][3] : 0);
+        // resultRates are °/s: a per-meter hold divides by the end
+        // speed (only when the value came from the compiled arrays)
+        boolean rollFromRates = !(rollG || (!tru && prev != null
+            && !prev.reversed && !prev.influenced() && !prev.rollGlobal
+            && prev.ratePerMeter == rateM));
         double v0h, v1h;
         boolean cleanSame = !tru && prev != null && !prev.reversed
             && !prev.influenced() && geo == prev instanceof GeoSection
             && prev.rollGlobal == rollG
-            && prev.yawPitchGlobal == (geo && ypG);
+            && prev.yawPitchGlobal == (geo && ypG)
+            && prev.ratePerMeter == rateM;
         if (geo && ypG) {
             v0h = 0;   // straight continuation: zero heading/elevation
             v1h = 0;   // rates — seamless position + tangent
@@ -3055,15 +3223,31 @@ class GraphEditor extends Region {
         double rH = vEnd / Math.max(0.1, vAuto);
         if (Math.abs(rH - 1) > 1e-9) {
             if (geo) {
-                v0h *= rH;
-                v1h *= rH;
+                // a per-meter authored copy is already speed-invariant
+                // — κ-matching would double-scale it (v16.6)
+                if (!(rateM && cleanSame)) {
+                    v0h *= rH;
+                    v1h *= rH;
+                }
             } else {
                 double uy = end != null ? end.U().y() : 1;
                 double ry = end != null ? end.R().y() : 0;
                 v0h = (v0h - uy) * rH * rH + uy;
                 v1h = (v1h - ry) * rH * rH + ry;
             }
-            rollEnd *= rH;
+            if (rollFromRates) rollEnd *= rH;
+        }
+        // PER-METER holds (v16.6): values sourced from the compiled
+        // °/s arrays divide by the section's design speed (the rH
+        // κ-scale composes to ω/vAuto — exactly the °/m value); a
+        // per-meter authored copy needs nothing
+        if (rateM) {
+            double vDiv = Math.max(0.5, vEnd);
+            if (geo && !cleanSame) {
+                v0h /= vDiv;
+                v1h /= vDiv;
+            }
+            if (rollFromRates) rollEnd /= vDiv;
         }
         List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(
             v0h, v1h, rollEnd, dist ? Coaster.CONT_HOLD_DIST : 1);
@@ -3072,6 +3256,7 @@ class GraphEditor extends Region {
         added.domain(dist ? Section.Domain.DISTANCE : Section.Domain.TIME);
         added.rollGlobal = rollG;
         added.yawPitchGlobal = geo && ypG;
+        added.ratePerMeter = rateM;
         if (!Double.isNaN(vCustom) && Math.abs(vCustom - vAuto) > 1e-6) {
             added.vPinned = true;   // deliberate conflict — keep it
         }
@@ -3121,6 +3306,10 @@ class GraphEditor extends Region {
                         // global-axis lanes are not the plot's body
                         // quantities — derived, like reversed (v16.1)
                         && !ls.globalAxes()
+                        // per-meter values only overlay an axis in the
+                        // same units (v16.6) — derived otherwise
+                        && ls.ratePerMeter == (sections().get(activeSection)
+                            instanceof LaneSection als && als.ratePerMeter)
                         // authored lanes draw directly only when their
                         // native domain IS the plot's axis (v16.0) —
                         // otherwise the compiled samples carry the
@@ -3223,10 +3412,14 @@ class GraphEditor extends Region {
      *  pitch/yaw/roll rates. Force view: felt Gv/Gl (the geo
      *  integrator records them at design speed) + resulting roll. */
     private double derivedAt(int i, int L) {
-        if (activeGeo()) return app.resultRates[i][L + 1];
+        // ACTIVE per-meter lanes show every strip in °/m (v16.6): the
+        // compiled rates are °/s — divide by that sample's own speed
+        double sc = activeRatePM(L)
+            ? 1 / Math.max(0.5, app.lastSamples.get(i).v()) : 1;
+        if (activeGeo()) return app.resultRates[i][L + 1] * sc;
         if (L == 0) return app.lastSamples.get(i).Gv();
         if (L == 1) return app.lastSamples.get(i).Gl();
-        return app.resultRates[i][3];
+        return app.resultRates[i][3] * sc;
     }
 
     // ---------- TRUE-speed display (round A, SECTIONS-DESIGN §5) ----
@@ -3240,14 +3433,21 @@ class GraphEditor extends Region {
     /** Pixel gap where the true stroke starts drawing. */
     private static final double TRUE_SPLIT_PX = 1.5;
     private static final double TRUE_STROKE_ALPHA = 0.85;
+    // s/c + bridge strips have no active lane: all three true strokes
+    // draw at a MIDDLE weight — between a lane strip's bold selected
+    // stroke and its faint unselected ones (v16.6, user spec; they
+    // used to draw all-bold — the v16.2 dimming never reached them)
+    private static final double TRUE_STROKE_MID = 0.55;
 
     /** derivedAt's sibling on the TRUE arrays: the active mode's
      *  lane-L value at compiled sample i, at the Pass-D true speed. */
     private double trueAt(int i, int L) {
-        if (activeGeo()) return app.trueRates[i][L + 1];
+        double sc = activeRatePM(L) && app.trueV != null
+            ? 1 / Math.max(0.5, app.trueV[i]) : 1;
+        if (activeGeo()) return app.trueRates[i][L + 1] * sc;
         if (L == 0) return app.trueFelt[i][0];
         if (L == 1) return app.trueFelt[i][1];
-        return app.trueRates[i][3];
+        return app.trueRates[i][3] * sc;
     }
 
     private boolean trueArraysReady() {
@@ -3339,11 +3539,15 @@ class GraphEditor extends Region {
         // the ACTIVE lane's true stroke draws at full strength; the
         // other lanes' fade like their design curves do (v16.2, user
         // rule — full-strength strokes on unselected lanes cluttered
-        // the plot). No lane surface (s/c, bridge) = all full.
+        // the plot). No lane surface (s/c, bridge) = no active lane:
+        // all three at the MIDDLE weight (v16.6, user spec).
         boolean laneSurface = activeSc() == null && activeBridge() == null;
         for (int L = 0; L < LANES; L++) {
-            gc.setGlobalAlpha(laneSurface && L != activeLane
-                ? TRUE_STROKE_ALPHA * INACTIVE_ALPHA : TRUE_STROKE_ALPHA);
+            gc.setGlobalAlpha(!laneSurface
+                ? TRUE_STROKE_ALPHA * TRUE_STROKE_MID
+                : L != activeLane
+                    ? TRUE_STROKE_ALPHA * INACTIVE_ALPHA
+                    : TRUE_STROKE_ALPHA);
             boolean rateSrc = activeGeo() || L == 2;
             gc.setStroke(laneColor(L));
             gc.beginPath();
@@ -5447,15 +5651,128 @@ class GraphEditor extends Region {
         return true;
     }
 
+    /** Roll {value, slope} across a seam whose sides author roll
+     *  about DIFFERENT axes (v16.6, D114): the neighbor's authored
+     *  roll converted into OUR semantics. At any sample the frames
+     *  and felt are exact, so the heading rate ψ' comes from the κ
+     *  identity without differencing, and worldRates' bank line
+     *  inverts to p = φ' + ψ'·sinθ (body roll ← bank rate; minus for
+     *  the other direction). Value at the BOUNDARY sample — exact,
+     *  so re-presses never creep; slope from the same conversion 5
+     *  samples inside the neighbor. NaN (vertical track) refuses
+     *  with the stats-bar reason. */
+    private double[] rollAcrossSeam(LaneSection nb, boolean atStart,
+                                    boolean ourGlobal) {
+        TrackCompiler.Span act = spanOf(activeSection);
+        TrackCompiler.Span nsp = spanOf(atStart ? activeSection + 1
+                                                : activeSection - 1);
+        if (act == null || nsp == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return null;
+        int ib = atStart ? act.i1() : act.i0();
+        int ii = Math.max(0, Math.min(app.lastSamples.size() - 1,
+            ib + (atStart ? 5 : -5)));
+        if (ib >= app.lastSamples.size()) return null;
+        double c0 = rollConverted(nb, nsp, ib, ourGlobal);
+        double c1 = rollConverted(nb, nsp, ii, ourGlobal);
+        if (Double.isNaN(c0) || Double.isNaN(c1)) {
+            matchHint = "No defined heading/bank on vertical track — "
+                + "roll can't convert across this seam.";
+            return null;
+        }
+        double dtSpan = app.lastSamples.get(ii).t()
+            - app.lastSamples.get(ib).t();
+        double slope = Math.abs(dtSpan) < 1e-9 ? 0 : (c1 - c0) / dtSpan;
+        slope = domSlope(slope, false, activeDistNative(),
+            seamDesignV(atStart));
+        return new double[]{ c0, slope };
+    }
+
+    /** The neighbor's roll rate at compiled sample i, converted into
+     *  the requested semantics (°/s; NaN near vertical). */
+    private double rollConverted(LaneSection nb, TrackCompiler.Span nsp,
+                                 int i, boolean wantGlobal) {
+        FVDIntegrator.Sample sm = app.lastSamples.get(i);
+        // the authored roll at this sample, in the neighbor's axis
+        double x = nb.domain() == Section.Domain.DISTANCE
+            ? sm.s() - nsp.s0() : sm.t() - nsp.t0();
+        double auth = authoredValAt(nb.lanes.get(2), x);
+        // a per-meter neighbor authors °/m (v16.6): × that sample's v
+        if (nb.ratePerMeter) auth *= Math.max(0.5, sm.v());
+        if (nb.rollGlobal == wantGlobal) return auth;   // same semantics
+        double vSafe = Math.max(0.5, sm.v());
+        double pit = Math.toDegrees(FVDIntegrator.G0
+            * (sm.Gv() - sm.U().y()) / vSafe);
+        double yaw = Math.toDegrees(FVDIntegrator.G0
+            * (sm.Gl() - sm.R().y()) / vSafe);
+        double psi = Coaster.worldRates(sm, pit, yaw, 0)[1];
+        if (Double.isNaN(psi)) return Double.NaN;
+        double transport = psi * sm.T().y();
+        // neighbor authors bank rate φ' → body roll p = φ' + ψ'·sinθ;
+        // neighbor authors body roll p → bank rate φ' = p − ψ'·sinθ
+        return nb.rollGlobal ? auth + transport : auth - transport;
+    }
+
+    /** Authored-lane value at local x (drawn-curve fidelity: the
+     *  baked polyline, held flat past both ends). */
+    private static double authoredValAt(List<BezierBaker.Node> lane,
+                                        double x) {
+        List<double[]> poly = BezierBaker.polyline(lane);
+        if (x <= poly.get(0)[0]) return poly.get(0)[1];
+        for (int i = 1; i < poly.size(); i++) {
+            if (poly.get(i)[0] >= x) {
+                double[] a = poly.get(i - 1), b = poly.get(i);
+                double u = b[0] - a[0] < 1e-12 ? 0
+                    : (x - a[0]) / (b[0] - a[0]);
+                return a[1] + u * (b[1] - a[1]);
+            }
+        }
+        return poly.get(poly.size() - 1)[1];
+    }
+
     /** {value, slope} of neighbor section k's active-lane curve at the
      *  boundary it shares with the active section, in the ACTIVE
      *  mode's units. atStart = the neighbor is the NEXT section (look
      *  at its beginning) vs the previous one (look at its end). The
      *  roll lane is authored °/s in both modes, so it always matches
-     *  from the authored lane; other cross-mode lanes read the
+     *  from the authored lane (converted across roll semantics since
+     *  v16.6); other cross-mode lanes read the
      *  compiled RESULTING curves, slope by finite difference over
      *  ~0.05 s on the neighbor's side. Null = no data yet. */
     private double[] boundaryState(int k, boolean atStart, int laneIdx) {
+        double[] vs = boundaryStatePerSec(k, atStart, laneIdx);
+        if (vs == null) return null;
+        // OUR lane in PER-METER units (v16.6, D115): the workhorse
+        // below always speaks °/s for rate lanes — convert its
+        // {value, slope} at the seam speed, with the product-rule
+        // term from v' = −g·T.y (value_s = v · value_m)
+        if (sections().get(activeSection) instanceof LaneSection act
+                && laneRatePM(act, laneIdx)) {
+            double v = Math.max(0.5, seamDesignV(atStart));
+            double aT = -FVDIntegrator.G0 * seamTy(atStart);
+            double vm = vs[0] / v;
+            double sl = activeDistNative()
+                ? (vs[1] - vm * (aT / v)) / v
+                : (vs[1] - vm * aT) / v;
+            return new double[]{ vm, sl };
+        }
+        return vs;
+    }
+
+    /** T.y at the shared boundary sample (0 before a compile) — the
+     *  seam's slope of v: v' = −g·T.y. */
+    private double seamTy(boolean atStart) {
+        TrackCompiler.Span act = spanOf(activeSection);
+        if (act == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return 0;
+        int ib = Math.min(atStart ? act.i1() : act.i0(),
+            app.lastSamples.size() - 1);
+        return app.lastSamples.get(ib).T().y();
+    }
+
+    /** The workhorse: {value, slope} in PER-SECOND semantics for rate
+     *  lanes (the wrapper converts for a per-meter active lane; the
+     *  authored paths below convert a per-meter NEIGHBOR up front). */
+    private double[] boundaryStatePerSec(int k, boolean atStart, int laneIdx) {
         List<Section> secs = sections();
         // k may fall OUTSIDE the active piece (v13.4: matching across a
         // bridged piece boundary) — the neighbor is then the bridge,
@@ -5518,39 +5835,82 @@ class GraphEditor extends Region {
         LaneSection actLs = secs.get(activeSection) instanceof LaneSection al
             ? al : null;
         boolean wg = actLs != null && laneWorld(actLs, laneIdx);
+        // ROLL ACROSS DIFFERING ROLL ORIENTATIONS (v16.6, D114 — user
+        // request "make B work for transitions between global and
+        // local roll"): the neighbor's roll EXPRESSED IN OUR
+        // semantics, EXACT at the boundary sample — its frames and
+        // felt give Ω⊥ through the κ identity (no differencing), its
+        // authored roll lane gives the rate in its own semantics, and
+        // the transport relation p = φ' + ψ'·sinθ converts between
+        // bank rate and body roll. Slope from the same conversion a
+        // few samples inside — the value at the seam stays exact, so
+        // re-presses don't creep. Vertical seams refuse (no defined
+        // heading/bank), reason on the stats bar.
+        if (!real && laneIdx == 2 && actLs != null
+                && nbSec instanceof LaneSection nbr
+                && !nbr.reversed() && !nbr.influenced()
+                && nbr.rollGlobal != actLs.rollGlobal) {
+            double[] rr = rollAcrossSeam(nbr, atStart, actLs.rollGlobal);
+            if (rr != null || matchHint != null) return rr;
+        }
         // a REVERSED neighbor's authored lanes run against the chain
         // (values at the wrong end, roll/Gl signs flipped) — its
         // boundary state comes from the compiled curves instead (D67);
-        // a straight/curve neighbor has no lanes at all — likewise
-        if (!real && !wg && nbSec instanceof LaneSection nb
+        // a straight/curve neighbor has no lanes at all — likewise.
+        // The ROLL lane matches from the authored lane whenever both
+        // sides SHARE roll semantics (v16.6 — global|global seams
+        // used to take the sampled world-rate path for no reason:
+        // both authored lanes are bank rates, direct is exact).
+        if (!real && nbSec instanceof LaneSection nb
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
                 && !nb.reversed && !nb.influenced()
-                // GLOBAL-axis lanes are not body rates (v16.1) —
-                // sampled path, like reversed/influenced
-                && !nb.globalAxes()) {
+                && (laneIdx == 2
+                    ? actLs != null && nb.rollGlobal == actLs.rollGlobal
+                    // lanes 0/1: exact whenever both sides mean the
+                    // same thing — only the YAW/PITCH semantics
+                    // matter here (v16.6; a neighbor's roll flag
+                    // needlessly forced the sampled path before)
+                    : actLs != null
+                        && actLs.yawPitchGlobal == nb.yawPitchGlobal)) {
             // slopes read in the NEIGHBOR's native x units and convert
             // to OURS at the seam design speed (v16.0, D103) — values
             // are unit-identical across domains
             boolean nbD = nb.domain() == Section.Domain.DISTANCE;
             boolean actD = activeDistNative();
             double vSeam = seamDesignV(atStart);
+            boolean nbPM = laneRatePM(nb, laneIdx);
             List<BezierBaker.Node> ln = nb.lanes.get(laneIdx);
+            double val, rawSlope;
             if (atStart) {
                 BezierBaker.Node n0 = ln.get(0);
                 double outDt = ln.size() >= 2
                     ? BezierBaker.effOutDt(n0, ln.get(1)) : 0;
-                return new double[]{ n0.val, domSlope(
-                    Math.abs(outDt) < 1e-9 ? 0 : n0.outDv / outDt,
-                    nbD, actD, vSeam) };
+                val = n0.val;
+                rawSlope = Math.abs(outDt) < 1e-9 ? 0 : n0.outDv / outDt;
+            } else {
+                BezierBaker.Node last = ln.get(ln.size() - 1);
+                if (ln.size() < 2
+                        || last.t < BezierBaker.rideEnd(nb.lanes) - 1e-9) {
+                    // holding flat at the boundary
+                    return new double[]{ nbPM
+                        ? last.val * Math.max(0.5, vSeam) : last.val, 0 };
+                }
+                double inDt = BezierBaker.effInDt(ln.get(ln.size() - 2), last);
+                val = last.val;
+                rawSlope = Math.abs(inDt) < 1e-9 ? 0 : last.inDv / inDt;
             }
-            BezierBaker.Node last = ln.get(ln.size() - 1);
-            if (ln.size() < 2 || last.t < BezierBaker.rideEnd(nb.lanes) - 1e-9) {
-                return new double[]{ last.val, 0 };   // holding flat at the boundary
+            if (nbPM) {
+                // a PER-METER neighbor speaks °/m (v16.6): value × v,
+                // slope through per-second space with the product term
+                double vv = Math.max(0.5, vSeam);
+                double slopeSec = domSlope(rawSlope, nbD, false, vSeam);
+                double aT = -FVDIntegrator.G0 * seamTy(atStart);
+                double slopeConv = vv * slopeSec + val * aT;
+                return new double[]{ val * vv,
+                    domSlope(slopeConv, false, actD, vSeam) };
             }
-            double inDt = BezierBaker.effInDt(ln.get(ln.size() - 2), last);
-            return new double[]{ last.val, domSlope(
-                Math.abs(inDt) < 1e-9 ? 0 : last.inDv / inDt,
-                nbD, actD, vSeam) };
+            return new double[]{ val,
+                domSlope(rawSlope, nbD, actD, vSeam) };
         }
         if (app.resultRates == null || app.lastSamples == null
                 || app.resultRates.length < 12) return null;
@@ -5570,6 +5930,9 @@ class GraphEditor extends Region {
                 // describe its actual curves — sampled path (v15.0);
                 // global-axis lanes aren't body rates either (v16.1)
                 && !nbl.influenced() && !nbl.globalAxes()
+                // a PER-METER neighbor's lanes aren't °/s (v16.6) —
+                // sampled path (the compiled curves already are)
+                && !nbl.ratePerMeter
                 // a TILTED piece's authored force targets live in the
                 // design frame; the analytic inversion mixes them with
                 // the world seam frame — sampled path there (v15.2)

@@ -216,7 +216,8 @@ public class FvdDesigner extends Application {
                     double vAuthored, boolean editInfl,
                     boolean dist, boolean viewOther,
                     boolean rollG, boolean ypG,
-                    boolean inflRollG, boolean inflYpG) {}
+                    boolean inflRollG, boolean inflYpG,
+                    boolean rateM) {}
 
     /** Deep copy of a 3-lane node-list set (null-safe). */
     private static List<List<BezierBaker.Node>> copyLanes(
@@ -253,7 +254,7 @@ public class FvdDesigner extends Application {
                     secs.add(new SecState(null, null, bs.vDesign, 3,
                         bs.reversed, false, bs.copy(),
                         null, Double.NaN, false, false, false,
-                        false, false, false, false));
+                        false, false, false, false, false));
                     continue;
                 }
                 if (s instanceof StraightCurveSection sc) {
@@ -263,7 +264,7 @@ public class FvdDesigner extends Application {
                     secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed,
                         sc.vPinned, null, null, Double.NaN, false,
                         true, sc.viewOtherDomain, false, false,
-                        false, false));
+                        false, false, false));
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
@@ -273,7 +274,8 @@ public class FvdDesigner extends Application {
                     copyLanes(fs.deltaLanes), fs.vAuthored, fs.editInfluence,
                     fs.domain == Section.Domain.DISTANCE, fs.viewOtherDomain,
                     fs.rollGlobal, fs.yawPitchGlobal,
-                    fs.inflRollGlobal, fs.inflYawPitchGlobal));
+                    fs.inflRollGlobal, fs.inflYawPitchGlobal,
+                    fs.ratePerMeter));
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
@@ -313,6 +315,7 @@ public class FvdDesigner extends Application {
                     ls.viewOtherDomain = st.viewOther();
                     ls.rollGlobal = st.rollG();
                     ls.yawPitchGlobal = st.ypG();
+                    ls.ratePerMeter = st.rateM();
                     if (st.dlanes() != null) {
                         // influence state rides the snapshot (v15.0, D98)
                         ls.deltaLanes = st.dlanes();

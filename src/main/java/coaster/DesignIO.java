@@ -176,14 +176,17 @@ public final class DesignIO {
                 // yaw-pitch axis flags; missing = 0 = local (the
                 // historic behavior — old files unchanged, old readers
                 // ignore the extra fields)
-                out.printf(Locale.US, "section %s %.4f %s %d %d %d %d%n",
+                // field 8 (v16.6, D115): per-meter rate units;
+                // missing = 0 = the historic °/s
+                out.printf(Locale.US, "section %s %.4f %s %d %d %d %d %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
                     fs.influenced() ? fs.vAuthored : fs.vDesign,
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
                     fs.reversed ? 1 : 0,
                     fs.vPinned ? 1 : 0,
                     fs.rollGlobal ? 1 : 0,
-                    fs.yawPitchGlobal ? 1 : 0);
+                    fs.yawPitchGlobal ? 1 : 0,
+                    fs.ratePerMeter ? 1 : 0);
                 for (int lane = 0; lane < 3; lane++) {
                     out.println("lane " + lane);
                     for (BezierBaker.Node n : fs.lanes.get(lane)) {
@@ -325,6 +328,9 @@ public final class DesignIO {
                             && parts[6].equals("1");
                         ls6.yawPitchGlobal = parts.length > 7
                             && parts[7].equals("1");
+                        // v16.6 rate units; missing = °/s
+                        ls6.ratePerMeter = parts.length > 8
+                            && parts[8].equals("1");
                     }
                     curPiece.sections.add(curSection);
                     curLane = -1;
