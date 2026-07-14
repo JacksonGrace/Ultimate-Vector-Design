@@ -65,6 +65,12 @@ public class FVDIntegrator {
          *  amount of bank into the same meters of track whatever the
          *  speed. false = the historic °/s, bitwise. */
         public boolean rollPerMeter = false;
+        /** ABSOLUTE roll (v16.7, D118): the roll lane holds the BANK
+         *  ANGLE (deg) vs the horizon - the global-roll projection
+         *  targets the lane VALUE directly (no integration), and the
+         *  within-step feed-forward uses the lane's SLOPE. Requires
+         *  rollGlobal. */
+        public boolean rollAbsolute = false;
     }
 
     /** Signed bank of U vs the level up at T (rad; roll-lane sign),
@@ -130,7 +136,7 @@ public class FVDIntegrator {
      *  RK4 hands us a mid-stage (slightly denormalized) state. */
     private static Deriv deriv(State st, double t, List<Keyframe> kfs,
                                double v0, double y0, boolean rollGlobal,
-                               boolean rollPM) {
+                               boolean rollPM, boolean rollAbs) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T); // frame convention: T x R = U, R x U = T, U x T = R
@@ -142,8 +148,9 @@ public class FVDIntegrator {
         double omegaU = (G0 * (kf.Gv() - U.y())) / vSafe;
         double omegaR = (G0 * (kf.Gl() - R.y())) / vSafe;
         Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU));
-        omega = omega.add(T.scale(
-            rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
+        omega = omega.add(T.scale(rollAbs && rollGlobal
+            ? rollTermPhi(Math.toRadians(rollSlopeAt(kfs, t)), T, omega)
+            : rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
 
         return new Deriv(T.scale(v), omega.cross(T), omega.cross(U));
     }
@@ -170,11 +177,26 @@ public class FVDIntegrator {
                            boolean rollGlobal, double rateScale) {
         double rate = Math.toRadians(kf.rollRateDeg()) * rateScale;
         if (!rollGlobal) return rate;
+        return rollTermPhi(rate, T, omegaUR);
+    }
+
+    /** The global-roll feed-forward from an explicit bank rate
+     *  (rad/s) - ABSOLUTE roll lanes derive it from the lane's SLOPE
+     *  instead of its value (v16.7, D118). */
+    static double rollTermPhi(double phiRate, Vec3 T, Vec3 omegaUR) {
         double horiz2 = T.x() * T.x() + T.z() * T.z();
         if (horiz2 <= 1e-6) return 0;
         Vec3 tp = omegaUR.cross(T);
         double psp = (T.z() * tp.x() - T.x() * tp.z()) / horiz2;
-        return rate + psp * T.y();   // sinθ = T.y
+        return phiRate + psp * T.y();   // sinθ = T.y
+    }
+
+    /** Roll-channel slope of the keyframe polyline at x (per unit of
+     *  the keyframe axis), central over +-0.01. */
+    static double rollSlopeAt(List<Keyframe> kfs, double x) {
+        double h = 0.01;
+        return (interpAt(kfs, x + h).rollRateDeg()
+            - interpAt(kfs, x - h).rollRateDeg()) / (2 * h);
     }
 
     private static State advance(State y, Deriv k, double h) {
@@ -215,10 +237,10 @@ public class FVDIntegrator {
             samples.add(new Sample(t, s, pos, T, U, R, v, kf.Gv(), kf.Gl()));
 
             State y = new State(pos, T, U);
-            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter);
-            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter);
-            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter);
-            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, opts.v0, y0, rG, opts.rollPerMeter);
+            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute);
+            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute);
+            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute);
+            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
@@ -230,7 +252,13 @@ public class FVDIntegrator {
                 k1.dU().add(k2.dU().scale(2)).add(k3.dU().scale(2)).add(k4.dU())
                     .scale(dt / 6));
             U = U.sub(T.scale(U.dot(T))).normalize();   // re-orthonormalize
-            if (rG) {
+            if (rG && opts.rollAbsolute) {
+                // ABSOLUTE roll (D118): the target IS the lane value
+                // at the just-reached time - no integral, no entry-
+                // bank reference
+                U = projectBank(T, U, Math.toRadians(
+                    interpAt(keyframes, t + dt).rollRateDeg()));
+            } else if (rG) {
                 if (opts.rollPerMeter) {
                     // bank target integrates the lane over ARC (D115):
                     // trapezoid of rate·v over the step
@@ -284,7 +312,7 @@ public class FVDIntegrator {
 
     private static DDeriv derivDist(DState st, List<Keyframe> kfs,
                                     double v0, double y0, boolean rollGlobal,
-                                    boolean rollPM) {
+                                    boolean rollPM, boolean rollAbs) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T);
@@ -295,8 +323,11 @@ public class FVDIntegrator {
         double omegaU = (G0 * (kf.Gv() - U.y())) / v;
         double omegaR = (G0 * (kf.Gl() - R.y())) / v;
         Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU));
-        omega = omega.add(T.scale(
-            rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
+        omega = omega.add(T.scale(rollAbs && rollGlobal
+            // slope per METER on an arc axis: phi' = slope x v
+            ? rollTermPhi(Math.toRadians(rollSlopeAt(kfs, st.s())) * v,
+                T, omega)
+            : rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
 
         return new DDeriv(T.scale(v), omega.cross(T), omega.cross(U), v);
     }
@@ -311,11 +342,12 @@ public class FVDIntegrator {
 
     private static DState rk4Dist(DState y, List<Keyframe> kfs,
                                   double v0, double y0, double h,
-                                  boolean rollGlobal, boolean rollPM) {
-        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal, rollPM);
-        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal, rollPM);
-        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal, rollPM);
-        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal, rollPM);
+                                  boolean rollGlobal, boolean rollPM,
+                                  boolean rollAbs) {
+        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal, rollPM, rollAbs);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal, rollPM, rollAbs);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -367,7 +399,7 @@ public class FVDIntegrator {
             double hUsed;
             if (st.s() + v * dt < totalLen - 1e-12) {
                 st = rk4Dist(st, keyframes, opts.v0, y0, dt, rG,
-                    opts.rollPerMeter);
+                    opts.rollPerMeter, opts.rollAbsolute);
                 t += dt;
                 hUsed = dt;
             } else {
@@ -377,7 +409,7 @@ public class FVDIntegrator {
                 DState end = st;
                 for (int it = 0; it < 3; it++) {
                     end = rk4Dist(st, keyframes, opts.v0, y0, h, rG,
-                        opts.rollPerMeter);
+                        opts.rollPerMeter, opts.rollAbsolute);
                     double vEnd = Math.max(0.5, speedAt(end.pos(), opts.v0, y0));
                     h += (totalLen - end.s()) / vEnd;
                 }
@@ -385,7 +417,15 @@ public class FVDIntegrator {
                 t += h;
                 hUsed = h;
             }
-            if (rG) {
+            if (rG && opts.rollAbsolute) {
+                // ABSOLUTE roll (D118): target = the lane value at
+                // the just-reached arc
+                Vec3 pu = projectBank(st.T(), st.U(), Math.toRadians(
+                    interpAt(keyframes, st.s()).rollRateDeg()));
+                if (pu != st.U()) {
+                    st = new DState(st.pos(), st.T(), pu, st.s());
+                }
+            } else if (rG) {
                 // per-meter roll: the bank target is the lane's ARC
                 // integral — exact here, ds is the step's own advance
                 cumRoll += opts.rollPerMeter

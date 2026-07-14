@@ -1114,6 +1114,37 @@
     strip's selected and unselected strokes); say if the level reads
     wrong.
 
+47. **v16.7 gates (DomainGate extension; D117-D119).** All passed
+    2026-07-14 (late): (47a) PER-METER INFLUENCE — entry bitwise on a
+    °/m section; a 0.5 °/m heading delta turns exactly rate × arc
+    (60.00°). (47b) ABSOLUTE ROLL — a ramp-to-50°-hold lane reads
+    bank 50.000° at mid and end (the lane value IS the bank). (47c)
+    converting a rate section TO absolute roll holds the shape to
+    1.6 mm, forces rollGlobal, and round-trips FVDD3 byte-identical
+    (section field 9). DomainGate 33 checks + Phase2Gate 253 green.
+    (Ops lesson: the incremental compiler reported stale success
+    while GraphEditor sat broken — headless gates never load JavaFX
+    classes, so editor compile breaks hide; force-delete
+    target/classes/coaster when in doubt.)
+
+78. v16.7 feel round (untested by the user yet): (a) °/m sections:
+    both vertical axes now say the units (left title + the right
+    Resulting axis on °/m force sections), and °/m lanes get their
+    own default scales — roll ±15 °/m, geo pitch/yaw ±10 °/m. (b)
+    every ↺ in the program grays while its row sits at the default/
+    original; a changed radio selection tints orange. (c) influence
+    a °/m section — the delta lanes author °/m. (d) "View rates in
+    °/m|°/s" (badge menu): the strip re-displays in the other units,
+    warped by speed; edit straight through it; it drops when you
+    leave the section. (e) ABSOLUTE ROLL: add or convert a section
+    with Roll behavior = Absolute bank (needs Global roll — watch
+    the interlock gray/flip the radio); the roll graph height IS the
+    bank in degrees (50 = 50° bank, 0 = level); B/Shift+B match the
+    seam's bank exactly, slopes best-effort (your caveat); switching
+    roll to Local reverts the lane to Rate. (f) Orientation dialog
+    buttons wear their explanations as gray captions beneath. (g)
+    1/2/3 switch lanes while the density preview is open.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

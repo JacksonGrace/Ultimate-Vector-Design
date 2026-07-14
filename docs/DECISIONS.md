@@ -4248,3 +4248,61 @@ green 2026-07-14. Walkthrough #77.
   already worked); still read-only until Apply.
 - **Orientation dialog**: the button parentheticals moved to gray
   captions UNDER each button (user spec; VBox per button).
+
+## D118. v16.7 part 2: ABSOLUTE ROLL — the lane authors the bank
+##        angle itself (user spec, same round)
+
+- LaneSection.rollAbsolute (section-line field 9; requires GLOBAL
+  roll — the angle IS the projection's target, local roll has no
+  absolute meaning): lane 2 holds the BANK vs the horizon in
+  DEGREES. 50 on the graph = 50 deg of bank there; 0 = level, no
+  matter what came before. Both integrators, both domains: the
+  post-step projection targets the lane VALUE at the reached
+  time/arc (no integral, no entry-bank reference) and the
+  within-step feed-forward uses the lane's SLOPE (rollTermPhi +
+  rollSlopeAt — the D110 quality holds). Gated: a ramp-to-50-hold
+  reads bank 50.000 at mid and end (47b).
+- Everywhere: Add dialog "Roll behavior" row + the Convert dialog's
+  — both interlocked (Absolute grays without Global roll; picking
+  Local flips it back to Rate, incl. the Orientation dialog's
+  Switch clearing the flag); converts to/from any combination
+  (toRollAbs measures bankOfTU per sample, vertical holds the last
+  defined bank, area matching skips the lane — an absolute lane IS
+  the integrated quantity, pointwise fidelity is the story; gate
+  47c: rate section -> absolute at 1.6 mm + byte-identical IO);
+  '+' holds copy the end bank; unified view shows other strips'
+  BANK on an absolute axis; unit " °", default scale ±90.
+- B/Shift+B: value = the seam's measured bank (exact frame read),
+  slope = the bank rate through the transport term off the sampled
+  body roll — BEST-EFFORT by design: the user pre-accepted that an
+  absolute lane sits one derivative below the rate lanes ("a
+  perfectly equal slope of roll rate can't be achieved in many
+  situations here... this is perfectly okay"). Vertical seams
+  refuse with the reason.
+- Influence refuses absolute-roll sections (the two-pass roll
+  channel is rate-shaped); rate units don't apply to an absolute
+  lane (degrees are degrees).
+
+## D119. v16.7 part 2: the CROSS-RATE VIEW (user request, same round)
+
+- "View rates in °/m|°/s" (badge menu, active section only): the
+  strip DISPLAYS its rate lanes in the other units — values warp
+  through the compiled speed profile per x — while the native lanes
+  stay put; every edit writes back through the warp (the influence
+  Resulting-view pattern, generalized: dispOff's additive offset
+  became dispVal/nativeVal, (val + off) × rateViewScale(x), one
+  choke point, 20 call sites). Session state like the domain view:
+  auto-drops on leaving the section, never saved. Displayed UNITS
+  govern the axis label and the default scales (laneShownPM).
+- The warp is NOT frozen per gesture (unlike the domain view's
+  map): v(x) barely moves under value edits — revisit only if feel
+  reports sliding.
+- ALSO this round: the incremental compiler had been silently
+  reporting stale success (GraphEditor sat broken for several
+  "BUILD_CHECKED" cycles — a missing Toggle import surfaced only on
+  a forced full rebuild). Gates never load JavaFX classes, so they
+  can't catch editor-side compile breaks: force-delete
+  target/classes/coaster when in doubt.
+
+Gates: DomainGate 33 checks (47a-c new) + Phase2Gate 253, all green
+2026-07-14. Walkthrough #78.

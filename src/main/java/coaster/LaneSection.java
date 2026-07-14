@@ -39,6 +39,16 @@ public sealed abstract class LaneSection implements Section
     /** Cross-domain view flag (v16.0) — see Section.viewOtherDomain. */
     public boolean viewOtherDomain = false;
 
+    /** CROSS-RATE view flag (v16.7, D119): the strip DISPLAYS its
+     *  rate lanes in the other units (°/s ↔ °/m, warped through the
+     *  compiled speed profile) while the native lanes stay put —
+     *  editing writes back through the warp. Session state like the
+     *  domain view (never saved; auto-drops on leaving the section).
+     */
+    public boolean viewOtherRate = false;
+
+    public boolean viewOtherRate() { return viewOtherRate; }
+
     /** GLOBAL-AXIS authoring (v16.1, D107 — user spec 2026-07-12).
      *  rollGlobal: the roll lane's rate integrates to a BANK TARGET vs
      *  the HORIZON, enforced by the s/c GLOBAL projection after every
@@ -68,6 +78,17 @@ public sealed abstract class LaneSection implements Section
      *  sits, rate units say what the value means. false = the
      *  historic °/s, bitwise. */
     public boolean ratePerMeter = false;
+
+    /** ABSOLUTE ROLL (v16.7, D118 — user spec): the roll lane
+     *  authors the BANK ANGLE vs the horizon (°) directly instead of
+     *  a rate — a lane value of 50 means the track banks 50° there,
+     *  0 means level, whatever came before. GLOBAL roll only (the
+     *  angle IS the projection's target; local roll has no absolute
+     *  meaning) — the UI auto-reverts to rate when roll goes local.
+     *  The rate-units flag doesn't apply to an absolute lane
+     *  (degrees are degrees); pitch/yaw keep theirs. Influence
+     *  refuses absolute-roll sections for now. */
+    public boolean rollAbsolute = false;
 
     /** INFLUENCE axis semantics (v16.5, D112 — user spec): how the
      *  two-pass integrates base + delta AS the other mode. A force

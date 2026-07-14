@@ -43,6 +43,7 @@ import javafx.scene.control.Spinner;
 import javafx.scene.control.SpinnerValueFactory;
 import javafx.scene.control.TextField;
 import javafx.scene.control.ToggleButton;
+import javafx.scene.control.Toggle;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.Tooltip;
 import javafx.scene.image.PixelWriter;
@@ -609,6 +610,56 @@ class GraphEditor extends Region {
             ? infl.baseValAt(lane, localT) : 0;
     }
 
+    /** NATIVE value → DISPLAYED value at section-local x (v16.7,
+     *  D119 — the CROSS-RATE VIEW): the influence-resulting offset
+     *  adds first, then the whole thing scales by the rate-view
+     *  factor (°/s shown as °/m divides by v(x), °/m shown as °/s
+     *  multiplies). Scale 1 + offset 0 = the identity every plain
+     *  section takes. */
+    private double dispVal(int lane, double localT, double val) {
+        return (val + dispOff(lane, localT))
+            * rateViewScale(lane, localT);
+    }
+
+    /** DISPLAYED value → native (the drag write-back). */
+    private double nativeVal(int lane, double localT, double disp) {
+        return disp / rateViewScale(lane, localT)
+            - dispOff(lane, localT);
+    }
+
+    /** The cross-rate view's display factor at section-local x — 1
+     *  unless the ACTIVE section views its rate lanes in the other
+     *  units. v(x) reads the compiled span (1 before a compile). */
+    private double rateViewScale(int lane, double localX) {
+        if (!(sections().get(activeSection) instanceof LaneSection ls)
+                || !ls.viewOtherRate() || !laneIsRate(ls, lane)) {
+            return 1;
+        }
+        TrackCompiler.Span sp = spanOf(activeSection);
+        if (sp == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return 1;
+        boolean distN = ls.domain() == Section.Domain.DISTANCE;
+        double g = distN ? sp.s0() + localX : sp.t0() + localX;
+        int lo = sp.i0(), hi = Math.min(sp.i1(),
+            app.lastSamples.size() - 1);
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            double c = distN ? app.lastSamples.get(mid).s()
+                             : app.lastSamples.get(mid).t();
+            if (c <= g) lo = mid; else hi = mid;
+        }
+        double v = Math.max(0.5, app.lastSamples.get(lo).v());
+        return ls.ratePerMeter ? v : 1 / v;
+    }
+
+    /** Is this lane a RATE on the current editing surface? (deltas
+     *  are always rates; an absolute roll lane never is) */
+    private boolean laneIsRate(LaneSection ls, int lane) {
+        if (lane == 2 && ls.rollAbsolute && ls.rollGlobal) return false;
+        if (activeInfl() != null) return true;
+        return ls instanceof GeoSection || lane == 2;
+    }
+
     /** Is the ACTIVE section a geo (body-rate) section? Influence
      *  editing FLIPS this: the delta lanes carry the OTHER mode's
      *  quantities, and everything keyed off the active mode — names,
@@ -645,13 +696,35 @@ class GraphEditor extends Region {
     }
 
     private String laneUnit(int lane) {
-        if (activeRatePM(lane)) return " °/m";
+        if (lane == 2 && activeRollAbs()) return " °";
+        if (laneShownPM(lane)) return " °/m";
         return activeGeo() ? " °/s" : LANE_UNITS[lane];
+    }
+
+    /** DISPLAYED units for a lane: native XOR the cross-rate view
+     *  (v16.7, D119). */
+    private boolean laneShownPM(int lane) {
+        boolean nat = activeRatePM(lane);
+        if (sections().get(activeSection) instanceof LaneSection ls
+                && ls.viewOtherRate && laneIsRate(ls, lane)) {
+            return !nat;
+        }
+        return nat;
+    }
+
+    /** Is the ACTIVE section's roll lane an ABSOLUTE bank angle
+     *  (v16.7, D118)? */
+    private boolean activeRollAbs() {
+        return sections().get(activeSection) instanceof LaneSection ls
+            && ls.rollAbsolute && ls.rollGlobal;
     }
 
     /** Is this lane of the given section authored PER METER (v16.6,
      *  D115)? Rate lanes only — geo pitch/yaw/roll, force roll. */
     static boolean laneRatePM(LaneSection ls, int lane) {
+        // an ABSOLUTE roll lane holds degrees — rate units don't
+        // apply to it (v16.7, D118)
+        if (lane == 2 && ls.rollAbsolute && ls.rollGlobal) return false;
         return ls.ratePerMeter
             && (ls instanceof GeoSection || lane == 2);
     }
@@ -680,12 +753,15 @@ class GraphEditor extends Region {
     private double defMin(int lane) {
         // °/m lanes live at ~1/v the °/s numbers: their own default
         // (minimum) scales — roll ±15, geo pitch/yaw ±10 (v16.7,
-        // user spec)
-        if (activeRatePM(lane)) return lane == 2 ? -15 : -10;
+        // user spec); an ABSOLUTE roll lane is degrees, default ±90.
+        // The DISPLAYED units govern (the cross-rate view rescales).
+        if (lane == 2 && activeRollAbs()) return -90;
+        if (laneShownPM(lane)) return lane == 2 ? -15 : -10;
         return modeDefMin(activeGeo())[lane];
     }
     private double defMax(int lane) {
-        if (activeRatePM(lane)) return lane == 2 ? 15 : 10;
+        if (lane == 2 && activeRollAbs()) return 90;
+        if (laneShownPM(lane)) return lane == 2 ? 15 : 10;
         return modeDefMax(activeGeo())[lane];
     }
 
@@ -793,11 +869,15 @@ class GraphEditor extends Region {
     private double xToLt(double x) { return warpInv(xToT(x) - tOff); }
 
     /** Leaving a section drops its cross-domain view (v16.2, user
-     *  rule: returning to a section always shows its TRUE domain). */
+     *  rule: returning to a section always shows its TRUE domain) —
+     *  and the cross-RATE view with it (v16.7, D119). */
     private void dropActiveView() {
         List<Section> secs = sections();
         if (activeSection < secs.size()) {
             secs.get(activeSection).viewOtherDomain(false);
+            if (secs.get(activeSection) instanceof LaneSection lv) {
+                lv.viewOtherRate = false;
+            }
         }
     }
 
@@ -1016,10 +1096,17 @@ class GraphEditor extends Region {
         convertSection(k, toGeo, Section.Domain.TIME, false, false, false);
     }
 
-    /** Full-settings whole convert (v16.6, D116 — the Convert
-     *  dialog): type/domain/axes/rate units in one engine call. */
     private void convertSection(int k, boolean toGeo, Section.Domain dom,
                                 boolean rollG, boolean ypG, boolean rateM) {
+        convertSection(k, toGeo, dom, rollG, ypG, rateM, false);
+    }
+
+    /** Full-settings whole convert (v16.6, D116 — the Convert
+     *  dialog): type/domain/axes/rate units/roll behavior in one
+     *  engine call. */
+    private void convertSection(int k, boolean toGeo, Section.Domain dom,
+                                boolean rollG, boolean ypG, boolean rateM,
+                                boolean rollAbs) {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()) return;
         Section sec = secs.get(k);
@@ -1033,7 +1120,8 @@ class GraphEditor extends Region {
             dom == Section.Domain.DISTANCE,
             (sp, tol) ->
             app.coaster.convertWholeSection(piece, k, toGeo,
-                FvdDesigner.INTEGRATE_DT, sp, tol, dom, rollG, ypG, rateM),
+                FvdDesigner.INTEGRATE_DT, sp, tol, dom, rollG, ypG, rateM,
+                rollAbs),
             () -> {
                 activePiece = piece;
                 activeSection = k;
@@ -1462,7 +1550,7 @@ class GraphEditor extends Region {
     private boolean pcToGeo;          // requested lane mode
     // requested output settings (v16.6, D116 — the Convert dialog)
     private Section.Domain pcDom = Section.Domain.TIME;
-    private boolean pcRollG, pcYpG, pcRateM;
+    private boolean pcRollG, pcYpG, pcRateM, pcRollAbs;
     private double pcFrac = 0.5;      // split fraction (arc or time)
     private boolean pcLeft = true;    // which side converts
     private boolean pcDragLine = false;
@@ -1478,10 +1566,17 @@ class GraphEditor extends Region {
             false, false, false);
     }
 
-    /** Full-settings variant (v16.6, D116): the converted side comes
-     *  out with the requested type/domain/axes/rate units. */
     void beginPartialConvert(int k, boolean toGeo, Section.Domain dom,
                              boolean rollG, boolean ypG, boolean rateM) {
+        beginPartialConvert(k, toGeo, dom, rollG, ypG, rateM, false);
+    }
+
+    /** Full-settings variant (v16.6, D116): the converted side comes
+     *  out with the requested type/domain/axes/rate units/roll
+     *  behavior. */
+    void beginPartialConvert(int k, boolean toGeo, Section.Domain dom,
+                             boolean rollG, boolean ypG, boolean rateM,
+                             boolean rollAbs) {
         if (k < 0 || k >= sections().size()) return;
         Section sec = sections().get(k);
         if (sec.reversed()) return;
@@ -1497,6 +1592,7 @@ class GraphEditor extends Region {
         pcRollG = rollG;
         pcYpG = ypG;
         pcRateM = rateM;
+        pcRollAbs = rollAbs;
         pcFrac = 0.5;
         pcLeft = true;
         pcDragLine = false;
@@ -1524,13 +1620,14 @@ class GraphEditor extends Region {
         boolean bridge = sections().get(k) instanceof BridgeSection;
         Section.Domain dom = pcDom;
         boolean rollG = pcRollG, ypG = pcYpG, rateM = pcRateM;
+        boolean rollAbs = pcRollAbs;
         ConvertOp op = bridge
             ? (sp, tol) -> app.coaster.partialConvertBridge(piece, k,
                 frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol,
-                dom, rollG, ypG, rateM)
+                dom, rollG, ypG, rateM, rollAbs)
             : (sp, tol) -> app.coaster.partialConvertSection(piece, k,
                 frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol,
-                dom, rollG, ypG, rateM);
+                dom, rollG, ypG, rateM, rollAbs);
         beginDensityPreview(k, toGeo, false,
             dom == Section.Domain.DISTANCE, op, () -> {
             if (bridge && !left
@@ -2270,7 +2367,7 @@ class GraphEditor extends Region {
             : drifted && !(sec instanceof BridgeSection)
                 ? " · true splits inside" : "";
         MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s%s%s%s%s%s%s",
+            "%s section %d — design %.1f m/s%s%s%s%s%s%s%s",
             modeName(sec), k + 1, sec.vDesign(),
             sec instanceof LaneSection ili && ili.influenced()
                 ? String.format(Locale.US, " (authored %.1f)", ili.vAuthored)
@@ -2284,6 +2381,8 @@ class GraphEditor extends Region {
                     ? " · global roll" : " · global yaw/pitch") : "",
             sec instanceof LaneSection lrm && lrm.ratePerMeter
                 ? " · rates °/m" : "",
+            sec instanceof LaneSection lab && lab.rollAbsolute
+                && lab.rollGlobal ? " · abs roll" : "",
             drift, extra));
         info.setDisable(true);
         // the per-section Reversed check moved to piece scope in v12.1
@@ -2321,6 +2420,26 @@ class GraphEditor extends Region {
             viewOther.setOnAction(ev ->
                 setViewOtherDomain(k, !sec.viewOtherDomain()));
             cm.getItems().add(viewOther);
+            // CROSS-RATE VIEW (v16.7, D119): display the rate lanes
+            // in the other units, warped through the speed profile;
+            // native lanes untouched, edits write back through it
+            if (sec instanceof LaneSection lrv
+                    && !(lrv.rollAbsolute && lrv.rollGlobal
+                        && !(lrv instanceof GeoSection))) {
+                CheckMenuItem viewRate = new CheckMenuItem(
+                    "View rates in " + (lrv.ratePerMeter
+                        ? "°/s" : "°/m"));
+                viewRate.setSelected(lrv.viewOtherRate);
+                viewRate.setOnAction(ev -> {
+                    if (k == activeSection) {
+                        lrv.viewOtherRate = !lrv.viewOtherRate;
+                        refreshOffset();
+                        redraw();
+                    }
+                });
+                viewRate.setDisable(k != activeSection);
+                cm.getItems().add(viewRate);
+            }
             // ORIENTATION SETTINGS (v16.4, user spec): the axis
             // radios + bake actions condensed into ONE dialog.
             // While the strip EDITS INFLUENCE (v16.5, D112 — user
@@ -2414,10 +2533,12 @@ class GraphEditor extends Region {
                 // distance sections take influence since v16.1 (the
                 // two-pass runs over arc); GLOBAL-AXIS sections since
                 // v16.5 (D112 — the base converts representations)
-                MenuItem enter = new MenuItem(geoSec
+                boolean absRoll = lsec.rollAbsolute && lsec.rollGlobal;
+                MenuItem enter = new MenuItem((geoSec
                     ? "Influence felt force graphs"
-                    : "Influence resulting geo graphs");
-                enter.setDisable(lsec.reversed);
+                    : "Influence resulting geo graphs")
+                    + (absRoll ? " (roll-rate sections only)" : ""));
+                enter.setDisable(lsec.reversed || absRoll);
                 enter.setOnAction(ev -> enterInfluenceUi(k));
                 cm.getItems().add(enter);
             } else {
@@ -2480,7 +2601,8 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)
-                || ls.influenced() || ls.reversed) return;
+                || ls.influenced() || ls.reversed
+                || (ls.rollAbsolute && ls.rollGlobal)) return;
         pushUndoSnapshot();
         if (k != activeSection) setActiveSection(k);
         // speeds untouched (v15.4, D102); the delta lanes span the
@@ -2618,6 +2740,9 @@ class GraphEditor extends Region {
         pushUndoSnapshot();
         ls.rollGlobal = nr;
         ls.yawPitchGlobal = ny;
+        // ABSOLUTE roll has no local meaning (v16.7, D118): switching
+        // roll to local reverts the lane to a RATE reading
+        if (!nr) ls.rollAbsolute = false;
         app.rebuildTrack();
         refreshOffset();
         redraw();
@@ -2890,6 +3015,26 @@ class GraphEditor extends Region {
         grid.addRow(row++, new Label("Rate units"),
             new HBox(10, uSec, uMet), uRst);
 
+        // ROLL BEHAVIOR (v16.7, D118) — absolute needs GLOBAL roll
+        boolean curAbs = ls != null && ls.rollAbsolute && ls.rollGlobal;
+        ToggleGroup ag = new ToggleGroup();
+        RadioButton aRate = new RadioButton("Roll rate");
+        RadioButton aAbs = new RadioButton("Absolute bank (°)");
+        aRate.setToggleGroup(ag);
+        aAbs.setToggleGroup(ag);
+        (curAbs ? aAbs : aRate).setSelected(true);
+        Button aRst = resetBtn(() -> (curAbs ? aAbs : aRate).setSelected(true));
+        wireOriginal(ag, curAbs ? aAbs : aRate, aRst);
+        grid.addRow(row++, new Label("Roll behavior"),
+            new HBox(10, aRate, aAbs), aRst);
+        Runnable syncAbs = () -> {
+            boolean glob = rGlobal.isSelected();
+            aAbs.setDisable(!glob);
+            if (!glob && aAbs.isSelected()) aRate.setSelected(true);
+        };
+        rg.selectedToggleProperty().addListener((o, w, n2) -> syncAbs.run());
+        syncAbs.run();
+
         Button go = new Button("Convert");
         go.setDefaultButton(true);
         Button cancel = new Button("Cancel");
@@ -2905,10 +3050,12 @@ class GraphEditor extends Region {
             boolean rollG = rGlobal.isSelected();
             boolean ypG = toGeo && yGlobal.isSelected();
             boolean rateM = uMet.isSelected();
+            boolean rollAbs = aAbs.isSelected() && rollG;
             if (sWhole.isSelected()) {
-                convertSection(k, toGeo, dom, rollG, ypG, rateM);
+                convertSection(k, toGeo, dom, rollG, ypG, rateM, rollAbs);
             } else {
-                beginPartialConvert(k, toGeo, dom, rollG, ypG, rateM);
+                beginPartialConvert(k, toGeo, dom, rollG, ypG, rateM,
+                    rollAbs);
             }
         });
         cancel.setOnAction(ev -> dlg.close());
@@ -3138,6 +3285,28 @@ class GraphEditor extends Region {
             null);
         grid.addRow(row++, new Label("Rate units"), new HBox(10, uSec, uMet));
 
+        // ROLL BEHAVIOR (v16.7, D118): rate vs ABSOLUTE bank angle —
+        // absolute needs GLOBAL roll (the angle IS the projection
+        // target); picking Local flips it back to Rate and grays it
+        ToggleGroup ag = new ToggleGroup();
+        RadioButton aRate = new RadioButton("Roll rate");
+        RadioButton aAbs = new RadioButton("Absolute bank (°)");
+        aRate.setToggleGroup(ag);
+        aAbs.setToggleGroup(ag);
+        boolean prevAbs = prev != null && prev.rollAbsolute
+            && prev.rollGlobal;
+        (prevAbs ? aAbs : aRate).setSelected(true);
+        wireOriginal(ag, prevAbs ? aAbs : aRate, null);
+        grid.addRow(row++, new Label("Roll behavior"),
+            new HBox(10, aRate, aAbs));
+        Runnable syncAbs = () -> {
+            boolean glob = rGlobal.isSelected();
+            aAbs.setDisable(!glob);
+            if (!glob && aAbs.isSelected()) aRate.setSelected(true);
+        };
+        rg.selectedToggleProperty().addListener((o, w, n2) -> syncAbs.run());
+        syncAbs.run();
+
         ToggleGroup yg = new ToggleGroup();
         RadioButton yLocal = new RadioButton("Local");
         RadioButton yGlobal = new RadioButton("Global (heading/elevation)");
@@ -3214,7 +3383,8 @@ class GraphEditor extends Region {
                 drifted && cReal.isSelected(), dDist.isSelected(),
                 rGlobal.isSelected(),
                 mGeo.isSelected() && yGlobal.isSelected(),
-                uMet.isSelected(), vCustom);
+                uMet.isSelected(),
+                aAbs.isSelected() && rGlobal.isSelected(), vCustom);
             dlg.close();
         });
         cancel.setOnAction(ev -> dlg.close());
@@ -3232,7 +3402,7 @@ class GraphEditor extends Region {
      *  conflict the reconcile must not close). */
     private void addLaneSection(boolean geo, boolean real, boolean dist,
                                 boolean rollG, boolean ypG, boolean rateM,
-                                double vCustom) {
+                                boolean rollAbs, double vCustom) {
         pushUndoSnapshot();
         List<Section> secs = sections();
         Section prevSec = secs.get(secs.size() - 1);
@@ -3247,6 +3417,13 @@ class GraphEditor extends Region {
         double vAuto = tru ? app.trueV[endIdx]
             : end != null ? end.v() : prevSec.vDesign();
         double vEnd = Double.isNaN(vCustom) ? vAuto : vCustom;
+        // ABSOLUTE roll hold (v16.7): the lane holds the CURRENT
+        // bank angle (°) — a flat line at the end state's bank
+        double bankEnd = 0;
+        if (rollAbs && end != null) {
+            double b = FVDIntegrator.bankOfTU(end.T(), end.U());
+            if (!Double.isNaN(b)) bankEnd = Math.toDegrees(b);
+        }
         double rollEnd = rollG ? 0   // global hold = keep the bank
             : !tru && prev != null && !prev.reversed && !prev.influenced()
                 && !prev.rollGlobal
@@ -3321,13 +3498,15 @@ class GraphEditor extends Region {
             if (rollFromRates) rollEnd /= vDiv;
         }
         List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(
-            v0h, v1h, rollEnd, dist ? Coaster.CONT_HOLD_DIST : 1);
+            v0h, v1h, rollAbs ? bankEnd : rollEnd,
+            dist ? Coaster.CONT_HOLD_DIST : 1);
         LaneSection added = geo ? new GeoSection(lanes, vEnd)
                                 : new ForceSection(lanes, vEnd);
         added.domain(dist ? Section.Domain.DISTANCE : Section.Domain.TIME);
         added.rollGlobal = rollG;
         added.yawPitchGlobal = geo && ypG;
         added.ratePerMeter = rateM;
+        added.rollAbsolute = rollAbs;
         if (!Double.isNaN(vCustom) && Math.abs(vCustom - vAuto) > 1e-6) {
             added.vPinned = true;   // deliberate conflict — keep it
         }
@@ -3378,9 +3557,12 @@ class GraphEditor extends Region {
                         // quantities — derived, like reversed (v16.1)
                         && !ls.globalAxes()
                         // per-meter values only overlay an axis in the
-                        // same units (v16.6) — derived otherwise
+                        // same units (v16.6) — derived otherwise; same
+                        // for the absolute-roll representation (v16.7)
                         && ls.ratePerMeter == (sections().get(activeSection)
                             instanceof LaneSection als && als.ratePerMeter)
+                        && (ls.rollAbsolute && ls.rollGlobal)
+                            == activeRollAbs()
                         // authored lanes draw directly only when their
                         // native domain IS the plot's axis (v16.0) —
                         // otherwise the compiled samples carry the
@@ -3483,6 +3665,13 @@ class GraphEditor extends Region {
      *  pitch/yaw/roll rates. Force view: felt Gv/Gl (the geo
      *  integrator records them at design speed) + resulting roll. */
     private double derivedAt(int i, int L) {
+        // an ABSOLUTE roll axis shows every strip's BANK ANGLE (°) —
+        // the axis quantity, not a rate (v16.7, D118; vertical = 0)
+        if (L == 2 && activeRollAbs()) {
+            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+            double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
+            return Double.isNaN(b) ? 0 : Math.toDegrees(b);
+        }
         // ACTIVE per-meter lanes show every strip in °/m (v16.6): the
         // compiled rates are °/s — divide by that sample's own speed
         double sc = activeRatePM(L)
@@ -3513,6 +3702,11 @@ class GraphEditor extends Region {
     /** derivedAt's sibling on the TRUE arrays: the active mode's
      *  lane-L value at compiled sample i, at the Pass-D true speed. */
     private double trueAt(int i, int L) {
+        if (L == 2 && activeRollAbs()) {
+            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+            double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
+            return Double.isNaN(b) ? 0 : Math.toDegrees(b);
+        }
         double sc = activeRatePM(L) && app.trueV != null
             ? 1 / Math.max(0.5, app.trueV[i]) : 1;
         if (activeGeo()) return app.trueRates[i][L + 1] * sc;
@@ -3701,7 +3895,7 @@ class GraphEditor extends Region {
         for (int L = 0; L < LANES; L++) {
             for (BezierBaker.Node n : app.lanes.get(L)) {
                 best = Math.min(best, Math.hypot(x - ltToX(n.t),
-                    y - valToY(L, n.val + dispOff(L, n.t))));
+                    y - valToY(L, dispVal(L, n.t, n.val))));
             }
         }
         return best;
@@ -4793,8 +4987,8 @@ class GraphEditor extends Region {
                     gestureStartX = e.getX();
                     gestureStartY = e.getY();
                     gestureNodeT = active().get(hit).t;
-                    gestureNodeV = active().get(hit).val
-                        + dispOff(activeLane, active().get(hit).t);
+                    gestureNodeV = dispVal(activeLane,
+                        active().get(hit).t, active().get(hit).val);
                     if (e.isShiftDown()) {
                         selSet.add(hit);               // shift+click adds
                     } else if (!selSet.contains(hit)) {
@@ -4850,8 +5044,8 @@ class GraphEditor extends Region {
                             gestureStartX = e.getX();
                             gestureStartY = e.getY();
                             gestureNodeT = active().get(ni).t;
-                            gestureNodeV = active().get(ni).val
-                                + dispOff(activeLane, active().get(ni).t);
+                            gestureNodeV = dispVal(activeLane,
+                                active().get(ni).t, active().get(ni).val);
                             dragWinT0 = viewStart();   // freeze the window,
                             dragWinT1 = viewEnd();     // like beginGesture
                             pendingSnapshot = null;    // insert already pushed
@@ -5169,8 +5363,8 @@ class GraphEditor extends Region {
                     int first = -1;   // primary = EARLIEST node in the box
                     for (int i = 0; i < lane.size(); i++) {
                         double px = ltToX(lane.get(i).t);
-                        double py = valToY(activeLane, lane.get(i).val
-                            + dispOff(activeLane, lane.get(i).t));
+                        double py = valToY(activeLane, dispVal(activeLane,
+                            lane.get(i).t, lane.get(i).val));
                         if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
                             selSet.add(i);
                             if (first < 0) first = i;
@@ -5722,6 +5916,39 @@ class GraphEditor extends Region {
         return true;
     }
 
+    /** ABSOLUTE-roll boundary target (v16.7, D118): {bank°, bank
+     *  rate} at the shared boundary sample. The bank reads the
+     *  compiled frame exactly; the rate converts the sampled body
+     *  roll through the transport term (best-effort — user-accepted
+     *  for the lower-derivative lane). Vertical seams refuse. */
+    private double[] absRollTarget(boolean atStart) {
+        TrackCompiler.Span act = spanOf(activeSection);
+        if (act == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()
+                || app.resultRates == null) return null;
+        int ib = Math.min(atStart ? act.i1() : act.i0(),
+            app.lastSamples.size() - 1);
+        FVDIntegrator.Sample sm = app.lastSamples.get(ib);
+        double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
+        if (Double.isNaN(b)) {
+            matchHint = "No defined bank on vertical track — the "
+                + "absolute roll lane can't read this seam.";
+            return null;
+        }
+        double vSafe = Math.max(0.5, sm.v());
+        double pitB = Math.toDegrees(FVDIntegrator.G0
+            * (sm.Gv() - sm.U().y()) / vSafe);
+        double yawB = Math.toDegrees(FVDIntegrator.G0
+            * (sm.Gl() - sm.R().y()) / vSafe);
+        double rollB = ib < app.resultRates.length
+            ? app.resultRates[ib][3] : 0;
+        double phi = Coaster.worldRates(sm, pitB, yawB, rollB)[2];
+        double slope = Double.isNaN(phi) ? 0
+            : domSlope(phi, false, activeDistNative(),
+                seamDesignV(atStart));
+        return new double[]{ Math.toDegrees(b), slope };
+    }
+
     /** Roll {value, slope} across a seam whose sides author roll
      *  about DIFFERENT axes (v16.6, D114): the neighbor's authored
      *  roll converted into OUR semantics. At any sample the frames
@@ -5906,6 +6133,17 @@ class GraphEditor extends Region {
         LaneSection actLs = secs.get(activeSection) instanceof LaneSection al
             ? al : null;
         boolean wg = actLs != null && laneWorld(actLs, laneIdx);
+        // ABSOLUTE ROLL lane (v16.7, D118): the target is the seam's
+        // measured BANK (°) — neighbor-agnostic, the compiled
+        // boundary frame is the truth — with the bank RATE as the
+        // slope (sampled body roll through the transport term; the
+        // user accepts best-effort slopes here: an absolute lane is
+        // one derivative below the rate lanes B usually smooths).
+        if (!real && laneIdx == 2 && actLs != null
+                && actLs.rollAbsolute && actLs.rollGlobal) {
+            double[] ab = absRollTarget(atStart);
+            if (ab != null || matchHint != null) return ab;
+        }
         // ROLL ACROSS DIFFERING ROLL ORIENTATIONS (v16.6, D114 — user
         // request "make B work for transitions between global and
         // local roll"): the neighbor's roll EXPRESSED IN OUR
@@ -6424,8 +6662,8 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> lane = active();
         for (int i = 0; i < lane.size(); i++) {
             double px = ltToX(lane.get(i).t);
-            double py = valToY(activeLane, lane.get(i).val
-                + dispOff(activeLane, lane.get(i).t));
+            double py = valToY(activeLane, dispVal(activeLane,
+                lane.get(i).t, lane.get(i).val));
             if (Math.hypot(x - px, y - py) <= NODE_HIT) return i;
         }
         return -1;
@@ -6458,8 +6696,8 @@ class GraphEditor extends Region {
             List<BezierBaker.Node> lane = app.lanes.get(L);
             for (int i = 0; i < lane.size(); i++) {
                 double d = Math.hypot(x - ltToX(lane.get(i).t),
-                                      y - valToY(L, lane.get(i).val
-                                          + dispOff(L, lane.get(i).t)));
+                                      y - valToY(L, dispVal(L,
+                                          lane.get(i).t, lane.get(i).val)));
                 if (d < best) { best = d; bestLane = L; bestNode = i; }
             }
         }
@@ -6472,7 +6710,7 @@ class GraphEditor extends Region {
         for (int L = 0; L < LANES; L++) {
             if (L == activeLane || (noRoll && L == 2)) continue;
             double d = Math.abs(y - valToY(L,
-                BezierBaker.evalAt(app.lanes.get(L), t) + dispOff(L, t)));
+                dispVal(L, t, BezierBaker.evalAt(app.lanes.get(L), t))));
             if (d < bestCurve) { bestCurve = d; bestLane = L; }
         }
         return bestLane >= 0 ? new int[]{ bestLane, -1 } : null;
@@ -6494,12 +6732,12 @@ class GraphEditor extends Region {
             if (idx >= lane.size() - 1 || n.lockedOut()) return null;
             double dt = BezierBaker.effOutDt(n, lane.get(idx + 1));
             return new double[]{ ltToX(n.t + dt), valToY(activeLane,
-                n.val + n.outDv + dispOff(activeLane, n.t)) };
+                dispVal(activeLane, n.t, n.val + n.outDv)) };
         } else {
             if (idx <= 0 || lane.get(idx - 1).lockedOut()) return null;
             double dt = BezierBaker.effInDt(lane.get(idx - 1), n);
             return new double[]{ ltToX(n.t + dt), valToY(activeLane,
-                n.val + n.inDv + dispOff(activeLane, n.t)) };
+                dispVal(activeLane, n.t, n.val + n.inDv)) };
         }
     }
 
@@ -6551,8 +6789,9 @@ class GraphEditor extends Region {
             // the write-back below converts to the delta).
             double vStep = snapVal(activeLane);
             if (app.settings.snapVRelative() && dragNodeIdx > 0) {
-                double pv = lane.get(dragNodeIdx - 1).val
-                    + dispOff(activeLane, lane.get(dragNodeIdx - 1).t);
+                double pv = dispVal(activeLane,
+                    lane.get(dragNodeIdx - 1).t,
+                    lane.get(dragNodeIdx - 1).val);
                 newVal = pv + Math.round((newVal - pv) / vStep) * vStep;
             } else {
                 newVal = Math.round(newVal / vStep) * vStep;
@@ -6580,9 +6819,10 @@ class GraphEditor extends Region {
         // already at the end may drag past it to extend the section
         if (newT > dragEndLimit) newT = dragEndLimit;
 
-        // Resulting view: the cursor tracked the DISPLAYED curve —
-        // write back the DELTA underneath it (v15.0, D98)
-        newVal -= dispOff(activeLane, newT);
+        // Resulting/cross-rate view: the cursor tracked the
+        // DISPLAYED curve — write back the native value (v15.0 D98;
+        // v16.7 D119)
+        newVal = nativeVal(activeLane, newT, newVal);
 
         if (selSet.size() > 1 && selSet.contains(dragNodeIdx)) {
             moveGroupBy(newT - n.t, newVal - n.val);
@@ -6729,9 +6969,9 @@ class GraphEditor extends Region {
             double slope = oldDv / curDt;   // value units per second
 
             double nx = ltToX(n.t), ny = valToY(activeLane,
-                n.val + dispOff(activeLane, n.t));
+                dispVal(activeLane, n.t, n.val));
             double kx = ltToX(n.t + curDt), ky = valToY(activeLane,
-                n.val + oldDv + dispOff(activeLane, n.t));
+                dispVal(activeLane, n.t, n.val + oldDv));
             double dirX = kx - nx, dirY = ky - ny;
             double dirLen = Math.hypot(dirX, dirY);
             if (dirLen < 1e-6) return;
@@ -6748,8 +6988,8 @@ class GraphEditor extends Region {
             newFrac = FvdDesigner.clamp((dragHandleIsOut ? dt : -dt) / segLen,
                             MIN_FRAC, BezierBaker.MAX_FRAC);
             if (snap) newFrac = snapFrac(newFrac);
-            newDv = yToVal(activeLane, y) - n.val
-                - dispOff(activeLane, n.t);
+            newDv = nativeVal(activeLane, n.t,
+                yToVal(activeLane, y)) - n.val;
         }
 
         if (dragHandleIsOut) { n.outFrac = newFrac; n.outDv = newDv; }
@@ -6800,7 +7040,7 @@ class GraphEditor extends Region {
         double bestD2 = 9 * 9;
         double bestT = Double.NaN;
         double px0 = ltToX(poly.get(0)[0]), py0 = valToY(activeLane,
-            poly.get(0)[1] + dispOff(activeLane, poly.get(0)[0]));
+            dispVal(activeLane, poly.get(0)[0], poly.get(0)[1]));
         // the dotted hold-final-value extension is insertable too
         double laneEnd = lane.get(lane.size() - 1).t;
         boolean extended = laneEnd < sectionEnd() - 1e-9;
@@ -6810,7 +7050,7 @@ class GraphEditor extends Region {
             double v1 = i < poly.size() ? poly.get(i)[1] : lane.get(lane.size() - 1).val;
             double t0 = i < poly.size() ? poly.get(i - 1)[0] : laneEnd;
             double px1 = ltToX(t1), py1 = valToY(activeLane,
-                v1 + dispOff(activeLane, t1));
+                dispVal(activeLane, t1, v1));
             double segX = px1 - px0, segY = py1 - py0;
             double len2 = segX * segX + segY * segY;
             double u = len2 < 1e-9 ? 0
@@ -7827,8 +8067,8 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> lane = active();
         for (int i = 0; i < lane.size(); i++) {
             double px = ltToX(lane.get(i).t);
-            double py = valToY(activeLane, lane.get(i).val
-                + dispOff(activeLane, lane.get(i).t));
+            double py = valToY(activeLane, dispVal(activeLane,
+                lane.get(i).t, lane.get(i).val));
             boolean isSel = (i == selIdx);
             boolean isDragged = (i == dragNodeIdx);
 
@@ -7852,9 +8092,10 @@ class GraphEditor extends Region {
                 BezierBaker.Node nd = lane.get(i);
                 // Resulting view: the readout leads with the RESULTING
                 // value under the node and carries the delta along
+                double shown = dispVal(activeLane, nd.t, nd.val);
                 double off = dispOff(activeLane, nd.t);
                 String vTxt = off != 0
-                    ? String.format("%.2f%s (Δ %+.2f)", nd.val + off,
+                    ? String.format("%.2f%s (Δ %+.2f)", shown,
                         laneUnit(activeLane), nd.val)
                     : String.format("%.2f%s", nd.val, laneUnit(activeLane));
                 // x readout in the DISPLAY domain: native Δ unwarped
@@ -7878,8 +8119,8 @@ class GraphEditor extends Region {
         // the lane's value at that point alongside (the DISPLAYED
         // curve: base+delta in the influence Resulting view)
         if (!Double.isNaN(hoverT)) {
-            double hv = BezierBaker.evalAt(lane, hoverT)
-                + dispOff(activeLane, hoverT);
+            double hv = dispVal(activeLane, hoverT,
+                BezierBaker.evalAt(lane, hoverT));
             double hx = ltToX(hoverT);
             double hy = valToY(activeLane, hv);
             gc.setGlobalAlpha(0.5);
@@ -7928,8 +8169,8 @@ class GraphEditor extends Region {
                  : (dragNodeIdx >= 0 ? shiftAxis : 0);
         if (selIdx >= 0 && lock != 0) {
             double lx = ltToX(lane.get(selIdx).t);
-            double ly = valToY(activeLane, lane.get(selIdx).val
-                + dispOff(activeLane, lane.get(selIdx).t));
+            double ly = valToY(activeLane, dispVal(activeLane,
+                lane.get(selIdx).t, lane.get(selIdx).val));
             gc.setGlobalAlpha(0.5);
             gc.setLineWidth(1.5);
             if (lock == 1) {
@@ -8247,7 +8488,7 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(idx);
         double nx = ltToX(n.t);
-        double ny = valToY(activeLane, n.val + dispOff(activeLane, n.t));
+        double ny = valToY(activeLane, dispVal(activeLane, n.t, n.val));
         outEdgeMarker = null;
         inEdgeMarker = null;
 

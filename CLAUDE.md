@@ -108,7 +108,18 @@ LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     targets integrate over ARC; force Gv/Gl are
                     TARGETS, untouched; DISTANCE × °/m geo shape is
                     fully speed-independent, gated 0.08 mm; influence
-                    refuses °/m sections for now; globalAxes() sections aren't
+                    WORKS on °/m sections since v16.7 D117 — deltas
+                    author °/m, the operating-speed re-expression is
+                    the identity there) + ABSOLUTE ROLL rollAbsolute
+                    (v16.7, D118: lane 2 = the BANK ANGLE °, global
+                    roll only — the projection targets the lane
+                    value, feed-forward from its slope; B matches
+                    the seam's bank exactly, slope best-effort by
+                    user acceptance; influence refuses) + the
+                    CROSS-RATE VIEW viewOtherRate (v16.7, D119:
+                    session-only display warp °/s↔°/m through the
+                    speed profile, dispVal/nativeVal choke points,
+                    auto-drops on leave; globalAxes() sections aren't
                     body rates: sampled matching, derived strips).
                     INFLUENCE state (v15.0, D98;
                     distance sections join in v16.1 — the two-pass
@@ -577,7 +588,8 @@ source tree — they won't compile against the current time-domain API.
   reversed` blocks (the domain field — written since Phase 1 — is
   HONORED for force/geo since v16.0 D103: "distance" = lane x in
   meters; every old file says "time" there and loads unchanged;
-  field 8 = ratePerMeter, v16.6 D115, missing = °/s;
+  field 8 = ratePerMeter, v16.6 D115, missing = °/s; field 9 =
+  rollAbsolute, v16.7 D118, missing = rate;
   the cross-domain VIEW flag is deliberately NOT saved) holding
   `lane`/`n` lines (force/geo; an
   INFLUENCED section, v15.0 D98, appends `infl vApply [rollG ypG]` —

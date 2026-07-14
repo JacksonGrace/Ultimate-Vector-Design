@@ -367,6 +367,7 @@ public final class TrackCompiler {
         opts.v0 = fs.vDesign;
         opts.rollGlobal = fs.rollGlobal;   // v16.1, D107
         opts.rollPerMeter = fs.ratePerMeter;   // v16.6, D115
+        opts.rollAbsolute = fs.rollAbsolute && fs.rollGlobal;   // v16.7, D118
         if (fs.reversed) {
             // canonical frame at the ENTRY HEIGHT: energy is
             // height-relative but float rounding is not — this keeps
@@ -395,14 +396,15 @@ public final class TrackCompiler {
     private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt) {
         boolean dist = gs.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(gs.lanes, 0.05);
+        boolean gAbs = gs.rollAbsolute && gs.rollGlobal;   // v16.7
         if (gs.reversed) {
             GeoIntegrator.Result rr = dist
                 ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                     new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
-                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter)
+                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter, gAbs)
                 : GeoIntegrator.integrate(kfs, dt,
                     gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
-                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter);
+                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter, gAbs);
             return reverseAndPlace(rr.samples(), entry);
         }
         // quaternion-native (the §2 amendment): the exit orientation
@@ -410,10 +412,10 @@ public final class TrackCompiler {
         GeoIntegrator.Result r = dist
             ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
-                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter)
+                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter, gAbs)
             : GeoIntegrator.integrate(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
-                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter);
+                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter, gAbs);
         FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
         TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t());
@@ -464,6 +466,14 @@ public final class TrackCompiler {
         // lanes key by section-local METERS, and no re-time exists at
         // all (arc is speed-invariant — the operating profile only
         // moves the values, never the axis).
+        // ABSOLUTE-ROLL sections take no influence (v16.7, D118 —
+        // the roll channel of the two-pass is rate-shaped); the UI
+        // refuses entry, hand-edited files fall back to plain.
+        if (ls.rollAbsolute && ls.rollGlobal) {
+            ls.baseCurves = null;
+            return isGeo ? geoLane((GeoSection) ls, entry, dt)
+                         : forceLane((ForceSection) ls, entry, dt);
+        }
         // PER-METER sections influence too since v16.7 (D117): the
         // base rows and the delta lanes speak °/m — per-meter rates
         // are speed-INVARIANT (angle per meter of a fixed shape), so

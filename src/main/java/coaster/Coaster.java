@@ -83,6 +83,7 @@ public class Coaster {
         // rate units carry too (v16.6, D115): the copied end values
         // only mean the same thing in the same units
         out.ratePerMeter = prev.ratePerMeter;
+        out.rollAbsolute = prev.rollAbsolute;   // v16.7, D118
         return out;
     }
 
@@ -1122,6 +1123,23 @@ public class Coaster {
                                              Section.Domain outDom,
                                              boolean toRollG, boolean toYpG,
                                              boolean toRateM) {
+        return convertToLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
+            outDom, toRollG, toYpG, toRateM, false);
+    }
+
+    /** Convert with an ABSOLUTE-ROLL target too (v16.7, D118): the
+     *  roll lane comes out as the measured BANK ANGLE (°) per sample
+     *  — global roll only (forced on). Vertical samples hold the
+     *  previous bank (no defined angle there). */
+    public static LaneSection convertToLanes(List<FVDIntegrator.Sample> s,
+                                             double vDesign, boolean toGeo,
+                                             double dt, double spacing,
+                                             double adaptTol,
+                                             Section.Domain outDom,
+                                             boolean toRollG, boolean toYpG,
+                                             boolean toRateM,
+                                             boolean toRollAbs) {
+        if (toRollAbs) toRollG = true;   // the angle IS the target
         int n = s.size();
         double vD = Math.max(1, vDesign);
         double y0 = s.get(0).pos().y();
@@ -1205,6 +1223,18 @@ public class Coaster {
                 if (toRollG) val[i][2] = capRate(wr[2]);
             }
         }
+        // ABSOLUTE-ROLL target (v16.7, D118): lane 2 = the measured
+        // bank angle per sample; vertical stretches hold the last
+        // defined bank
+        if (toRollAbs) {
+            double lastBank = 0;
+            for (int i = 0; i < n; i++) {
+                FVDIntegrator.Sample sm = s.get(i);
+                double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
+                if (!Double.isNaN(b)) lastBank = Math.toDegrees(b);
+                val[i][2] = lastBank;
+            }
+        }
         // PER-METER targets (v16.6, D115): rate values divide by the
         // target profile's speed per sample — the integrator consumes
         // value × v, so the round trip is exact where the fit is
@@ -1264,7 +1294,12 @@ public class Coaster {
                 ? fitLaneAdaptive(xG, val, c, dur, adaptTol, xScale)
                 : fitLaneUniform(xG, val, c, dur,
                     Math.max(0.01 * xScale, spacing), xScale);
-            matchSegmentAreas(lane, xG, val, c, vGs, wPow);
+            // an ABSOLUTE roll lane IS the integrated quantity —
+            // pointwise fidelity is the whole story, area matching
+            // would chase a meaningless integral (v16.7, D118)
+            if (!(toRollAbs && c == 2)) {
+                matchSegmentAreas(lane, xG, val, c, vGs, wPow);
+            }
             lanes.add(lane);
         }
         LaneSection out = toGeo ? new GeoSection(lanes, vD)
@@ -1273,6 +1308,7 @@ public class Coaster {
         out.rollGlobal = toRollG;
         out.yawPitchGlobal = toGeo && toYpG;
         out.ratePerMeter = toRateM;
+        out.rollAbsolute = toRollAbs;
         return out;
     }
 
@@ -1852,6 +1888,17 @@ public class Coaster {
                                         Section.Domain outDom,
                                         boolean rollG, boolean ypG,
                                         boolean rateM) {
+        return partialConvertBridge(pieceIdx, secIdx, frac, left, toGeo,
+            dt, spacing, adaptTol, outDom, rollG, ypG, rateM, false);
+    }
+
+    public boolean partialConvertBridge(int pieceIdx, int secIdx,
+                                        double frac, boolean left,
+                                        boolean toGeo, double dt,
+                                        double spacing, double adaptTol,
+                                        Section.Domain outDom,
+                                        boolean rollG, boolean ypG,
+                                        boolean rateM, boolean rollAbs) {
         TrackPiece piece = pieces.get(pieceIdx);
         if (!(piece.sections.get(secIdx) instanceof BridgeSection bs)) {
             return false;
@@ -1887,7 +1934,7 @@ public class Coaster {
         if (left) {
             LaneSection conv = convertToLanes(sideOf(s, cs, true),
                 bs.vDesign, toGeo, dt, spacing, adaptTol,
-                outDom, rollG, ypG, rateM);
+                outDom, rollG, ypG, rateM, rollAbs);
             BridgeSection rem = new BridgeSection(
                 new TrackPose(cs.pos(), cq),
                 new TrackPose(bs.solvedTarget.pos(), bs.solvedTarget.orient()),
@@ -1920,7 +1967,7 @@ public class Coaster {
         } else {
             List<FVDIntegrator.Sample> side = sideOf(s, cs, false);
             LaneSection conv = convertToLanes(side, vCut, toGeo, dt,
-                spacing, adaptTol, outDom, rollG, ypG, rateM);
+                spacing, adaptTol, outDom, rollG, ypG, rateM, rollAbs);
             // the kept bridge now ends at the cut; seed the far seam
             // with the dynamics MEASURED there (the next compile
             // re-captures them from the converted piece's head)
@@ -2036,6 +2083,14 @@ public class Coaster {
             double frac, boolean left, boolean toGeo, double dt,
             double spacing, double adaptTol, Section.Domain outDom,
             boolean rollG, boolean ypG, boolean rateM) {
+        return partialConvertSection(pieceIdx, secIdx, frac, left, toGeo,
+            dt, spacing, adaptTol, outDom, rollG, ypG, rateM, false);
+    }
+
+    public boolean partialConvertSection(int pieceIdx, int secIdx,
+            double frac, boolean left, boolean toGeo, double dt,
+            double spacing, double adaptTol, Section.Domain outDom,
+            boolean rollG, boolean ypG, boolean rateM, boolean rollAbs) {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
@@ -2114,7 +2169,7 @@ public class Coaster {
         }
         LaneSection conv = convertToLanes(convSide,
             left ? sec.vDesign() : vCut, toGeo, dt, spacing, adaptTol,
-            outDom, rollG, ypG, rateM);
+            outDom, rollG, ypG, rateM, rollAbs);
         // BOTH halves continue the original's DESIGN speed profile, so
         // a conflicted (pinned) section leaves two conflicted halves —
         // the pin rides onto each (v15.1, D99; unpinned originals get
@@ -2287,11 +2342,19 @@ public class Coaster {
             boolean toGeo, double dt, double spacing, double adaptTol,
             Section.Domain outDom, boolean rollG, boolean ypG,
             boolean rateM) {
+        return convertWholeSection(pieceIdx, secIdx, toGeo, dt, spacing,
+            adaptTol, outDom, rollG, ypG, rateM, false);
+    }
+
+    public boolean convertWholeSection(int pieceIdx, int secIdx,
+            boolean toGeo, double dt, double spacing, double adaptTol,
+            Section.Domain outDom, boolean rollG, boolean ypG,
+            boolean rateM, boolean rollAbs) {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec instanceof BridgeSection) {
             return convertBridgeWhole(pieceIdx, secIdx, toGeo, dt,
-                spacing, adaptTol, outDom, rollG, ypG, rateM);
+                spacing, adaptTol, outDom, rollG, ypG, rateM, rollAbs);
         }
         if (sec.reversed()) return false;
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
@@ -2304,7 +2367,7 @@ public class Coaster {
         LaneSection conv = convertToLanes(
             withEntry(r.samples(), sp, dt),
             sec.vDesign(), toGeo, dt, spacing, adaptTol,
-            outDom, rollG, ypG, rateM);
+            outDom, rollG, ypG, rateM, rollAbs);
         // a SPEED-CONFLICTED section stays conflicted through a convert
         // (v15.1, D99 — user rule: "the geo section should still have
         // design/real speed conflict and shouldn't change shape"): the
@@ -2333,6 +2396,14 @@ public class Coaster {
             boolean toGeo, double dt, double spacing, double adaptTol,
             Section.Domain outDom, boolean rollG, boolean ypG,
             boolean rateM) {
+        return convertBridgeWhole(pieceIdx, secIdx, toGeo, dt, spacing,
+            adaptTol, outDom, rollG, ypG, rateM, false);
+    }
+
+    public boolean convertBridgeWhole(int pieceIdx, int secIdx,
+            boolean toGeo, double dt, double spacing, double adaptTol,
+            Section.Domain outDom, boolean rollG, boolean ypG,
+            boolean rateM, boolean rollAbs) {
         TrackPiece piece = pieces.get(pieceIdx);
         if (!(piece.sections.get(secIdx) instanceof BridgeSection bs)) {
             return false;
@@ -2341,7 +2412,7 @@ public class Coaster {
         if (s.size() < 5) return false;
         piece.sections.set(secIdx,
             convertToLanes(s, bs.vDesign, toGeo, dt, spacing, adaptTol,
-                outDom, rollG, ypG, rateM));
+                outDom, rollG, ypG, rateM, rollAbs));
         if (pieceIdx + 1 < pieces.size()) {
             // PIN the first attached section's design speed (v14.5,
             // D97, user rule): the target's design speeds and its

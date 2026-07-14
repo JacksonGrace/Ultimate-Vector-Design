@@ -77,7 +77,17 @@ public final class GeoIntegrator {
     static Vec3 omegaFor(FVDIntegrator.Keyframe kf, Vec3 T, Vec3 U, Vec3 R,
                          boolean rollGlobal, boolean ypGlobal,
                          double rateScale) {
-        if (!rollGlobal && !ypGlobal && rateScale == 1) {
+        return omegaFor(kf, T, U, R, rollGlobal, ypGlobal, rateScale,
+            Double.NaN);
+    }
+
+    /** absPhi = the ABSOLUTE roll lane's bank rate (rad/s, from its
+     *  SLOPE — v16.7 D118); NaN = the lane is a rate as usual. */
+    static Vec3 omegaFor(FVDIntegrator.Keyframe kf, Vec3 T, Vec3 U, Vec3 R,
+                         boolean rollGlobal, boolean ypGlobal,
+                         double rateScale, double absPhi) {
+        if (!rollGlobal && !ypGlobal && rateScale == 1
+                && Double.isNaN(absPhi)) {
             return U.scale(Math.toRadians(kf.Gl()))           // yaw slot
                 .add(R.scale(-Math.toRadians(kf.Gv())))       // pitch slot
                 .add(T.scale(Math.toRadians(kf.rollRateDeg())));
@@ -106,14 +116,15 @@ public final class GeoIntegrator {
         // D110 — FVDIntegrator.rollTerm; the projection corrects the
         // O(dt²) rest). Felt is untouched: a T-term contributes to
         // neither Ω·U nor Ω·R.
-        return base.add(T.scale(
-            FVDIntegrator.rollTerm(kf, T, base, rollGlobal, rateScale)));
+        return base.add(T.scale(!Double.isNaN(absPhi) && rollGlobal
+            ? FVDIntegrator.rollTermPhi(absPhi, T, base)
+            : FVDIntegrator.rollTerm(kf, T, base, rollGlobal, rateScale)));
     }
 
     private static Deriv deriv(State st, double t, List<FVDIntegrator.Keyframe> kfs,
                                double vDesign, double y0,
                                boolean rollGlobal, boolean ypGlobal,
-                               boolean perMeter) {
+                               boolean perMeter, boolean rollAbs) {
         Quat q = st.q().normalize();   // stages hand us slightly non-unit q
         Vec3 T = q.T();
         Vec3 U = q.U();
@@ -123,7 +134,10 @@ public final class GeoIntegrator {
         double v = FVDIntegrator.speedAt(st.pos(), vDesign, y0);
 
         Vec3 omega = omegaFor(kf, T, U, R, rollGlobal, ypGlobal,
-            perMeter ? v : 1);
+            perMeter ? v : 1,
+            rollAbs && rollGlobal
+                ? Math.toRadians(FVDIntegrator.rollSlopeAt(kfs, t))
+                : Double.NaN);
         Quat dQ = new Quat(0, omega.x(), omega.y(), omega.z()).mul(q).scale(0.5);
         return new Deriv(T.scale(v), dQ);
     }
@@ -155,6 +169,17 @@ public final class GeoIntegrator {
                                    double vDesign, Vec3 pos0, Quat q0,
                                    boolean rollGlobal, boolean ypGlobal,
                                    boolean perMeter) {
+        return integrate(keyframes, dt, vDesign, pos0, q0,
+            rollGlobal, ypGlobal, perMeter, false);
+    }
+
+    /** ABSOLUTE-roll variant (v16.7, D118): the roll lane holds the
+     *  bank angle (deg) — the projection targets the lane VALUE, the
+     *  feed-forward its slope. Requires rollGlobal. */
+    public static Result integrate(List<FVDIntegrator.Keyframe> keyframes, double dt,
+                                   double vDesign, Vec3 pos0, Quat q0,
+                                   boolean rollGlobal, boolean ypGlobal,
+                                   boolean perMeter, boolean rollAbs) {
         double totalTime = keyframes.get(keyframes.size() - 1).t();
 
         Vec3 pos = pos0;
@@ -182,7 +207,10 @@ public final class GeoIntegrator {
             double rsF = perMeter ? v : 1;
             double gv, gl;
             if (anyGlobal) {
-                Vec3 om = omegaFor(kf, T, U, R, rollGlobal, ypGlobal, rsF);
+                Vec3 om = omegaFor(kf, T, U, R, rollGlobal, ypGlobal, rsF,
+                    rollAbs && rollGlobal
+                        ? Math.toRadians(FVDIntegrator.rollSlopeAt(keyframes, t))
+                        : Double.NaN);
                 gv = -om.dot(R) * v / FVDIntegrator.G0 + U.y();
                 gl = om.dot(U) * v / FVDIntegrator.G0 + R.y();
             } else {
@@ -195,10 +223,10 @@ public final class GeoIntegrator {
                         // (the loop's own q ends one step PAST it, D80)
 
             State y = new State(pos, q);
-            Deriv k1 = deriv(y, t, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter);
-            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter);
-            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter);
-            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter);
+            Deriv k1 = deriv(y, t, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs);
+            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs);
+            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs);
+            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
@@ -206,7 +234,16 @@ public final class GeoIntegrator {
             q = q.add(
                 k1.dQ().add(k2.dQ().scale(2)).add(k3.dQ().scale(2)).add(k4.dQ())
                     .scale(dt / 6)).normalize();
-            if (rollGlobal) {
+            if (rollGlobal && rollAbs) {
+                // ABSOLUTE roll (D118): target = the lane value at
+                // the just-reached time
+                double tb = Math.toRadians(FVDIntegrator
+                    .interpAt(keyframes, t + dt).rollRateDeg());
+                double b = FVDIntegrator.bankOfTU(q.T(), q.U());
+                if (!Double.isNaN(b) && Math.abs(tb - b) >= 1e-12) {
+                    q = Quat.aboutAxis(q.T(), tb - b).mul(q).normalize();
+                }
+            } else if (rollGlobal) {
                 if (perMeter) {
                     // bank target = the lane's ARC integral (D115)
                     double v1 = FVDIntegrator.speedAt(newPos, vDesign, y0);
@@ -258,7 +295,7 @@ public final class GeoIntegrator {
     private static DDeriv derivDist(DState st, List<FVDIntegrator.Keyframe> kfs,
                                     double vDesign, double y0,
                                     boolean rollGlobal, boolean ypGlobal,
-                                    boolean perMeter) {
+                                    boolean perMeter, boolean rollAbs) {
         Quat q = st.q().normalize();
         Vec3 T = q.T();
         Vec3 U = q.U();
@@ -268,7 +305,12 @@ public final class GeoIntegrator {
         double v = Math.max(0.5, FVDIntegrator.speedAt(st.pos(), vDesign, y0));
 
         Vec3 omega = omegaFor(kf, T, U, R, rollGlobal, ypGlobal,
-            perMeter ? v : 1);
+            perMeter ? v : 1,
+            rollAbs && rollGlobal
+                // slope per METER on an arc axis: phi' = slope x v
+                ? Math.toRadians(
+                    FVDIntegrator.rollSlopeAt(kfs, st.s())) * v
+                : Double.NaN);
         Quat dQ = new Quat(0, omega.x(), omega.y(), omega.z()).mul(q).scale(0.5);
         return new DDeriv(T.scale(v), dQ, v);
     }
@@ -281,11 +323,11 @@ public final class GeoIntegrator {
     private static DState rk4Dist(DState y, List<FVDIntegrator.Keyframe> kfs,
                                   double vDesign, double y0, double h,
                                   boolean rollGlobal, boolean ypGlobal,
-                                  boolean perMeter) {
-        DDeriv k1 = derivDist(y, kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter);
-        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter);
-        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter);
-        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter);
+                                  boolean perMeter, boolean rollAbs) {
+        DDeriv k1 = derivDist(y, kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -301,7 +343,7 @@ public final class GeoIntegrator {
                                       List<FVDIntegrator.Keyframe> kfs,
                                       double vDesign, double y0,
                                       boolean rollGlobal, boolean ypGlobal,
-                                      boolean perMeter) {
+                                      boolean perMeter, boolean rollAbs) {
         Quat q = st.q();
         Vec3 T = q.T();
         Vec3 U = q.U();
@@ -311,7 +353,11 @@ public final class GeoIntegrator {
         double rsF = perMeter ? v : 1;
         double gv, gl;
         if (rollGlobal || ypGlobal) {   // body components of Ω (v16.1)
-            Vec3 om = omegaFor(kf, T, U, R, rollGlobal, ypGlobal, rsF);
+            Vec3 om = omegaFor(kf, T, U, R, rollGlobal, ypGlobal, rsF,
+                rollAbs && rollGlobal
+                    ? Math.toRadians(
+                        FVDIntegrator.rollSlopeAt(kfs, st.s())) * v
+                    : Double.NaN);
             gv = -om.dot(R) * v / FVDIntegrator.G0 + U.y();
             gl = om.dot(U) * v / FVDIntegrator.G0 + R.y();
         } else {
@@ -345,6 +391,15 @@ public final class GeoIntegrator {
                                        Vec3 pos0, Quat q0,
                                        boolean rollGlobal, boolean ypGlobal,
                                        boolean perMeter) {
+        return integrateDist(keyframes, dt, vDesign, pos0, q0,
+            rollGlobal, ypGlobal, perMeter, false);
+    }
+
+    public static Result integrateDist(List<FVDIntegrator.Keyframe> keyframes,
+                                       double dt, double vDesign,
+                                       Vec3 pos0, Quat q0,
+                                       boolean rollGlobal, boolean ypGlobal,
+                                       boolean perMeter, boolean rollAbs) {
         double totalLen = Math.max(keyframes.get(keyframes.size() - 1).t(), 1e-6);
 
         DState st = new DState(pos0, q0.normalize(), 0);
@@ -358,13 +413,13 @@ public final class GeoIntegrator {
 
         while (st.s() < totalLen - 1e-9 && guard++ < 500_000) {
             addSampleDist(samples, st, t, keyframes, vDesign, y0,
-                rollGlobal, ypGlobal, perMeter);
+                rollGlobal, ypGlobal, perMeter, rollAbs);
             double v = Math.max(0.5, FVDIntegrator.speedAt(st.pos(), vDesign, y0));
             double sPrev = st.s();
             double hUsed;
             if (st.s() + v * dt < totalLen - 1e-12) {
                 st = rk4Dist(st, keyframes, vDesign, y0, dt,
-                    rollGlobal, ypGlobal, perMeter);
+                    rollGlobal, ypGlobal, perMeter, rollAbs);
                 t += dt;
                 hUsed = dt;
             } else {
@@ -372,7 +427,7 @@ public final class GeoIntegrator {
                 DState end = st;
                 for (int it = 0; it < 3; it++) {
                     end = rk4Dist(st, keyframes, vDesign, y0, h,
-                        rollGlobal, ypGlobal, perMeter);
+                        rollGlobal, ypGlobal, perMeter, rollAbs);
                     double vEnd = Math.max(0.5,
                         FVDIntegrator.speedAt(end.pos(), vDesign, y0));
                     h += (totalLen - end.s()) / vEnd;
@@ -381,7 +436,18 @@ public final class GeoIntegrator {
                 t += h;
                 hUsed = h;
             }
-            if (rollGlobal) {
+            if (rollGlobal && rollAbs) {
+                // ABSOLUTE roll (D118): target = the lane value at
+                // the just-reached arc
+                Quat q = st.q();
+                double tb = Math.toRadians(FVDIntegrator
+                    .interpAt(keyframes, st.s()).rollRateDeg());
+                double b = FVDIntegrator.bankOfTU(q.T(), q.U());
+                if (!Double.isNaN(b) && Math.abs(tb - b) >= 1e-12) {
+                    st = new DState(st.pos(), Quat.aboutAxis(q.T(), tb - b)
+                        .mul(q).normalize(), st.s());
+                }
+            } else if (rollGlobal) {
                 // per-meter: the bank target is the lane's ARC
                 // integral — ds is the step's own advance (D115)
                 cumRoll += perMeter
@@ -411,7 +477,7 @@ public final class GeoIntegrator {
             }
         }
         addSampleDist(samples, st, t, keyframes, vDesign, y0,
-            rollGlobal, ypGlobal, perMeter);
+            rollGlobal, ypGlobal, perMeter, rollAbs);
         return new Result(samples, st.q());
     }
 }

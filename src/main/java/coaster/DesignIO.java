@@ -177,8 +177,8 @@ public final class DesignIO {
                 // historic behavior — old files unchanged, old readers
                 // ignore the extra fields)
                 // field 8 (v16.6, D115): per-meter rate units;
-                // missing = 0 = the historic °/s
-                out.printf(Locale.US, "section %s %.4f %s %d %d %d %d %d%n",
+                // field 9 (v16.7, D118): absolute roll; missing = 0
+                out.printf(Locale.US, "section %s %.4f %s %d %d %d %d %d %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
                     fs.influenced() ? fs.vAuthored : fs.vDesign,
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
@@ -186,7 +186,8 @@ public final class DesignIO {
                     fs.vPinned ? 1 : 0,
                     fs.rollGlobal ? 1 : 0,
                     fs.yawPitchGlobal ? 1 : 0,
-                    fs.ratePerMeter ? 1 : 0);
+                    fs.ratePerMeter ? 1 : 0,
+                    fs.rollAbsolute ? 1 : 0);
                 for (int lane = 0; lane < 3; lane++) {
                     out.println("lane " + lane);
                     for (BezierBaker.Node n : fs.lanes.get(lane)) {
@@ -331,6 +332,9 @@ public final class DesignIO {
                         // v16.6 rate units; missing = °/s
                         ls6.ratePerMeter = parts.length > 8
                             && parts[8].equals("1");
+                        // v16.7 absolute roll; missing = rate
+                        ls6.rollAbsolute = parts.length > 9
+                            && parts[9].equals("1");
                     }
                     curPiece.sections.add(curSection);
                     curLane = -1;
