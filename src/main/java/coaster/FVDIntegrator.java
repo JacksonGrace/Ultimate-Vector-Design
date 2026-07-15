@@ -191,12 +191,63 @@ public class FVDIntegrator {
         return phiRate + psp * T.y();   // sinθ = T.y
     }
 
-    /** Roll-channel slope of the keyframe polyline at x (per unit of
-     *  the keyframe axis), central over +-0.01. */
+    /** C1 read of the ABSOLUTE roll lane (v16.9, D121): the baked
+     *  keyframes are LINEAR per 0.05 cell, so consuming them
+     *  directly as the bank target made the roll RATE a per-cell
+     *  STAIRCASE — constant slope, then a jump at every knot (the
+     *  user's "jitter"/stair-stepped resulting graph, worst at high
+     *  rates; rate lanes never see this: their piecewise-linear
+     *  VALUE is already continuous). Catmull-Rom through the knots:
+     *  bank C1, rate continuous. Returns {bank°, slope °/axis-unit};
+     *  clamps flat outside the grid. */
+    static double[] bankHermite(List<Keyframe> kfs, double x) {
+        int n = kfs.size();
+        if (n < 2) {
+            return new double[]{ n == 0 ? 0 : kfs.get(0).rollRateDeg(), 0 };
+        }
+        if (x <= kfs.get(0).t()) {
+            return new double[]{ kfs.get(0).rollRateDeg(), 0 };
+        }
+        if (x >= kfs.get(n - 1).t()) {
+            return new double[]{ kfs.get(n - 1).rollRateDeg(), 0 };
+        }
+        int lo = 0, hi = n - 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (kfs.get(mid).t() <= x) lo = mid; else hi = mid;
+        }
+        double t0 = kfs.get(lo).t(), t1 = kfs.get(hi).t();
+        double h = t1 - t0;
+        double v0 = kfs.get(lo).rollRateDeg();
+        double v1 = kfs.get(hi).rollRateDeg();
+        if (h < 1e-12) return new double[]{ v0, 0 };
+        double m0 = lo == 0 ? (v1 - v0) / h
+            : (v1 - kfs.get(lo - 1).rollRateDeg())
+              / (t1 - kfs.get(lo - 1).t());
+        double m1 = hi == n - 1 ? (v1 - v0) / h
+            : (kfs.get(hi + 1).rollRateDeg() - v0)
+              / (kfs.get(hi + 1).t() - t0);
+        double u = (x - t0) / h, u2 = u * u, u3 = u2 * u;
+        double val = (2 * u3 - 3 * u2 + 1) * v0
+            + (u3 - 2 * u2 + u) * h * m0
+            + (-2 * u3 + 3 * u2) * v1
+            + (u3 - u2) * h * m1;
+        double slope = ((6 * u2 - 6 * u) * v0
+            + (3 * u2 - 4 * u + 1) * h * m0
+            + (-6 * u2 + 6 * u) * v1
+            + (3 * u2 - 2 * u) * h * m1) / h;
+        return new double[]{ val, slope };
+    }
+
+    /** The absolute lane's bank target at x (°, C1). */
+    static double bankAt(List<Keyframe> kfs, double x) {
+        return bankHermite(kfs, x)[0];
+    }
+
+    /** The absolute lane's bank slope at x (° per keyframe-axis
+     *  unit, continuous — the feed-forward's input). */
     static double rollSlopeAt(List<Keyframe> kfs, double x) {
-        double h = 0.01;
-        return (interpAt(kfs, x + h).rollRateDeg()
-            - interpAt(kfs, x - h).rollRateDeg()) / (2 * h);
+        return bankHermite(kfs, x)[1];
     }
 
     private static State advance(State y, Deriv k, double h) {
@@ -255,9 +306,10 @@ public class FVDIntegrator {
             if (rG && opts.rollAbsolute) {
                 // ABSOLUTE roll (D118): the target IS the lane value
                 // at the just-reached time - no integral, no entry-
-                // bank reference
+                // bank reference (C1 read since v16.9 D121: the raw
+                // polyline made the rate a per-cell staircase)
                 U = projectBank(T, U, Math.toRadians(
-                    interpAt(keyframes, t + dt).rollRateDeg()));
+                    bankAt(keyframes, t + dt)));
             } else if (rG) {
                 if (opts.rollPerMeter) {
                     // bank target integrates the lane over ARC (D115):
@@ -419,9 +471,9 @@ public class FVDIntegrator {
             }
             if (rG && opts.rollAbsolute) {
                 // ABSOLUTE roll (D118): target = the lane value at
-                // the just-reached arc
+                // the just-reached arc (C1 read, v16.9 D121)
                 Vec3 pu = projectBank(st.T(), st.U(), Math.toRadians(
-                    interpAt(keyframes, st.s()).rollRateDeg()));
+                    bankAt(keyframes, st.s())));
                 if (pu != st.U()) {
                     st = new DState(st.pos(), st.T(), pu, st.s());
                 }

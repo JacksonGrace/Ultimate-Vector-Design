@@ -236,9 +236,9 @@ public final class GeoIntegrator {
                     .scale(dt / 6)).normalize();
             if (rollGlobal && rollAbs) {
                 // ABSOLUTE roll (D118): target = the lane value at
-                // the just-reached time
+                // the just-reached time (C1 read, v16.9 D121)
                 double tb = Math.toRadians(FVDIntegrator
-                    .interpAt(keyframes, t + dt).rollRateDeg());
+                    .bankAt(keyframes, t + dt));
                 double b = FVDIntegrator.bankOfTU(q.T(), q.U());
                 if (!Double.isNaN(b) && Math.abs(tb - b) >= 1e-12) {
                     q = Quat.aboutAxis(q.T(), tb - b).mul(q).normalize();
@@ -438,10 +438,10 @@ public final class GeoIntegrator {
             }
             if (rollGlobal && rollAbs) {
                 // ABSOLUTE roll (D118): target = the lane value at
-                // the just-reached arc
+                // the just-reached arc (C1 read, v16.9 D121)
                 Quat q = st.q();
                 double tb = Math.toRadians(FVDIntegrator
-                    .interpAt(keyframes, st.s()).rollRateDeg());
+                    .bankAt(keyframes, st.s()));
                 double b = FVDIntegrator.bankOfTU(q.T(), q.U());
                 if (!Double.isNaN(b) && Math.abs(tb - b) >= 1e-12) {
                     st = new DState(st.pos(), Quat.aboutAxis(q.T(), tb - b)

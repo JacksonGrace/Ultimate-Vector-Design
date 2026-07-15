@@ -4361,3 +4361,60 @@ Gates: DomainGate 33 checks (47a-c new) + Phase2Gate 253, all green
 Gates: DomainGate 33 + Phase2Gate 253 green on a forced full
 rebuild, 2026-07-14. AbsSeamProbe (scratchpad) documents the
 before/after target values. Walkthrough #79.
+
+## D121. v16.9: absolute-roll rate STAIRCASE (two root causes),
+##        cross-rate view COMPLETED as a true warp, radio-dot
+##        geometry (user feedback on v16.8)
+
+- THE JITTER/STAIR-STEPPING had two stacked causes, both in what the
+  absolute lane CONSUMES (rate lanes see neither — their
+  piecewise-linear VALUE is already continuous; the absolute lane's
+  value gets DIFFERENTIATED by the ride, exposing the bake's
+  structure):
+  (1) The integrators read the baked 0.05 polyline directly as the
+  bank target — a piecewise-LINEAR target has a per-cell STAIRCASE
+  derivative by construction (constant rate, jump at every knot).
+  Fix: FVDIntegrator.bankHermite — Catmull-Rom through the keyframe
+  knots, one C1 read serving the projection target (bankAt) and the
+  feed-forward slope (rollSlopeAt, same name so all call sites
+  stood), both integrators, both domains.
+  (2) Under the C1 read a cell-periodic wobble REMAINED (bank err
+  0.107 deg, jumps 2.6 deg/s): BezierBaker.bakeLane's parameter walk
+  targets ~0.1-unit steps (clamp(dt/0.1, 8, 48) per segment) and the
+  0.05 grid LINEAR-FILLS between walked points — every other knot
+  held a midpoint, not the Bezier value. Fix: BezierBaker.exactAt
+  (the slopeAt bisection, value flavor) + TrackCompiler.exactRoll —
+  absolute sections re-sample their roll channel knot-exactly after
+  bake. Force/geo/time/dist all take it; nothing else changes
+  (historic bitwise untouched — the resample only fires with
+  rollAbsolute).
+  Result: bank tracks the analytic smoothstep to 0.007-0.008 deg,
+  max consecutive resulting-rate jump 3.56 -> 0.88 deg/s on the
+  200-deg ramp = the true rate curvature x dt, the same smoothness a
+  rate lane shows (the user's stated bar). Convert-to-absolute
+  round-trips improved too (47c dev 1.6 mm -> 0.0 mm). Gate 47d.
+- CROSS-RATE VIEW, the user's actual spec (three rounds converged):
+  EDIT in the other units — nodes AND curve warped together, scales
+  fitted to the viewed units. v16.7 warped only the node/handle/hit
+  machinery (dispVal sites); strokeLaneCurve strokes RAW bezier
+  control points, so the curve sat at native scale under the warped
+  nodes — the v16.8 "which one is right?" answer unwarped the nodes,
+  the wrong way around. Now: dispVal/nativeVal carry the warp again;
+  strokeLaneCurve gets a warp branch (baked polyline through dispVal,
+  sampled hold continuation — a constant native value is a CURVE in
+  the other units; locked segments lose only their twin-line styling
+  there); updateScale fits DISPLAYED values (so the deg/m defaults
+  roll +-15 / pitch-yaw +-10 govern and the data always fits);
+  derivedDisp/trueDisp wrap derivedAt/trueAt for inactive strips,
+  true strokes and hovers (B-matching keeps reading the NATIVE
+  helpers — a session view must never change what B writes);
+  the right-edge axis flipped to show the NATIVE units beside the
+  warped main scale; hover/drag readouts lead with the displayed
+  value, hover appends the exact native one.
+- Radio-dot highlight: only -fx-mark-color tints now — overriding
+  -fx-mark-highlight-color too repainted the dot's second background
+  layer and subtly changed its shape vs the default black dots.
+
+Gates: DomainGate 34 (47d new) + Phase2Gate 253 green on forced full
+rebuilds, 2026-07-14. StairProbe/StairProbe2/KfProbe (scratchpad)
+document the staircase numbers. Walkthrough #80.

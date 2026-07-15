@@ -610,25 +610,27 @@ class GraphEditor extends Region {
             ? infl.baseValAt(lane, localT) : 0;
     }
 
-    /** NATIVE value → DISPLAYED value at section-local x: the
-     *  influence-resulting offset (v15.0). The v16.7 cross-rate
-     *  value-warp came OUT in v16.8 (D120, user spec): warping node
-     *  geometry left them disagreeing with everything drawn at native
-     *  scale — the view now keeps ALL geometry native and shows the
-     *  other units on a right-edge axis + in the hover readout. */
+    /** NATIVE value → DISPLAYED value at section-local x (v16.7
+     *  D119; completed v16.9 D121 — user clarification: the view DOES
+     *  edit in the other units, the v16.7 bug was strokeLaneCurve
+     *  drawing raw control points so the curve sat at native scale
+     *  under the warped nodes): the influence-resulting offset adds
+     *  first, then everything scales by the rate-view factor. Scale 1
+     *  + offset 0 = the identity every plain section takes. */
     private double dispVal(int lane, double localT, double val) {
-        return val + dispOff(lane, localT);
+        return (val + dispOff(lane, localT))
+            * rateViewScale(lane, localT);
     }
 
     /** DISPLAYED value → native (the drag write-back). */
     private double nativeVal(int lane, double localT, double disp) {
-        return disp - dispOff(lane, localT);
+        return disp / rateViewScale(lane, localT)
+            - dispOff(lane, localT);
     }
 
-    /** The cross-rate view's conversion factor at section-local x
-     *  (v16.8: READOUT-only — geometry stays native; the right axis
-     *  uses the constant design-speed factor instead). v(x) reads
-     *  the compiled span (1 before a compile). */
+    /** The cross-rate view's display factor at section-local x — 1
+     *  unless the ACTIVE section views its rate lanes in the other
+     *  units. v(x) reads the compiled span (1 before a compile). */
     private double rateViewScale(int lane, double localX) {
         if (!(sections().get(activeSection) instanceof LaneSection ls)
                 || !ls.viewOtherRate() || !laneIsRate(ls, lane)) {
@@ -700,12 +702,23 @@ class GraphEditor extends Region {
         return activeGeo() ? " °/s" : LANE_UNITS[lane];
     }
 
-    /** DISPLAYED units for a lane — NATIVE since v16.8 (D120): the
-     *  cross-rate view no longer warps geometry, so the left axis,
-     *  default scales and readouts all keep the lane's own units;
-     *  the other units live on the right-edge axis. */
+    /** DISPLAYED units for a lane: native XOR the cross-rate view
+     *  (v16.7 D119, kept in v16.9 D121 — the axis label, default
+     *  scales and readouts follow what the plot SHOWS). */
     private boolean laneShownPM(int lane) {
-        return activeRatePM(lane);
+        boolean nat = activeRatePM(lane);
+        if (sections().get(activeSection) instanceof LaneSection ls
+                && ls.viewOtherRate() && laneIsRate(ls, lane)) {
+            return !nat;
+        }
+        return nat;
+    }
+
+    /** Is this ACTIVE-section lane displayed in the OTHER rate units
+     *  (the cross-rate view warp applies to it)? */
+    private boolean laneWarped(int lane) {
+        return sections().get(activeSection) instanceof LaneSection ls
+            && ls.viewOtherRate() && laneIsRate(ls, lane);
     }
 
     /** Is the ACTIVE section's roll lane an ABSOLUTE bank angle
@@ -715,18 +728,17 @@ class GraphEditor extends Region {
             && ls.rollAbsolute && ls.rollGlobal;
     }
 
-    /** Is the cross-rate right-edge axis up (v16.8, D120)? The view
-     *  is on and the ACTIVE lane is a rate — the axis re-labels that
-     *  lane's scale in the other units. */
+    /** Is the cross-rate right-edge axis up? The view is on and the
+     *  ACTIVE lane is warped — the axis shows that lane's NATIVE
+     *  units beside the warped main scale (v16.9, D121). */
     private boolean rateViewAxisOn() {
-        return sections().get(activeSection) instanceof LaneSection ls
-            && ls.viewOtherRate() && laneIsRate(ls, activeLane);
+        return laneWarped(activeLane);
     }
 
-    /** The cross-rate axis' CONSTANT conversion factor, native → the
-     *  other units at the section's design speed (nominal — the
-     *  speed profile varies over the span; hover readouts convert
-     *  exactly at the cursor instead). */
+    /** The cross-rate view's CONSTANT conversion factor, native →
+     *  displayed units at the section's design speed (nominal — the
+     *  speed profile varies over the span; the geometry warp and the
+     *  hover readout convert exactly per x instead). */
     private double rateViewFactor() {
         if (!(sections().get(activeSection) instanceof LaneSection ls)) {
             return 1;
@@ -3090,7 +3102,7 @@ class GraphEditor extends Region {
     /** Wire a radio row to its ORIGINAL selection (v16.7, user
      *  spec): the ↺ grays while the row sits at the original, and a
      *  selection that DIFFERS tints orange — on the radio DOT, not
-     *  the label text (v16.8, user spec). reset may be null (rows
+     *  the label text (v16.9, user spec). reset may be null (rows
      *  without a ↺). */
     private static void wireOriginal(ToggleGroup g, Toggle original,
                                      Button reset) {
@@ -3100,10 +3112,11 @@ class GraphEditor extends Region {
             if (reset != null) reset.setDisable(atOrig);
             for (Toggle t : g.getToggles()) {
                 if (t instanceof RadioButton rb) {
+                    // mark color ONLY — overriding the highlight
+                    // layer too changed the dot's layered geometry
+                    // vs the default black dot (v16.9, user report)
                     rb.setStyle(t == sel && !atOrig
-                        ? "-fx-mark-color: rgb(235,150,60); "
-                          + "-fx-mark-highlight-color: rgb(235,150,60);"
-                        : "");
+                        ? "-fx-mark-color: rgb(235,150,60);" : "");
                 }
             }
         };
@@ -3665,7 +3678,7 @@ class GraphEditor extends Region {
                 double a = gAxis(i);
                 double trim = axisTrim(i);
                 if (a < off + trim || a > off + dur - trim) continue;
-                pts.add(new double[]{ tToX(a), valToY(L, derivedAt(i, L)) });
+                pts.add(new double[]{ tToX(a), valToY(L, derivedDisp(i, L)) });
             }
             if (pts.size() < 2) continue;
             fillUnderSeries(gc, pts, L);
@@ -3677,6 +3690,26 @@ class GraphEditor extends Region {
             }
             gc.stroke();
         }
+    }
+
+    /** derivedAt in DISPLAYED units — the cross-rate view flips a
+     *  warped lane per sample (v16.9, D121). Drawing + hover only:
+     *  B-matching reads the NATIVE derivedAt/trueAt directly (a
+     *  session view must never change what B writes into lanes). */
+    private double derivedDisp(int i, int L) {
+        if (!laneWarped(L)) return derivedAt(i, L);
+        double v = Math.max(0.5, app.lastSamples.get(i).v());
+        return derivedAt(i, L) * (activeRatePM(L) ? v : 1 / v);
+    }
+
+    /** trueAt in DISPLAYED units (the flip converts at the TRUE
+     *  speed — a °/m read of the true ride divides by trueV). */
+    private double trueDisp(int i, int L) {
+        if (!laneWarped(L)) return trueAt(i, L);
+        double v = app.trueV != null && i < app.trueV.length
+            ? Math.max(0.5, app.trueV[i])
+            : Math.max(0.5, app.lastSamples.get(i).v());
+        return trueAt(i, L) * (activeRatePM(L) ? v : 1 / v);
     }
 
     /** The active mode's lane-L value at compiled sample i (unified
@@ -3854,9 +3887,9 @@ class GraphEditor extends Region {
                         inflDesign.domain() == Section.Domain.DISTANCE
                             ? app.lastSamples.get(i).s() - inflSpan.s0()
                             : t - inflSpan.t0())
-                    : derivedAt(i, L);
+                    : derivedDisp(i, L);
                 double dy = valToY(L, ref);
-                double ty = valToY(L, trueAt(i, L));
+                double ty = valToY(L, trueDisp(i, L));
                 if (Math.abs(ty - dy) <= TRUE_SPLIT_PX) {
                     started = false;
                     continue;
@@ -3877,13 +3910,13 @@ class GraphEditor extends Region {
      *  by INDEX (±2 samples) and reported per DISPLAY-axis unit. */
     private String trueSuffix(int i, int L, boolean slope) {
         if (!trueArraysReady()) return "";
-        double dv = derivedAt(i, L), tv = trueAt(i, L);
+        double dv = derivedDisp(i, L), tv = trueDisp(i, L);
         if (Math.abs(valToY(L, tv) - valToY(L, dv)) <= TRUE_SPLIT_PX) return "";
         if (!slope) return String.format(" (true %.2f)", tv);
         int i0 = Math.max(0, i - 2);
         int i1 = Math.min(app.resultRates.length - 1, i + 2);
         double span = gAxis(i1) - gAxis(i0);
-        double sl = span < 1e-9 ? 0 : (trueAt(i1, L) - trueAt(i0, L)) / span;
+        double sl = span < 1e-9 ? 0 : (trueDisp(i1, L) - trueDisp(i0, L)) / span;
         return String.format(" (true %.2f)", sl);
     }
 
@@ -7734,14 +7767,22 @@ class GraphEditor extends Region {
         LaneSection infl = activeInfl();
         for (int L = 0; L < LANES; L++) {
             double lo = defMin(L), hi = defMax(L);
+            // the fit reads DISPLAYED values (v16.9, D121): a warped
+            // lane's scale must cover the other-units curve so the
+            // °/m defaults hold and the data fits (scale only — the
+            // influence offset is fitted via influenceSum below)
             for (double[] p : BezierBaker.polyline(app.lanes.get(L))) {
                 double a = tOff + warpFwd(p[0]);   // native → axis (v16.0)
                 if (a < t0 || a > t1) continue;
-                lo = Math.min(lo, p[1]);
-                hi = Math.max(hi, p[1]);
+                double dv = p[1] * rateViewScale(L, p[0]);
+                lo = Math.min(lo, dv);
+                hi = Math.max(hi, dv);
             }
-            double eA = BezierBaker.evalAt(app.lanes.get(L), warpInv(t0 - tOff));
-            double eB = BezierBaker.evalAt(app.lanes.get(L), warpInv(t1 - tOff));
+            double xA = warpInv(t0 - tOff), xB = warpInv(t1 - tOff);
+            double eA = BezierBaker.evalAt(app.lanes.get(L), xA)
+                * rateViewScale(L, xA);
+            double eB = BezierBaker.evalAt(app.lanes.get(L), xB)
+                * rateViewScale(L, xB);
             lo = Math.min(lo, Math.min(eA, eB));
             hi = Math.max(hi, Math.max(eA, eB));
             if (infl != null) {
@@ -7758,8 +7799,11 @@ class GraphEditor extends Region {
             if (handleViewExpand && L == activeLane
                     && selIdx >= 0 && selIdx < app.lanes.get(L).size()) {
                 BezierBaker.Node sn = app.lanes.get(L).get(selIdx);
-                lo = Math.min(lo, Math.min(sn.val + sn.outDv, sn.val + sn.inDv));
-                hi = Math.max(hi, Math.max(sn.val + sn.outDv, sn.val + sn.inDv));
+                double sf = rateViewScale(L, sn.t);
+                lo = Math.min(lo, Math.min(sn.val + sn.outDv,
+                    sn.val + sn.inDv) * sf);
+                hi = Math.max(hi, Math.max(sn.val + sn.outDv,
+                    sn.val + sn.inDv) * sf);
             }
             if (lo < defMin(L) || hi > defMax(L)) {
                 double pad = (hi - lo) * 0.05;   // "slightly beyond"
@@ -8153,7 +8197,9 @@ class GraphEditor extends Region {
                 String vTxt = off != 0
                     ? String.format("%.2f%s (Δ %+.2f)", shown,
                         laneUnit(activeLane), nd.val)
-                    : String.format("%.2f%s", nd.val, laneUnit(activeLane));
+                    // `shown` == nd.val without a warp; the cross-rate
+                    // view shows the displayed value (v16.9, D121)
+                    : String.format("%.2f%s", shown, laneUnit(activeLane));
                 // x readout in the DISPLAY domain: native Δ unwarped
                 // (Δt or Δs per the section), the warped axis Δ in a
                 // cross-domain view — always what the plot shows
@@ -8192,25 +8238,40 @@ class GraphEditor extends Region {
                 // (differencing the baked polyline stair-stepped).
                 // Native units — divided onto the DISPLAY axis when
                 // the strip is warped (the slope you SEE, v16.0).
-                double slope = BezierBaker.slopeAt(lane, hoverT);
-                if (warpMap != null) {
+                double slope;
+                if (laneWarped(activeLane)) {
+                    // cross-rate view (v16.9, D121): the DISPLAYED
+                    // slope — value scale AND x-axis both warp
                     double hStep = activeDistNative() ? 0.5 : 0.02;
-                    double da = warpFwd(hoverT + hStep)
-                        - warpFwd(hoverT - hStep);
-                    slope = Math.abs(da) < 1e-12 ? 0
-                        : slope * 2 * hStep / da;
+                    double y1 = dispVal(activeLane, hoverT + hStep,
+                        BezierBaker.evalAt(lane, hoverT + hStep));
+                    double y0 = dispVal(activeLane, hoverT - hStep,
+                        BezierBaker.evalAt(lane, hoverT - hStep));
+                    double dx = warpMap != null
+                        ? warpFwd(hoverT + hStep) - warpFwd(hoverT - hStep)
+                        : 2 * hStep;
+                    slope = Math.abs(dx) < 1e-12 ? 0 : (y1 - y0) / dx;
+                } else {
+                    slope = BezierBaker.slopeAt(lane, hoverT);
+                    if (warpMap != null) {
+                        double hStep = activeDistNative() ? 0.5 : 0.02;
+                        double da = warpFwd(hoverT + hStep)
+                            - warpFwd(hoverT - hStep);
+                        slope = Math.abs(da) < 1e-12 ? 0
+                            : slope * 2 * hStep / da;
+                    }
                 }
                 hoverTxt = String.format("%.2f %s/%s", slope,
                     laneUnit(activeLane).trim(), xUnit());
             } else {
                 hoverTxt = String.format("%.2f%s", hv, laneUnit(activeLane));
-                // CROSS-RATE view (v16.8, D120): the exact converted
-                // value at the cursor rides along — v(x) here, not
-                // the axis' nominal design-speed factor
-                if (rateViewAxisOn()) {
+                // CROSS-RATE view (v16.9, D121): hv is already the
+                // warped display value — the NATIVE value rides
+                // along in parentheses
+                if (laneWarped(activeLane)) {
                     hoverTxt += String.format(" (= %.2f%s)",
-                        hv * rateViewScale(activeLane, hoverT),
-                        activeRatePM(activeLane) ? " °/s" : " °/m");
+                        BezierBaker.evalAt(lane, hoverT),
+                        activeRatePM(activeLane) ? " °/m" : " °/s");
                 }
             }
             // §5.2: the true value rides along once it visibly differs
@@ -8306,15 +8367,16 @@ class GraphEditor extends Region {
             + ")", 0, 0);
         gc.restore();
 
-        // CROSS-RATE right axis (v16.8, D120 — user spec): the ACTIVE
-        // lane's scale re-labeled in the OTHER rate units at the
-        // section's design speed. Takes the right edge over the
-        // resulting axis while the view is on.
+        // CROSS-RATE right axis (v16.8, D120/D121): the main scale
+        // shows the WARPED (other) units — this axis labels the same
+        // rows in the lane's NATIVE units at the section's design
+        // speed. Takes the right edge over the resulting axis while
+        // the view is on.
         if (rateViewAxisOn()) {
             double f = rateViewFactor();
             double rx = w - marginRight() + 4;
-            double lo = Math.min(curMin[activeLane], curMax[activeLane]) * f;
-            double hi = Math.max(curMin[activeLane], curMax[activeLane]) * f;
+            double lo = Math.min(curMin[activeLane], curMax[activeLane]) / f;
+            double hi = Math.max(curMin[activeLane], curMax[activeLane]) / f;
             double rStep = niceStep((hi - lo) / 5);
             gc.setFill(Color.rgb(150, 150, 168));
             gc.setFont(Font.font(9));
@@ -8322,7 +8384,7 @@ class GraphEditor extends Region {
             gc.setTextBaseline(VPos.CENTER);
             for (double v = Math.ceil(lo / rStep) * rStep;
                     v <= hi + 1e-9; v += rStep) {
-                gc.fillText(fmtVal(v), rx, valToY(activeLane, v / f));
+                gc.fillText(fmtVal(v), rx, valToY(activeLane, v * f));
             }
             gc.save();
             gc.translate(w - 6, MARGIN_TOP + plotHeight() / 2);
@@ -8330,8 +8392,8 @@ class GraphEditor extends Region {
             gc.setFont(Font.font(11));
             gc.setTextAlign(TextAlignment.CENTER);
             gc.fillText(laneName(activeLane)
-                + (activeRatePM(activeLane) ? " (°/s)" : " (°/m)")
-                + " at design speed", 0, 0);
+                + (activeRatePM(activeLane) ? " (°/m)" : " (°/s)")
+                + " native, at design speed", 0, 0);
             gc.restore();
         } else
         // RIGHT axis for the resulting overlays (v10.3): their shared
@@ -8407,6 +8469,47 @@ class GraphEditor extends Region {
             gc.setLineWidth(2);
         }
         List<BezierBaker.Node> lane = app.lanes.get(laneIdx);
+        // CROSS-RATE VIEW (v16.9, D121 — THE v16.7 gap): a warped
+        // lane draws from its baked polyline through dispVal. The
+        // bezier path below strokes RAW control points, which is why
+        // the curve sat at native scale while the nodes warped (the
+        // user's "nodes and graph don't line up"). The hold
+        // continuation samples too — a constant native value is a
+        // CURVE in the other units (× v(x)). Locked segments lose
+        // their twin-line styling here (the polyline already carries
+        // the chord shape).
+        if (laneWarped(laneIdx)) {
+            List<double[]> wpoly = BezierBaker.polyline(lane);
+            List<double[]> wpts = new ArrayList<>(wpoly.size());
+            for (double[] p : wpoly) {
+                wpts.add(new double[]{ ltToX(p[0]),
+                    valToY(laneIdx, dispVal(laneIdx, p[0], p[1])) });
+            }
+            double wEnd = sectionEnd();
+            BezierBaker.Node wLast = lane.get(lane.size() - 1);
+            List<double[]> hold = new ArrayList<>();
+            if (wLast.t < wEnd - 1e-9) {
+                int nH = (int) FvdDesigner.clamp(
+                    (ltToX(wEnd) - ltToX(wLast.t)) / 3, 2, 400);
+                for (int i = 0; i <= nH; i++) {
+                    double x = wLast.t + (wEnd - wLast.t) * i / nH;
+                    hold.add(new double[]{ ltToX(x),
+                        valToY(laneIdx, dispVal(laneIdx, x, wLast.val)) });
+                }
+            }
+            List<double[]> fillPts = new ArrayList<>(wpts);
+            fillPts.addAll(hold);
+            fillUnderSeries(gc, fillPts, laneIdx);
+            gc.setStroke(laneColor(laneIdx));
+            gc.setLineWidth(2);
+            strokeSeries(gc, wpts);
+            if (!hold.isEmpty()) {
+                gc.setLineDashes(3, 7);
+                strokeSeries(gc, hold);
+                gc.setLineDashes((double[]) null);
+            }
+            return;
+        }
         // zero-line fill first (from the baked polyline + hold extension;
         // the true bezier stroke sits on top of its edge)
         List<double[]> poly = BezierBaker.polyline(lane);

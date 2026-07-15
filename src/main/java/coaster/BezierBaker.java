@@ -287,6 +287,35 @@ public class BezierBaker {
         return dy / dx;
     }
 
+    /** EXACT lane value at t — the parametric cubic's u solved by
+     *  bisection, like {@link #slopeAt} (v16.9, D121). The baked
+     *  polyline walks ~0.1-unit parameter steps and LINEAR-fills the
+     *  keyframe grid between them — invisible for rate lanes (tiny
+     *  value error), but an ABSOLUTE roll lane's bank target gets
+     *  DIFFERENTIATED by the ride, so the compiler re-samples its
+     *  roll channel through this instead. Holds the end values
+     *  outside the lane. */
+    public static double exactAt(List<Node> lane, double t) {
+        if (lane.isEmpty()) return 0;
+        if (t <= lane.get(0).t) return lane.get(0).val;
+        Node last = lane.get(lane.size() - 1);
+        if (t >= last.t) return last.val;
+        int i = 0;
+        while (i < lane.size() && lane.get(i).t < t) i++;
+        Node a = lane.get(i - 1), b = lane.get(i);
+        double x0 = a.t,                  y0 = a.val;
+        double x1 = a.t + effOutDt(a, b), y1 = a.val + a.outDv;
+        double x2 = b.t + effInDt(a, b),  y2 = b.val + b.inDv;
+        double x3 = b.t,                  y3 = b.val;
+        double lo = 0, hi = 1;
+        for (int k = 0; k < 50; k++) {
+            double mid = (lo + hi) / 2;
+            if (cubic(x0, x1, x2, x3, mid) < t) lo = mid; else hi = mid;
+        }
+        double u = (lo + hi) / 2;
+        return cubic(y0, y1, y2, y3, u);
+    }
+
     private static double cubicDeriv(double p0, double p1, double p2, double p3, double u) {
         double w = 1 - u;
         return 3 * w * w * (p1 - p0) + 6 * w * u * (p2 - p1) + 3 * u * u * (p3 - p2);

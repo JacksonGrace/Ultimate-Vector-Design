@@ -352,6 +352,24 @@ public final class TrackCompiler {
         return tiltLine(line, tilt, gen.pos()).samples();
     }
 
+    /** ABSOLUTE roll lanes get their bank knots re-read EXACTLY off
+     *  the Bezier (v16.9, D121): bake()'s parameter walk targets
+     *  ~0.1-unit steps and LINEAR-fills the 0.05 grid between —
+     *  invisible for rate lanes, but the ride effectively
+     *  DIFFERENTIATES an absolute lane's values, and the fill made
+     *  the resulting roll rate wobble cell to cell (the user's
+     *  "jitter"/stair-stepping, with bankHermite's C1 read the
+     *  other half of the fix). */
+    private static List<FVDIntegrator.Keyframe> exactRoll(
+            List<FVDIntegrator.Keyframe> kfs, List<BezierBaker.Node> lane) {
+        List<FVDIntegrator.Keyframe> out = new ArrayList<>(kfs.size());
+        for (FVDIntegrator.Keyframe k : kfs) {
+            out.add(new FVDIntegrator.Keyframe(k.t(), k.Gv(), k.Gl(),
+                BezierBaker.exactAt(lane, k.t())));
+        }
+        return out;
+    }
+
     /** The plain FORCE path (extracted v15.0 — the influence fast path
      *  reuses it verbatim; zero added arithmetic on the D50 gate).
      *  DISTANCE-domain sections (v16.0, D103) bake onto an s-grid and
@@ -368,6 +386,7 @@ public final class TrackCompiler {
         opts.rollGlobal = fs.rollGlobal;   // v16.1, D107
         opts.rollPerMeter = fs.ratePerMeter;   // v16.6, D115
         opts.rollAbsolute = fs.rollAbsolute && fs.rollGlobal;   // v16.7, D118
+        if (opts.rollAbsolute) kfs = exactRoll(kfs, fs.lanes.get(2));
         if (fs.reversed) {
             // canonical frame at the ENTRY HEIGHT: energy is
             // height-relative but float rounding is not — this keeps
@@ -397,6 +416,7 @@ public final class TrackCompiler {
         boolean dist = gs.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(gs.lanes, 0.05);
         boolean gAbs = gs.rollAbsolute && gs.rollGlobal;   // v16.7
+        if (gAbs) kfs = exactRoll(kfs, gs.lanes.get(2));
         if (gs.reversed) {
             GeoIntegrator.Result rr = dist
                 ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,

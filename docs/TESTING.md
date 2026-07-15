@@ -1164,6 +1164,21 @@
     replaces the Resulting overlays' right axis while the view is
     on. (d) A changed radio's orange sits on the radio DOT, not the
     label letters.
+80. v16.9 feedback fixes (D121): (a) ABSOLUTE ROLL smoothness — a
+    fast bank ramp (say 0 → 200° over 4 s) rides SMOOTHLY now: no
+    jitter on the track, and the resulting roll-rate graph is a
+    continuous curve instead of stair steps (the graph should look
+    exactly as smooth as an equivalent roll-RATE section's). Gate
+    47d locks it (max consecutive rate jump 3.56 → 0.88 °/s; bank
+    tracks the authored curve to 0.007°). (b) CROSS-RATE VIEW, as
+    you actually specced: "View rates in °/m|°/s" now EDITS in the
+    other units — the curve, nodes and handles all warp together
+    and line up, the left axis + default scales speak the viewed
+    units (roll ±15 °/m, pitch/yaw ±10 °/m), the RIGHT edge shows
+    the native units at design speed, hover appends the exact
+    native value, and drags/Ctrl-snaps work in what you see. (c)
+    The changed-radio orange dot is now geometrically identical to
+    the black dots (only the mark color tints).
 
 ## The historical headless harness (context, not a prescription)
 
