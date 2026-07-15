@@ -1144,6 +1144,26 @@
     roll to Local reverts the lane to Rate. (f) Orientation dialog
     buttons wear their explanations as gray captions beneath. (g)
     1/2/3 switch lanes while the density preview is open.
+79. v16.8 feedback fixes (D120): (a) B on an ABSOLUTE roll lane's
+    edge node against a rate neighbor now takes the SEAM's bank —
+    set the abs lane to any wrong value, press B, it lands on what
+    the neighbor delivers (it used to hand the lane its own value
+    back, with a huge garbage slope). (b) THE CUTBACK CASE: bank a
+    global-rate section past 180° (e.g. rate ramping to +250° of
+    total bank) into an absolute section whose lane is authored in
+    the same unwrapped range — B matches at +250-ish, NOT the
+    mirrored −110 (the fix unwraps to the representative nearest
+    your node's current value; a node near 0 still gets the
+    principal value — same physical bank). Verify both directions:
+    B from the rate side toward the abs neighbor reads the compiled
+    curves (right units), never the bank lane as a rate. (c)
+    CROSS-RATE VIEW: nodes and curves sit together at NATIVE scale
+    now; the right edge grows an axis labeling the same scale in
+    the other units (at the section's design speed) and curve hover
+    appends the exact converted value at the cursor; the axis
+    replaces the Resulting overlays' right axis while the view is
+    on. (d) A changed radio's orange sits on the radio DOT, not the
+    label letters.
 
 ## The historical headless harness (context, not a prescription)
 

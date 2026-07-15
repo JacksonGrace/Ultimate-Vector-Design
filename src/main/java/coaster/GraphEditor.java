@@ -610,26 +610,25 @@ class GraphEditor extends Region {
             ? infl.baseValAt(lane, localT) : 0;
     }
 
-    /** NATIVE value → DISPLAYED value at section-local x (v16.7,
-     *  D119 — the CROSS-RATE VIEW): the influence-resulting offset
-     *  adds first, then the whole thing scales by the rate-view
-     *  factor (°/s shown as °/m divides by v(x), °/m shown as °/s
-     *  multiplies). Scale 1 + offset 0 = the identity every plain
-     *  section takes. */
+    /** NATIVE value → DISPLAYED value at section-local x: the
+     *  influence-resulting offset (v15.0). The v16.7 cross-rate
+     *  value-warp came OUT in v16.8 (D120, user spec): warping node
+     *  geometry left them disagreeing with everything drawn at native
+     *  scale — the view now keeps ALL geometry native and shows the
+     *  other units on a right-edge axis + in the hover readout. */
     private double dispVal(int lane, double localT, double val) {
-        return (val + dispOff(lane, localT))
-            * rateViewScale(lane, localT);
+        return val + dispOff(lane, localT);
     }
 
     /** DISPLAYED value → native (the drag write-back). */
     private double nativeVal(int lane, double localT, double disp) {
-        return disp / rateViewScale(lane, localT)
-            - dispOff(lane, localT);
+        return disp - dispOff(lane, localT);
     }
 
-    /** The cross-rate view's display factor at section-local x — 1
-     *  unless the ACTIVE section views its rate lanes in the other
-     *  units. v(x) reads the compiled span (1 before a compile). */
+    /** The cross-rate view's conversion factor at section-local x
+     *  (v16.8: READOUT-only — geometry stays native; the right axis
+     *  uses the constant design-speed factor instead). v(x) reads
+     *  the compiled span (1 before a compile). */
     private double rateViewScale(int lane, double localX) {
         if (!(sections().get(activeSection) instanceof LaneSection ls)
                 || !ls.viewOtherRate() || !laneIsRate(ls, lane)) {
@@ -701,15 +700,12 @@ class GraphEditor extends Region {
         return activeGeo() ? " °/s" : LANE_UNITS[lane];
     }
 
-    /** DISPLAYED units for a lane: native XOR the cross-rate view
-     *  (v16.7, D119). */
+    /** DISPLAYED units for a lane — NATIVE since v16.8 (D120): the
+     *  cross-rate view no longer warps geometry, so the left axis,
+     *  default scales and readouts all keep the lane's own units;
+     *  the other units live on the right-edge axis. */
     private boolean laneShownPM(int lane) {
-        boolean nat = activeRatePM(lane);
-        if (sections().get(activeSection) instanceof LaneSection ls
-                && ls.viewOtherRate && laneIsRate(ls, lane)) {
-            return !nat;
-        }
-        return nat;
+        return activeRatePM(lane);
     }
 
     /** Is the ACTIVE section's roll lane an ABSOLUTE bank angle
@@ -717,6 +713,26 @@ class GraphEditor extends Region {
     private boolean activeRollAbs() {
         return sections().get(activeSection) instanceof LaneSection ls
             && ls.rollAbsolute && ls.rollGlobal;
+    }
+
+    /** Is the cross-rate right-edge axis up (v16.8, D120)? The view
+     *  is on and the ACTIVE lane is a rate — the axis re-labels that
+     *  lane's scale in the other units. */
+    private boolean rateViewAxisOn() {
+        return sections().get(activeSection) instanceof LaneSection ls
+            && ls.viewOtherRate() && laneIsRate(ls, activeLane);
+    }
+
+    /** The cross-rate axis' CONSTANT conversion factor, native → the
+     *  other units at the section's design speed (nominal — the
+     *  speed profile varies over the span; hover readouts convert
+     *  exactly at the cursor instead). */
+    private double rateViewFactor() {
+        if (!(sections().get(activeSection) instanceof LaneSection ls)) {
+            return 1;
+        }
+        double v = Math.max(0.5, ls.vDesign());
+        return ls.ratePerMeter ? v : 1 / v;
     }
 
     /** Is this lane of the given section authored PER METER (v16.6,
@@ -3073,7 +3089,8 @@ class GraphEditor extends Region {
 
     /** Wire a radio row to its ORIGINAL selection (v16.7, user
      *  spec): the ↺ grays while the row sits at the original, and a
-     *  selection that DIFFERS tints orange. reset may be null (rows
+     *  selection that DIFFERS tints orange — on the radio DOT, not
+     *  the label text (v16.8, user spec). reset may be null (rows
      *  without a ↺). */
     private static void wireOriginal(ToggleGroup g, Toggle original,
                                      Button reset) {
@@ -3084,7 +3101,9 @@ class GraphEditor extends Region {
             for (Toggle t : g.getToggles()) {
                 if (t instanceof RadioButton rb) {
                     rb.setStyle(t == sel && !atOrig
-                        ? "-fx-text-fill: rgb(235,150,60);" : "");
+                        ? "-fx-mark-color: rgb(235,150,60); "
+                          + "-fx-mark-highlight-color: rgb(235,150,60);"
+                        : "");
                 }
             }
         };
@@ -4688,7 +4707,10 @@ class GraphEditor extends Region {
     private boolean resAxisOn = false;
     private double resLo = -60, resHi = 60;
 
-    private double marginRight() { return resAxisOn ? MARGIN_RIGHT_RES : MARGIN_RIGHT; }
+    private double marginRight() {
+        return resAxisOn || rateViewAxisOn() ? MARGIN_RIGHT_RES
+                                             : MARGIN_RIGHT;
+    }
 
     // hover readout on a resulting curve: comp 0 = none, 1/2 = the
     // pitch-or-Gv / yaw-or-Gl overlay under the cursor
@@ -5916,18 +5938,27 @@ class GraphEditor extends Region {
         return true;
     }
 
-    /** ABSOLUTE-roll boundary target (v16.7, D118): {bank°, bank
-     *  rate} at the shared boundary sample. The bank reads the
-     *  compiled frame exactly; the rate converts the sampled body
-     *  roll through the transport term (best-effort — user-accepted
-     *  for the lower-derivative lane). Vertical seams refuse. */
+    /** ABSOLUTE-roll boundary target (v16.7 D118; REWORKED v16.8
+     *  D120): {bank°, bank rate} of the NEIGHBOR's side of the seam.
+     *  Our own edge sample is useless — the absolute projection has
+     *  already snapped it to OUR lane's current value (reading it
+     *  made B parrot the lane back at itself, with the one-step snap
+     *  transient as the "slope"), so the value reads the sample just
+     *  ACROSS the seam and the slope reads the neighbor's bank rate
+     *  clear of the ±2-sample bodyRates smear. The atan2 principal
+     *  bank UNWRAPS to the representative nearest the edge node's
+     *  current value (the user's cutback: a lane authored past ±180°
+     *  got handed the mirrored equivalent — same physical
+     *  orientation, wrong graph). Bank is speed-invariant, so this
+     *  target also serves real-split seams. Vertical seams refuse. */
     private double[] absRollTarget(boolean atStart) {
         TrackCompiler.Span act = spanOf(activeSection);
         if (act == null || app.lastSamples == null
                 || app.lastSamples.isEmpty()
                 || app.resultRates == null) return null;
-        int ib = Math.min(atStart ? act.i1() : act.i0(),
-            app.lastSamples.size() - 1);
+        int last = app.lastSamples.size() - 1;
+        int ib = Math.max(0, Math.min(atStart ? act.i1() + 1
+                                              : act.i0() - 1, last));
         FVDIntegrator.Sample sm = app.lastSamples.get(ib);
         double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
         if (Double.isNaN(b)) {
@@ -5935,18 +5966,34 @@ class GraphEditor extends Region {
                 + "absolute roll lane can't read this seam.";
             return null;
         }
-        double vSafe = Math.max(0.5, sm.v());
+        int is = Math.max(0, Math.min(atStart ? ib + 3 : ib - 3,
+            Math.min(last, app.resultRates.length - 1)));
+        FVDIntegrator.Sample ss = app.lastSamples.get(is);
+        double vSafe = Math.max(0.5, ss.v());
         double pitB = Math.toDegrees(FVDIntegrator.G0
-            * (sm.Gv() - sm.U().y()) / vSafe);
+            * (ss.Gv() - ss.U().y()) / vSafe);
         double yawB = Math.toDegrees(FVDIntegrator.G0
-            * (sm.Gl() - sm.R().y()) / vSafe);
-        double rollB = ib < app.resultRates.length
-            ? app.resultRates[ib][3] : 0;
-        double phi = Coaster.worldRates(sm, pitB, yawB, rollB)[2];
+            * (ss.Gl() - ss.R().y()) / vSafe);
+        double phi = Coaster.worldRates(ss, pitB, yawB,
+            app.resultRates[is][3])[2];
         double slope = Double.isNaN(phi) ? 0
             : domSlope(phi, false, activeDistNative(),
                 seamDesignV(atStart));
-        return new double[]{ Math.toDegrees(b), slope };
+        double bd = Math.toDegrees(b);
+        // the neighbor-side sample sits one step OFF the seam —
+        // extrapolate the bank onto the boundary time (rate × dt;
+        // 0.25° at a 25°/s seam otherwise)
+        if (!Double.isNaN(phi)) {
+            double tB = atStart ? act.t1() : act.t0();
+            bd += phi * (tB - sm.t());
+        }
+        if (sections().get(activeSection) instanceof LaneSection als
+                && als.lanes.size() > 2 && !als.lanes.get(2).isEmpty()) {
+            List<BezierBaker.Node> rl = als.lanes.get(2);
+            double cur = (atStart ? rl.get(rl.size() - 1) : rl.get(0)).val;
+            bd += 360 * Math.round((cur - bd) / 360);
+        }
+        return new double[]{ bd, slope };
     }
 
     /** Roll {value, slope} across a seam whose sides author roll
@@ -6133,13 +6180,14 @@ class GraphEditor extends Region {
         LaneSection actLs = secs.get(activeSection) instanceof LaneSection al
             ? al : null;
         boolean wg = actLs != null && laneWorld(actLs, laneIdx);
-        // ABSOLUTE ROLL lane (v16.7, D118): the target is the seam's
-        // measured BANK (°) — neighbor-agnostic, the compiled
-        // boundary frame is the truth — with the bank RATE as the
-        // slope (sampled body roll through the transport term; the
-        // user accepts best-effort slopes here: an absolute lane is
+        // ABSOLUTE ROLL lane (v16.7 D118, reworked v16.8 D120): the
+        // target is the seam's measured BANK (°) read off the
+        // NEIGHBOR's side — with the neighbor's bank RATE as the
+        // slope (best-effort by user acceptance: an absolute lane is
         // one derivative below the rate lanes B usually smooths).
-        if (!real && laneIdx == 2 && actLs != null
+        // Fires on real-split seams too — bank is a frame quantity,
+        // invariant under the design/true speed split.
+        if (laneIdx == 2 && actLs != null
                 && actLs.rollAbsolute && actLs.rollGlobal) {
             double[] ab = absRollTarget(atStart);
             if (ab != null || matchHint != null) return ab;
@@ -6158,7 +6206,10 @@ class GraphEditor extends Region {
         if (!real && laneIdx == 2 && actLs != null
                 && nbSec instanceof LaneSection nbr
                 && !nbr.reversed() && !nbr.influenced()
-                && nbr.rollGlobal != actLs.rollGlobal) {
+                && nbr.rollGlobal != actLs.rollGlobal
+                // an ABSOLUTE neighbor's roll lane is a BANK, not a
+                // rate — its compiled curves say what it does (v16.8)
+                && !(nbr.rollAbsolute && nbr.rollGlobal)) {
             double[] rr = rollAcrossSeam(nbr, atStart, actLs.rollGlobal);
             if (rr != null || matchHint != null) return rr;
         }
@@ -6175,6 +6226,11 @@ class GraphEditor extends Region {
                 && !nb.reversed && !nb.influenced()
                 && (laneIdx == 2
                     ? actLs != null && nb.rollGlobal == actLs.rollGlobal
+                        // rate vs ABSOLUTE mismatch: the two lanes
+                        // hold different quantities (°/s-or-°/m vs
+                        // bank °) — sampled path below (v16.8)
+                        && (nb.rollAbsolute && nb.rollGlobal)
+                           == (actLs.rollAbsolute && actLs.rollGlobal)
                     // lanes 0/1: exact whenever both sides mean the
                     // same thing — only the YAW/PITCH semantics
                     // matter here (v16.6; a neighbor's roll flag
@@ -8148,6 +8204,14 @@ class GraphEditor extends Region {
                     laneUnit(activeLane).trim(), xUnit());
             } else {
                 hoverTxt = String.format("%.2f%s", hv, laneUnit(activeLane));
+                // CROSS-RATE view (v16.8, D120): the exact converted
+                // value at the cursor rides along — v(x) here, not
+                // the axis' nominal design-speed factor
+                if (rateViewAxisOn()) {
+                    hoverTxt += String.format(" (= %.2f%s)",
+                        hv * rateViewScale(activeLane, hoverT),
+                        activeRatePM(activeLane) ? " °/s" : " °/m");
+                }
             }
             // §5.2: the true value rides along once it visibly differs
             // (not on the influence surface — its deltas aren't the
@@ -8242,6 +8306,34 @@ class GraphEditor extends Region {
             + ")", 0, 0);
         gc.restore();
 
+        // CROSS-RATE right axis (v16.8, D120 — user spec): the ACTIVE
+        // lane's scale re-labeled in the OTHER rate units at the
+        // section's design speed. Takes the right edge over the
+        // resulting axis while the view is on.
+        if (rateViewAxisOn()) {
+            double f = rateViewFactor();
+            double rx = w - marginRight() + 4;
+            double lo = Math.min(curMin[activeLane], curMax[activeLane]) * f;
+            double hi = Math.max(curMin[activeLane], curMax[activeLane]) * f;
+            double rStep = niceStep((hi - lo) / 5);
+            gc.setFill(Color.rgb(150, 150, 168));
+            gc.setFont(Font.font(9));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.CENTER);
+            for (double v = Math.ceil(lo / rStep) * rStep;
+                    v <= hi + 1e-9; v += rStep) {
+                gc.fillText(fmtVal(v), rx, valToY(activeLane, v / f));
+            }
+            gc.save();
+            gc.translate(w - 6, MARGIN_TOP + plotHeight() / 2);
+            gc.rotate(90);
+            gc.setFont(Font.font(11));
+            gc.setTextAlign(TextAlignment.CENTER);
+            gc.fillText(laneName(activeLane)
+                + (activeRatePM(activeLane) ? " (°/s)" : " (°/m)")
+                + " at design speed", 0, 0);
+            gc.restore();
+        } else
         // RIGHT axis for the resulting overlays (v10.3): their shared
         // scale's ticks down the right edge (its own nice steps — they
         // deliberately don't chase the active lane's gridlines) + a

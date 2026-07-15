@@ -113,14 +113,22 @@ LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     the identity there) + ABSOLUTE ROLL rollAbsolute
                     (v16.7, D118: lane 2 = the BANK ANGLE °, global
                     roll only — the projection targets the lane
-                    value, feed-forward from its slope; B matches
-                    the seam's bank exactly, slope best-effort by
-                    user acceptance; influence refuses) + the
-                    CROSS-RATE VIEW viewOtherRate (v16.7, D119:
-                    session-only display warp °/s↔°/m through the
-                    speed profile, dispVal/nativeVal choke points,
-                    auto-drops on leave; globalAxes() sections aren't
-                    body rates: sampled matching, derived strips).
+                    value, feed-forward from its slope; B reads the
+                    seam bank off the NEIGHBOR-side sample and
+                    UNWRAPS past ±180° to the representative nearest
+                    the edge node — v16.8 D120: our own edge sample
+                    is post-projection (B parroted the lane at
+                    itself) and atan2 mirrored cutback banks; slope
+                    best-effort by user acceptance; rate lanes never
+                    read an abs neighbor's lane as a rate — sampled/
+                    world paths; influence refuses) + the
+                    CROSS-RATE VIEW viewOtherRate (v16.7 D119,
+                    re-presented v16.8 D120: geometry stays NATIVE —
+                    the other units live on a right-edge axis at the
+                    design-speed factor + exact hover conversions;
+                    the v16.7 node-warp made nodes disagree with the
+                    native-drawn curves; session-only, auto-drops on
+                    leave).
                     INFLUENCE state (v15.0, D98;
                     distance sections join in v16.1 — the two-pass
                     runs over ARC; GLOBAL-AXIS sections join in

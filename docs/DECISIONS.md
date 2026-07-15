@@ -4306,3 +4306,58 @@ green 2026-07-14. Walkthrough #77.
 
 Gates: DomainGate 33 checks (47a-c new) + Phase2Gate 253, all green
 2026-07-14. Walkthrough #78.
+
+## D120. v16.8: absolute-roll B seam fix (parrot + wrap), cross-rate
+##        view re-presented, radio-dot highlight (user feedback on
+##        v16.7)
+
+- B ON AN ABSOLUTE LANE WAS READING ITS OWN REFLECTION: the D118
+  target sampled the boundary at OUR side's edge sample — which
+  sits PAST the absolute projection, already snapped to our lane's
+  current value. B returned the lane to itself (never the seam),
+  and the "slope" it wrote was the one-step snap TRANSIENT smeared
+  by bodyRates (probe: -2270 deg/s where the honest answer was 0).
+  Sole-fixture gates were blind by self-consistency — the
+  lane->projection->measure loop round-trips ANY value; only a
+  neighbor comparison exposes it (the D113 lesson shape again).
+  Fix: absRollTarget reads the sample just ACROSS the seam
+  (act.i0()-1 / act.i1()+1 — the neighbor's side, untouched by our
+  projection), takes the slope ~3 samples INSIDE the neighbor
+  (clear of the +-2-sample smear), and extrapolates the bank onto
+  the exact boundary time (rate x dt, 0.25 deg at a 25 deg/s seam).
+- THE USER'S MIRROR was the atan2 WRAP: bankOfTU returns the
+  principal bank in (-180, 180], so a seam whose unwrapped bank
+  story passes 180 (his CUTBACK — banking beyond a half turn)
+  handed back the mirrored representative (+250 read as -110; all
+  representatives are the same physical orientation, the projection
+  is mod-360 — but the GRAPH is not). Fix: unwrap the returned bank
+  to the representative nearest the edge node's CURRENT value, so a
+  lane authored past 180 keeps its own story. Probe: lane at +250
+  against a +250-unwrapped seam now matches +252.5 (the true seam
+  bank), lane at 0 gets the principal -107.5 (same orientation).
+- The abs branch now serves REAL-SPLIT seams too (bank is a frame
+  quantity — invariant under the design/true speed split; the
+  slope stays design-side, best-effort per D118's acceptance), and
+  two guards keep RATE lanes from ever reading an absolute
+  neighbor's lane as a rate: the same-semantics authored path
+  requires matching rollAbsolute, rollAcrossSeam skips absolute
+  neighbors — both fall to the sampled/world paths, which read the
+  compiled truth in the right units.
+- CROSS-RATE VIEW RE-PRESENTED (user picked the design after
+  feeling v16.7's): the value-warp on node geometry made nodes
+  disagree with everything drawn at native scale ("nodes way
+  further from zero than the graph"). The warp is GONE — all
+  geometry stays native — and the other units live on a RIGHT-EDGE
+  AXIS (the active lane's scale re-labeled through the constant
+  design-speed factor; it takes the right edge over the Resulting
+  axis while on) plus the hover readout, which appends the
+  EXACTLY-converted value at the cursor (v(x), not the nominal
+  factor). dispVal/nativeVal reverted to the influence-offset
+  contract; laneShownPM is native again (left axis, defaults,
+  readouts); rateViewScale survives as the readout converter.
+- Changed-radio highlight moved OFF the label text onto the radio
+  DOT (-fx-mark-color / -fx-mark-highlight-color) per user spec.
+
+Gates: DomainGate 33 + Phase2Gate 253 green on a forced full
+rebuild, 2026-07-14. AbsSeamProbe (scratchpad) documents the
+before/after target values. Walkthrough #79.
