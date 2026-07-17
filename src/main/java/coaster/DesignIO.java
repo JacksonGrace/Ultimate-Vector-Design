@@ -32,26 +32,45 @@ public final class DesignIO {
     private DesignIO() {}
 
     // gradient stop range — keep in sync with FvdDesigner's G_MIN/G_MAX
-    private static final double GRAD_G_MIN = -1.0, GRAD_G_MAX = 5.0;
+    // widened −1→−2 in v16.14 (the purple stop sits at −1.5)
+    private static final double GRAD_G_MIN = -2.0, GRAD_G_MAX = 5.0;
 
     /** Render-only per-coaster settings (UI-layer state until the
      *  milestone-B split moves them into the document). Colors are
-     *  r,g,b in 0..1: railColor has 3 entries, gradColors 12 (four
-     *  stops), gradStops 4 G-values. */
+     *  r,g,b in 0..1: railColor has 3 entries; gradColors 15 (FIVE
+     *  stops since v16.14 — purple joined below the blue; old
+     *  four-stop files load with the default purple prepended),
+     *  gradStops 5 G-values; latColors/latStops (v16.13; ABSOLUTE
+     *  since v16.14) are the LATERAL comb's three |Gl| stops,
+     *  mirrored about zero. */
     public record Cosmetics(double heart, double gauge, double tiespace,
                             boolean railSolid, double[] railColor,
-                            double[] gradColors, double[] gradStops) {
+                            double[] gradColors, double[] gradStops,
+                            double[] latColors, double[] latStops) {
 
         public static Cosmetics defaults() {
             return new Cosmetics(1.0, 1.0, 1.0, false,
                 new double[]{ 220 / 255.0, 60 / 255.0, 50 / 255.0 },
-                new double[]{ 0.2, 0.4, 1.0,  0.2, 0.9, 0.3,
+                new double[]{ 0.55, 0.15, 0.85,  0.2, 0.4, 1.0,
+                              0.15, 0.8, 0.9,  0.2, 0.9, 0.3,
                               1.0, 0.9, 0.1,  1.0, 0.15, 0.1 },
-                new double[]{ 0, 1, 3, 5 });
+                new double[]{ -1.5, -1, -0.5, 1, 3, 5 },
+                new double[]{ 0.2, 0.9, 0.3,  1.0, 0.9, 0.1,
+                              1.0, 0.15, 0.1 },
+                new double[]{ 0.5, 1.0, 1.5 });
         }
     }
 
     public record LoadResult(Coaster coaster, Cosmetics cosmetics) {}
+
+    /** Which of the SIX gradient slots the k-th stop of an n-stop
+     *  file line lands in (v16.15): 6 = direct; 5 (v16.14) = cyan
+     *  slot 2 skipped; 4 (legacy) = slots 2-5. */
+    private static int gradSlot(int k, int n) {
+        if (n >= 6) return k;
+        if (n == 5) return k < 2 ? k : k + 1;
+        return k + 2;
+    }
 
     // =====================================================================
     // Save (FVDD3 only)
@@ -69,8 +88,17 @@ public final class DesignIO {
         StringBuilder gc = new StringBuilder("gradcolors");
         for (double v : cos.gradColors()) gc.append(String.format(Locale.US, " %.4f", v));
         out.println(gc);
-        out.printf(Locale.US, "gradstops %.4f %.4f %.4f %.4f%n",
-            cos.gradStops()[0], cos.gradStops()[1], cos.gradStops()[2], cos.gradStops()[3]);
+        StringBuilder gs = new StringBuilder("gradstops");
+        for (double v : cos.gradStops()) gs.append(String.format(Locale.US, " %.4f", v));
+        out.println(gs);
+        // lateral comb stops (v16.13; three |Gl| stops since v16.14)
+        // — old readers ignore unknown lines
+        StringBuilder lc = new StringBuilder("latcolors");
+        for (double v : cos.latColors()) lc.append(String.format(Locale.US, " %.4f", v));
+        out.println(lc);
+        StringBuilder ls = new StringBuilder("latstops");
+        for (double v : cos.latStops()) ls.append(String.format(Locale.US, " %.4f", v));
+        out.println(ls);
         for (Coaster.SpeedRegion r : c.speedRegions) {
             out.printf(Locale.US, "speedregion %.4f %.4f %s %.4f%n",
                 r.s0(), r.length(), r.mode(), r.value());
@@ -238,6 +266,8 @@ public final class DesignIO {
         double[] rail = def.railColor().clone();
         double[] grad = def.gradColors().clone();
         double[] stops = def.gradStops().clone();
+        double[] latc = def.latColors().clone();
+        double[] lats = def.latStops().clone();
         double v0 = 26;
         double[] start = { 0, 21, 0 };   // legacy `start` line (FVDD2/1)
 
@@ -272,12 +302,40 @@ public final class DesignIO {
                         rail[k] = clamp(Double.parseDouble(parts[k + 1]), 0, 1);
                 }
                 case "gradcolors" -> {
-                    for (int k = 0; k < 12; k++)
-                        grad[k] = clamp(Double.parseDouble(parts[k + 1]), 0, 1);
+                    // SIX stops since v16.15 (18 values). Legacy maps:
+                    // a 15-value v16.14 line (purple/blue/green/
+                    // yellow/red) keeps the default CYAN inserted at
+                    // stop 2; a 12-value 4-stop line (blue@0/green/
+                    // yellow/red) fills stops 2-5 under the default
+                    // purple + blue.
+                    int n = (parts.length - 1) / 3;
+                    for (int k = 0; k < n && k < 6; k++) {
+                        int slot = gradSlot(k, n);
+                        if (slot > 5) continue;
+                        for (int ch = 0; ch < 3; ch++)
+                            grad[slot * 3 + ch] = clamp(
+                                Double.parseDouble(parts[k * 3 + ch + 1]), 0, 1);
+                    }
                 }
                 case "gradstops" -> {
-                    for (int k = 0; k < 4; k++)
-                        stops[k] = clamp(Double.parseDouble(parts[k + 1]), GRAD_G_MIN, GRAD_G_MAX);
+                    int n = parts.length - 1;
+                    for (int k = 0; k < n && k < 6; k++) {
+                        int slot = gradSlot(k, n);
+                        if (slot > 5) continue;
+                        stops[slot] = clamp(Double.parseDouble(parts[k + 1]),
+                            GRAD_G_MIN, GRAD_G_MAX);
+                    }
+                }
+                // lateral comb stops (v16.13; missing = defaults;
+                // THREE |Gl| stops since v16.14 — the v16.13 4-stop
+                // shape never shipped)
+                case "latcolors" -> {
+                    for (int k = 0; k < 9 && k < parts.length - 1; k++)
+                        latc[k] = clamp(Double.parseDouble(parts[k + 1]), 0, 1);
+                }
+                case "latstops" -> {
+                    for (int k = 0; k < 3 && k < parts.length - 1; k++)
+                        lats[k] = clamp(Double.parseDouble(parts[k + 1]), 0, GRAD_G_MAX);
                 }
                 case "speedregion" -> c.speedRegions.add(new Coaster.SpeedRegion(
                     Double.parseDouble(parts[1]), Double.parseDouble(parts[2]),
@@ -509,7 +567,8 @@ public final class DesignIO {
             }
         }
 
-        return new LoadResult(c, new Cosmetics(heart, gauge, tie, solid, rail, grad, stops));
+        return new LoadResult(c, new Cosmetics(heart, gauge, tie, solid,
+            rail, grad, stops, latc, lats));
     }
 
     /** One node line in the shared `n`/`dn` grammar (9 fields; the

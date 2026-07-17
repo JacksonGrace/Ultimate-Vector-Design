@@ -237,7 +237,13 @@ public class FvdDesigner extends Application {
     // a piece's pitch/roll placement, D89)
     record PieceState(List<SecState> sections,
                       double x, double y, double z, double yaw,
-                      double pitch, double roll, Quat base) {}
+                      double pitch, double roll, Quat base,
+                      // the Placement padlocks ride the history too
+                      // (v16.12, user rule: Ctrl+Z after a gizmo move
+                      // must not RELOCK a padlock the user opened —
+                      // rebuilding TrackPiece defaulted them shut, so
+                      // every undo slammed the locks)
+                      boolean lockPitch, boolean lockRoll) {}
 
     record DocState(List<PieceState> pieces, int activePiece, int active,
                     double heart, double gauge, double v0) {}
@@ -279,7 +285,7 @@ public class FvdDesigner extends Application {
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
-                piece.baseOrient));
+                piece.baseOrient, piece.uiLockPitch, piece.uiLockRoll));
         }
         return new DocState(ps,
             editor != null ? editor.activePiece() : 0,
@@ -299,6 +305,8 @@ public class FvdDesigner extends Application {
             piece.pitchDeg = pst.pitch();
             piece.rollDeg = pst.roll();
             piece.baseOrient = pst.base();
+            piece.uiLockPitch = pst.lockPitch();
+            piece.uiLockRoll = pst.lockRoll();
             for (SecState st : pst.sections()) {
                 Section sec = switch (st.mode()) {
                     case 3  -> st.bridge();   // deep copy, adopted
@@ -378,6 +386,19 @@ public class FvdDesigner extends Application {
         startYSpinner.getValueFactory().setValue(p.y);
         startZSpinner.getValueFactory().setValue(p.z);
         yawSpinner.getValueFactory().setValue(p.yawDeg);
+        // a piece PLACED through a bridge grays whatever the bridge
+        // owns (v16.13, user spec — the rows silently fought the
+        // auto re-optimize before): position under any optimize
+        // mode; yaw when locked or march-aligned. The grayHint
+        // wrappers say to edit through the bridge.
+        BridgeSection binto = bridgeInto(editor.activePiece());
+        boolean posOwned = binto != null
+            && binto.optMode != BridgeSection.OPT_NONE;
+        startXSpinner.setDisable(posOwned);
+        startYSpinner.setDisable(posOwned);
+        startZSpinner.setDisable(posOwned);
+        yawSpinner.setDisable(binto != null && (binto.lockYaw
+            || binto.optMode == BridgeSection.OPT_POS_YAW));
         if (piecePitchSpinner != null) {
             // pitch/roll rows (v15.3): values off the piece; lock
             // state off the bridge connecting into it when one exists
@@ -502,6 +523,25 @@ public class FvdDesigner extends Application {
         bridgePosRow.setDisable(m != BridgeSection.OPT_NONE);
     }
 
+    /** The gizmo axes toggle shows exactly while a gizmo does
+     *  (v16.11) — the viewport drives it from its rebuild. */
+    void syncGizmoAxesBtn(boolean visible) {
+        if (gizmoAxesBtn != null) gizmoAxesBtn.setVisible(visible);
+    }
+
+    /** ONE applier for the gizmo local/global choice (v16.13): the
+     *  overlay button and the View-menu check both call it and both
+     *  re-sync (programmatic setSelected fires no onAction). */
+    void setGizmoAxesLocal(boolean loc) {
+        settings.setGizmoLocal(loc);
+        if (gizmoAxesBtn != null) {
+            gizmoAxesBtn.setSelected(loc);
+            gizmoAxesBtn.setText(loc ? "Axes: local" : "Axes: global");
+        }
+        if (viewGizmoCheck != null) viewGizmoCheck.setSelected(loc);
+        viewport.refreshGizmo(true);
+    }
+
     /** Refresh the piece selector: label = the active piece, hidden
      *  entirely while the ride is a single piece (the common case). */
     void updatePieceButton() {
@@ -524,6 +564,16 @@ public class FvdDesigner extends Application {
         if (!(viewport.flyActive
                 || (viewport.povActive && viewport.povCaptured))) return;
         KeyCode c = e.getCode();
+        if (viewport.povActive && viewport.povCaptured
+                && (c == KeyCode.A || c == KeyCode.D)) {
+            // the POV view-direction keys (v16.15) work from popup
+            // scenes too, like the movement keys
+            if (pressed) {
+                setPovReversed(c == KeyCode.A && !settings.povReversed());
+            }
+            e.consume();
+            return;
+        }
         boolean movement = c == KeyCode.W || c == KeyCode.S
             || c == KeyCode.SHIFT || c == KeyCode.CONTROL
             || (viewport.flyActive && (c == KeyCode.A || c == KeyCode.D));
@@ -531,6 +581,15 @@ public class FvdDesigner extends Application {
         if (pressed) viewport.moveKeys.add(c);
         else viewport.moveKeys.remove(c);
         e.consume();
+    }
+
+    /** ONE applier for the POV view direction (v16.15): the View
+     *  check and the captured-ride A/D keys share it. */
+    void setPovReversed(boolean rev) {
+        settings.setPovReversed(rev);
+        if (viewPovRevCheck != null) viewPovRevCheck.setSelected(rev);
+        viewport.applyPovNow();   // instant flip, even parked
+        viewport.syncPovLabel();  // the bottom-left indicator (v16.16)
     }
 
     /** Delegates kept so the split moved no call sites: the pipeline
@@ -546,15 +605,29 @@ public class FvdDesigner extends Application {
     boolean railSolid = false; // false = vertical-G gradient, true = solid color
     Color railColor = Color.rgb(220, 60, 50);
     // G-force gradient stops (per-coaster, saved in .fvd): each stop is a
-    // COLOR at a G VALUE; flat outside the ends, lerped between stops
+    // COLOR at a G VALUE; flat outside the ends, lerped between stops.
+    // FIVE stops since v16.14 (user spec): PURPLE joins below the blue
+    // (blue moved to −0.7) so strong negative G reads distinctly
     final Color[] gradColors = {
-        Color.color(0.2, 0.4, 1.0),
+        Color.color(0.55, 0.15, 0.85),   // purple  -1.5
+        Color.color(0.2, 0.4, 1.0),      // blue    -1   (v16.15)
+        Color.color(0.15, 0.8, 0.9),     // cyan    -0.5 (v16.15)
+        Color.color(0.2, 0.9, 0.3),      // green    1
+        Color.color(1.0, 0.9, 0.1),      // yellow   3
+        Color.color(1.0, 0.15, 0.1),     // red      5
+    };
+    final double[] gradStops = { -1.5, -1, -0.5, 1, 3, 5 };
+    // LATERAL comb stops (v16.13; ABSOLUTE VALUE since v16.14, user
+    // spec): colors mirror about zero — |Gl| hits green 0.5,
+    // yellow 1.0, red 1.5 by default
+    final Color[] latColors = {
         Color.color(0.2, 0.9, 0.3),
         Color.color(1.0, 0.9, 0.1),
         Color.color(1.0, 0.15, 0.1),
     };
-    final double[] gradStops = { 0, 1, 3, 5 };
-    static final double G_MIN = -1.0, G_MAX = 5.0;
+    final double[] latStops = { 0.5, 1.0, 1.5 };
+    // render range widened −1→−2 in v16.14 so the −1.5 purple shows
+    static final double G_MIN = -2.0, G_MAX = 5.0;
     static final double INTEGRATE_DT = 0.01;
 
     // lane accent colors, shared by the graph curves, node markers and the
@@ -702,7 +775,7 @@ public class FvdDesigner extends Application {
      *  piece's trailing bridge), or null — its lock fields govern the
      *  Placement pitch/roll padlocks so the two panels show one state
      *  (v15.3, D101). */
-    private BridgeSection bridgeInto(int pieceIdx) {
+    BridgeSection bridgeInto(int pieceIdx) {   // viewport gizmos read it too (v16.11)
         if (pieceIdx <= 0 || pieceIdx >= coaster.pieces.size()) return null;
         List<Section> prev = coaster.pieces.get(pieceIdx - 1).sections;
         return !prev.isEmpty()
@@ -748,7 +821,12 @@ public class FvdDesigner extends Application {
     }
     private SplitPane mainSplit;           // 3D view over graph panel
     private double lastDividerPos = 0.6;   // restore point for the collapse toggle
-    RadioMenuItem gradientModeItem, solidModeItem;
+    private ToggleButton gizmoAxesBtn;     // gizmo local/global axes (v16.11)
+    CheckBox viewGizmoCheck;               // the View menu's twin (v16.13)
+    CheckBox viewPovRevCheck;              // POV reverse check (v16.15)
+    // rail-mode radios, VIEW-menu residents since v16.14 (Dialogs
+    // builds and assigns them; setRailMode/loads re-sync as ever)
+    RadioButton gradientModeItem, solidModeItem;
     private CheckBox resPitchCheck, resYawCheck;   // retitled per mode
 
     // app-wide settings persisted across runs (shortcuts, FOV)
@@ -767,6 +845,13 @@ public class FvdDesigner extends Application {
     @Override
     public void start(Stage stage) {
         this.stage = stage;
+
+        // (The v16.15 custom-color Window watcher is GONE, v16.16:
+        // no amount of refocusing beat the OS activation race — the
+        // built-in Custom Color window is owned by the picker's
+        // long-hidden POPUP. Every ColorPicker was replaced by a
+        // swatch + Dialogs.pickColor, an ordinary OWNED window that
+        // returns focus like any other dialog in the app.)
 
         // 3D viewport (cameras, meshes, grid, markers): Viewport3D.java
         viewport = new Viewport3D(this);
@@ -1043,6 +1128,36 @@ public class FvdDesigner extends Application {
         collapseBtn.setOnAction(e -> toggleGraphPanel());
         subHolder.getChildren().add(collapseBtn);
 
+        // gizmo AXES toggle (v16.11): overlaid on the 3D view like the
+        // collapse button, visible only while a gizmo shows; flips the
+        // translation arrows between world X/Y/Z and the piece's entry
+        // frame — a pure view choice, switching never moves the track
+        gizmoAxesBtn = new ToggleButton(settings.gizmoLocal()
+            ? "Axes: local" : "Axes: global");
+        gizmoAxesBtn.setFocusTraversable(false);
+        gizmoAxesBtn.setStyle("-fx-background-color: rgba(45,50,62,0.75); -fx-text-fill: rgb(210,215,225);");
+        gizmoAxesBtn.setSelected(settings.gizmoLocal());
+        StackPane.setAlignment(gizmoAxesBtn, Pos.TOP_RIGHT);
+        StackPane.setMargin(gizmoAxesBtn, new Insets(8));
+        gizmoAxesBtn.setVisible(false);
+        gizmoAxesBtn.setOnAction(e ->
+            setGizmoAxesLocal(gizmoAxesBtn.isSelected()));
+        Tooltip.install(gizmoAxesBtn, new Tooltip(
+            "Gizmo arrows: world X/Y/Z (global) or the piece entry\n"
+            + "frame's right/up/forward (local). Rotation rings always\n"
+            + "turn the placement quantities themselves. Switching\n"
+            + "never moves the track."));
+        subHolder.getChildren().add(gizmoAxesBtn);
+        // comb hover readout (v16.13; FIXED bottom-left + managed
+        // since v16.14 — an unmanaged Label never got laid out to a
+        // size, so the old cursor-following version rendered 0×0)
+        StackPane.setAlignment(viewport.combLabel, Pos.BOTTOM_LEFT);
+        StackPane.setMargin(viewport.combLabel, new Insets(8));
+        subHolder.getChildren().add(viewport.combLabel);
+        StackPane.setAlignment(viewport.povLabel, Pos.BOTTOM_LEFT);
+        StackPane.setMargin(viewport.povLabel, new Insets(8));
+        subHolder.getChildren().add(viewport.povLabel);
+
         mainSplit = new SplitPane(subHolder, bottom);
         mainSplit.setOrientation(Orientation.VERTICAL);
         mainSplit.setDividerPositions(lastDividerPos);
@@ -1095,6 +1210,16 @@ public class FvdDesigner extends Application {
         if (e.getCode() == KeyCode.CONTROL) editor.ctrlHover(true);
         if (viewport.flyActive || (viewport.povActive && viewport.povCaptured)) {   // camera owns movement keys
             KeyCode c = e.getCode();
+            // A/D in CAPTURED POV = view direction (v16.15, user
+            // spec): A toggles the BACKWARD view, A again or D
+            // returns forward; W/S keep their track direction, so
+            // reversed W reads as riding backward
+            if (viewport.povActive && viewport.povCaptured
+                    && (c == KeyCode.A || c == KeyCode.D)) {
+                setPovReversed(c == KeyCode.A && !settings.povReversed());
+                e.consume();
+                return;
+            }
             boolean movement = c == KeyCode.W || c == KeyCode.S
                     || c == KeyCode.SHIFT || c == KeyCode.CONTROL
                     || (viewport.flyActive && (c == KeyCode.A || c == KeyCode.D));
@@ -1334,7 +1459,7 @@ public class FvdDesigner extends Application {
         rebuildTrack();
     }
 
-    private void changeRailMode(boolean solid) {
+    void changeRailMode(boolean solid) {   // View-menu radios call it (v16.14)
         if (railSolid == solid) return;
         pushMenuEdit(() -> setRailMode(!solid), () -> setRailMode(solid));
         setRailMode(solid);
@@ -1359,7 +1484,9 @@ public class FvdDesigner extends Application {
         // --- Edit: app-wide settings, persisted across runs ---
         MenuItem shortcutsItem = new MenuItem("Shortcuts…");
         shortcutsItem.setOnAction(e -> dialogs.showShortcutsDialog());
-        MenuItem optionsItem = new MenuItem("Options…");
+        // renamed Options→Snapping in v16.14: after the viewport rows
+        // moved to the View menu, snapping is all that's left
+        MenuItem optionsItem = new MenuItem("Snapping…");
         optionsItem.setOnAction(e -> dialogs.showOptionsDialog());
         Menu editMenu = new Menu("Edit", null, shortcutsItem, optionsItem);
 
@@ -1418,9 +1545,19 @@ public class FvdDesigner extends Application {
         gaugeRow.setAlignment(Pos.CENTER_LEFT);
         HBox tieRow = new HBox(8, tieLbl, tieSpinner);
         tieRow.setAlignment(Pos.CENTER_LEFT);
-        placementRow = new HBox(8, startLbl, startXSpinner, startYSpinner, startZSpinner);
+        // gray-out explainers (v16.13): a bridged-in piece's owned
+        // values say to edit through the BRIDGE instead
+        String bridgeOwned = "The bridge connecting into this piece "
+            + "owns this value — edit it through the BRIDGE (activate "
+            + "the bridge section: its placement mode and rows), or "
+            + "set the bridge to \"No optimization\".";
+        placementRow = new HBox(8, startLbl,
+            GraphEditor.grayHint(startXSpinner, bridgeOwned),
+            GraphEditor.grayHint(startYSpinner, bridgeOwned),
+            GraphEditor.grayHint(startZSpinner, bridgeOwned));
         placementRow.setAlignment(Pos.CENTER_LEFT);
-        yawPlacementRow = new HBox(8, yawLbl, yawSpinner);
+        yawPlacementRow = new HBox(8, yawLbl,
+            GraphEditor.grayHint(yawSpinner, bridgeOwned));
         yawPlacementRow.setAlignment(Pos.CENTER_LEFT);
         // piece START pitch/roll rows (v15.3, D101 — user spec): the
         // rigid tilt (D100) made these shape-preserving placement
@@ -1445,9 +1582,13 @@ public class FvdDesigner extends Application {
         wireDocSpinner(pieceRollSpinner, v -> activePieceRef().rollDeg = v);
         pieceLockPitchBtn = placementLockBtn(1);
         pieceLockRollBtn = placementLockBtn(2);
+        String tiltGray = "Locked — open the padlock to edit. When a "
+            + "bridge connects into this piece the padlocks live on "
+            + "the BRIDGE (one shared state), and its optimize-"
+            + "orientation mode owns the unlocked axes.";
         tiltPlacementRow = new HBox(8, tiltLbl,
-            pieceLockPitchBtn, piecePitchSpinner,
-            pieceLockRollBtn, pieceRollSpinner);
+            pieceLockPitchBtn, GraphEditor.grayHint(piecePitchSpinner, tiltGray),
+            pieceLockRollBtn, GraphEditor.grayHint(pieceRollSpinner, tiltGray));
         tiltPlacementRow.setAlignment(Pos.CENTER_LEFT);
 
         // bridge placement panel (v13.5): while a live bridge is
@@ -1505,8 +1646,10 @@ public class FvdDesigner extends Application {
         // constants are internal again)
         Label bYawLbl = new Label("Next piece yaw (°)");
         bYawLbl.setTextFill(Color.BLACK);
-        bridgeYawSpinner = new Spinner<>(
-            new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, 0, 5));
+        bridgeYawSpinner = new Spinner<>(   // arrows step 1° (v16.12,
+            // user spec — pitch/roll already did; the gizmo rings'
+            // Ctrl-snap is 1° to match)
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, 0, 1));
         bridgeYawSpinner.setPrefWidth(90);
         bridgeYawSpinner.setEditable(true);
         bridgeYawSpinner.getEditor().setTextFormatter(signedNumFormatter());
@@ -1561,17 +1704,9 @@ public class FvdDesigner extends Application {
         HBox speedRow = new HBox(8, speedLbl, startSpeedSpinner);
         speedRow.setAlignment(Pos.CENTER_LEFT);
 
-        ToggleGroup colorMode = new ToggleGroup();
-        gradientModeItem = new RadioMenuItem("Rail color: G-force gradient");
-        gradientModeItem.setToggleGroup(colorMode);
-        gradientModeItem.setOnAction(e -> changeRailMode(false));
-        solidModeItem = new RadioMenuItem("Rail color: solid");
-        solidModeItem.setToggleGroup(colorMode);
-        solidModeItem.setOnAction(e -> changeRailMode(true));
-        (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
-
-        MenuItem colorItem = new MenuItem("Rail colors (solid & gradient)…");
-        colorItem.setOnAction(e -> dialogs.showRailColorDialog());
+        // (the rail-color radios + "Rail colors…" dialog item moved to
+        // the VIEW menu in v16.14 — Dialogs.buildViewMenu assigns the
+        // gradientModeItem/solidModeItem RadioButtons there)
 
         // reversal is a PIECE operation (v12.1, D71 — was a per-section
         // badge check): flips the travel direction of the active piece,
@@ -1584,11 +1719,7 @@ public class FvdDesigner extends Application {
             new CustomMenuItem(heartRow, false),
             new CustomMenuItem(gaugeRow, false),
             new CustomMenuItem(tieRow, false),
-            new CustomMenuItem(speedRow, false),
-            new SeparatorMenuItem(),
-            gradientModeItem,
-            solidModeItem,
-            colorItem);
+            new CustomMenuItem(speedRow, false));
         // menu-local undo/redo lives exactly as long as the menu is open;
         // the popup has its own Scene, so the Ctrl+Z filter goes there
         coasterMenu.setOnShown(e -> {
@@ -1604,7 +1735,11 @@ public class FvdDesigner extends Application {
         helpLbl.setOnMouseClicked(e -> dialogs.showHelpDialog());
         helpMenu.setGraphic(helpLbl);
 
-        return new MenuBar(fileMenu, editMenu, coasterMenu, helpMenu);
+        // View menu (v16.13): every viewport setting, between Edit
+        // and Coaster per user spec — built in Dialogs with the
+        // option-row helpers
+        return new MenuBar(fileMenu, editMenu, dialogs.buildViewMenu(),
+            coasterMenu, helpMenu);
     }
 
 
@@ -1695,11 +1830,10 @@ public class FvdDesigner extends Application {
         tieSpacing = def.tiespace();
         railSolid = def.railSolid();
         railColor = Color.color(def.railColor()[0], def.railColor()[1], def.railColor()[2]);
-        for (int i = 0; i < 4; i++) {
-            gradColors[i] = Color.color(def.gradColors()[i * 3],
-                def.gradColors()[i * 3 + 1], def.gradColors()[i * 3 + 2]);
-        }
-        System.arraycopy(def.gradStops(), 0, gradStops, 0, 4);
+        unflatten(def.gradColors(), gradColors);
+        unflatten(def.latColors(), latColors);
+        System.arraycopy(def.gradStops(), 0, gradStops, 0, gradStops.length);
+        System.arraycopy(def.latStops(), 0, latStops, 0, latStops.length);
 
         heartSpinner.getValueFactory().setValue(heartOffset);
         gaugeSpinner.getValueFactory().setValue(railGauge);
@@ -1727,14 +1861,25 @@ public class FvdDesigner extends Application {
     /** Snapshot the UI-side per-coaster cosmetics for DesignIO. */
     private DesignIO.Cosmetics uiCosmetics() {
         double[] rail = { railColor.getRed(), railColor.getGreen(), railColor.getBlue() };
-        double[] grad = new double[12];
-        for (int i = 0; i < 4; i++) {
-            grad[i * 3]     = gradColors[i].getRed();
-            grad[i * 3 + 1] = gradColors[i].getGreen();
-            grad[i * 3 + 2] = gradColors[i].getBlue();
-        }
         return new DesignIO.Cosmetics(heartOffset, railGauge, tieSpacing,
-            railSolid, rail, grad, gradStops.clone());
+            railSolid, rail, flatten(gradColors), gradStops.clone(),
+            flatten(latColors), latStops.clone());
+    }
+
+    private static double[] flatten(Color[] cols) {
+        double[] out = new double[cols.length * 3];
+        for (int i = 0; i < cols.length; i++) {
+            out[i * 3]     = cols[i].getRed();
+            out[i * 3 + 1] = cols[i].getGreen();
+            out[i * 3 + 2] = cols[i].getBlue();
+        }
+        return out;
+    }
+
+    private static void unflatten(double[] rgb, Color[] into) {
+        for (int i = 0; i < into.length; i++) {
+            into[i] = Color.color(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+        }
     }
 
     private void loadDesign() {
@@ -1763,11 +1908,10 @@ public class FvdDesigner extends Application {
             tieSpacing = cos.tiespace();
             railSolid = cos.railSolid();
             railColor = Color.color(cos.railColor()[0], cos.railColor()[1], cos.railColor()[2]);
-            for (int i = 0; i < 4; i++) {
-                gradColors[i] = Color.color(cos.gradColors()[i * 3],
-                    cos.gradColors()[i * 3 + 1], cos.gradColors()[i * 3 + 2]);
-            }
-            System.arraycopy(cos.gradStops(), 0, gradStops, 0, 4);
+            unflatten(cos.gradColors(), gradColors);
+            unflatten(cos.latColors(), latColors);
+            System.arraycopy(cos.gradStops(), 0, gradStops, 0, gradStops.length);
+            System.arraycopy(cos.latStops(), 0, latStops, 0, latStops.length);
 
             heartSpinner.getValueFactory().setValue(heartOffset);
             gaugeSpinner.getValueFactory().setValue(railGauge);

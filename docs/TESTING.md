@@ -1180,6 +1180,169 @@
     The changed-radio orange dot is now geometrically identical to
     the black dots (only the mark color tints).
 
+81. v16.10 feedback fixes (D122): (a) YOUR HILL REPRO — abs-roll
+    force section (Time, Global, Absolute bank), then '+' a geo
+    section (Time, Global roll, Local yaw/pitch, °/m, Absolute
+    bank): Shift+B on its first node now sets the PITCH node to the
+    hill's continuing curvature in °/m (and yaw likewise) instead
+    of zeroing it flat; the transition rides smooth. Same fix
+    applies wherever a °/m lane matches across a seam the analytic
+    paths can't serve — against reversed, influenced, s/c, bridge
+    and global-axis neighbors, and real-split (≠v) seams: targets
+    were all ~v× too small before. Re-pressing B should change
+    nothing once matched. (b) Ctrl-snap on any lane DISPLAYED in
+    °/m steps by 1 °/m now (Options row "Snap: per-meter rate",
+    reset ↺, arrows walk 1-2-5); °/s lanes and absolute BANK lanes
+    keep the 5-step. The °/m|°/s view follows the displayed units.
+    (c) In the Convert… and Add-section dialogs, hover a grayed
+    choice — Absolute bank under Local roll, Yaw/pitch under Force,
+    Part… on an influenced section, the padlocked speed field — and
+    a tooltip says how to un-gray it. Enabled controls show no
+    tooltip. (d) FLY-MODE DRIFT: right-click into fly mode and
+    sweep the mouse side to side for a few seconds — the horizon
+    stays put now (it used to pitch steadily upward); vertical look
+    still works normally. (e) B/Shift+B on the LAST node of a
+    section whose NEXT section is absolute-bank refuses with a
+    stats-bar hint pointing at the other side of the boundary;
+    B/Shift+B on the abs section's own FIRST node remains the way
+    to smooth that seam.
+
+82. v16.11 viewport round (D123): (a) MIDDLE-drag now PANS the
+    orbit view (grab-style — the world follows the mouse; works in
+    the T/Shift+T ortho views too and stays ortho); left-drag still
+    orbits, shift+left-click still snaps the pivot to the track.
+    (b) The ACTIVE section's cross ties are WHITE — click strips in
+    the graph and watch the white band move along the 3D track;
+    piece/section switches re-tint without a visible hitch.
+    (c) Click a node MARKER sphere: that node selects in the graph
+    (white marker + selected node), and if you were zoomed
+    elsewhere the graph window re-centers onto it. Clicking track
+    between markers still just activates the piece + section.
+    (d) GIZMOS: the active piece's entry shows 3 colored arrows +
+    a green yaw ring (pitch/roll rings appear when you unlock the
+    Placement padlocks). Drag arrows/rings — the track follows
+    live, one Ctrl+Z per gesture, spinners re-sync on release.
+    Verify NO gizmo on a piece that an optimize-mode bridge places,
+    and no pitch/roll rings while locked. (e) BRIDGE gizmo: with
+    the bridge section active, manual mode = arrows + rings at the
+    NEXT piece's entry; optimize modes = one ORANGE arrow along the
+    end tangent that drags the LENGTH (gone when Optimize length is
+    checked). (f) The "Axes: global/local" button (top-right of the
+    3D view, only while a gizmo shows) re-aims the translation
+    arrows along the piece's right/up/forward — toggling moves
+    NOTHING. (g) Feel-check ring directions: each ring should
+    follow the mouse (grab a ring and the track turns WITH the
+    drag) — report any ring that runs backwards (one documented
+    sign, D123). Gizmos hide in POV/fly and re-appear after.
+
+83. v16.12 viewport feedback fixes (D124): (a) MIDDLE-drag ORBITS
+    now (left-drag does nothing — left is selection only);
+    shift+middle-click snaps the pivot to the track; DOUBLE-click
+    the track inserts a node and the graph scrolls to it
+    (Ctrl+click no longer inserts). (b) GIZMO REVEAL: the bigger
+    sphere at the piece's start toggles the gizmos; with a
+    trailing bridge BOTH gizmos appear (entry + bridge end),
+    whatever section is active — and there's a reveal sphere at
+    the bridge end too. Switching pieces hides them. (c) Colors:
+    arrows X red / Y blue / Z green; rings yaw yellow, pitch teal,
+    roll orange-red (the graph palette). (d) RING FEEL: drag along
+    a straight line — rotation follows the mouse's distance from
+    the press (~57° per ring-radius); verify the optimize-position
+    bridge's yaw ring no longer runs away (the old feedback spiral).
+    (e) CTRL snaps gizmo translation/length by the element step
+    (1 m) and rings to whole degrees; the bridge yaw spinner arrows
+    step 1°. (f) Gizmo appearance follows the drag in REAL TIME
+    (arrows/rings re-aim as the piece turns), parts are thicker,
+    the scale stays constant anywhere on screen (no edge blow-up),
+    and gizmos stay visible in fly mode. (g) UNDO: unlock a
+    Placement padlock, drag the pitch/roll ring, Ctrl+Z — the
+    padlock STAYS unlocked (it relocks only when undoing past the
+    point it was locked). (h) Active-section ties are brighter
+    white now (self-lit).
+
+84. v16.13 (D125): (a) gizmo arrows are X GREEN / Y blue / Z RED
+    now; clicking EMPTY space hides revealed gizmos (the piece
+    stays selected). (b) Two pieces parked close together: the
+    HEARTLINE no longer joins them (one strand per piece). (c) On
+    a piece placed by an optimize-mode bridge, open Placement ▾ —
+    x/y/z (and yaw when locked/optimized) are grayed with a hover
+    tip pointing at the bridge; "No optimization" un-grays x/y/z.
+    (d) The new VIEW menu (between Edit and Coaster) holds gizmo
+    axes, heartline, node markers, comb toggles, comb colors, both
+    FOVs and mouse sensitivity — sliders/checks keep the menu open,
+    and Edit > Options now has only snaps + POV marker. (e) COMBS:
+    toggle each on — vertical G teeth point outward and wear the
+    rail gradient's colors; lateral teeth flip sides with the
+    force and wear their own stops (edit both sets under View >
+    G-force & comb colors…; save/load a .fvd and the lateral stops
+    survive); speed teeth grow with speed. Hover a tooth's tip —
+    a readout follows the cursor with the value ("2.31 g vert",
+    "-0.45 g lat", "26.0 m/s"); it hides off the combs. (f) Old
+    .fvd files load with default lateral stops and byte-identical
+    round-trips still pass (gated).
+
+85. v16.14 comb/gradient round (D126): (a) TIE + COMB SPACING is
+    dead even now — look along any stretch (especially fast track):
+    every gap identical, no occasional wide ones. (b) Combs: a
+    three-way View-menu choice (No / G-Force / Speed) — G-Force
+    shows vertical AND lateral together; teeth every 0.5 m, growing
+    from the HEARTLINE; lateral teeth point rider-LEFT on a
+    right-hand force; "Comb size (%)" scales them (applies when you
+    release the slider). Combs hide in POV and never block clicks —
+    double-click through them still inserts a node. (c) HOVER a
+    tooth (anywhere on it): its value appears at the BOTTOM-LEFT of
+    the viewport. (d) Gradient: five stops now — purple −1.5, blue
+    −0.7, green 1, yellow 3, red 5 — driving rails + vertical comb;
+    hang time shades blue→purple. Lateral colors mirror about zero
+    (green ±0.5, yellow ±1, red ±1.5). Every color row has a ↺
+    that grays at the default. (e) Rail color lives in the View
+    menu: gradient|solid radios, the solid picker (with ↺) appears
+    only when solid — and after using "Custom Color"'s Save/Use the
+    app window stays in front (it used to drop behind another
+    window). WATCH: if picking "Custom Color" from the View menu's
+    rail row crashes, report it (the pre-v7.5 menu-owner crash —
+    documented fallback ready). (f) Edit menu says "Snapping…"
+    (snap steps + references only); the POV graph marker is always
+    on. (g) Old files: 4-stop saves load with purple prepended;
+    re-saving writes 5 stops.
+
+86. v16.15 (D127): (a) double-click a mid-lane node — grey
+    parentheses beside Transition and Value update LIVE as you
+    type: the absolute axis position and the Δ from the previous
+    node. (b) Hover a node: grey ring + grey readout
+    (Δt + value); hold SHIFT while hovering: absolute position +
+    Δvalue. The readout no longer vanishes over node bodies; click
+    still selects (white ring) as before. (c) POV: capture with
+    right-click, press A — the view flips backward while W/S keep
+    moving the ride the same way along the track (W now reads as
+    backing up); A again or D returns forward; the View-menu
+    "Reverse POV view direction" check mirrors the state both
+    ways. (d) Comb teeth are twice as wide along the rails.
+    (e) G-Force Colors (renamed, letters tinted by your own
+    gradient hottest→coldest — re-tints after you edit stops):
+    vertical stops now purple −1.5 / blue −1 / CYAN −0.5 / green 1
+    / yellow 3 / red 5; older files load with the cyan default
+    inserted. (f) Custom Color window: clicking Save/Use returns
+    focus DIRECTLY to the app — no flash through another window
+    (root fix; the v16.14 behavior pulled focus back late).
+
+87. v16.16 (D128): (a) THE FLASH: open G-Force Colors, click a
+    color swatch — the app's OWN picker opens (RGB sliders + hex,
+    live preview on the track); OK/Cancel/X return focus straight
+    to the dialog with NO flash through another window, every
+    time. The View menu's rail swatch behaves identically. (b) All
+    four View sliders (FOVs, sensitivity, comb size) wear ↺ resets,
+    grayed at default. (c) Reverse POV (A while captured): a
+    "Backwards POV (A)" tag sits at the bottom-left while reversed,
+    gone when forward. (d) SHIFT while dragging a node: the readout
+    swaps to absolute position + Δvalue (same as shift+hover).
+    (e) CTRL while hovering a curve: the snapped insert dot's
+    readout leads with the global axis position. (f) The color
+    dialog offers a QUICK PALETTE (30 hues/shades + grays) and a
+    "Recent" row of your last ten picked colors — pick one, OK,
+    reopen any swatch: it leads the Recent row; clicking swatches
+    live-applies exactly like sliding.
+
 ## The historical headless harness (context, not a prescription)
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.

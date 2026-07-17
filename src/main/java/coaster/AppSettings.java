@@ -52,6 +52,7 @@ public class AppSettings {
     public static final double SNAP_T_DEFAULT = 0.1;     // s
     public static final double SNAP_G_DEFAULT = 0.1;     // g
     public static final double SNAP_ROLL_DEFAULT = 5;    // deg/s
+    public static final double SNAP_RATE_PM_DEFAULT = 1; // deg/m (v16.10)
     public static final double SNAP_LEN_DEFAULT = 1;     // m (s/c elements)
     public static final double NL2_SEGLEN_DEFAULT = 1.0; // m between CSV vertices
 
@@ -130,6 +131,11 @@ public class AppSettings {
     public void setSnapG(double v) { setD("snapG", v); }
     public double snapRoll() { return getD("snapRoll", SNAP_ROLL_DEFAULT); }
     public void setSnapRoll(double v) { setD("snapRoll", v); }
+    /** Rate lanes DISPLAYED in °/m snap by their own, finer step
+     *  (v16.10, user spec — typical °/m values live near ±3, where
+     *  the 5 °/s grid was a whole turn of range). */
+    public double snapRatePM() { return getD("snapRatePM", SNAP_RATE_PM_DEFAULT); }
+    public void setSnapRatePM(double v) { setD("snapRatePM", v); }
 
     /** Straight/curve element boundary drag snap (Ctrl), meters. */
     public double snapLen() { return getD("snapLen", SNAP_LEN_DEFAULT); }
@@ -162,15 +168,8 @@ public class AppSettings {
         save();
     }
 
-    /** Show the POV camera's track position as a line on the graph. */
-    public boolean povMarker() {
-        return Boolean.parseBoolean(props.getProperty("povMarker", "true"));
-    }
-
-    public void setPovMarker(boolean on) {
-        props.setProperty("povMarker", String.valueOf(on));
-        save();
-    }
+    // (the POV graph marker is ALWAYS ON since v16.14, user spec —
+    // the povMarker key is ignored)
 
     /** NL2 CSV export: true = heartline points (the default, user
      *  preference — see D41), false = rail-center spine. */
@@ -215,6 +214,76 @@ public class AppSettings {
 
     public void setTrackMarkers(boolean on) {
         props.setProperty("trackMarkers", String.valueOf(on));
+        save();
+    }
+
+    /** Gizmo translation arrows follow the piece's entry frame (local)
+     *  instead of world X/Y/Z (v16.11) — a pure view choice, toggled
+     *  by the viewport's overlay button; switching never moves track. */
+    public boolean gizmoLocal() {
+        return Boolean.parseBoolean(props.getProperty("gizmoLocal", "false"));
+    }
+
+    public void setGizmoLocal(boolean on) {
+        props.setProperty("gizmoLocal", String.valueOf(on));
+        save();
+    }
+
+    /** Track COMB mode (v16.13; three-way since v16.14, user spec —
+     *  G-force and speed combs never show together): 0 = none,
+     *  1 = G-FORCE (vertical + lateral teeth as one unit), 2 = SPEED.
+     *  Per-user view preference; the View menu radios drive it.
+     *  (The v16.13 combVert/combLat/combSpeed keys are ignored.) */
+    public static final int COMB_NONE = 0, COMB_GFORCE = 1, COMB_SPEED = 2;
+
+    public int combMode() {
+        try {
+            return Integer.parseInt(props.getProperty("combMode", "0"));
+        } catch (NumberFormatException e) {
+            return COMB_NONE;
+        }
+    }
+
+    public void setCombMode(int mode) {
+        props.setProperty("combMode", String.valueOf(mode));
+        save();
+    }
+
+    /** Comb tooth size, PERCENT of the built-in default (v16.14). */
+    public static final double COMB_SCALE_DEFAULT = 100;
+    public double combScale() { return getD("combScale", COMB_SCALE_DEFAULT); }
+    public void setCombScale(double v) { setD("combScale", v); }
+
+    /** The color dialog's LAST TEN picked colors (v16.16, user spec),
+     *  hex strings, most recent first — shown as a "Recent" swatch
+     *  row in Dialogs.pickColor. */
+    public java.util.List<String> recentColors() {
+        String s = props.getProperty("recentColors", "");
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (String p : s.split(",")) {
+            if (!p.isBlank()) out.add(p.trim());
+        }
+        return out;
+    }
+
+    public void pushRecentColor(String hex) {
+        java.util.List<String> list = recentColors();
+        list.remove(hex);
+        list.add(0, hex);
+        while (list.size() > 10) list.remove(list.size() - 1);
+        props.setProperty("recentColors", String.join(",", list));
+        save();
+    }
+
+    /** POV rides looking BACKWARD (v16.15): the View-menu check, or
+     *  A / D while the ride is captured — W/S keep their track
+     *  direction either way. */
+    public boolean povReversed() {
+        return Boolean.parseBoolean(props.getProperty("povReversed", "false"));
+    }
+
+    public void setPovReversed(boolean on) {
+        props.setProperty("povReversed", String.valueOf(on));
         save();
     }
 

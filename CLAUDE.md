@@ -126,7 +126,11 @@ LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     itself) and atan2 mirrored cutback banks; slope
                     best-effort by user acceptance; rate lanes never
                     read an abs neighbor's lane as a rate — sampled/
-                    world paths; influence refuses) + the
+                    world paths; influence refuses; B/Shift+B
+                    TOWARD an abs NEXT neighbor refuse outright
+                    with a stats hint, v16.10 D122 — its entry is
+                    enforced by its OWN lane, match from ITS first
+                    node) + the
                     CROSS-RATE VIEW viewOtherRate (v16.7 D119,
                     COMPLETED v16.9 D121 as the user's actual spec:
                     a full edit-in-the-other-units warp — dispVal/
@@ -472,6 +476,23 @@ Viewport3D.java     JavaFX 3D VIEW (split out v9.4, D54): orbit/fly/POV
                     grid + LOD, track picking, node markers, and
                     rebuildTrack (the pipeline entry — the shell keeps
                     name-stable delegates). Same `app` backref pattern.
+                    Since v16.11 (D123, reworked v16.12 D124) also
+                    the PLACEMENT GIZMOS (revealed by the entry
+                    marker; piece entry + trailing bridge end as
+                    independent Rigs; locked axes build no part;
+                    ABSOLUTE-from-press drags — arrows project onto
+                    the press-time screen axis, rings rotate by
+                    linear mouse distance, world delta = NEGATED
+                    scene delta under the Y-mirror), the middle-drag
+                    ORBIT (left = selection only), white
+                    ACTIVE-SECTION ties (TiePiece re-tint, self-lit)
+                    and clickable node markers + double-click insert.
+                    v16.13 (D125) adds the track COMBS (vertical/
+                    lateral felt G + true speed, hover readout via
+                    combLabel) and per-piece heartline strands;
+                    v16.14 (D126) makes tie/comb placement arc-EXACT
+                    (arcHit) and the combs a three-way heartline-
+                    rooted, POV-hidden, mouse-transparent unit.
 
 Dialogs.java        JavaFX DIALOGS (split out v9.4, D54): Help,
                     Shortcuts, Rail colors, Options + option-row
@@ -575,7 +596,10 @@ source tree — they won't compile against the current time-domain API.
   act as mirror images, unequal ones stay proportional and collinear).
   Node drags are free; CTRL snaps time and value — DEFAULT references:
   TRANSITION length (Δt from the previous node) for time, the GLOBAL
-  absolute grid for value (defaults 0.1 s, 0.1 G, 5 °/s roll, steps
+  absolute grid for value (defaults 0.1 s, 0.1 G, 5 °/s roll, 1 °/m
+  for rate lanes DISPLAYED per-meter — laneShownPM picks the step, so
+  the cross-rate view counts; abs BANK lanes are degrees, not rates,
+  and keep the roll step (v16.10 D122) — steps
   adjustable in Options). v10.2/3: each axis's reference is a per-user
   Options LOCAL/GLOBAL radio pair (horizontal defaults local = Δt,
   vertical defaults global = absolute); the SECTION END
@@ -600,7 +624,14 @@ source tree — they won't compile against the current time-domain API.
   compatibility, extra fields on known lines ignored (the straight-lock
   8th and level-lock 9th `n` fields ride on this). Global lines (v0,
   heart, gauge,
-  tiespace, railmode/railcolor/gradcolors/gradstops, speedregion), then
+  tiespace, railmode/railcolor/gradcolors/gradstops — SIX
+  gradient stops since v16.15 (18+6 values; DesignIO.gradSlot maps
+  legacy lines: a 15+5 v16.14 line keeps the default CYAN inserted
+  at stop 2, a 12+4 line fills stops 2-5 under the default
+  purple + blue) —
+  latcolors/latstops — the lateral comb's THREE absolute |Gl|
+  stops since v16.14 (9+3 values; the v16.13 4-stop shape never
+  shipped), missing = defaults — speedregion), then
   `piece x y z yaw [qw qx qy qz]` blocks (fields 5-8 = the base
   orientation, v12.1; missing = identity; %.10f so round-trips skip
   the loader's re-normalize) holding `section force|geo|sc|bridge
@@ -679,7 +710,10 @@ fuzz of baking with pathological handles (0 violations), save round-trip
 
 **Least-verified code:** the POV camera affine (sign conventions), toolbar
 key/focus interactions, spinner listeners. If the POV view is rolled 180° or
-mirrored, it's a sign flip in `applyPovCamera`.
+mirrored, it's a sign flip in `applyPovCamera`. The GIZMO drag math
+(v16.11) is in the same class: if a rotation ring runs BACKWARDS
+against the mouse, the one documented sign in `wireRingDrag`
+(world delta = −scene delta under the Y-mirror) is the tunable.
 
 ## Current UI feature set
 
@@ -876,7 +910,8 @@ orange; GraphEditor.laneColor is the
 one accessor (curves, fills, buttons, guides, 3D markers). Selecting a
 geo section relabels+retints the lane buttons (setLaneButtonMode),
 retitles the y-axis and node dialogs, snaps ALL lanes by the
-roll step, defaults the scales to ±60 °/s (roll ±150) and drops the
+roll step (°/m-displayed lanes by the 1 °/m step, v16.10), defaults
+the scales to ±60 °/s (roll ±150) and drops the
 1 g reference line. B on a section-EDGE node (or "Match boundary
 (value + slope)" in its dialog) RETURNS it to the boundary — Shift+B
 (action "matchAll") does it for ALL THREE lanes' edge nodes as one
@@ -893,11 +928,17 @@ ACTIVE side's seam design speed (G = ω·v_seam/g + axis.y, v13.3 D75)
 B/Shift+B is idempotent once matched (v13.3's sampled targets, and
 v10.2's before them, crept ~0.1 °/s per press at banked rolling
 seams: linear extrapolation of curved rate profiles re-injects a
-bias — probed, D76). Only s/c, bridge and reversed neighbors still
+bias — probed, D76). Only s/c, bridge, reversed, influenced and
+global-axis neighbors (plus real-split seams) still
 sample the compiled curves (~3 samples inside via rateIdxAt —
 bodyRates smear boundary jumps across ±2 samples, same reason
 derived strips and overlays trim SEAM_TRIM = 2.5·dt — extrapolated
-back to the compiled boundary time). B/Shift+B FIRST re-freeze the
+back to the compiled boundary time; the sampled tail reads
+sampledPerSec — PER-SECOND, v16.10 D122: derivedAt/trueAt pre-scale
+by 1/v for a °/m active lane and boundaryState's own °/m wrapper
+divided AGAIN, so every sampled-path target on a per-meter lane
+collapsed ~v× to "zero with flat handles" — the analytic/authored
+paths honor the °/s contract and never had it). B/Shift+B FIRST re-freeze the
 DOWNSTREAM section's vDesign to the upstream design-end speed
 (v13.5 D78 — the '+' creation rule re-applied; bridge neighbors
 skipped, they blend already): felt Gv/Gl are recorded at each
@@ -941,7 +982,10 @@ alongside future bridges per user); Coaster menu "Piece
 x/y/z" + "Piece yaw (°)" spinners edit the ACTIVE piece (yaw is a
 DELTA on top of baseOrient — zeroing it reverts to the natural
 orientation) and re-sync
-on switches; Coaster menu "REVERSE PIECE (flip travel direction)" =
+on switches — rows a connecting BRIDGE owns gray out with a
+grayHint pointing at the bridge (v16.13, D125: position under any
+optimize mode, yaw when locked or march-aligned; hand-edits there
+silently fought the auto re-optimize before); Coaster menu "REVERSE PIECE (flip travel direction)" =
 the user-facing reversal since v12.1: a MODEL transformation
 (placement re-anchors at the old exit via baseOrient, section list
 flips to train order, each section's reversed flag toggles) — the
@@ -1217,7 +1261,12 @@ v14.0 D89/D90; ONE "Convert…" DIALOG since v16.6 D116: Whole/Part
 scope, Type, Domain, Roll axis, Yaw/pitch axis, Rate units — each
 row pre-set to the section's current value with ↺ reset buttons,
 any combination to any other, Part carries the choices into the
-split-line mode, influenced sections gray Part, reversed refuse):
+split-line mode, influenced sections gray Part, reversed refuse;
+GRAYED choices wear a hover explainer since v16.10 D122 — how to
+un-gray, via GraphEditor.grayHint: disabled controls swallow mouse
+events, so the tip rides an enabled StackPane wrapper, installed
+only while disabled; the Add-section dialog's grays + padlocked
+speed field wear the same, ↺ buttons deliberately none):
 the pre-v16.6 menu ended with a WHOLE + PART pair per target mode — "Convert to
 geo/force section" (bridges: "Convert whole bridge to …", which
 ATTACHES the next piece so the track stays connected — the v13.7
@@ -1406,7 +1455,9 @@ cubic — only the shipped default layout keeps 1/3) ·
 `Space` POV cam — starts HANDS-OFF (W/S and the S slide key stay with the
 graph, so you can edit while watching); right-click the view CAPTURES the
 ride controls (mouse hidden, no mouse look): W/S ride at simulated speed,
-Shift ×4, Ctrl ×0.25; right-click releases; while captured, Space flips
+Shift ×4, Ctrl ×0.25; A REVERSES the view — A again or D = forward,
+W/S keep their track direction, one applier with the View-menu check
+(v16.15); right-click releases; while captured, Space flips
 between fly (WASD) and POV (W/S) without releasing (`povCaptured`);
 scroll = fast burst either way, translucent graph line marks the camera
 (Options toggle, default on). POV↔selection sync (v13.11 D85, user
@@ -1454,7 +1505,10 @@ carpets "snapped flat" — and a v13.11 keep-absolute-knob variant
 was REJECTED; the D63 re-timing squish is untouched); last-node
 deletes shorten the
 ride; node 0 refuses) · double-click a NODE = modal editor to type
-transition time, transition Δ, and handle fractions directly (typed
+transition time, transition Δ, and handle fractions directly (grey
+COMPUTED TWINS beside the fields update live as you type — the
+absolute axis position and the Δ from the previous node, v16.15;
+typed
 fractions SLIDE the knob along its current line — dv scales with length,
 S-drag semantics; node 0's dialog also edits the START SPEED; labels are
 just "In handle"/"Out handle" and the drag readout shows the bare
@@ -1466,7 +1520,11 @@ camera; mutually exclusive with POV; TWO FOV settings — "POV" and
 "fly & orbit" (the handoff pair must share a lens or mode switches zoom-
 jump) — plus a fly mouse-sensitivity slider, all in
 Edit > Options; fly look deltas are capped ±35 px/event to tame OS pointer
-acceleration). Graph editor: scroll
+acceleration, and measure from where the cursor ACTUALLY rests after
+each Robot warp — warpFlyCursor reads getMousePosition back, v16.10
+D122: the ideal subscene centre is fractional in screen coords while
+the warp lands on a whole pixel, and that constant sub-pixel dy bias
+pitched the view steadily during sideways sweeps). Graph editor: scroll
 zooms the time axis around the cursor (view window in tToX/xToT, min 0.1 s,
 full zoom-out resumes auto-fit; grid step floors at 0.01 s with 2-decimal
 ticks), right-drag pans, box select on empty plot (Shift adds; plain-click
@@ -1495,7 +1553,11 @@ everywhere (`TIME_COLOR` rgb(200,165,255), v10.2 — was yellow, which
 geo yaw now owns: "Time (s)" label, POV marker). Guides draw at
 alpha 0.5; S-dragging a handle shows its dashed slide rail. Hovering the curve
 shows the insert dot plus the lane's value (Shift REPLACES it with the
-ANALYTIC slope from `BezierBaker.slopeAt` — differencing the baked
+ANALYTIC slope from `BezierBaker.slopeAt`; hovering a NODE shows a
+GREY ring + the drag readout's Δt/value in grey — Shift swaps in the
+absolute axis position + Δ from the previous node, v16.15; the same
+Shift twins take over the DRAG readout mid-gesture, and Ctrl-hover's
+snapped insert dot leads with the global axis position, v16.16 — differencing the baked
 polyline stair-stepped; tracked via key filters so it updates without
 moving the mouse). The node-drag readout clamps into the plot bounds. Orbit drags
 respond ONLY to the primary button — the right-drag that exits fly used to
@@ -1529,18 +1591,68 @@ signs), Edit
 (Shortcuts dialog — TWO titled category columns since v10.3 (Graph
 editor | View/File/History, ACTIONS carries the category as its 4th
 field); rebind by clicking + pressing a key, ↺ resets an edited
-binding to default; Options dialog — the TWO FOV sliders 30–110°, mouse
-sensitivity, snap steps (the v13.9 bridge-optimizer rows were
-REMOVED in v13.10, D84 — internal constants again),
-"Show heartline (neon)" check — hairline
-self-illuminated yellow tube on the integrated path, app-wide default off,
-setVisible(false) while POV rides (the camera sits ON it) — and the POV
-marker), Help
+binding to default; SNAPPING dialog — renamed from "Options" in
+v16.14 after the viewport rows left: snap steps (the v13.9
+bridge-optimizer rows were
+REMOVED in v13.10, D84 — internal constants again) and snap axis
+references; the POV graph marker is ALWAYS ON since v16.14), VIEW
+menu (v16.13, D125 — the v7.5
+"no View menu" verdict reversed on user spec, between Edit and
+Coaster: gizmo axes local/global (one applier syncs it with the
+overlay button), "Show heartline (neon)" check — hairline
+self-illuminated yellow tube on the integrated path, ONE STRAND PER
+PIECE since v16.13 (a single ride-wide strand visually joined
+close-parked pieces), app-wide default off, setVisible(false) while
+POV rides (the camera sits ON it) — node markers, RAIL COLOR since
+v16.14 (gradient|solid radios + the solid ColorPicker inline,
+visible only while solid, ↺ to the default red — the old "Rail
+colors…" dialog is GONE; showRailColorDialog's owner-crash lesson
+lives on as a comment: watch "Custom Color" from a menu row), the
+COMB three-way (v16.14: No | G-Force = vertical + lateral together
+| Speed — AppSettings.combMode) + "Comb size (%)" slider (applies
+on release), "G-FORCE COLORS…" (its label's letters tinted by the
+LIVE gradient hottest-first, rebuilt per menu show, v16.15; the
+SIX vertical stops shared with the rail gradient — purple −1.5 /
+blue −1 / cyan −0.5 / green 1 / yellow 3 / red 5 — + the lateral
+comb's THREE |Gl| stops, every color with a ↺ grayed at default),
+"Reverse POV view direction" (v16.15 — one applier shared with
+the captured-ride A/D keys; a "Backwards POV (A)" tag sits at the
+viewport's bottom-left while reversed, povLabel, v16.16), the TWO
+FOV sliders 30–110° and mouse sensitivity — every slider wears a
+↺ reset since v16.16 — all CustomMenuItem rows
+that keep the menu open, with the Options dialogs' menu-local undo
+wiring. NO ColorPicker EXISTS anywhere since v16.16: its Custom
+Color child is owned by the picker's transient POPUP, which both
+crashed the pre-v7.5 menu embed and caused an UNBEATABLE focus
+flash on close (Windows re-activated another app before any
+refocus could run — the v16.14 toFront and v16.15 Window-watcher
+band-aids lost the race and are deleted). Colors are SWATCH
+buttons (Dialogs.colorSwatch) opening Dialogs.pickColor — an
+ordinary owned WINDOW_MODAL Stage (RGB sliders + hex, LIVE apply,
+OK keeps / Cancel + X restore, one menu-undo pair per session; the
+rail swatch re-syncs on menu show via the railSyncing guard so
+Load/New don't leave it stale or mark dirty), Help
 (clicking the menu TITLE opens the Help dialog directly — it's a Label
-graphic on an empty Menu; there is deliberately NO View menu, tried and
-merged back into Options in v7.5). Shift+click
-OR C+click the track in orbit mode re-centers the pivot on it
-(screen-space nearest track point within 25 px via pickTrackSample:
+graphic on an empty Menu). COMBS (v16.13 D125, reworked v16.14
+D126 — FVD++-style; teeth 2× wider along the track since v16.15):
+one tooth per 0.5 m at EXACT arc spacing
+(arcHit lerps frames between samples — the same fix ended the
+ties' quantize-to-sample wobble), per piece, growing from the
+HEARTLINE — G-FORCE mode = VERTICAL felt G outward along −U
+(0.5 m/g, the rail gradient's colors) + LATERAL felt G along −R
+(rider-left for +Gl; 0.8 m/g, ABSOLUTE-value colors mirrored about
+zero on latColors/latStops — per-coaster, saved); SPEED mode =
+TRUE speed up along U (0.05 m per m/s, solid); modes exclusive,
+values from the TRUE arrays, cap 3.5 m × the size setting, teeth
+under 2 cm skip, whole combGroup hidden in POV and
+mouse-transparent (clicks pass through). Hovering ANYWHERE on a
+tooth (root→tip segment, 10 px) shows the value in the
+BOTTOM-LEFT overlay label (Viewport3D.combLabel — MANAGED in the
+subHolder StackPane; the v16.13 unmanaged version never got sized:
+invisible). Shift+MIDDLE-click
+OR C+MIDDLE-click the track in orbit mode re-centers the pivot on
+it (moved off left with the orbit drag, v16.12;
+screen-space nearest track point within 25 px via pickTrackSample:
 distance to the SEGMENTS between strided sample projections — near
 track projects the dots hundreds of px apart, clicks between them
 used to miss (v13.5) — with the eye/forward taken from the ACTIVE
@@ -1551,13 +1663,58 @@ projects them mirrored, which made sky clicks teleport the pivot;
 segments spanning a > 6 m piece gap skipped so the space between
 detached pieces stays unclickable; a miss
 moves nothing and the drag orbits normally; C tracked like the S slide
-key). Ctrl+click the track = INSERT a node in the active lane at that
-ride time (same pick, feeds insertNodeOnCurve — identical semantics to
-clicking the graph curve). Middle-drag orbits like primary-drag
-(secondary stays excluded — fly-exit stale-anchor jump). On-track NODE
+key). DOUBLE-click the track = INSERT a node in the active lane at
+that ride time (v16.12 — was Ctrl+click; same pick, feeds
+insertNodeOnCurve — identical semantics to clicking the graph curve,
+and the graph window scrolls to the new node). MIDDLE-drag = the
+ORBIT drag, REPLACING left-drag entirely (v16.12, user re-spec of
+the v16.11 pan; the primary button is selection/gizmos only;
+panView survives for the ortho right-drag pan; secondary stays
+excluded — fly-exit stale-anchor jump). On-track NODE
 MARKERS (Options toggle, default on): a small spine-level sphere per
 active-lane node, selection in white, signature-guarded rebuild on graph
-redraws. `T`/`Shift+T` = TOP/SIDE views with a pseudo-ortho lens (1° FOV
+redraws; a clean CLICK on one selects that node in the graph and
+re-centers a manual zoom window onto it (v16.11 — marker pick beats
+the track-activate click, 14 px). PLACEMENT GIZMOS (v16.11 D123,
+reworked v16.12 D124): HIDDEN until revealed — a bigger sphere
+(0.34) at the active piece's ENTRY (its "first node") toggles them,
+and the reveal shows BOTH the entry gizmo and the trailing bridge's
+end gizmo (its own reveal sphere sits there too) whatever section
+is active; switching pieces re-hides (multi-Rig: per-anchor scale +
+re-aim hooks; a clean click on EMPTY space also hides them,
+v16.13). Arrows X green / Y blue / Z red (v16.13); rings wear
+GEO_LANE_COLORS (yaw yellow world-Y, pitch teal horizontal-right,
+roll orange heading) — yaw always, pitch/roll only while their
+padlocks are UNLOCKED; locked or machine-owned axes build NO part
+(a piece bridged-in under an optimize mode builds no piece gizmo —
+the previous piece's bridge gizmo is the surface). Bridge end per
+mode: manual = arrows + unlocked rings; optimize modes = ONE orange
+TANGENT arrow dragging the LENGTH (hidden under Optimize length;
+optimize-orientation owns the rings so none show) — writes go
+through PIECE-scoped trailing-bridge paths (GraphEditor
+gizmoSetBridgeGap/gizmoSetBridgeOrient/gizmoBridgeMoved; no undo of
+their own, and the OPT_POS+optLen orient path re-knees SILENTLY —
+applyOptimalLength's zero-distance prompt must never pop mid-drag).
+DRAGS ARE ABSOLUTE FROM THE PRESS (v16.12): arrows project mouse
+travel onto the press-time screen axis (pose = base + dir₀·λ);
+rings rotate by LINEAR mouse distance along the press-time ring
+tangent (~57°/grabbed-radius, value = base − dist·k, the one
+Y-mirror sign) — a part that re-places itself per event (an
+optimize-position bridge) can't feed back into its own input, the
+v16.11 yaw spiral. Ctrl SNAPS translation/length by the
+element-length step and rings to 1°. Parts re-aim LIVE per event
+(each keeps a Rotate fed by direction suppliers; rebuild waits for
+release — replacing the pressed node kills JavaFX mouse capture);
+scale is view-DEPTH based (~10% of visible height; euclidean
+distance ballooned it toward the screen edge) via origin-pivot
+Scale transforms (the scale PROPERTIES pivot at layout-bounds
+centre — wrong); gizmos stay visible in FLY (POV hides them), push
+ONE undo per gesture, and consume their mouse events. The "Axes:
+global|local" overlay button (top-right, visible with the gizmos,
+AppSettings.gizmoLocal) flips the translation arrows between world
+X/Y/Z and the entry frame's right/up/forward — rings keep the model
+Euler axes (a world-axis pitch/roll isn't representable in the
+delta model), and toggling never moves the track. `T`/`Shift+T` = TOP/SIDE views with a pseudo-ortho lens (1° FOV
 at ~72× the distance, apparent size preserved; ParallelCamera can't do
 3D) — top snaps yaw to the nearest 90° (always grid-aligned), side
 centers the pivot on the SELECTED node's track point AND yaws the lens
@@ -1582,13 +1739,15 @@ to the piece selector in v13.2 (D74), along with "Reverse piece" —
 the Coaster menu keeps only truly per-coaster knobs. Start speed is
 saved as the `v0` line and is ALSO editable in the first node's
 double-click
-dialog — the dialog writes through the spinner. Rail color:
-G-force gradient or solid — the ColorPicker lives in its own dialog, NOT in
-the menu: embedded there, "Custom Color" crashed because its owner window
-was the auto-hiding menu popup; the same dialog customizes the FOUR
-G-force gradient stops — each a COLOR and a G VALUE spinner, defaults
-0/1/3/5 g, flat outside the ends and lerped between stops, saved as
-`gradcolors` + `gradstops` lines). Toolbar: lane toggles, Ripple time/value
+dialog — the dialog writes through the spinner. Rail color lives in
+the VIEW menu since v16.14 (gradient|solid radios + inline solid
+picker; the gradient's FIVE stops — each a COLOR and a G VALUE
+spinner, defaults purple −1.5 / blue −0.7 / green 1 / yellow 3 /
+red 5, flat outside the ends and lerped between, saved as
+`gradcolors` + `gradstops` lines — edit in "G-force & comb
+colors…"; the pre-v7.5 lesson that a menu-embedded picker's
+"Custom Color" crashed on the auto-hiding popup owner is the WATCH
+ITEM on this move). Toolbar: lane toggles, Ripple time/value
 checks, "Resulting" popup (persisted per-user; a dark hover-dismissed Popup of
 CheckBoxes since v10.3 — stays open while picks are clicked, closes
 250 ms after the mouse leaves both it and the button, re-entry cancels;
@@ -1630,11 +1789,12 @@ non-obvious behavior. Do not ship a feature without touching it.
 - Extreme handle angles can fold a curve; the baker's monotonic-t guard
   flattens it, so drawn curve and baked result can differ at pathological
   settings.
-- Rails + cross ties but no spine box yet; tie positions quantize to the
-  nearest integration sample (up to ~0.13 m jitter at speed — invisible at
-  normal tie spacing). The tie grid anchors at each PIECE's starting arc
-  length (v13.3 — per-piece meshes start mid-ride; a zero anchor put a
-  tie on every sample until it caught up).
+- Rails + cross ties but no spine box yet. Ties (and comb teeth) sit
+  at EXACT arc positions since v16.14 (arcHit lerps between samples
+  — they used to quantize to the next sample, up to ~v·dt late, the
+  visible uneven-spacing bug). The tie grid anchors at each PIECE's
+  starting arc length (v13.3 — per-piece meshes start mid-ride; a
+  zero anchor put a tie on every sample until it caught up).
 - Undo/redo exclude tie spacing and rail colors (cosmetics; menu-local
   Ctrl+Z only — but they do mark the file dirty).
 - Friction is hardcoded (0), not in the UI. (v0 became the per-coaster
@@ -1651,8 +1811,10 @@ non-obvious behavior. Do not ship a feature without touching it.
   everything else about tilts is rigid + gated).
 - The Placement rows' pitch/roll padlocks on un-bridged pieces
   (TrackPiece.uiLockPitch/Roll) are UI edit-guards only — not
-  persisted, not in undo; a bridged-in piece shares the BRIDGE's
-  persisted lock fields instead.
+  persisted, but they DO ride undo snapshots since v16.12 (D124:
+  applyDocState rebuilt pieces with default-locked guards, so any
+  Ctrl+Z slammed open padlocks shut); a bridged-in piece shares the
+  BRIDGE's persisted lock fields instead.
 
 ## Roadmap (user-endorsed, phased — see docs/SECTIONS-DESIGN.md for Phase 1+)
 
@@ -1745,9 +1907,16 @@ in value AND slope at seams; toolbar Gap spinner auto-optimizing per
 tick; piece placement/reverse moved to the toolbar "Placement ▾"
 dropdown; per-piece meshes with inactive pieces DESATURATED; bridged
 seams abut flush = one visual track) →
-piece placement 3D gizmos (pitch editing user-approved if revertible
-— baseOrient already separates the natural orientation from edit
-deltas) → mid-section piece split (node-anchored: select a node,
+~~piece placement 3D gizmos~~ DONE v16.11 (D123, the viewport
+round: entry/bridge-end gizmos with the lock rule — no part for a
+locked axis — plus the bridge LENGTH tangent arrow, the Axes
+local/global toggle, white active-section ties,
+clickable node markers; gated TESTING walkthrough #82) + v16.12
+feedback round (D124: middle-drag = THE orbit, double-click
+insert, gizmo REVEAL markers + both rigs at once, absolute-from-
+press drags with Ctrl snap, live re-aim, depth-based scale,
+fly-visible; walkthrough #83) →
+mid-section piece split (node-anchored: select a node,
 split the section's lanes there — de Casteljau, user-confirmed) →
 influence
 curves + "become real" (direct attach REMAINS first-class next to

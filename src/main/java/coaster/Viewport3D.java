@@ -62,6 +62,7 @@ import javafx.scene.paint.Color;
 import javafx.scene.paint.PhongMaterial;
 import javafx.scene.robot.Robot;
 import javafx.scene.shape.CullFace;
+import javafx.scene.shape.Cylinder;
 import javafx.scene.shape.MeshView;
 import javafx.scene.shape.Sphere;
 import javafx.scene.shape.TriangleMesh;
@@ -134,7 +135,10 @@ class Viewport3D {
     double gridCamX0, gridCamZ0;        // scene->world offset for camera positions
 
     SubScene sub;
-    MeshView heartMesh;   // neon heartline; hidden while riding POV
+    Group heartMesh;   // neon heartline, one strand PER PIECE (v16.13
+                       // — a single ride-wide mesh only broke on the
+                       // 3.5 m gap heuristic, so pieces parked close
+                       // together read as connected); hidden in POV
     PerspectiveCamera orbitCam, povCam;
     boolean povActive = false;
     boolean povCaptured = false;   // right-click: hide mouse, W/S ride;
@@ -195,8 +199,9 @@ class Viewport3D {
         sun.setTranslateZ(-100);
 
         // povHolder lives inside `world` so the centering translate applies
-        // to the POV camera exactly as it does to the track mesh
-        world.getChildren().addAll(trackGroup, povHolder);
+        // to the POV camera exactly as it does to the track mesh;
+        // gizmoGroup rides along (its coords are world coords, v16.11)
+        world.getChildren().addAll(trackGroup, povHolder, gizmoGroup);
         Group root3D = new Group(world, cameraRig, flyHolder, ambient, sun);
 
         sub = new SubScene(root3D, 800, 400, true, SceneAntialiasing.BALANCED);
@@ -229,21 +234,20 @@ class Viewport3D {
                 lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
                 return;
             }
+            if (e.getButton() == MouseButton.MIDDLE && !povActive
+                    && !flyActive && (e.isShiftDown() || app.cKey)) {
+                // Shift+middle-click (or C+middle) = re-center the orbit
+                // on the track under the cursor (v16.12 — moved off
+                // left-click with the orbit drag)
+                snapPivotToTrack(e.getScreenX(), e.getScreenY());
+            }
             if (e.getButton() == MouseButton.PRIMARY && !povActive && !flyActive) {
-                if (e.isControlDown()) {
-                    // Ctrl+click the track = insert a node at that ride time
-                    insertNodeAtTrack(e.getScreenX(), e.getScreenY());
-                } else if (e.isShiftDown() || app.cKey) {
-                    // Shift+click or C+click = re-center the orbit on the
-                    // track piece under the cursor
-                    snapPivotToTrack(e.getScreenX(), e.getScreenY());
-                } else {
-                    // plain press: remember it — a CLEAN release on the
-                    // track activates that piece + section (v13.1); a
-                    // drag orbits as ever
-                    clickX = e.getSceneX();
-                    clickY = e.getSceneY();
-                }
+                // plain press: remember it — a CLEAN release on the
+                // track activates that piece + section (v13.1), a
+                // DOUBLE-click inserts a node (v16.12); left-DRAG no
+                // longer orbits (middle owns the camera now)
+                clickX = e.getSceneX();
+                clickY = e.getSceneY();
             } else if (e.getButton() == MouseButton.PRIMARY
                     && povActive && !povCaptured) {
                 // hands-off POV keeps the mouse: a clean click selects
@@ -263,34 +267,49 @@ class Viewport3D {
                 return;
             }
             clickX = Double.NaN;
+            if (e.getClickCount() == 2) {
+                // DOUBLE-click = insert a node at that track point
+                // (v16.12 — moved off Ctrl+click; the first click
+                // already activated the piece + section, so the
+                // insert lands in the right lane, and the graph view
+                // snaps to the new node like a marker click)
+                insertNodeAtTrack(e.getScreenX(), e.getScreenY());
+                return;
+            }
+            // node MARKERS take the click before the track does
+            // (v16.11, user spec): a clean click on one selects that
+            // node in the graph and brings it into view
+            int mi = pickMarkerIndex(e.getScreenX(), e.getScreenY());
+            if (mi >= 0) {
+                app.editor.selectNodeFromViewport(mi);
+                return;
+            }
             FVDIntegrator.Sample hit = pickTrackSample(e.getScreenX(), e.getScreenY());
-            if (hit != null) app.editor.activateAt(hit.t());
+            if (hit != null) {
+                app.editor.activateAt(hit.t());
+            } else if (gizmoRevealed) {
+                // a clean click on EMPTY SPACE hides the gizmos —
+                // the selection stays (v16.13, user spec)
+                gizmoRevealed = false;
+                refreshGizmo(true);
+            }
         });
         sub.setOnMouseDragged(e -> {
             if (povActive || flyActive) return;
             if (orthoView && e.isSecondaryButtonDown()) {
                 // right-drag in a snapped view = grab-pan in the view plane
                 // (the world follows the mouse); the ortho view survives
-                double d = -camZoom.getZ();
-                double upp = 2 * d * Math.tan(Math.toRadians(ORTHO_FOV / 2))
-                           / Math.max(1, sub.getHeight());   // world m per px
-                double dx = e.getSceneX() - lastMouseX, dy = e.getSceneY() - lastMouseY;
-                Rotate ry = new Rotate(camYaw.getAngle(), Rotate.Y_AXIS);
-                Rotate rx = new Rotate(camPitch.getAngle(), Rotate.X_AXIS);
-                Point3D right = ry.transform(rx.transform(new Point3D(1, 0, 0)));
-                Point3D down = ry.transform(rx.transform(new Point3D(0, 1, 0)));
-                camPivot.setX(camPivot.getX() - (right.getX() * dx + down.getX() * dy) * upp);
-                camPivot.setY(camPivot.getY() - (right.getY() * dx + down.getY() * dy) * upp);
-                camPivot.setZ(camPivot.getZ() - (right.getZ() * dx + down.getZ() * dy) * upp);
-                updateGridLOD(camPivot.getX() + gridCamX0, camPivot.getZ() + gridCamZ0);
+                panView(e.getSceneX() - lastMouseX, e.getSceneY() - lastMouseY);
                 lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
                 return;
             }
-            // primary OR middle drags orbit (middle: CAD muscle memory, and
-            // frees primary for future viewport editing) — never secondary:
-            // the right-drag that exits fly otherwise fell through here with
-            // a huge stale delta (jump bug)
-            if (!e.isPrimaryButtonDown() && !e.isMiddleButtonDown()) return;
+            // MIDDLE-drag = orbit, REPLACING left-drag entirely (v16.12,
+            // user re-spec of the v16.11 pan: "middle-drag to orbit");
+            // left-drag does nothing so the primary button is free for
+            // selection/gizmos — and never secondary: the right-drag
+            // that exits fly otherwise fell through here with a huge
+            // stale delta (jump bug)
+            if (!e.isMiddleButtonDown()) return;
             // rotating away from a snapped ortho view returns to the
             // perspective lens but keeps the current angles
             if (orthoView) exitOrthoKeepView();
@@ -301,6 +320,7 @@ class Viewport3D {
             camYaw.setAngle(camYaw.getAngle() + dx * s);
             camPitch.setAngle(FvdDesigner.clamp(camPitch.getAngle() - dy * s, -89, 89));
             lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
+            positionGizmo();
         });
         sub.setOnScroll(e -> {
             // SHIFT+wheel arrives as HORIZONTAL scroll on Windows (deltaY 0,
@@ -320,7 +340,7 @@ class Viewport3D {
                 double rideTime = app.lastSamples.get(app.lastSamples.size() - 1).t();
                 if (rideTime <= 0) return;
                 povTime = ((povTime + wheel * 0.02) % rideTime + rideTime) % rideTime;
-                if (app.settings.povMarker()) app.editor.refresh();
+                app.editor.refresh();   // POV marker always on (v16.14)
             } else if (orthoView) {
                 // ortho zoom is multiplicative (the camera sits ~72x out;
                 // the additive step and its -1500 clamp would wreck it)
@@ -329,9 +349,11 @@ class Viewport3D {
             } else {
                 camZoom.setZ(FvdDesigner.clamp(camZoom.getZ() + wheel * 0.5, -1500, -10));
             }
+            positionGizmo();   // constant apparent size through zooms
         });
         sub.addEventHandler(MouseEvent.MOUSE_MOVED, this::flyLook);
         sub.addEventHandler(MouseEvent.MOUSE_DRAGGED, this::flyLook);
+        sub.addEventHandler(MouseEvent.MOUSE_MOVED, this::combHover);
 
         // POV: W rides forward at the simulated speed, S backward;
         // SHIFT x4, CTRL x0.25; no key = hold position (follows live edits)
@@ -359,7 +381,7 @@ class Viewport3D {
                     double ratio = app.trueV == null ? 1
                         : app.trueV[at] / Math.max(0.1, app.lastSamples.get(at).v());
                     povTime = ((povTime + dir * dt * mult * ratio) % rideTime + rideTime) % rideTime;
-                    if (app.settings.povMarker()) app.editor.refresh();   // marker follows
+                    app.editor.refresh();   // marker follows (always on, v16.14)
                 }
                 int idx = (int) FvdDesigner.clamp(povTime / FvdDesigner.INTEGRATE_DT, 0, app.lastSamples.size() - 1);
                 applyPovCamera(app.lastSamples.get(idx));
@@ -403,6 +425,7 @@ class Viewport3D {
                 flyPos.setY(flyPos.getY() + (fwd.getY() * f + right.getY() * r) * speed);
                 flyPos.setZ(flyPos.getZ() + (fwd.getZ() * f + right.getZ() * r) * speed);
                 updateGridLOD(flyPos.getX() + gridCamX0, flyPos.getZ() + gridCamZ0);
+                positionGizmo();   // gizmos stay visible in fly (v16.12)
             }
         };
     }
@@ -414,6 +437,11 @@ class Viewport3D {
      *  but the scene graph only churns when something relevant changed. */
     void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx,
                              double[] nodeTimes) {
+        // activation changes arrive here on every graph redraw — the
+        // tie highlight and the gizmo ride along (each has its own
+        // signature guard, v16.11)
+        refreshTieHighlight(false);
+        refreshGizmo(false);
         List<BezierBaker.Node> laneNodes = app.lanes.get(lane);
         int count = Math.min(laneNodes.size(), nodeTimes.length);
         Color laneCol = app.editor.laneColor(lane);   // mode palette (geo: teal/yellow)
@@ -445,6 +473,56 @@ class Viewport3D {
             ball.setTranslateZ(p.z());
             markerGroup.getChildren().add(ball);
         }
+    }
+
+    /** Nearest node MARKER within ~14 px of a screen point (v16.11):
+     *  markerGroup children are one sphere per active-lane node, in
+     *  order, translated to Y-flipped world coords — project each and
+     *  pick the closest, behind-camera filtered like pickTrackSample.
+     *  Returns the node index, or -1 on a miss. */
+    private int pickMarkerIndex(double screenX, double screenY) {
+        if (markerGroup.getChildren().isEmpty()) return -1;
+        javafx.scene.Camera cam = sub.getCamera();
+        Point3D eye = cam.localToScene(0, 0, 0);
+        Point3D fwd = cam.localToScene(0, 0, 1).subtract(eye).normalize();
+        double best = 14 * 14;
+        int bestIdx = -1;
+        for (int i = 0; i < markerGroup.getChildren().size(); i++) {
+            javafx.scene.Node ball = markerGroup.getChildren().get(i);
+            double x = ball.getTranslateX(), y = ball.getTranslateY(),
+                   z = ball.getTranslateZ();
+            Point3D sceneP = world.localToScene(x, y, z);
+            if (sceneP.subtract(eye).dotProduct(fwd) <= 0) continue;
+            Point2D s = world.localToScreen(x, y, z);
+            if (s == null) continue;
+            double dx = s.getX() - screenX, dy = s.getY() - screenY;
+            double d2 = dx * dx + dy * dy;
+            if (d2 < best) {
+                best = d2;
+                bestIdx = i;
+            }
+        }
+        return bestIdx;
+    }
+
+    /** Grab-pan the orbit rig in the view plane: the world point under
+     *  the cursor follows the mouse (world-meters-per-pixel from the
+     *  CURRENT lens — perspective or the ortho 1° one). Shared by the
+     *  ortho right-drag pan (v8.2) and the middle-drag pan (v16.11). */
+    private void panView(double dx, double dy) {
+        double d = -camZoom.getZ();
+        double upp = 2 * d * Math.tan(Math.toRadians(
+                orbitCam.getFieldOfView() / 2))
+            / Math.max(1, sub.getHeight());   // world m per px
+        Rotate ry = new Rotate(camYaw.getAngle(), Rotate.Y_AXIS);
+        Rotate rx = new Rotate(camPitch.getAngle(), Rotate.X_AXIS);
+        Point3D right = ry.transform(rx.transform(new Point3D(1, 0, 0)));
+        Point3D down = ry.transform(rx.transform(new Point3D(0, 1, 0)));
+        camPivot.setX(camPivot.getX() - (right.getX() * dx + down.getX() * dy) * upp);
+        camPivot.setY(camPivot.getY() - (right.getY() * dx + down.getY() * dy) * upp);
+        camPivot.setZ(camPivot.getZ() - (right.getZ() * dx + down.getZ() * dy) * upp);
+        updateGridLOD(camPivot.getX() + gridCamX0, camPivot.getZ() + gridCamZ0);
+        positionGizmo();
     }
 
     /** Nearest track point within ~25 px of a screen point (a cheap
@@ -521,9 +599,10 @@ class Viewport3D {
         updateGridLOD(p.x(), p.z());
     }
 
-    /** Ctrl+click the track: insert a node in the ACTIVE lane at that
-     *  point's ride time — the 3D twin of clicking the graph curve
-     *  (same insert rules: exact split, gap guards, selects the node). */
+    /** DOUBLE-click the track (v16.12 — was Ctrl+click): insert a node
+     *  in the ACTIVE lane at that point's ride time — the 3D twin of
+     *  clicking the graph curve (same insert rules: exact split, gap
+     *  guards, selects the node and scrolls the graph to it). */
     void insertNodeAtTrack(double screenX, double screenY) {
         FVDIntegrator.Sample hit = pickTrackSample(screenX, screenY);
         if (hit == null) return;
@@ -649,6 +728,8 @@ class Viewport3D {
             povCaptured = keepCapture;
             if (povCaptured) sub.setCursor(Cursor.NONE);
             if (heartMesh != null) heartMesh.setVisible(false);
+            if (combGroup != null) combGroup.setVisible(false);
+            combLabel.setVisible(false);   // combs hidden in POV (v16.14)
             sub.setCamera(povCam);
             povTimer.start();
             app.editor.refresh();   // show the POV marker line
@@ -660,6 +741,7 @@ class Viewport3D {
             moveKeys.clear();
             sub.setCursor(Cursor.DEFAULT);
             if (heartMesh != null) heartMesh.setVisible(true);
+            if (combGroup != null) combGroup.setVisible(true);
             sub.setCamera(orbitCam);
             app.editor.refresh();
             toggleFly();
@@ -668,9 +750,12 @@ class Viewport3D {
             povTimer.stop();
             moveKeys.clear();
             if (heartMesh != null) heartMesh.setVisible(true);
+            if (combGroup != null) combGroup.setVisible(true);
             sub.setCamera(orbitCam);
             app.editor.refresh();   // hide the POV marker line
         }
+        refreshGizmo(false);   // gizmos hide while riding (v16.11)
+        syncPovLabel();        // backward indicator (v16.16)
     }
 
     void toggleFly() {
@@ -712,30 +797,68 @@ class Viewport3D {
             sub.setCamera(orbitCam);
             updateGridLOD(camPivot.getX() + gridCamX0, camPivot.getZ() + gridCamZ0);
         }
+        refreshGizmo(false);   // gizmos STAY in fly (v16.12) — rescale
     }
 
     /** Mouse look: measure the offset from the viewport centre, then warp
      *  the (hidden) cursor back — JavaFX cannot capture the pointer, so
      *  Robot-recentering is the standard FPS-camera workaround. */
+    // where the cursor ACTUALLY rests after our last warp (v16.10
+    // drift fix): Robot.mouseMove lands on a whole device pixel, but
+    // the subscene centre is usually FRACTIONAL in screen coords —
+    // measuring deltas against the ideal centre left a constant
+    // sub-pixel bias in every event, and since the own-warp guard
+    // below only skips events quiet on BOTH axes, sweeping the mouse
+    // side to side applied the dy bias at full event rate: the view
+    // pitched steadily on its own. NaN = not warped yet.
+    private double flyRestX = Double.NaN, flyRestY;
+
     void flyLook(MouseEvent e) {
         if (!flyActive) return;
         Point2D c = sub.localToScreen(sub.getWidth() / 2, sub.getHeight() / 2);
         if (c == null) return;
+        double rx = Double.isNaN(flyRestX) ? c.getX() : flyRestX;
+        double ry = Double.isNaN(flyRestX) ? c.getY() : flyRestY;
         // per-event delta capped: OS pointer acceleration makes fast flicks
         // arrive as huge single deltas, which felt twitchy — the cap evens
         // out slow-vs-fast response; base sensitivity is an Options slider
         double sens = app.settings.flySens();
-        double dx = FvdDesigner.clamp(e.getScreenX() - c.getX(), -35, 35);
-        double dy = FvdDesigner.clamp(e.getScreenY() - c.getY(), -35, 35);
+        double dx = FvdDesigner.clamp(e.getScreenX() - rx, -35, 35);
+        double dy = FvdDesigner.clamp(e.getScreenY() - ry, -35, 35);
         if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;  // our own warp event
         flyYaw.setAngle(flyYaw.getAngle() + dx * sens);
         flyPitch.setAngle(FvdDesigner.clamp(flyPitch.getAngle() - dy * sens, -89, 89));
-        flyRobot.mouseMove(c.getX(), c.getY());
+        warpFlyCursor(c);
+        positionGizmo();   // depth-based scale follows the look (v16.12)
+    }
+
+    /** Re-aim the parked POV camera immediately (v16.15 — the A/D
+     *  reverse flip must not wait for a W/S tick). */
+    void applyPovNow() {
+        if (!povActive || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return;
+        int idx = (int) FvdDesigner.clamp(
+            povTime / FvdDesigner.INTEGRATE_DT, 0,
+            app.lastSamples.size() - 1);
+        applyPovCamera(app.lastSamples.get(idx));
     }
 
     void centerFlyCursor() {
         Point2D c = sub.localToScreen(sub.getWidth() / 2, sub.getHeight() / 2);
-        if (c != null) flyRobot.mouseMove(c.getX(), c.getY());
+        if (c != null) warpFlyCursor(c);
+    }
+
+    /** Warp to the centre and record where the cursor really landed —
+     *  the reference the next look delta measures from. */
+    private void warpFlyCursor(Point2D c) {
+        flyRobot.mouseMove(c.getX(), c.getY());
+        Point2D rest = flyRobot.getMousePosition();
+        if (rest != null) {
+            flyRestX = rest.getX();
+            flyRestY = rest.getY();
+        } else {
+            flyRestX = Double.NaN;
+        }
     }
 
     /** Unit view direction of the fly camera (local +Z through yaw+pitch). */
@@ -753,7 +876,11 @@ class Viewport3D {
      *   c0 (local +X) = c1 x c2   (completes the right-handed basis)
      */
     void applyPovCamera(FVDIntegrator.Sample sm) {
-        Vec3 f = new Vec3(sm.T().x(), -sm.T().y(), sm.T().z());
+        // REVERSED POV (v16.15): look along −T — up stays U, right
+        // re-derives, so the frame keeps its handedness; W/S keep
+        // moving the ride position in the same TRACK direction
+        Vec3 tw = app.settings.povReversed() ? sm.T().scale(-1) : sm.T();
+        Vec3 f = new Vec3(tw.x(), -tw.y(), tw.z());
         Vec3 d = new Vec3(-sm.U().x(), sm.U().y(), -sm.U().z()); // -flip(U)
         Vec3 r = d.cross(f);
         Vec3 eye = new Vec3(sm.pos().x(), -sm.pos().y(), sm.pos().z());
@@ -805,6 +932,11 @@ class Viewport3D {
         int runS = app.editor != null ? app.editor.runStartPiece() : 0;
         int runE = app.editor != null ? app.editor.runEndPiece() : 0;
         int base = 0;
+        tiePieces.clear();
+        combPoints.clear();
+        Group heart = app.settings.showHeartline() ? new Group() : null;
+        Group combs = app.settings.combMode() != AppSettings.COMB_NONE
+            ? new Group() : null;
         for (int p = 0; p < app.coaster.pieces.size(); p++) {
             int nSec = app.coaster.pieces.get(p).sections.size();
             if (nSec == 0 || base + nSec > spans.size()) {
@@ -819,12 +951,35 @@ class Viewport3D {
             boolean act = p >= runS && p <= runE;
             parts.add(buildRailMesh(sub, -app.railGauge / 2, act));
             parts.add(buildRailMesh(sub, app.railGauge / 2, act));
-            parts.add(buildTieMesh(sub, act));
+            // ties build through the highlight refresh below (the
+            // active section's ties render white, v16.11)
+            TiePiece tp = new TiePiece(sub, i0, act, new Group());
+            tiePieces.add(tp);
+            parts.add(tp.group());
+            // heartline strand PER PIECE (v16.13): detached pieces
+            // never read as one strand however close they park
+            if (heart != null) heart.getChildren().add(buildHeartlineMesh(sub));
+            // track COMBS (v16.13; three-way mode since v16.14 — the
+            // G-force comb is vertical + lateral as one unit)
+            if (combs != null) {
+                if (app.settings.combMode() == AppSettings.COMB_GFORCE) {
+                    combs.getChildren().add(buildCombMesh(sub, i0, 0));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 1));
+                } else {
+                    combs.getChildren().add(buildCombMesh(sub, i0, 2));
+                }
+            }
         }
-        heartMesh = app.settings.showHeartline() ? buildHeartlineMesh(samples) : null;
+        refreshTieHighlight(true);
+        heartMesh = heart;
         if (heartMesh != null) {
             heartMesh.setVisible(!povActive);   // the camera rides ON it
             parts.add(heartMesh);
+        }
+        combGroup = combs;
+        if (combGroup != null) {
+            combGroup.setVisible(!povActive);   // teeth block the view
+            parts.add(combGroup);
         }
         parts.add(markerGroup);
         trackGroup.getChildren().setAll(parts);
@@ -959,56 +1114,354 @@ class Viewport3D {
         return mv;
     }
 
-    /** Cross ties: one thin box between the rails every `tieSpacing` metres
-     *  of track (placed by arc length s, so spacing is uniform regardless of
-     *  speed; positions quantize to the nearest integration sample). */
-    MeshView buildTieMesh(List<FVDIntegrator.Sample> samples, boolean active) {
+    /** Per-piece tie context (v16.11): the sublist + its global sample
+     *  base, kept so the ACTIVE-SECTION highlight can re-tint ties on
+     *  activation changes without recompiling the track. */
+    private record TiePiece(List<FVDIntegrator.Sample> samples, int base,
+                            boolean active, Group group) { }
+    private final List<TiePiece> tiePieces = new ArrayList<>();
+    private String tieSig;
+
+    /** Frame interpolated at an EXACT arc position between bracketing
+     *  samples (v16.14): ties and combs used to quantize to the next
+     *  sample AT/PAST each grid point — up to ~v·dt ≈ 0.26 m late per
+     *  item, so adjacent gaps differed by up to half a meter (the
+     *  user's "spacings significantly more than the others", there
+     *  since ties existed — a quantization artifact, not a section/
+     *  piece bug). loHint = a moving lower-bracket cursor (the grid
+     *  only walks forward). */
+    private record ArcHit(int lo, double frac, Vec3 pos,
+                          Vec3 T, Vec3 U, Vec3 R) { }
+
+    private static ArcHit arcHit(List<FVDIntegrator.Sample> samples,
+                                 int loHint, double s) {
+        int j = Math.max(0, loHint);
+        while (j + 1 < samples.size() - 1 && samples.get(j + 1).s() < s) j++;
+        FVDIntegrator.Sample a = samples.get(j);
+        FVDIntegrator.Sample b = samples.get(Math.min(j + 1, samples.size() - 1));
+        double span = b.s() - a.s();
+        double u = span < 1e-12 ? 0
+            : FvdDesigner.clamp((s - a.s()) / span, 0, 1);
+        Vec3 pos = vLerp(a.pos(), b.pos(), u);
+        Vec3 T = vLerp(a.T(), b.T(), u).normalize();
+        Vec3 U = vLerp(a.U(), b.U(), u).normalize();
+        return new ArcHit(j, u, pos, T, U, U.cross(T));
+    }
+
+    private static Vec3 vLerp(Vec3 a, Vec3 b, double u) {
+        return a.add(b.sub(a).scale(u));
+    }
+
+    /** Rebuild each piece's tie group when the highlighted section
+     *  changed (signature-guarded — called on every graph redraw via
+     *  refreshTrackMarkers, and once per rebuildTrack). The ACTIVE
+     *  section's ties render WHITE (v16.11, user spec). */
+    void refreshTieHighlight(boolean force) {
+        int[] hi = app.editor != null ? app.editor.activeSpanRange() : null;
+        String sig = hi == null ? "-" : hi[0] + ":" + hi[1];
+        if (!force && sig.equals(tieSig)) return;
+        tieSig = sig;
+        for (TiePiece tp : tiePieces) {
+            tp.group().getChildren().setAll(
+                buildTieMeshes(tp.samples(), tp.active(), tp.base(), hi));
+        }
+    }
+
+    /** Cross ties: one thin box between the rails every `tieSpacing`
+     *  metres of track — at EXACT arc positions since v16.14 (frames
+     *  lerped between samples via arcHit; the old quantize-to-sample
+     *  placement wobbled visibly). Ties whose nearest global sample
+     *  falls in the ACTIVE section's span build into a second, WHITE
+     *  mesh (v16.11 — the selected-section cue). */
+    private List<MeshView> buildTieMeshes(List<FVDIntegrator.Sample> samples,
+                                          boolean active, int base, int[] hi) {
         final double TIE_HALF_W = 0.045;  // along T (track direction)
         final double TIE_HALF_H = 0.03;   // along U
-        TriangleMesh mesh = new TriangleMesh();
+        TriangleMesh mesh = new TriangleMesh();     // normal ties
+        TriangleMesh meshHi = new TriangleMesh();   // active-section ties
         mesh.getTexCoords().addAll(0, 0);
-        int v = 0;
+        meshHi.getTexCoords().addAll(0, 0);
+        int v = 0, vHi = 0;
         double spacing = Math.max(0.1, app.tieSpacing);
+        if (samples.size() < 2) return new ArrayList<>();
         // sample s is GLOBAL arc length — per-piece meshes (v13.2) start
-        // mid-ride, so the tie grid must anchor at the sublist's own
-        // start (nextS = 0 put a tie on EVERY sample until it caught up)
-        double nextS = samples.isEmpty() ? 0 : samples.get(0).s();
+        // mid-ride, so the tie grid anchors at the sublist's own start
+        double s0 = samples.get(0).s();
+        double sEnd = samples.get(samples.size() - 1).s();
         // ties end exactly at the rail centerlines: the tie cross-section
         // (0.09 x 0.06 m) hides inside the 0.07 m-radius tubes, nothing pokes out
         double halfLen = app.railGauge / 2;
-        for (FVDIntegrator.Sample sm : samples) {
-            if (sm.s() < nextS) continue;
-            do { nextS += spacing; } while (nextS <= sm.s());
-            Vec3 spine = sm.pos().sub(sm.U().scale(app.heartOffset));
-            Vec3 a = spine.sub(sm.R().scale(halfLen));
-            Vec3 b = spine.add(sm.R().scale(halfLen));
-            Vec3 tw = sm.T().scale(TIE_HALF_W);
-            Vec3 uh = sm.U().scale(TIE_HALF_H);
+        int lo = 0;
+        for (double S = s0; S <= sEnd + 1e-9; S += spacing) {
+            ArcHit h = arcHit(samples, lo, S);
+            lo = h.lo();
+            int near = base + h.lo() + (h.frac() < 0.5 ? 0 : 1);
+            boolean white = hi != null && near >= hi[0] && near <= hi[1];
+            TriangleMesh m = white ? meshHi : mesh;
+            int vb = white ? vHi : v;
+            Vec3 spine = h.pos().sub(h.U().scale(app.heartOffset));
+            Vec3 a = spine.sub(h.R().scale(halfLen));
+            Vec3 b = spine.add(h.R().scale(halfLen));
+            Vec3 tw = h.T().scale(TIE_HALF_W);
+            Vec3 uh = h.U().scale(TIE_HALF_H);
             // 8 corners: (a|b) ± tw ± uh, Y-flipped like all mesh vertices
             Vec3[] c = {
                 a.sub(tw).sub(uh), a.add(tw).sub(uh), a.add(tw).add(uh), a.sub(tw).add(uh),
                 b.sub(tw).sub(uh), b.add(tw).sub(uh), b.add(tw).add(uh), b.sub(tw).add(uh),
             };
-            for (Vec3 p : c) mesh.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
+            for (Vec3 p : c) m.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
             int[][] quads = {
                 {0,1,2,3}, {4,5,6,7},           // end caps
                 {0,1,5,4}, {2,3,7,6},           // bottom, top
                 {1,2,6,5}, {0,3,7,4},           // front, back
             };
             for (int[] q : quads) {
-                mesh.getFaces().addAll(v + q[0], 0, v + q[1], 0, v + q[2], 0);
-                mesh.getFaces().addAll(v + q[0], 0, v + q[2], 0, v + q[3], 0);
+                m.getFaces().addAll(vb + q[0], 0, vb + q[1], 0, vb + q[2], 0);
+                m.getFaces().addAll(vb + q[0], 0, vb + q[2], 0, vb + q[3], 0);
+            }
+            if (white) vHi = vb + 8; else v = vb + 8;
+        }
+        List<MeshView> out = new ArrayList<>(2);
+        if (v > 0) {
+            MeshView mv = new MeshView(mesh);
+            PhongMaterial mat = new PhongMaterial(active
+                ? Color.rgb(70, 74, 84) : Color.rgb(52, 55, 62));
+            mat.setSpecularColor(active
+                ? Color.rgb(90, 90, 90) : Color.rgb(60, 60, 64));
+            mv.setMaterial(mat);
+            mv.setCullFace(CullFace.NONE);
+            out.add(mv);
+        }
+        if (vHi > 0) {
+            MeshView mv = new MeshView(meshHi);
+            // PURE white regardless of scene lighting (v16.12, "even
+            // whiter"): a diffuse-only white tie still rendered grey
+            // under the dim ambient — self-illumination lifts it
+            PhongMaterial mat = new PhongMaterial(Color.WHITE);
+            WritableImage glow = new WritableImage(1, 1);
+            glow.getPixelWriter().setColor(0, 0, Color.rgb(210, 210, 214));
+            mat.setSelfIlluminationMap(glow);
+            mat.setSpecularColor(Color.rgb(200, 200, 205));
+            mv.setMaterial(mat);
+            mv.setCullFace(CullFace.NONE);
+            out.add(mv);
+        }
+        return out;
+    }
+
+    // ==================== TRACK COMBS (v16.13 D125; reworked v16.14 D126) ====================
+    // Perpendicular teeth along the track, FVD++-style: the G-FORCE
+    // comb = VERTICAL felt G (outward along −U, colored by the
+    // g-force gradient) + LATERAL felt G (rider-LEFT for +Gl since
+    // v16.14, its own mirrored-absolute gradient) as one unit, or the
+    // SPEED comb (upward along U, length only) — a three-way mode,
+    // never both. Teeth originate at the HEARTLINE, sit at EXACT arc
+    // positions (arcHit), scale by the View menu's percent setting,
+    // hide in POV, and are mouse-transparent (they block nothing —
+    // hover works in screen space). Values from the TRUE arrays.
+    // Hovering anywhere on a tooth shows its value bottom-left.
+
+    static final double COMB_SPACING = 0.5;    // m of track per tooth
+    static final double COMB_VG_SCALE = 0.5;   // m per g (vertical)
+    static final double COMB_LG_SCALE = 0.8;   // m per g (lateral)
+    static final double COMB_V_SCALE = 0.05;   // m per m/s (speed)
+    static final double COMB_MAX = 3.5;        // length cap (m, at 100%)
+
+    private record CombPt(Vec3 base, Vec3 tip, double value, int kind) { }
+    private final List<CombPt> combPoints = new ArrayList<>();
+    Group combGroup;   // all comb meshes; hidden while riding POV
+    final Label combLabel = new Label();   // bottom-left readout (v16.14)
+    /** Bottom-left "riding backward" indicator (v16.16, user spec —
+     *  same styling as the comb readout; A is the fixed key, not a
+     *  rebindable action). Never up together with combLabel: combs
+     *  hide in POV and the comb hover bails there. */
+    final Label povLabel = new Label("Backwards POV (A)");
+    {
+        String overlay = "-fx-background-color: rgba(30,34,44,0.85);"
+            + " -fx-text-fill: rgb(225,230,240); -fx-padding: 2 6 2 6;"
+            + " -fx-font-size: 11px; -fx-background-radius: 4;";
+        combLabel.setStyle(overlay);
+        combLabel.setVisible(false);
+        combLabel.setMouseTransparent(true);
+        povLabel.setStyle(overlay);
+        povLabel.setVisible(false);
+        povLabel.setMouseTransparent(true);
+    }
+
+    /** The backward-POV indicator shows exactly while POV rides
+     *  reversed (v16.16). */
+    void syncPovLabel() {
+        povLabel.setVisible(povActive && app.settings.povReversed());
+    }
+
+    /** One comb's teeth over a piece's samples (base = the sublist's
+     *  global start index — the TRUE arrays are ride-global). */
+    private MeshView buildCombMesh(List<FVDIntegrator.Sample> samples,
+                                   int base, int kind) {
+        final double HW = 0.03;    // tooth half-thickness (⊥ tooth)
+        final double HW_T = 0.06;  // half-width ALONG the track —
+                                   // doubled in v16.15 (user spec)
+        TriangleMesh mesh = new TriangleMesh();
+        int v = 0, tc = 0;
+        double scale = FvdDesigner.clamp(
+            app.settings.combScale(), 10, 500) / 100.0;
+        if (samples.size() < 2) return new MeshView(mesh);
+        double s0 = samples.get(0).s();
+        double sEnd = samples.get(samples.size() - 1).s();
+        int lo = 0;
+        for (double S = s0; S <= sEnd + 1e-9; S += COMB_SPACING) {
+            ArcHit h = arcHit(samples, lo, S);
+            lo = h.lo();
+            int gi = Math.min(base + h.lo(), app.trueV.length - 1);
+            int gj = Math.min(gi + 1, app.trueV.length - 1);
+            double val;
+            Vec3 dir;
+            double len;
+            if (kind == 0) {
+                val = app.trueFelt[gi][0]
+                    + (app.trueFelt[gj][0] - app.trueFelt[gi][0]) * h.frac();
+                dir = h.U().scale(-1);   // outward: loops comb outside
+                len = val * COMB_VG_SCALE;
+            } else if (kind == 1) {
+                val = app.trueFelt[gi][1]
+                    + (app.trueFelt[gj][1] - app.trueFelt[gi][1]) * h.frac();
+                dir = h.R().scale(-1);   // rider-LEFT for +Gl (v16.14)
+                len = val * COMB_LG_SCALE;
+            } else {
+                val = app.trueV[gi]
+                    + (app.trueV[gj] - app.trueV[gi]) * h.frac();
+                dir = h.U();
+                len = val * COMB_V_SCALE;
+            }
+            len = FvdDesigner.clamp(len * scale,
+                -COMB_MAX * scale, COMB_MAX * scale);
+            if (Math.abs(len) < 0.02) continue;
+            // teeth grow from the HEARTLINE (v16.14 — was the spine)
+            Vec3 root = h.pos();
+            Vec3 tip = root.add(dir.scale(len));
+            combPoints.add(new CombPt(root, tip, val, kind));
+            // gradient u for this tooth (kind 2 is solid: u unused)
+            float u = 0.5f;
+            if (kind == 0) {
+                u = (float) FvdDesigner.clamp((val - FvdDesigner.G_MIN)
+                    / (FvdDesigner.G_MAX - FvdDesigner.G_MIN), 0.001, 0.999);
+            } else if (kind == 1) {
+                // ABSOLUTE lateral colors (v16.14): mirrored about 0
+                double hi = app.latStops[app.latStops.length - 1];
+                u = (float) FvdDesigner.clamp(Math.abs(val)
+                    / Math.max(1e-6, hi), 0.001, 0.999);
+            }
+            mesh.getTexCoords().addAll(u, 0.5f);
+            // thin box from root to tip: cross-section T × (dir×T)
+            Vec3 a = root, b = tip;
+            Vec3 tw = h.T().scale(HW_T);
+            Vec3 n = dir.cross(h.T());
+            double nl = n.length();
+            Vec3 uh = nl > 1e-9 ? n.scale(HW / nl) : h.U().scale(HW);
+            Vec3[] c = {
+                a.sub(tw).sub(uh), a.add(tw).sub(uh), a.add(tw).add(uh), a.sub(tw).add(uh),
+                b.sub(tw).sub(uh), b.add(tw).sub(uh), b.add(tw).add(uh), b.sub(tw).add(uh),
+            };
+            for (Vec3 p : c) mesh.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
+            int[][] quads = {
+                {0,1,2,3}, {4,5,6,7},
+                {0,1,5,4}, {2,3,7,6},
+                {1,2,6,5}, {0,3,7,4},
+            };
+            for (int[] q : quads) {
+                mesh.getFaces().addAll(v + q[0], tc, v + q[1], tc, v + q[2], tc);
+                mesh.getFaces().addAll(v + q[0], tc, v + q[2], tc, v + q[3], tc);
             }
             v += 8;
+            tc++;
         }
         MeshView mv = new MeshView(mesh);
-        PhongMaterial mat = new PhongMaterial(active
-            ? Color.rgb(70, 74, 84) : Color.rgb(52, 55, 62));
-        mat.setSpecularColor(active
-            ? Color.rgb(90, 90, 90) : Color.rgb(60, 60, 64));
+        PhongMaterial mat = new PhongMaterial();
+        if (kind == 0) {
+            mat.setDiffuseMap(buildGForceGradient(false));
+        } else if (kind == 1) {
+            mat.setDiffuseMap(buildLatGradient());
+        } else {
+            mat.setDiffuseColor(Color.rgb(150, 210, 255));
+        }
+        mat.setSpecularColor(Color.rgb(90, 90, 95));
         mv.setMaterial(mat);
         mv.setCullFace(CullFace.NONE);
+        // teeth block NOTHING (v16.14): clicks/double-clicks pass
+        // through to the track; the hover readout is screen-space
+        mv.setMouseTransparent(true);
         return mv;
+    }
+
+    /** The LATERAL comb's gradient strip (v16.14, user spec: ABSOLUTE
+     *  value — colors mirror about zero): the three per-coaster
+     *  latColors/latStops over |Gl| ∈ [0, last stop]; below the first
+     *  stop stays flat at its color. */
+    WritableImage buildLatGradient() {
+        int w = 256;
+        WritableImage img = new WritableImage(w, 1);
+        PixelWriter pw = img.getPixelWriter();
+        double hi = app.latStops[app.latStops.length - 1];
+        for (int i = 0; i < w; i++) {
+            double g = hi * i / (w - 1.0);
+            pw.setColor(i, 0, stopColor(g, app.latColors, app.latStops));
+        }
+        return img;
+    }
+
+    /** Readout while hovering ANYWHERE on a comb tooth (v16.14 — the
+     *  v16.13 version measured to the TIP point only, a near-
+     *  impossible target, and its cursor-following label was
+     *  UNMANAGED in the StackPane, so it never got laid out to a
+     *  size — 0×0 = invisible, the user's "hover isn't working"):
+     *  distance to the tooth's projected root→tip SEGMENT within
+     *  10 px; the value shows in a fixed label at the viewport's
+     *  BOTTOM-LEFT (user spec). Wired on MOUSE_MOVED. */
+    private void combHover(MouseEvent e) {
+        if (combPoints.isEmpty() || flyActive || povActive) {
+            combLabel.setVisible(false);
+            return;
+        }
+        javafx.scene.Camera cam = sub.getCamera();
+        Point3D eye = cam.localToScene(0, 0, 0);
+        Point3D fwd = cam.localToScene(0, 0, 1).subtract(eye).normalize();
+        double best = 10 * 10;
+        CombPt hit = null;
+        for (CombPt cp : combPoints) {
+            Vec3 p = cp.tip();
+            Point3D sceneP = world.localToScene(p.x(), -p.y(), p.z());
+            if (sceneP.subtract(eye).dotProduct(fwd) <= 0) continue;
+            Point2D sTip = world.localToScreen(p.x(), -p.y(), p.z());
+            Point2D sRoot = world.localToScreen(cp.base().x(),
+                -cp.base().y(), cp.base().z());
+            if (sTip == null || sRoot == null) continue;
+            // point → segment distance in screen space
+            double sx = sTip.getX() - sRoot.getX();
+            double sy = sTip.getY() - sRoot.getY();
+            double l2 = sx * sx + sy * sy;
+            double px = e.getScreenX() - sRoot.getX();
+            double py = e.getScreenY() - sRoot.getY();
+            double t = l2 < 1e-9 ? 0
+                : FvdDesigner.clamp((px * sx + py * sy) / l2, 0, 1);
+            double dx = px - t * sx;
+            double dy = py - t * sy;
+            double d2 = dx * dx + dy * dy;
+            if (d2 < best) {
+                best = d2;
+                hit = cp;
+            }
+        }
+        if (hit == null) {
+            combLabel.setVisible(false);
+            return;
+        }
+        combLabel.setText(switch (hit.kind()) {
+            case 0 -> String.format("%.2f g vert", hit.value());
+            case 1 -> String.format("%.2f g lat", hit.value());
+            default -> String.format("%.1f m/s  (%.0f km/h)",
+                hit.value(), hit.value() * 3.6);
+        });
+        combLabel.setVisible(true);
     }
 
     /** Recenter the floor grid under the camera, quantized to 10 m steps so
@@ -1100,18 +1553,7 @@ class Viewport3D {
         PixelWriter pw = img.getPixelWriter();
         for (int i = 0; i < w; i++) {
             double g = FvdDesigner.G_MIN + (FvdDesigner.G_MAX - FvdDesigner.G_MIN) * i / (w - 1.0);
-            Color c;
-            if (g <= app.gradStops[0]) {
-                c = app.gradColors[0];
-            } else if (g >= app.gradStops[3]) {
-                c = app.gradColors[3];
-            } else {
-                int k = 0;
-                while (k < 2 && g > app.gradStops[k + 1]) k++;
-                double span = app.gradStops[k + 1] - app.gradStops[k];
-                c = span < 1e-9 ? app.gradColors[k + 1]
-                    : lerpColor(app.gradColors[k], app.gradColors[k + 1], (g - app.gradStops[k]) / span);
-            }
+            Color c = stopColor(g, app.gradColors, app.gradStops);
             // inactive pieces wear the same gradient DESATURATED and a
             // touch darker (v13.2) — the active piece pops
             if (muted) c = c.deriveColor(0, 0.30, 0.80, 1);
@@ -1120,12 +1562,749 @@ class Viewport3D {
         return img;
     }
 
+    /** Color at g on a stop list of ANY length (v16.14 — the vertical
+     *  gradient grew a fifth, purple stop): flat outside the ends,
+     *  lerped between. */
+    private static Color stopColor(double g, Color[] cols, double[] stops) {
+        int last = stops.length - 1;
+        if (g <= stops[0]) return cols[0];
+        if (g >= stops[last]) return cols[last];
+        int k = 0;
+        while (k < last - 1 && g > stops[k + 1]) k++;
+        double span = stops[k + 1] - stops[k];
+        return span < 1e-9 ? cols[k + 1]
+            : lerpColor(cols[k], cols[k + 1], (g - stops[k]) / span);
+    }
+
     static Color lerpColor(Color a, Color b, double t) {
         return Color.color(
             a.getRed() + (b.getRed() - a.getRed()) * t,
             a.getGreen() + (b.getGreen() - a.getGreen()) * t,
             a.getBlue() + (b.getBlue() - a.getBlue()) * t
         );
+    }
+
+    // ==================== 3D GIZMOS (v16.11 D123, reworked v16.12 D124) ====================
+    // Placement gizmos, HIDDEN until revealed: clicking the ACTIVE
+    // piece's ENTRY MARKER (the bigger sphere at its first node)
+    // toggles them, and the reveal shows EVERY placement surface the
+    // piece owns at once — the entry gizmo AND the trailing bridge's
+    // end gizmo — whatever section is active (v16.12, user spec). A
+    // locked or machine-owned axis builds NO part. The overlay Axes
+    // toggle flips the TRANSLATION arrows between world X/Y/Z and the
+    // entry frame; rotation rings always turn the model's own Euler
+    // quantities (yaw about world Y, pitch about the heading's
+    // horizontal right, roll about the heading — the exact numbers
+    // the Placement spinners edit), so every ring is representable
+    // under any lock combination.
+    // DRAGS ARE ABSOLUTE FROM THE PRESS (v16.12): the screen mapping
+    // and the base value are captured once at the press, so a part
+    // that MOVES while dragged (an optimize-position bridge re-places
+    // the target per event) cannot feed back into its own input — the
+    // v16.11 incremental rings spiraled exactly that way. Ctrl snaps
+    // translation + length by the element-length step, rings to 1°.
+
+    final Group gizmoGroup = new Group();
+    private String gizmoSig;
+    private boolean gizmoDragging, gizmoPushed;
+    private boolean gizmoRevealed;       // entry marker toggles it
+    private int gizmoPiece = -1;         // reveal resets on piece switch
+    private double gDragX, gDragY;       // screen point of the press
+
+    /** One gizmo assembly (piece entry / bridge end): its own anchor,
+     *  origin-pivot scale (the scale PROPERTIES pivot at the
+     *  layout-bounds centre — wrong for the asymmetric arrow set) and
+     *  live re-aim hooks; both rigs show at once when the piece has a
+     *  trailing bridge (v16.12). */
+    private final class Rig {
+        final Group group = new Group();
+        final javafx.scene.transform.Scale scaleT =
+            new javafx.scene.transform.Scale(1, 1, 1);
+        final java.util.function.Supplier<Vec3> anchor;
+        final List<Runnable> aims = new ArrayList<>();
+        double scale = 5;   // world m per gizmo unit (live)
+        Rig(java.util.function.Supplier<Vec3> a) {
+            anchor = a;
+            group.getTransforms().add(scaleT);
+        }
+    }
+    private final List<Rig> gizmoRigs = new ArrayList<>();
+    private record RevealMark(Sphere ball,
+        java.util.function.Supplier<Vec3> at) { }
+    private final List<RevealMark> revealMarks = new ArrayList<>();
+
+    // arrows X green / Y blue / Z red (v16.13, user spec — the red and
+    // green of v16.12 swapped); the rings wear the GRAPH's lane
+    // colors — yaw yellow, pitch teal, roll the roll-lane orange-red —
+    // so they line up with the curves; the bridge LENGTH arrow stays
+    // orange
+    private static final Color GIZ_X = Color.rgb(95, 205, 95);
+    private static final Color GIZ_Y = Color.rgb(90, 140, 235);
+    private static final Color GIZ_Z = Color.rgb(225, 85, 85);
+    private static final Color GIZ_LEN = Color.rgb(235, 165, 60);
+    private static final Color RING_PITCH = FvdDesigner.GEO_LANE_COLORS[0];
+    private static final Color RING_YAW = FvdDesigner.GEO_LANE_COLORS[1];
+    private static final Color RING_ROLL = FvdDesigner.GEO_LANE_COLORS[2];
+
+    /** Rebuild-or-follow, signature-guarded like the markers; a
+     *  mid-drag call only repositions/re-aims (rebuilding the pressed
+     *  part would kill the mouse capture — positionGizmo's aim hooks
+     *  keep the parts tracking the pose in real time, v16.12). */
+    void refreshGizmo(boolean force) {
+        int ap = app.editor != null ? app.editor.activePiece() : -1;
+        if (ap != gizmoPiece) {
+            gizmoPiece = ap;
+            gizmoRevealed = false;   // the reveal is per-piece
+        }
+        if (gizmoDragging) {
+            positionGizmo();
+            return;
+        }
+        String sig = gizmoSigNow();
+        if (!force && sig.equals(gizmoSig)) {
+            positionGizmo();
+            return;
+        }
+        gizmoSig = sig;
+        rebuildGizmo();
+    }
+
+    private String gizmoSigNow() {
+        // POV hides everything; FLY keeps the gizmos visible (v16.12)
+        if (povActive || app.editor == null
+                || app.lastSamples == null || app.lastSamples.isEmpty()) {
+            return "off";
+        }
+        int pi = app.editor.activePiece();
+        if (pi < 0 || pi >= app.coaster.pieces.size()) return "off";
+        TrackPiece p = app.coaster.pieces.get(pi);
+        BridgeSection into = app.bridgeInto(pi);
+        BridgeSection trail = app.bridgeInto(pi + 1);
+        StringBuilder sb = new StringBuilder();
+        sb.append(app.settings.gizmoLocal() ? 'L' : 'G')
+          .append(gizmoRevealed ? 'R' : 'h')
+          .append('|').append(pi)
+          .append('|').append(into != null ? into.optMode : -1)
+          .append('|').append(into != null && into.lockYaw)
+          .append(into != null ? into.lockPitch : p.uiLockPitch)
+          .append(into != null ? into.lockRoll : p.uiLockRoll);
+        appendPose(sb, p);
+        if (trail != null) {
+            sb.append("|T|").append(trail.optMode)
+              .append('|').append(trail.optLen)
+              .append('|').append(trail.lockYaw).append(trail.lockPitch)
+              .append(trail.lockRoll);
+            appendPose(sb, app.coaster.pieces.get(pi + 1));
+        }
+        return sb.toString();
+    }
+
+    private static void appendPose(StringBuilder sb, TrackPiece p) {
+        sb.append('|').append(p.x).append(',').append(p.y)
+          .append(',').append(p.z).append(',').append(p.yawDeg)
+          .append(',').append(p.pitchDeg).append(',').append(p.rollDeg)
+          .append(',').append(p.baseOrient.w()).append(',')
+          .append(p.baseOrient.x()).append(',').append(p.baseOrient.y())
+          .append(',').append(p.baseOrient.z());
+    }
+
+    private void rebuildGizmo() {
+        gizmoGroup.getChildren().clear();
+        gizmoRigs.clear();
+        revealMarks.clear();
+        if ("off".equals(gizmoSig)) {
+            app.syncGizmoAxesBtn(false);
+            return;
+        }
+        int pi = app.editor.activePiece();
+        TrackPiece p = app.coaster.pieces.get(pi);
+        BridgeSection trail = app.bridgeInto(pi + 1);
+        TrackPiece next = trail != null
+            && pi + 1 < app.coaster.pieces.size()
+            ? app.coaster.pieces.get(pi + 1) : null;
+        // reveal markers first: the piece's entry ("first node",
+        // drawn bigger) and — with a trailing bridge — the bridge end
+        addRevealMark(() -> new Vec3(p.x, p.y, p.z), true);
+        if (next != null) {
+            TrackPiece n = next;
+            addRevealMark(() -> new Vec3(n.x, n.y, n.z), false);
+        }
+        if (gizmoRevealed) {
+            boolean local = app.settings.gizmoLocal();
+            buildPieceGizmo(local, pi, p);
+            if (trail != null && next != null) {
+                buildBridgeGizmo(local, trail, next);
+            }
+        }
+        app.syncGizmoAxesBtn(gizmoRevealed && !gizmoRigs.isEmpty());
+        positionGizmo();
+    }
+
+    private Rig newRig(java.util.function.Supplier<Vec3> anchor) {
+        Rig rig = new Rig(anchor);
+        gizmoRigs.add(rig);
+        gizmoGroup.getChildren().add(rig.group);
+        return rig;
+    }
+
+    /** The reveal button (v16.12, user spec: "gizmo only reveals when
+     *  you click the first node of the track piece"): a slightly
+     *  bigger sphere at the piece entry — and at a trailing bridge's
+     *  end — toggling the piece's gizmos. Clicking the ENTRY one open
+     *  with the piece's first section active also selects lane node 0
+     *  (it sits on the same spot as the node marker it covers). */
+    private void addRevealMark(java.util.function.Supplier<Vec3> at,
+                               boolean pieceEntry) {
+        Sphere ball = new Sphere(0.34, 14);
+        Color idle = gizmoRevealed ? Color.rgb(255, 248, 200)
+                                   : Color.rgb(205, 215, 235);
+        PhongMaterial mat = new PhongMaterial(idle);
+        ball.setMaterial(mat);
+        ball.setOnMouseEntered(e -> mat.setDiffuseColor(Color.WHITE));
+        ball.setOnMouseExited(e -> mat.setDiffuseColor(idle));
+        ball.setOnMousePressed(e -> {
+            if (e.getButton() == MouseButton.PRIMARY) e.consume();
+        });
+        ball.setOnMouseReleased(e -> {
+            if (e.getButton() != MouseButton.PRIMARY) return;
+            e.consume();
+            // a double-click's second click would toggle right back
+            if (e.getClickCount() != 1) return;
+            gizmoRevealed = !gizmoRevealed;
+            if (pieceEntry && gizmoRevealed && app.editor != null
+                    && app.editor.activeSection() == 0) {
+                app.editor.selectNodeFromViewport(0);
+            }
+            refreshGizmo(true);
+        });
+        revealMarks.add(new RevealMark(ball, at));
+        gizmoGroup.getChildren().add(ball);
+    }
+
+    /** The ACTIVE piece's entry gizmo: translation arrows + the yaw
+     *  ring; pitch/roll rings only where UNLOCKED (bridged-in pieces
+     *  read the bridge's shared padlocks). A piece PLACED by an
+     *  optimize-mode bridge builds none of it (machine-owned — the
+     *  previous piece's bridge gizmo is the surface). */
+    private void buildPieceGizmo(boolean local, int pi, TrackPiece p) {
+        BridgeSection into = app.bridgeInto(pi);
+        if (into != null && into.optMode != BridgeSection.OPT_NONE) return;
+        Rig rig = newRig(() -> new Vec3(p.x, p.y, p.z));
+        addTranslationArrows(rig, local, () -> p.entryPose().orient(),
+            new AxisSink() {
+                private double bx, by, bz, bProj;
+                private Vec3 d0;
+                @Override public void begin(Vec3 dir0) {
+                    bx = p.x;
+                    by = p.y;
+                    bz = p.z;
+                    d0 = dir0;
+                    bProj = new Vec3(bx, by, bz).dot(dir0);
+                }
+                @Override public void apply(double lam, boolean snap) {
+                    if (snap) {   // absolute grid along the axis
+                        double step = Math.max(0.01, app.settings.snapLen());
+                        lam = Math.round((bProj + lam) / step) * step - bProj;
+                    }
+                    pushOnce();
+                    p.x = bx + d0.x() * lam;
+                    p.y = by + d0.y() * lam;
+                    p.z = bz + d0.z() * lam;
+                    app.rebuildTrack();
+                }
+            });
+        boolean lockY = into != null && into.lockYaw;
+        boolean lockP = into != null ? into.lockPitch : p.uiLockPitch;
+        boolean lockR = into != null ? into.lockRoll : p.uiLockRoll;
+        if (!lockY) {
+            addRing(rig, 1.0, RING_YAW, () -> new Vec3(0, 1, 0),
+                () -> p.yawDeg, deg -> {
+                    pushOnce();
+                    p.yawDeg = wrapDeg(deg);
+                    app.rebuildTrack();
+                });
+        }
+        if (!lockP) {
+            addRing(rig, 0.85, RING_PITCH, () -> pitchAxis(p),
+                () -> p.pitchDeg, deg -> {
+                    pushOnce();
+                    p.pitchDeg = FvdDesigner.clamp(deg, -85, 85);
+                    app.rebuildTrack();
+                });
+        }
+        if (!lockR) {
+            addRing(rig, 0.7, RING_ROLL, () -> p.entryPose().orient().T(),
+                () -> p.rollDeg, deg -> {
+                    pushOnce();
+                    p.rollDeg = wrapDeg(deg);
+                    app.rebuildTrack();
+                });
+        }
+    }
+
+    /** The trailing bridge's end gizmo = the NEXT piece's entry,
+     *  shown while revealed whatever section is active (v16.12).
+     *  Manual mode: arrows + unlocked rings; optimize modes: the
+     *  march owns position — ONE orange tangent arrow drags the
+     *  LENGTH (hidden under Optimize length); optimize-orientation
+     *  also owns the unlocked rings, so none show. Writes go through
+     *  the editor's trailing-bridge gizmo paths (undo pushed here,
+     *  once per gesture). */
+    private void buildBridgeGizmo(boolean local, BridgeSection bs,
+                                  TrackPiece t) {
+        Rig rig = newRig(() -> new Vec3(t.x, t.y, t.z));
+        if (bs.optMode == BridgeSection.OPT_NONE) {
+            addTranslationArrows(rig, local, () -> t.entryPose().orient(),
+                new AxisSink() {
+                    private double bx, by, bz, bProj;
+                    private Vec3 d0;
+                    @Override public void begin(Vec3 dir0) {
+                        bx = t.x;
+                        by = t.y;
+                        bz = t.z;
+                        d0 = dir0;
+                        bProj = new Vec3(bx, by, bz).dot(dir0);
+                    }
+                    @Override public void apply(double lam, boolean snap) {
+                        if (snap) {
+                            double step = Math.max(0.01, app.settings.snapLen());
+                            lam = Math.round((bProj + lam) / step) * step - bProj;
+                        }
+                        pushOnce();
+                        t.x = bx + d0.x() * lam;
+                        t.y = by + d0.y() * lam;
+                        t.z = bz + d0.z() * lam;
+                        app.editor.gizmoBridgeMoved();
+                    }
+                });
+        } else if (!bs.optLen) {
+            Group arrow = gizmoArrow(rig, () -> t.entryPose().orient().T(),
+                GIZ_LEN);
+            wireAxisDrag(arrow, rig, () -> t.entryPose().orient().T(),
+                new AxisSink() {
+                    private double base;
+                    @Override public void begin(Vec3 dir0) {
+                        base = app.editor.gizmoBridgeGap();
+                    }
+                    @Override public void apply(double lam, boolean snap) {
+                        double gap = base + lam;
+                        if (snap) {
+                            double step = Math.max(0.01, app.settings.snapLen());
+                            gap = Math.round(gap / step) * step;
+                        }
+                        pushOnce();
+                        app.editor.gizmoSetBridgeGap(Math.max(1, gap));
+                    }
+                });
+            rig.group.getChildren().add(arrow);
+        }
+        if (bs.optMode != BridgeSection.OPT_POS_YAW) {
+            if (!bs.lockYaw) {
+                addRing(rig, 1.0, RING_YAW, () -> new Vec3(0, 1, 0),
+                    () -> t.yawDeg, deg -> {
+                        pushOnce();
+                        app.editor.gizmoSetBridgeOrient(0, deg);
+                    });
+            }
+            if (!bs.lockPitch) {
+                addRing(rig, 0.85, RING_PITCH, () -> pitchAxis(t),
+                    () -> t.pitchDeg, deg -> {
+                        pushOnce();
+                        app.editor.gizmoSetBridgeOrient(1, deg);
+                    });
+            }
+            if (!bs.lockRoll) {
+                addRing(rig, 0.7, RING_ROLL,
+                    () -> t.entryPose().orient().T(),
+                    () -> t.rollDeg, deg -> {
+                        pushOnce();
+                        app.editor.gizmoSetBridgeOrient(2, deg);
+                    });
+            }
+        }
+    }
+
+    /** The model's pitch axis at a piece's entry: horizontal right of
+     *  the heading (TrackPiece.entryPose's exact axis). */
+    private static Vec3 pitchAxis(TrackPiece p) {
+        Vec3 t = p.entryPose().orient().T();
+        Vec3 r = new Vec3(-t.z(), 0, t.x());
+        double len = r.length();
+        return len > 1e-9 ? r.scale(1 / len) : new Vec3(1, 0, 0);
+    }
+
+    private static double wrapDeg(double d) {
+        return d - 720 * Math.floor((d + 360) / 720);
+    }
+
+    /** Absolute-from-press axis drag sink: begin() captures the base
+     *  state and the press-time direction, apply() re-derives the
+     *  pose from base + λ every event. */
+    private interface AxisSink {
+        void begin(Vec3 dir0);
+        void apply(double lam, boolean snap);
+    }
+
+    /** One translation arrow per axis: world X/Y/Z, or the entry
+     *  frame's right/up/forward when the Axes toggle says local. */
+    private void addTranslationArrows(Rig rig, boolean local,
+            java.util.function.Supplier<Quat> frame, AxisSink sink) {
+        record Ax(java.util.function.Supplier<Vec3> dir, Color col) { }
+        List<Ax> dirs = new ArrayList<>();
+        if (local) {
+            dirs.add(new Ax(() -> frame.get().U().cross(frame.get().T()),
+                GIZ_X));                                       // right
+            dirs.add(new Ax(() -> frame.get().U(), GIZ_Y));    // up
+            dirs.add(new Ax(() -> frame.get().T(), GIZ_Z));    // forward
+        } else {
+            dirs.add(new Ax(() -> new Vec3(1, 0, 0), GIZ_X));
+            dirs.add(new Ax(() -> new Vec3(0, 1, 0), GIZ_Y));
+            dirs.add(new Ax(() -> new Vec3(0, 0, 1), GIZ_Z));
+        }
+        for (Ax ax : dirs) {
+            Group arrow = gizmoArrow(rig, ax.dir(), ax.col());
+            wireAxisDrag(arrow, rig, ax.dir(), sink);
+            rig.group.getChildren().add(arrow);
+        }
+    }
+
+    /** A ring (torus ⊥ its rotation axis) writing ABSOLUTE degrees:
+     *  base value read at the press, applyAbs called with base +
+     *  linear mouse movement (Ctrl = whole degrees). */
+    private void addRing(Rig rig, double radius, Color col,
+            java.util.function.Supplier<Vec3> axis,
+            java.util.function.DoubleSupplier baseVal,
+            java.util.function.DoubleConsumer applyAbs) {
+        PhongMaterial mat = gizmoMat(col);
+        MeshView ring = torus(radius, 0.06, mat);
+        Group g = new Group(ring);
+        Rotate rot = new Rotate();
+        g.getTransforms().add(rot);
+        Runnable aimIt = () -> aim(rot, axis.get());
+        aimIt.run();
+        rig.aims.add(aimIt);
+        hoverGlow(g, mat, col);
+        wireRingDrag(g, rig, axis, baseVal, applyAbs);
+        rig.group.getChildren().add(g);
+    }
+
+    /** Shaft + cone tip along +local-Y, aimed along the (live) WORLD
+     *  direction — thicker since v16.12 (grabbing needed too much
+     *  precision). */
+    private Group gizmoArrow(Rig rig,
+            java.util.function.Supplier<Vec3> dir, Color col) {
+        PhongMaterial mat = gizmoMat(col);
+        Cylinder shaft = new Cylinder(0.05, 1.0);
+        shaft.setMaterial(mat);
+        shaft.setTranslateY(0.5);
+        MeshView tip = cone(0.13, 1.0, 1.32, mat);
+        Group g = new Group(shaft, tip);
+        Rotate rot = new Rotate();
+        g.getTransforms().add(rot);
+        Runnable aimIt = () -> aim(rot, dir.get());
+        aimIt.run();
+        rig.aims.add(aimIt);
+        hoverGlow(g, mat, col);
+        return g;
+    }
+
+    /** Point a part's +local-Y along a WORLD direction (scene =
+     *  Y-flipped world) — re-run live during drags so the parts
+     *  track the pose in real time (v16.12). */
+    private static void aim(Rotate rot, Vec3 dirWorld) {
+        Point3D dir = new Point3D(dirWorld.x(), -dirWorld.y(),
+            dirWorld.z()).normalize();
+        Point3D from = new Point3D(0, 1, 0);
+        double dot = FvdDesigner.clamp(from.dotProduct(dir), -1, 1);
+        if (dot > 0.99999) {
+            rot.setAngle(0);
+            return;
+        }
+        rot.setAxis(dot < -0.99999 ? new Point3D(1, 0, 0)
+                                   : from.crossProduct(dir));
+        rot.setAngle(Math.toDegrees(Math.acos(dot)));
+    }
+
+    private static PhongMaterial gizmoMat(Color col) {
+        PhongMaterial m = new PhongMaterial(col);
+        m.setSpecularColor(Color.rgb(210, 210, 215));
+        return m;
+    }
+
+    private static void hoverGlow(Group g, PhongMaterial mat, Color col) {
+        g.setOnMouseEntered(e -> mat.setDiffuseColor(
+            col.interpolate(Color.WHITE, 0.5)));
+        g.setOnMouseExited(e -> mat.setDiffuseColor(col));
+    }
+
+    /** Axis drag, ABSOLUTE from the press (v16.12): the axis's screen
+     *  image is captured once at the press, so per-event λ is a pure
+     *  function of how far the mouse moved from the press point —
+     *  parts that move while dragged cannot feed back. Ctrl hands the
+     *  sink snap=true. Events are consumed so the orbit/click
+     *  handlers never see them. */
+    private void wireAxisDrag(Group part, Rig rig,
+            java.util.function.Supplier<Vec3> axis, AxisSink sink) {
+        double[] sv = new double[3];   // press-time screen axis: sx, sy, |s|²
+        part.setOnMousePressed(e -> {
+            if (e.getButton() != MouseButton.PRIMARY) return;
+            sub.requestFocus();
+            Vec3 a = rig.anchor.get();
+            Vec3 d = axis.get();
+            Point2D p0 = projectWorld(a);
+            Point2D p1 = projectWorld(a.add(d));
+            if (p0 == null || p1 == null) return;
+            sv[0] = p1.getX() - p0.getX();
+            sv[1] = p1.getY() - p0.getY();
+            sv[2] = sv[0] * sv[0] + sv[1] * sv[1];
+            if (sv[2] < 4) return;   // edge-on: ungrabbable anyway
+            gizmoDragging = true;
+            gizmoPushed = false;
+            gDragX = e.getScreenX();
+            gDragY = e.getScreenY();
+            sink.begin(d);
+            e.consume();
+        });
+        part.setOnMouseDragged(e -> {
+            if (!gizmoDragging) return;
+            double lam = ((e.getScreenX() - gDragX) * sv[0]
+                        + (e.getScreenY() - gDragY) * sv[1]) / sv[2];
+            lam = FvdDesigner.clamp(lam, -60 * rig.scale, 60 * rig.scale);
+            sink.apply(lam, e.isControlDown());
+            e.consume();
+        });
+        part.setOnMouseReleased(e -> {
+            endGizmoDrag();
+            e.consume();
+        });
+    }
+
+    /** Ring drag, LINEAR + ABSOLUTE (v16.12, user spec): the press
+     *  captures the ring's screen-space tangent at the grab point and
+     *  the base value; rotation = the distance the mouse moved along
+     *  that FIXED line, one grabbed-radius of travel ≈ 57° — no
+     *  circling the gizmo, and a part that moves mid-drag (an
+     *  optimize-position bridge re-places the target per event)
+     *  cannot spiral its own input, the v16.11 yaw-feedback bug. The
+     *  scene is a Y-MIRROR of the world, so the applied delta is
+     *  NEGATED (one documented sign — flip here if a ring ever runs
+     *  backwards). Ctrl snaps the value to whole degrees. */
+    private void wireRingDrag(Group part, Rig rig,
+            java.util.function.Supplier<Vec3> axis,
+            java.util.function.DoubleSupplier baseVal,
+            java.util.function.DoubleConsumer applyAbs) {
+        double[] st = new double[4];   // ux, uy, deg/px, base value
+        part.setOnMousePressed(e -> {
+            if (e.getButton() != MouseButton.PRIMARY) return;
+            sub.requestFocus();
+            Vec3 c = rig.anchor.get();
+            Vec3 ax = axis.get();
+            Point3D cS = world.localToScene(c.x(), -c.y(), c.z());
+            Point3D n = new Point3D(ax.x(), -ax.y(), ax.z()).normalize();
+            Point3D hit = ringHit(e, c, ax);
+            double ux = 1, uy = 0, degPerPx = 0.25;   // edge-on fallback
+            if (hit != null) {
+                Point3D tan = n.crossProduct(hit.subtract(cS));
+                if (tan.magnitude() > 1e-9) {
+                    tan = tan.normalize();
+                    Point2D sA = screenOfScene(hit);
+                    Point2D sB = screenOfScene(hit.add(
+                        tan.multiply(0.25 * rig.scale)));
+                    Point2D sC = screenOfScene(cS);
+                    if (sA != null && sB != null) {
+                        double dx = sB.getX() - sA.getX();
+                        double dy = sB.getY() - sA.getY();
+                        double len = Math.hypot(dx, dy);
+                        if (len > 1e-6) {
+                            ux = dx / len;
+                            uy = dy / len;
+                        }
+                    }
+                    if (sA != null && sC != null) {
+                        double rPx = Math.max(30, Math.hypot(
+                            sA.getX() - sC.getX(), sA.getY() - sC.getY()));
+                        degPerPx = Math.toDegrees(1) / rPx;   // 1 rad/radius
+                    }
+                }
+            }
+            st[0] = ux;
+            st[1] = uy;
+            st[2] = degPerPx;
+            st[3] = baseVal.getAsDouble();
+            gizmoDragging = true;
+            gizmoPushed = false;
+            gDragX = e.getScreenX();
+            gDragY = e.getScreenY();
+            e.consume();
+        });
+        part.setOnMouseDragged(e -> {
+            if (!gizmoDragging) return;
+            double dist = (e.getScreenX() - gDragX) * st[0]
+                        + (e.getScreenY() - gDragY) * st[1];
+            double val = st[3] - dist * st[2];   // world = −scene (mirror)
+            if (e.isControlDown()) val = Math.round(val);
+            applyAbs.accept(val);
+            e.consume();
+        });
+        part.setOnMouseReleased(e -> {
+            endGizmoDrag();
+            e.consume();
+        });
+    }
+
+    /** The mouse ray's hit on the plane through cW ⊥ axW, in SCENE
+     *  coords; null when edge-on or behind the camera. */
+    private Point3D ringHit(MouseEvent e, Vec3 cW, Vec3 axW) {
+        Point3D c = world.localToScene(cW.x(), -cW.y(), cW.z());
+        Point3D n = new Point3D(axW.x(), -axW.y(), axW.z()).normalize();
+        javafx.scene.Camera cam = sub.getCamera();
+        Point3D eye = cam.localToScene(0, 0, 0);
+        Point3D fwd = cam.localToScene(0, 0, 1).subtract(eye).normalize();
+        Point3D right = cam.localToScene(1, 0, 0).subtract(eye).normalize();
+        Point3D down = cam.localToScene(0, 1, 0).subtract(eye).normalize();
+        Point2D local = sub.screenToLocal(e.getScreenX(), e.getScreenY());
+        if (local == null) return null;
+        // pixel ray through the current lens (vertical FOV — the
+        // JavaFX default); identical math for the ortho 1° lens
+        double f = (sub.getHeight() / 2)
+            / Math.tan(Math.toRadians(camFov() / 2));
+        Point3D dir = fwd.multiply(f)
+            .add(right.multiply(local.getX() - sub.getWidth() / 2))
+            .add(down.multiply(local.getY() - sub.getHeight() / 2))
+            .normalize();
+        double denom = dir.dotProduct(n);
+        if (Math.abs(denom) < 1e-4) return null;
+        double t = c.subtract(eye).dotProduct(n) / denom;
+        if (t <= 0) return null;
+        return eye.add(dir.multiply(t));
+    }
+
+    /** The rendering camera's FOV (fly cam while flying — gizmos stay
+     *  visible there since v16.12). */
+    private double camFov() {
+        return sub.getCamera() instanceof PerspectiveCamera pc
+            ? pc.getFieldOfView() : orbitCam.getFieldOfView();
+    }
+
+    private Point2D screenOfScene(Point3D scenePt) {
+        Point3D loc = world.sceneToLocal(scenePt);
+        return world.localToScreen(loc);
+    }
+
+    /** World point → screen, behind-camera filtered (the
+     *  pickTrackSample discipline). */
+    private Point2D projectWorld(Vec3 p) {
+        javafx.scene.Camera cam = sub.getCamera();
+        Point3D eye = cam.localToScene(0, 0, 0);
+        Point3D fwd = cam.localToScene(0, 0, 1).subtract(eye).normalize();
+        Point3D sceneP = world.localToScene(p.x(), -p.y(), p.z());
+        if (sceneP.subtract(eye).dotProduct(fwd) <= 0) return null;
+        return world.localToScreen(p.x(), -p.y(), p.z());
+    }
+
+    /** One undo snapshot + dirty mark per gizmo gesture (every sink
+     *  calls it before its first write). */
+    private void pushOnce() {
+        if (!gizmoPushed) {
+            app.editor.pushUndoSnapshot();
+            app.markDirty();
+            gizmoPushed = true;
+        }
+    }
+
+    private void endGizmoDrag() {
+        if (!gizmoDragging) return;
+        gizmoDragging = false;
+        app.syncPlacementSpinners();
+        app.updateBridgeControls();
+        refreshGizmo(true);
+    }
+
+    /** Anchor every rig + reveal marker at its pose, keep the rigs a
+     *  constant APPARENT size (~10% of the visible height at the
+     *  anchor's view DEPTH — depth, not euclidean distance: off-axis
+     *  wide-FOV projection magnifies, which blew the gizmo up toward
+     *  the screen edge, v16.12 fix) and run the live re-aim hooks. */
+    private void positionGizmo() {
+        if (gizmoRigs.isEmpty() && revealMarks.isEmpty()) return;
+        javafx.scene.Camera cam = sub.getCamera();
+        Point3D eye = cam.localToScene(0, 0, 0);
+        Point3D fwd = cam.localToScene(0, 0, 1).subtract(eye).normalize();
+        double k = 2 * Math.tan(Math.toRadians(camFov() / 2)) * 0.10;
+        for (Rig rig : gizmoRigs) {
+            Vec3 a = rig.anchor.get();
+            rig.group.setTranslateX(a.x());
+            rig.group.setTranslateY(-a.y());
+            rig.group.setTranslateZ(a.z());
+            Point3D at = world.localToScene(a.x(), -a.y(), a.z());
+            double depth = Math.max(1, at.subtract(eye).dotProduct(fwd));
+            rig.scale = Math.max(0.5, depth * k);
+            rig.scaleT.setX(rig.scale);
+            rig.scaleT.setY(rig.scale);
+            rig.scaleT.setZ(rig.scale);
+            for (Runnable aimIt : rig.aims) aimIt.run();
+        }
+        for (RevealMark rm : revealMarks) {
+            Vec3 a = rm.at().get();
+            rm.ball().setTranslateX(a.x());
+            rm.ball().setTranslateY(-a.y());
+            rm.ball().setTranslateZ(a.z());
+        }
+    }
+
+    /** Torus of major radius R (in the local XZ plane, about +Y). */
+    private static MeshView torus(double R, double r, PhongMaterial mat) {
+        TriangleMesh m = new TriangleMesh();
+        m.getTexCoords().addAll(0, 0);
+        int nu = 48, nv = 8;
+        for (int i = 0; i < nu; i++) {
+            double a = 2 * Math.PI * i / nu;
+            double ca = Math.cos(a), sa = Math.sin(a);
+            for (int j = 0; j < nv; j++) {
+                double b = 2 * Math.PI * j / nv;
+                double rr = R + r * Math.cos(b);
+                m.getPoints().addAll((float) (ca * rr),
+                    (float) (r * Math.sin(b)), (float) (sa * rr));
+            }
+        }
+        for (int i = 0; i < nu; i++) {
+            int i2 = (i + 1) % nu;
+            for (int j = 0; j < nv; j++) {
+                int j2 = (j + 1) % nv;
+                int a = i * nv + j, b = i * nv + j2;
+                int c = i2 * nv + j, d = i2 * nv + j2;
+                m.getFaces().addAll(a, 0, c, 0, b, 0);
+                m.getFaces().addAll(b, 0, c, 0, d, 0);
+            }
+        }
+        MeshView mv = new MeshView(m);
+        mv.setMaterial(mat);
+        mv.setCullFace(CullFace.NONE);
+        return mv;
+    }
+
+    /** Cone along +local-Y: base ring at y0, apex at y1. */
+    private static MeshView cone(double r, double y0, double y1,
+                                 PhongMaterial mat) {
+        TriangleMesh m = new TriangleMesh();
+        m.getTexCoords().addAll(0, 0);
+        int n = 16;
+        for (int i = 0; i < n; i++) {
+            double a = 2 * Math.PI * i / n;
+            m.getPoints().addAll((float) (Math.cos(a) * r), (float) y0,
+                (float) (Math.sin(a) * r));
+        }
+        m.getPoints().addAll(0, (float) y1, 0);
+        m.getPoints().addAll(0, (float) y0, 0);
+        for (int i = 0; i < n; i++) {
+            int j = (i + 1) % n;
+            m.getFaces().addAll(i, 0, n, 0, j, 0);
+            m.getFaces().addAll(i, 0, j, 0, n + 1, 0);
+        }
+        MeshView mv = new MeshView(m);
+        mv.setMaterial(mat);
+        mv.setCullFace(CullFace.NONE);
+        return mv;
     }
 
 }

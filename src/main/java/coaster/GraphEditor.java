@@ -28,6 +28,7 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.CheckMenuItem;
 import javafx.scene.control.ColorPicker;
 import javafx.scene.control.ContextMenu;
+import javafx.scene.control.Control;
 import javafx.scene.control.CustomMenuItem;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
@@ -75,6 +76,7 @@ import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
+import javafx.util.Duration;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -149,6 +151,44 @@ class GraphEditor extends Region {
         int idx = spanBase() + k;
         return spans != null && idx >= 0 && idx < spans.size()
             ? spans.get(idx) : null;
+    }
+
+    /** Global sample range {i0, i1} of the ACTIVE section's span —
+     *  the viewport's white-tie highlight (v16.11); null before a
+     *  compile. */
+    int[] activeSpanRange() {
+        TrackCompiler.Span sp = spanOf(activeSection);
+        return sp == null ? null : new int[]{ sp.i0(), sp.i1() };
+    }
+
+    /** A clean left-click on a 3D node marker (v16.11, user spec):
+     *  select that node of the active lane and bring it into the
+     *  graph view — a manual zoom window re-centers on the node when
+     *  it sits outside; auto-fit already shows everything. */
+    void selectNodeFromViewport(int idx) {
+        List<BezierBaker.Node> ln = active();
+        if (idx < 0 || idx >= ln.size()) return;
+        refreshOffset();
+        selIdx = idx;
+        selSet.clear();
+        selSet.add(idx);
+        ensureSelectedVisible();
+        redraw();
+    }
+
+    /** Re-center a MANUAL zoom window on the selected node when it
+     *  sits outside (auto-fit already shows everything) — marker
+     *  clicks and 3D double-click inserts share it (v16.12). */
+    private void ensureSelectedVisible() {
+        List<BezierBaker.Node> ln = active();
+        if (viewT1 < 0 || selIdx < 0 || selIdx >= ln.size()) return;
+        double x = tOff + warpFwd(ln.get(selIdx).t);
+        if (x >= viewT0 && x <= viewT1) return;
+        double w = viewT1 - viewT0;
+        double n0 = FvdDesigner.clamp(x - w / 2, runT0(),
+            Math.max(runT0(), runT0() + domain() - w));
+        viewT0 = n0;
+        viewT1 = n0 + w;
     }
 
     /** Span of piece p's section k, or null. */
@@ -1564,6 +1604,80 @@ class GraphEditor extends Region {
         app.updateBridgeControls();
     }
 
+    // ---------- trailing-bridge GIZMO write paths (v16.12) ----------
+    // the gizmo reveal shows the piece's trailing bridge whatever
+    // SECTION is active (user spec), so these resolve the bridge by
+    // PIECE, not by the active section, and push NO undo — the
+    // viewport pushes once per gesture.
+
+    private BridgeSection trailingBridge() {
+        List<Section> secs = sections();
+        return !secs.isEmpty()
+            && secs.get(secs.size() - 1) instanceof BridgeSection bs
+            && !bridgeOrphan(bs) ? bs : null;
+    }
+
+    /** The trailing bridge's length as the gizmo reads it (the
+     *  requestedBridgeGap rule, piece-scoped). */
+    double gizmoBridgeGap() {
+        BridgeSection bs = trailingBridge();
+        if (bs == null) return 1;
+        if (bs.optMode != BridgeSection.OPT_NONE && bs.lastOptDist > 0) {
+            return bs.lastOptDist;
+        }
+        TrackCompiler.Span sp = spanOf(sections().size() - 1);
+        if (sp != null && sp.sLen() > 1e-6) return sp.sLen();
+        return activePiece + 1 < app.coaster.pieces.size()
+            ? app.coaster.pieces.get(activePiece + 1).entryPose().pos()
+                .sub(bs.solvedEntry.pos()).length() : 1;
+    }
+
+    void gizmoSetBridgeGap(double dist) {
+        BridgeSection bs = trailingBridge();
+        if (bs == null || dist <= 0
+                || bs.optMode == BridgeSection.OPT_NONE || bs.optLen) return;
+        app.markDirty();
+        applyBridgeGap(bs, dist);
+        app.updateBridgeControls();
+    }
+
+    /** Manual-mode target moved by the gizmo (the fields are already
+     *  written — one rebuild + panel re-sync). */
+    void gizmoBridgeMoved() {
+        app.markDirty();
+        app.rebuildTrack();
+        refreshOffset();
+        redraw();
+        app.updateBridgeControls();
+    }
+
+    void gizmoSetBridgeOrient(int axis, double deg) {
+        BridgeSection bs = trailingBridge();
+        if (bs == null || bs.optMode == BridgeSection.OPT_POS_YAW) return;
+        if (axis == 0 ? bs.lockYaw : axis == 1 ? bs.lockPitch
+                                               : bs.lockRoll) return;
+        if (activePiece + 1 >= app.coaster.pieces.size()) return;
+        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+        if (axis == 0) t.yawDeg = deg;
+        else if (axis == 1) t.pitchDeg = Math.max(-85, Math.min(85, deg));
+        else t.rollDeg = deg;
+        app.markDirty();
+        if (bs.optMode == BridgeSection.OPT_POS) {
+            // re-place at the current (or freshly kneed) length —
+            // NEVER applyOptimalLength here: its zero-distance attach
+            // PROMPT must not pop mid-drag
+            double d = bs.optLen
+                ? Math.max(1, app.coaster.optimalBridgeLength(bs, false))
+                : Math.max(1, gizmoBridgeGap());
+            applyBridgeGap(bs, d);
+        } else {
+            app.rebuildTrack();
+            refreshOffset();
+            redraw();
+        }
+        app.updateBridgeControls();
+    }
+
     /** Is (x, y) on the ACTIVE bridge's end boundary line (the piece
      *  end)? Grab range mirrors the s/c separators; only a bridge with
      *  a live target resizes (v13.3 — the draggable gap). */
@@ -2930,6 +3044,11 @@ class GraphEditor extends Region {
         redraw();
     }
 
+    /** Shared gray-out explainer (v16.10): why Absolute bank grays
+     *  in the Convert and Add-section dialogs. */
+    private static final String ABS_HOW = "Absolute bank targets the "
+        + "bank vs the horizon — set Roll axis to Global to enable it.";
+
     /** The unified CONVERT dialog (v16.6, D116 — user spec: all
      *  convert options in one Add-style window): Whole/Part scope,
      *  Type, Domain, Roll axis, Yaw/pitch axis (grayed for force),
@@ -2971,7 +3090,10 @@ class GraphEditor extends Region {
         sPart.setDisable(influenced);
         wireOriginal(sg, sWhole, null);
         grid.addRow(row++, new Label("Convert"),
-            new HBox(10, sWhole, sPart), new Label(influenced
+            new HBox(10, sWhole, grayHint(sPart, "Part conversion "
+                + "needs the plain design lanes — bake or discard this "
+                + "section's influence first (badge menu).")),
+            new Label(influenced
                 ? "(part: bake or discard influence first)" : ""));
 
         ToggleGroup mg = new ToggleGroup();
@@ -3019,8 +3141,11 @@ class GraphEditor extends Region {
         (curYpG ? yGlobal : yLocal).setSelected(true);
         Button yRst = resetBtn(() -> (curYpG ? yGlobal : yLocal).setSelected(true));
         wireOriginal(yg, curYpG ? yGlobal : yLocal, null);
+        String ypHow = "Yaw/pitch axes exist on geometric sections — "
+            + "set Type to Geometric to choose them.";
         grid.addRow(row++, new Label("Yaw/pitch axis"),
-            new HBox(10, yLocal, yGlobal), yRst);
+            new HBox(10, grayHint(yLocal, ypHow),
+                grayHint(yGlobal, ypHow)), yRst);
         Runnable syncYp = () -> {
             boolean geoOn = mGeo.isSelected();
             yLocal.setDisable(!geoOn);
@@ -3054,7 +3179,7 @@ class GraphEditor extends Region {
         Button aRst = resetBtn(() -> (curAbs ? aAbs : aRate).setSelected(true));
         wireOriginal(ag, curAbs ? aAbs : aRate, aRst);
         grid.addRow(row++, new Label("Roll behavior"),
-            new HBox(10, aRate, aAbs), aRst);
+            new HBox(10, aRate, grayHint(aAbs, ABS_HOW)), aRst);
         Runnable syncAbs = () -> {
             boolean glob = rGlobal.isSelected();
             aAbs.setDisable(!glob);
@@ -3122,6 +3247,27 @@ class GraphEditor extends Region {
         };
         g.selectedToggleProperty().addListener((o, w, n2) -> sync.run());
         sync.run();
+    }
+
+    /** Wrap a dialog control that can GRAY under a rule with a hover
+     *  explainer saying how to un-gray it (v16.10, user spec).
+     *  Disabled JavaFX controls swallow mouse events — tooltips set
+     *  on them never show — so the tip rides this enabled wrapper,
+     *  installed only WHILE the control is disabled (enabled
+     *  controls stay tooltip-free). Place the wrapper in the row
+     *  where the control would go. (Package-visible since v16.13 —
+     *  the Placement rows wear it too.) */
+    static StackPane grayHint(Control c, String how) {
+        StackPane wrap = new StackPane(c);
+        Tooltip tip = new Tooltip(how);
+        tip.setShowDelay(Duration.millis(300));
+        Runnable sync = () -> {
+            if (c.isDisabled()) Tooltip.install(wrap, tip);
+            else Tooltip.uninstall(wrap, tip);
+        };
+        c.disabledProperty().addListener((o, was, dis) -> sync.run());
+        sync.run();
+        return wrap;
     }
 
     /** Remove section k of the ACTIVE piece; downstream sections
@@ -3330,7 +3476,7 @@ class GraphEditor extends Region {
         (prevAbs ? aAbs : aRate).setSelected(true);
         wireOriginal(ag, prevAbs ? aAbs : aRate, null);
         grid.addRow(row++, new Label("Roll behavior"),
-            new HBox(10, aRate, aAbs));
+            new HBox(10, aRate, grayHint(aAbs, ABS_HOW)));
         Runnable syncAbs = () -> {
             boolean glob = rGlobal.isSelected();
             aAbs.setDisable(!glob);
@@ -3348,7 +3494,10 @@ class GraphEditor extends Region {
         wireOriginal(yg, prev != null && prev.yawPitchGlobal
             ? yGlobal : yLocal, null);
         Label ypLbl = new Label("Yaw/pitch axis");
-        HBox ypRow = new HBox(10, yLocal, yGlobal);
+        String ypHow = "Yaw/pitch axes exist on geometric sections — "
+            + "set Type to Geometric to choose them.";
+        HBox ypRow = new HBox(10, grayHint(yLocal, ypHow),
+            grayHint(yGlobal, ypHow));
         grid.addRow(row++, ypLbl, ypRow);
         Runnable syncYp = () -> {
             boolean geoOn = mGeo.isSelected();
@@ -3395,7 +3544,11 @@ class GraphEditor extends Region {
         });
         mg.selectedToggleProperty().addListener((o, was, sel) -> syncYp.run());
         grid.addRow(row++, new Label("Design speed (m/s)"),
-            new HBox(6, vField, vLock));
+            new HBox(6, grayHint(vField, "Tracks the speed the seam "
+                + "implies — click the padlock to type a custom "
+                + "starting speed (a deliberate speed conflict; the "
+                + "section pins so the auto re-freeze leaves it "
+                + "alone)."), vLock));
 
         Button add = new Button("Add");
         add.setDefaultButton(true);
@@ -3765,6 +3918,31 @@ class GraphEditor extends Region {
         if (L == 0) return app.trueFelt[i][0];
         if (L == 1) return app.trueFelt[i][1];
         return app.trueRates[i][3] * sc;
+    }
+
+    /** derivedAt/trueAt's sibling for the SAMPLED boundary path, in
+     *  PER-SECOND rate semantics — boundaryStatePerSec's contract
+     *  (its wrapper alone converts °/s → our °/m). The display
+     *  helpers pre-scale rates by 1/v for an active per-meter lane,
+     *  and routing them through the wrapper divided by the seam
+     *  speed TWICE — every sampled-path B/Shift+B target on a °/m
+     *  lane (global-axis, reversed, influenced, s/c and bridge
+     *  neighbors, real-split seams) collapsed to ~0 value + flat
+     *  slope (v16.10: the user's geo pitch node "went to zero"
+     *  against a global-roll force neighbor). */
+    private double sampledPerSec(int i, int L, boolean real) {
+        if (L == 2 && activeRollAbs()) {
+            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+            double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
+            return Double.isNaN(b) ? 0 : Math.toDegrees(b);
+        }
+        if (activeGeo()) return (real ? app.trueRates
+                                      : app.resultRates)[i][L + 1];
+        if (L == 0) return real ? app.trueFelt[i][0]
+                                : app.lastSamples.get(i).Gv();
+        if (L == 1) return real ? app.trueFelt[i][1]
+                                : app.lastSamples.get(i).Gl();
+        return (real ? app.trueRates : app.resultRates)[i][3];
     }
 
     private boolean trueArraysReady() {
@@ -4768,6 +4946,10 @@ class GraphEditor extends Region {
     // In a geo section every lane is a rate, so all snap by the roll step.
     private double snapT() { return app.settings.snapT(); }
     private double snapVal(int lane) {
+        // a lane DISPLAYED in °/m takes its own, finer step (v16.10,
+        // user spec — the DISPLAYED units govern, so the cross-rate
+        // view counts: Ctrl-snap grids live in display units)
+        if (laneShownPM(lane)) return app.settings.snapRatePM();
         return (lane == 2 || activeGeo())
             ? app.settings.snapRoll() : app.settings.snapG();
     }
@@ -4795,6 +4977,7 @@ class GraphEditor extends Region {
     private int dragHandleIdx = -1;
     private boolean dragHandleIsOut = false;
     private double hoverT = Double.NaN;   // insert preview position on the curve
+    private int hoverNodeIdx = -1;        // grey ring + readout (v16.15)
     private boolean hoverSlope = false;   // Shift while hovering: show the slope
 
     // x-axis view window in AXIS units (seconds or meters, v16.0);
@@ -4916,6 +5099,7 @@ class GraphEditor extends Region {
             hoverRawT = Double.NaN;
             hoverResComp = 0;
             hoverDerLane = -1;
+            hoverNodeIdx = -1;
             // an open '+'/badge menu: this press just dismisses it (JavaFX
             // auto-hides on clicks anywhere EXCEPT this canvas — v10.1)
             if (openMenu != null && openMenu.isShowing()) {
@@ -5227,8 +5411,12 @@ class GraphEditor extends Region {
                 canvas.setCursor(hitBridgeEnd(e.getX(), e.getY())
                     ? Cursor.H_RESIZE : Cursor.DEFAULT);
             }
+            // node under the cursor (v16.15): grey ring + the drag
+            // readout's numbers, without the click
+            int hn = activeSc() == null && activeBridge() == null
+                ? hitNode(e.getX(), e.getY()) : -1;
             double t = (activeSc() == null && activeBridge() == null
-                    && hitNode(e.getX(), e.getY()) < 0
+                    && hn < 0
                     && (selIdx < 0 || hitKnob(e.getX(), e.getY()) == 0))
                     ? curveHitT(e.getX(), e.getY()) : Double.NaN;
             hoverRawT = t;
@@ -5289,9 +5477,10 @@ class GraphEditor extends Region {
                 }
             }
             boolean was = !Double.isNaN(hoverT) || hoverResComp != 0
-                || hoverDerLane >= 0;
-            boolean is = !Double.isNaN(t) || rc != 0 || dl >= 0;
+                || hoverDerLane >= 0 || hoverNodeIdx >= 0;
+            boolean is = !Double.isNaN(t) || rc != 0 || dl >= 0 || hn >= 0;
             hoverT = t;
+            hoverNodeIdx = hn;
             hoverResComp = rc;
             hoverResT = rt;
             hoverResVal = rv;
@@ -5302,11 +5491,12 @@ class GraphEditor extends Region {
         });
         canvas.setOnMouseExited(e -> {
             if (!Double.isNaN(hoverT) || hoverResComp != 0
-                    || hoverDerLane >= 0) {
+                    || hoverDerLane >= 0 || hoverNodeIdx >= 0) {
                 hoverT = Double.NaN;
                 hoverRawT = Double.NaN;
                 hoverResComp = 0;
                 hoverDerLane = -1;
+                hoverNodeIdx = -1;
                 redraw();
             }
         });
@@ -5533,7 +5723,12 @@ class GraphEditor extends Region {
         } else {
             lx = globalT - (sp != null ? sp.t0() : tOff);
         }
-        insertNodeOnCurve(lx);
+        if (insertNodeOnCurve(lx) >= 0) {
+            // the 3D double-click insert brings its node into a
+            // manual zoom window, like a marker click (v16.12)
+            ensureSelectedVisible();
+            redraw();
+        }
     }
 
     /** 3D plain-click: activate the piece + section at this ride time
@@ -5576,7 +5771,8 @@ class GraphEditor extends Region {
         if (hoverSlope == on) return;
         hoverSlope = on;
         if (!Double.isNaN(hoverT) || hoverResComp != 0
-                || hoverDerLane >= 0) redraw();
+                || hoverDerLane >= 0 || hoverNodeIdx >= 0
+                || dragNodeIdx >= 0) redraw();   // mid-drag twins (v16.16)
     }
 
     void clearSelection() {
@@ -5803,6 +5999,23 @@ class GraphEditor extends Region {
             || activePiece < runEnd();
     }
 
+    /** Is the ACTIVE section's next in-piece neighbor an
+     *  ABSOLUTE-bank section (v16.10)? Matching TOWARD it refuses:
+     *  its entry state is enforced by its OWN bank lane — the seam
+     *  smooths from ITS first node, and our-side targets would read
+     *  its projection snap (by design, D118/D120). */
+    private boolean nextAbsRoll() {
+        List<Section> secs = sections();
+        return activeSection + 1 < secs.size()
+            && secs.get(activeSection + 1) instanceof LaneSection nl
+            && nl.rollAbsolute && nl.rollGlobal;
+    }
+
+    private static final String ABS_NEXT_HINT = "The next section's "
+        + "absolute bank sets the seam state at its own start — press "
+        + "B/Shift+B on the OTHER side of the boundary (its first "
+        + "node) to smooth this transition.";
+
     void matchBoundary(int idx) {
         List<BezierBaker.Node> lane = active();
         boolean infl = activeInfl() != null;
@@ -5817,6 +6030,10 @@ class GraphEditor extends Region {
             app.statsLabel.setText("B matches a section-EDGE node to its "
                 + "boundary — select a lane's FIRST or LAST node, with a "
                 + "neighboring section on that side.");
+            return;
+        }
+        if (!infl && end && !start && nextAbsRoll()) {
+            app.statsLabel.setText(ABS_NEXT_HINT);
             return;
         }
         refreshOffset();
@@ -5914,6 +6131,10 @@ class GraphEditor extends Region {
             app.statsLabel.setText("Shift+B matches section-EDGE nodes to "
                 + "their boundary — select a lane's FIRST or LAST node, "
                 + "with a neighboring section on that side.");
+            return;
+        }
+        if (!infl && end && !start && nextAbsRoll()) {
+            app.statsLabel.setText(ABS_NEXT_HINT);
             return;
         }
         refreshOffset();
@@ -6394,10 +6615,13 @@ class GraphEditor extends Region {
                 real, realScale, rReal);
         }
         double span = app.resultRates[i1][0] - app.resultRates[i0][0];
-        double a0 = real ? trueAt(i0, laneIdx) : derivedAt(i0, laneIdx);
-        double a1 = real ? trueAt(i1, laneIdx) : derivedAt(i1, laneIdx);
+        // per-second reads, NOT derivedAt/trueAt (v16.10): those
+        // pre-scale by 1/v for a °/m active lane and the wrapper
+        // above divides again — targets collapsed to ~0
+        double a0 = sampledPerSec(i0, laneIdx, real);
+        double a1 = sampledPerSec(i1, laneIdx, real);
         double slope = span < 1e-9 ? 0 : (a1 - a0) / span;
-        double val = (real ? trueAt(at, laneIdx) : derivedAt(at, laneIdx))
+        double val = sampledPerSec(at, laneIdx, real)
             - slope * (app.resultRates[at][0] - tB);
         if (real) {
             // true rate → OUR design rate (the κ identity, v16.2);
@@ -7638,10 +7862,29 @@ class GraphEditor extends Region {
         int row = 0;
         if (prev != null) {
             dtField = new TextField(String.format(Locale.US, "%.3f", n.t - prev.t));
+            // computed twin (v16.15, user spec): the ABSOLUTE display-
+            // axis position this transition lands the node at — live
+            // as you type; grey like the hover readouts
+            Label dtAbs = new Label();
+            dtAbs.setStyle("-fx-text-fill: rgb(140,145,158);");
+            final TextField fDtL = dtField;
+            final BezierBaker.Node fPrev = prev;
+            Runnable dtSync = () -> {
+                try {
+                    double d = Double.parseDouble(fDtL.getText().trim());
+                    dtAbs.setText(String.format(Locale.US, "(= %.3f %s abs)",
+                        tOff + warpFwd(fPrev.t + d), axisDist() ? "m" : "s"));
+                } catch (NumberFormatException ex) {
+                    dtAbs.setText("");
+                }
+            };
+            fDtL.textProperty().addListener((o, a, b) -> dtSync.run());
+            dtSync.run();
             // NATIVE units — a distance-domain section's transitions
             // are meters of track (v16.0)
             grid.addRow(row++, new Label(activeDistNative()
-                ? "Transition length (m)" : "Transition time (s)"), dtField);
+                ? "Transition length (m)" : "Transition time (s)"),
+                dtField, dtAbs);
         } else if (activeSection == 0 && activeInfl() == null) {
             // node 0 of the FIRST section: the ride's start speed lives
             // here too (same value as the Coaster-menu spinner). Not on
@@ -7652,8 +7895,27 @@ class GraphEditor extends Region {
         // vertical axis is the GLOBAL value, not a delta — except on
         // the influence surface, where the value IS the delta
         valField = new TextField(String.format(Locale.US, "%.3f", n.val));
+        // computed twin (v16.15): the CHANGE from the previous node
+        Label valDelta = new Label();
+        valDelta.setStyle("-fx-text-fill: rgb(140,145,158);");
+        if (prev != null) {
+            final TextField fValL = valField;
+            final BezierBaker.Node fPrev = prev;
+            Runnable vSync = () -> {
+                try {
+                    double v = Double.parseDouble(fValL.getText().trim());
+                    valDelta.setText(String.format(Locale.US, "(Δ %+.3f%s)",
+                        v - fPrev.val, laneUnit(activeLane)));
+                } catch (NumberFormatException ex) {
+                    valDelta.setText("");
+                }
+            };
+            fValL.textProperty().addListener((o, a, b) -> vSync.run());
+            vSync.run();
+        }
         grid.addRow(row++, new Label((activeInfl() != null ? "Delta ("
-            : "Value (") + laneUnit(activeLane).trim() + ")"), valField);
+            : "Value (") + laneUnit(activeLane).trim() + ")"),
+            valField, valDelta);
         if (prev != null) {
             inField = new TextField(String.format(Locale.US, "%.3f", n.inFrac));
             grid.addRow(row++, new Label("In handle"), inField);
@@ -8178,9 +8440,56 @@ class GraphEditor extends Region {
                 gc.setLineWidth(isSel ? 1.5 : 1.2);
                 gc.strokeOval(px - NODE_RADIUS - 3, py - NODE_RADIUS - 3,
                               (NODE_RADIUS + 3) * 2, (NODE_RADIUS + 3) * 2);
+            } else if (i == hoverNodeIdx && dragNodeIdx < 0
+                    && dragHandleIdx < 0) {
+                // GREY hover ring (v16.15, user spec): the node under
+                // the cursor pre-lights before the white click ring
+                gc.setStroke(Color.rgb(170, 175, 185, 0.85));
+                gc.setLineWidth(1.3);
+                gc.strokeOval(px - NODE_RADIUS - 3, py - NODE_RADIUS - 3,
+                              (NODE_RADIUS + 3) * 2, (NODE_RADIUS + 3) * 2);
             }
             gc.setFill(isDragged ? Color.WHITE : laneColor(activeLane));
             gc.fillOval(px - NODE_RADIUS, py - NODE_RADIUS, NODE_RADIUS * 2, NODE_RADIUS * 2);
+            if (!isDragged && i == hoverNodeIdx && dragNodeIdx < 0
+                    && dragHandleIdx < 0) {
+                // GREY node-hover readout (v16.15, user spec): the
+                // drag readout's numbers without the click — and
+                // SHIFT swaps in the computed twins: the ABSOLUTE
+                // axis position + the CHANGE from the previous node
+                gc.setFill(Color.rgb(170, 175, 185));
+                gc.setFont(Font.font(11));
+                gc.setTextAlign(TextAlignment.LEFT);
+                gc.setTextBaseline(VPos.TOP);
+                BezierBaker.Node nd = lane.get(i);
+                double shown = dispVal(activeLane, nd.t, nd.val);
+                String xu = xUnit();
+                String txt;
+                if (hoverSlope) {
+                    String dv = i > 0
+                        ? String.format("  Δ%+.2f%s",
+                            nd.val - lane.get(i - 1).val,
+                            laneUnit(activeLane))
+                        : "";
+                    txt = String.format("%s=%.2f%s%s",
+                        axisDist() ? "s" : "t",
+                        tOff + warpFwd(nd.t), xu, dv);
+                } else {
+                    String vTxt = String.format("%.2f%s", shown,
+                        laneUnit(activeLane));
+                    txt = i == 0 ? vTxt
+                        : String.format("Δ%s=%.2f%s  %s",
+                            axisDist() ? "s" : "t",
+                            warpFwd(nd.t) - warpFwd(lane.get(i - 1).t),
+                            xu, vTxt);
+                }
+                double tw = txt.length() * 6.5;
+                double tx = FvdDesigner.clamp(px + 8, MARGIN_LEFT + 4,
+                    w - marginRight() - tw - 4);
+                double ty = FvdDesigner.clamp(py - 20, MARGIN_TOP + 4,
+                    MARGIN_TOP + plotHeight() - 16);
+                gc.fillText(txt, tx, ty);
+            }
             if (isDragged) {
                 gc.setFill(Color.WHITE);
                 gc.setFont(Font.font(11));
@@ -8202,14 +8511,30 @@ class GraphEditor extends Region {
                     : String.format("%.2f%s", shown, laneUnit(activeLane));
                 // x readout in the DISPLAY domain: native Δ unwarped
                 // (Δt or Δs per the section), the warped axis Δ in a
-                // cross-domain view — always what the plot shows
+                // cross-domain view — always what the plot shows.
+                // SHIFT mid-drag (v16.16, user spec) swaps in the
+                // computed twins, exactly like shift+hover: the
+                // ABSOLUTE axis position + the Δ from the last node
                 String xu = xUnit();
-                String txt = i == 0
-                    ? String.format("%s=%.2f%s  %s",
-                        axisDist() ? "s" : "t", warpFwd(nd.t), xu, vTxt)
-                    : String.format("Δ%s=%.2f%s  %s",
+                String txt;
+                if (hoverSlope) {
+                    String dv = i > 0
+                        ? String.format("  Δ%+.2f%s",
+                            nd.val - lane.get(i - 1).val,
+                            laneUnit(activeLane))
+                        : "";
+                    txt = String.format("%s=%.2f%s%s",
                         axisDist() ? "s" : "t",
-                        warpFwd(nd.t) - warpFwd(lane.get(i - 1).t), xu, vTxt);
+                        tOff + warpFwd(nd.t), xu, dv);
+                } else {
+                    txt = i == 0
+                        ? String.format("%s=%.2f%s  %s",
+                            axisDist() ? "s" : "t", warpFwd(nd.t), xu, vTxt)
+                        : String.format("Δ%s=%.2f%s  %s",
+                            axisDist() ? "s" : "t",
+                            warpFwd(nd.t) - warpFwd(lane.get(i - 1).t),
+                            xu, vTxt);
+                }
                 double tw = txt.length() * 6.5;   // approx width at 11 px
                 double tx = FvdDesigner.clamp(px + 8, MARGIN_LEFT + 4, w - marginRight() - tw - 4);
                 double ty = FvdDesigner.clamp(py - 20, MARGIN_TOP + 4, MARGIN_TOP + plotHeight() - 16);
@@ -8282,6 +8607,14 @@ class GraphEditor extends Region {
                     sampleIdxAtAxis(tOff + warpFwd(hoverT)),
                     activeLane, hoverSlope);
             }
+            // CTRL (v16.16, user spec): the snapped spot's GLOBAL
+            // axis position leads the readout — you see exactly
+            // where the grid point sits before clicking to insert
+            if (ctrlHover) {
+                hoverTxt = String.format("%s=%.2f%s  ",
+                    axisDist() ? "s" : "t",
+                    tOff + warpFwd(hoverT), xUnit()) + hoverTxt;
+            }
             gc.fillText(hoverTxt, hx + 8, hy - 6);
             gc.setGlobalAlpha(1.0);
         }
@@ -8309,7 +8642,7 @@ class GraphEditor extends Region {
         }
 
         // POV camera position on the track (toggle in Edit > Options)
-        if (app.viewport.povActive && app.settings.povMarker()) {
+        if (app.viewport.povActive) {   // marker always on (v16.14)
             double px2 = tToX(axisOfTime(app.viewport.povTime));
             if (px2 >= MARGIN_LEFT - 1 && px2 <= w - marginRight() + 1) {
                 gc.setGlobalAlpha(0.4);

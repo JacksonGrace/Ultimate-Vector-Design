@@ -4418,3 +4418,410 @@ before/after target values. Walkthrough #79.
 Gates: DomainGate 34 (47d new) + Phase2Gate 253 green on forced full
 rebuilds, 2026-07-14. StairProbe/StairProbe2/KfProbe (scratchpad)
 document the staircase numbers. Walkthrough #80.
+
+## D122. v16.10: B/Shift+B per-meter double-divide (the sampled path),
+##        1 deg/m snap step, gray-out hover explainers (user feedback
+##        on v16.9)
+
+- B/SHIFT+B COLLAPSED PER-METER TARGETS TO ~ZERO on every seam that
+  takes the SAMPLED path: boundaryStatePerSec's tail read the
+  neighbor through derivedAt/trueAt, which since v16.6 PRE-SCALE
+  rates by 1/v for an active deg/m lane — and boundaryState's
+  wrapper, whose contract is "the workhorse speaks deg/s", then
+  divided by the seam speed AGAIN. A ~10 deg/s pitch target became
+  10/26/26 ~ 0.015 deg/m: the user's geo pitch node "went to zero
+  with horizontal handles" instead of continuing the hill. His seam
+  (abs-roll force -> abs-roll geo x deg/m) routed lanes 0/1 there
+  because a global-roll neighbor's globalAxes() disqualifies the
+  analytic crossModeFromLanes path; the same collapse hit ALL
+  sampled-path matches on deg/m lanes — global-axis, reversed,
+  influenced, s/c and bridge neighbors, and real-split seams. The
+  analytic/authored paths were correct all along (they return deg/s
+  per the contract), which is why deg/m gates and simple same-mode
+  seams never showed it. Fix: sampledPerSec — derivedAt/trueAt's
+  sibling reading the raw resultRates/trueRates/felt arrays (bank
+  kept for the abs lane) — feeds the tail; display helpers stay
+  display-only. The roll lane was immune in the user's repro only
+  because ABSOLUTE roll takes absRollTarget and skips the wrapper.
+- SNAP: a rate lane DISPLAYED in deg/m steps by a new Options value
+  "Snap: per-meter rate (deg/m)", default 1 (user spec — deg/m
+  values live near +-3, where the 5 deg/s grid was a whole turn of
+  range). laneShownPM picks the step, so the cross-rate view counts
+  (Ctrl-snap grids live in display units, the D121 rule); deg/s
+  lanes and the absolute BANK lane (degrees, not a rate) keep the
+  5 deg/s step. AppSettings.snapRatePM, snap125 spinner + reset row
+  in Options.
+- GRAY-OUT HOVER EXPLAINERS (user spec) in the Convert and
+  Add-section dialogs: hovering a disabled choice says why it is
+  gray and how to enable it — Absolute bank (needs Roll axis
+  Global), the Yaw/pitch radios (need Type Geometric), Part…
+  (influenced sections: bake or discard first), and the padlocked
+  Design-speed field (click the padlock; custom = deliberate
+  conflict). Disabled JavaFX controls swallow mouse events, so
+  GraphEditor.grayHint wraps each in an enabled StackPane and
+  installs the tooltip only WHILE disabled — enabled controls stay
+  tooltip-free. Reset (undo-arrow) buttons deliberately carry no
+  hint: their gray means "already at this setting".
+  (A shift+drag-a-node = value-only draft shipped briefly in this
+  round and was REVERTED on user instruction — the ask had been
+  meant for the 3D viewport's coming gizmo work, not the graph.)
+- FLY-LOOK VERTICAL DRIFT (the user's "view gradually moves upward
+  when I move my mouse side to side"): flyLook measured every
+  delta against the IDEAL subscene centre — usually FRACTIONAL in
+  screen coords — while Robot.mouseMove parks the cursor on a
+  whole device pixel. The cursor therefore rested a constant
+  sub-pixel off the reference, and because the own-warp guard only
+  skips events quiet on BOTH axes, sweeping the mouse sideways
+  applied the dy bias at full event rate (~0.5 px x sens per
+  event = steady pitch). Fix: warpFlyCursor records where the
+  cursor ACTUALLY landed (Robot.getMousePosition) and the next
+  delta measures from that — bias exactly zero at any DPI scale.
+- B/SHIFT+B TOWARD AN ABSOLUTE-BANK NEIGHBOR REFUSES (user rule):
+  from the section BEFORE an abs-roll section, end-edge matching
+  posts "press B/Shift+B on the OTHER side of the boundary (its
+  first node)" instead of acting — the abs section's entry state
+  is enforced by its OWN bank lane (D118), so our-side targets
+  would read its projection snap; the good seam flow is matching
+  FROM the abs section's first node (which reads the neighbor
+  side, D120). Applies to all three lanes, both B and Shift+B,
+  nextAbsRoll()/ABS_NEXT_HINT in matchBoundary/matchBoundaryAll.
+
+Gates: DomainGate 34 + Phase2Gate 253 green, 2026-07-14 (the fixes
+are editor/viewport-side; the gates pin no regression in the core).
+Hand-test: walkthrough #81.
+
+## D123. v16.11: the VIEWPORT ROUND — placement gizmos, middle-drag
+##        pan, white active-section ties, clickable node markers
+##        (user spec, start of the interactive-viewport arc)
+
+- MIDDLE-DRAG = PAN (user spec): grab-style in the view plane,
+  shared math with the v8.2 ortho right-drag pan (panView — world
+  meters per pixel off the CURRENT lens, so ortho and perspective
+  feel identical); the v8.2 middle-drag ORBIT alias is gone, left
+  drag still orbits, shift+left-click still snaps the pivot to the
+  track. An ortho view SURVIVES a middle-drag pan like it does the
+  right-drag one.
+- WHITE TIES mark the ACTIVE SECTION on the 3D track (user spec:
+  "cross ties of a selected section turn white"): buildTieMeshes
+  splits each piece's ties into a normal and a white mesh by the
+  active span's GLOBAL sample range; a per-piece TiePiece context
+  (sublist + base index) lets refreshTieHighlight re-tint on pure
+  activation changes without recompiling (signature-guarded, rides
+  refreshTrackMarkers like the markers themselves).
+- NODE MARKERS ARE CLICKABLE (user spec): a clean left-click within
+  14 px of a marker sphere selects that node in the graph
+  (selIdx + selSet) and, when a manual zoom window has it
+  off-screen, re-centers the window on it (auto-fit already shows
+  everything). Marker pick outranks the track-activate click;
+  behind-camera projections filtered like pickTrackSample.
+- PLACEMENT GIZMOS (the Phase-2 roadmap item, user re-spec of
+  2026-07-15): the ACTIVE piece's entry pose wears translation
+  arrows (X red / Y green / Z blue) + rotation rings; while a live
+  BRIDGE section is active the gizmo sits on the NEXT piece's entry
+  instead. THE LOCK RULE (user spec): an axis that is locked or
+  machine-owned builds NO part — a default piece shows 3 arrows +
+  the yaw ring only (pitch/roll rings appear when their Placement
+  padlocks unlock; bridged-in pieces read the bridge's shared
+  locks); a piece bridged-in under an OPTIMIZE mode shows no piece
+  gizmo at all (the auto-reoptimize pass would fight every hand
+  move — the bridge's own gizmo is the surface). Bridge gizmo per
+  mode: manual = arrows + unlocked rings (setBridgeTargetOrient /
+  a new one-rebuild nudgeBridgeTarget composite); optimize modes =
+  ONE orange TANGENT arrow dragging the LENGTH through setBridgeGap
+  (user spec — replaces position arrows; hidden under Optimize
+  length; optimize-orientation owns the unlocked rings too, so
+  none show). Undo: piece gestures push once per drag; bridge parts
+  ride the spinners' coalesced clock. Drags rebuild the track live
+  per event (the spinner/tick precedent).
+- ROTATION RINGS turn the MODEL's own Euler quantities — yaw about
+  world Y, pitch about the heading's horizontal right, roll about
+  the heading (exactly what the Placement spinners edit, one ring =
+  one number) — so every ring stays representable under any lock
+  combination. JUDGMENT CALL: the user asked for a local/global
+  toggle on "both roll and translation"; a fully world-axis pitch/
+  roll rotation isn't expressible in the yaw/pitch/roll delta model
+  without cross-coupling locked quantities, so the AXES TOGGLE
+  (overlay button, top-right of the 3D view, persisted as
+  AppSettings.gizmoLocal) flips the TRANSLATION arrows between
+  world X/Y/Z and the entry frame's right/up/forward, while rings
+  keep the model axes. Toggling moves nothing (pure view) — the
+  user's stated invariant. Revisit on feel-test if he wants ring
+  axes to flip too.
+- Gizmo mechanics, for the next reader: parts live in gizmoGroup
+  inside `world` (Y-flip discipline: positions (x,-y,z), directions
+  flip y). Scale pivots at the gizmo ORIGIN via an explicit Scale
+  transform — the scaleX/Y/Z PROPERTIES pivot at the layout-bounds
+  centre and slid the asymmetric arrow set off its anchor — and
+  tracks ~10% of the visible height at the anchor's distance
+  (lens-generic; re-scaled on zoom/orbit/pan). Arrow drags project
+  the axis into SCREEN space and convert pixel deltas to world
+  units, capped at one gizmo-scale per event (an edge-on axis
+  projects tiny and λ exploded). Ring drags intersect the mouse ray
+  with the ring plane and track the hit angle; the scene is a
+  Y-MIRROR of the world, so the world delta is the NEGATED
+  scene-measured delta (conjugation by a reflection flips
+  handedness) — if a ring ever feels reversed, that one sign in
+  wireRingDrag is the tunable. Parts consume their mouse events
+  (the orbit/click handlers never see them); a mid-drag refresh
+  only repositions (rebuilding the pressed part would kill JavaFX's
+  mouse capture); signature-guarded rebuilds ride
+  refreshTrackMarkers.
+
+Gates: DomainGate 34 + Phase2Gate 253 green (all viewport-side —
+the gates pin no core regression). Hand-test: walkthrough #82.
+
+## D124. v16.12: viewport feedback round — middle-drag ORBIT,
+##        gizmo reveal + absolute drags, live re-aim, ctrl snap
+##        (user feedback on v16.11)
+
+- MIDDLE-DRAG = ORBIT after all (user correction of his own v16.11
+  pan spec): it REPLACES left-drag entirely — the primary button is
+  selection/gizmos only now — and shift+middle-click (or C+middle)
+  snaps the pivot to the track. The pan is gone (panView survives
+  for the ortho right-drag). Node insert moved from Ctrl+click to
+  DOUBLE-click, and it scrolls the graph to the new node like a
+  marker click (ensureSelectedVisible, shared).
+- GIZMO REVEAL (user spec: "only reveal when you click first node
+  of track piece"): gizmos hide behind REVEAL MARKERS — a bigger
+  sphere (0.34 vs 0.22) at the active piece's entry and, with a
+  trailing bridge, at the bridge end. Clicking toggles; the reveal
+  shows BOTH the entry gizmo and the trailing bridge's end gizmo
+  at once, whatever section is active (multi-Rig rework — each rig
+  owns its anchor/scale/re-aim hooks); switching pieces re-hides.
+  The bridge gizmo therefore stopped requiring the bridge SECTION
+  to be active: new PIECE-scoped write paths (trailingBridge —
+  gizmoSetBridgeGap/gizmoSetBridgeOrient/gizmoBridgeMoved, no undo
+  push of their own; the viewport pushes once per gesture; the
+  OPT_POS+optLen orient path re-knees SILENTLY — applyOptimal-
+  Length's zero-distance PROMPT must never pop mid-drag). Clicking
+  the entry marker open with the first section active also selects
+  lane node 0 (it covers that node's marker).
+- ABSOLUTE-FROM-PRESS DRAGS (user bug: "optimize position makes
+  the yaw gizmo go crazy — rotating moves the gizmo, which adjusts
+  the rotation, which moves the gizmo…"): every drag now captures
+  its screen mapping AND base value once at the press. Arrows: λ =
+  mouse travel projected on the press-time screen axis, pose =
+  base + dir₀·λ. Rings: LINEAR drag (user spec) — the press grabs
+  the ring's screen tangent at the hit point and the rotation is
+  proportional to distance moved along that fixed line (1 grabbed
+  ring-radius ≈ 57°, like dragging the rim), value = base − dist·k
+  (the one Y-mirror sign). A part that re-places ITSELF per event
+  (optimize-position bridges) can no longer feed back into its own
+  input. Ctrl SNAP (user spec): translation + bridge length by the
+  element-length step (absolute along-axis grid / whole-step
+  lengths), rings to 1°; the bridge YAW spinner's arrows step 1°
+  now too (pitch/roll already did).
+- LIVE RE-AIM (user: "appearance only updates after releasing"):
+  parts keep a Rotate whose axis/angle re-derive from live
+  direction suppliers — positionGizmo runs the aim hooks per
+  event, so rings/arrows track the pose in real time; rebuild
+  still waits for release (replacing the pressed node would kill
+  JavaFX's mouse capture). THICKER parts (shaft 0.05, ring minor
+  0.06, cone 0.13 — grabbing needed too much aim). DEPTH-based
+  scale (anchor·view-axis, not euclidean distance): the old
+  distance scaling ballooned the gizmo toward the screen edge
+  (off-axis wide-FOV magnification). Gizmos STAY VISIBLE in fly
+  mode (POV still hides them); fly timer/look reposition them.
+- COLORS (user spec, matching the graph): arrows X red / Y blue /
+  Z green (blue↔green swapped); rings wear GEO_LANE_COLORS — yaw
+  yellow, pitch teal, roll the roll-lane orange-red.
+- WHITER TIES: the active section's ties self-illuminate now — a
+  diffuse-only white still rendered grey under the dim ambient.
+- UNDO vs PADLOCKS (user bug): applyDocState rebuilt TrackPieces
+  whose uiLockPitch/Roll DEFAULT to locked, so any undo slammed
+  open padlocks shut. The locks ride PieceState now — Ctrl+Z after
+  a gizmo move keeps them open, and they relock only when undoing
+  past the point they were actually locked (their toggles aren't
+  undo steps, so the state simply rides neighboring snapshots —
+  exactly the user's stated expectation). Still not persisted.
+
+Gates: DomainGate 34 + Phase2Gate 253 green (viewport-side round).
+Hand-test: walkthrough #83.
+
+## D125. v16.13: View menu, force/speed COMBS, viewport tweaks
+##        (user feedback on v16.12 + new features)
+
+- TWEAKS: gizmo arrows are X GREEN / Y blue / Z RED now (the v16.12
+  red/green swapped, user spec); a clean click on EMPTY space hides
+  the gizmos (selection stays — the reveal already reset on piece
+  switches); the HEARTLINE builds one strand PER PIECE like every
+  other mesh (the single ride-wide strand only broke on the 3.5 m
+  gap heuristic, so pieces parked close together read as connected);
+  the Placement rows GRAY whatever a connecting bridge owns —
+  position under any optimize mode, yaw when locked/march-aligned —
+  with grayHint explainers pointing at the bridge (they silently
+  fought the auto re-optimize before).
+- VIEW MENU (user spec: "basically everything to do with the
+  viewport"), between Edit and Coaster: gizmo axes local/global
+  (synced with the overlay button through one applier), show
+  heartline, node markers, the three comb toggles, "G-force & comb
+  colors…", both FOV sliders and mouse sensitivity — the last four
+  MOVED out of Edit > Options (which keeps the graph-editor snaps
+  and the POV marker). Rows are CustomMenuItems (menu stays open);
+  the sliders reuse the Options wiring verbatim (menu-local undo
+  included).
+- COMBS (user spec, FVD++-style): one tooth per meter of track,
+  per piece. VERTICAL felt G — outward along −U (loops comb their
+  outside), length 0.5 m/g, colored by the SAME four stops as the
+  rail gradient (one set drives both). LATERAL felt G — along R,
+  signed, 0.8 m/g, its OWN four color stops (lateral lives near
+  ±1.5 g; per-coaster `latcolors`/`latstops` lines, missing =
+  defaults, lateral clamp ±5 — the vertical −1..5 clamp would eat
+  the −1.5 default; the round-trip gate carries them). TRUE SPEED —
+  upward along U, 0.05 m per m/s, solid light blue. Values read the
+  TRUE arrays (identical to design until a split). Hovering a
+  tooth's TIP (12 px) shows the exact value in a cursor-following
+  overlay label (combLabel, unmanaged in the subHolder StackPane).
+  Length cap 3.5 m; teeth under 2 cm skip. All constants
+  (COMB_SPACING/COMB_*_SCALE/COMB_MAX) deliberately internal.
+
+Gates: DomainGate 34 + Phase2Gate 253 green — Phase2Gate's
+round-trip fixture now includes the lateral stop lines (the gate
+scratch file grew the two Cosmetics args). Hand-test: walkthrough
+#84.
+
+## D126. v16.14: comb/gradient feedback round — exact tie/comb
+##        spacing, three-way combs, 5-stop gradient, View-menu rail
+##        color, Snapping (user feedback on v16.13)
+
+- THE SPACING BUG (user: "spacings significantly more than the
+  others… around almost the entire time crossties have existed"):
+  ties and combs placed themselves on the first SAMPLE at/past each
+  arc grid point — up to v·dt ≈ 0.26 m late per item, so adjacent
+  gaps differed by up to half a meter. It was the documented
+  quantize-to-sample quirk, not a section/piece interaction. Fix:
+  arcHit — frames (pos/T/U lerped + renormalized, R = U×T) at the
+  EXACT grid arc between bracketing samples; ties and comb teeth
+  both build through it, comb VALUES lerp the TRUE arrays the same
+  way. The white-tie highlight keys off the NEAREST sample index.
+- COMBS: spacing halved to 0.5 m (user spec); teeth grow from the
+  HEARTLINE (was the spine); lateral teeth point rider-LEFT for
+  +Gl (reversed, user spec); a THREE-WAY mode replaces the three
+  checks (user spec: No comb | G-Force comb = vertical + lateral
+  as one unit | Speed comb — never both; AppSettings.combMode,
+  old keys ignored); "Comb size (%)" scales teeth (applied on
+  slider release — per-pixel recompiles are pointless); teeth are
+  in a combGroup HIDDEN while riding POV and are MOUSE-TRANSPARENT
+  (they block nothing — double-click-to-insert works through
+  them). HOVER FIX: the v16.13 readout label was UNMANAGED in the
+  subHolder StackPane, so it was never laid out to a size — 0×0,
+  literally invisible (the user's "hover isn't working") — and it
+  measured to the tooth's TIP point only. Now: a MANAGED label
+  pinned BOTTOM-LEFT (user spec) and hover distance measured to
+  the tooth's projected root→tip SEGMENT (10 px).
+- GRADIENT: FIVE stops now — PURPLE (−1.5) joined below the BLUE
+  (moved 0 → −0.7), all editable, one set driving rails AND the
+  vertical comb; the render range widened −1 → −2 (G_MIN) so the
+  purple shows. Legacy 4-stop gradcolors/gradstops lines load with
+  the default purple PREPENDED (old files' flat-blue negatives now
+  shade toward purple below −0.7 — deliberate, the user made
+  purple the default). LATERAL stops are ABSOLUTE now (user spec:
+  colors mirror about zero): three |Gl| stops, defaults green 0.5 /
+  yellow 1.0 / red 1.5; latcolors/latstops = 9 + 3 values (the
+  v16.13 12 + 4 shape never shipped). stopColor() is the shared
+  length-generic lerp.
+- VIEW MENU: RAIL COLOR moved in (user spec) — gradient|solid
+  radios + the solid ColorPicker inline (visible only while solid)
+  with a ↺ to the default red; showRailColorDialog is GONE (its
+  gradient stops already lived in "G-force & comb colors…", which
+  now shows 5 + 3 rows, EVERY color with its own ↺ grayed at
+  default — user spec "swirly arrows to revert"). WATCH ITEM: a
+  ColorPicker inside a menu popup once crashed on "Custom Color"
+  (owner = auto-hiding popup, the pre-v7.5 lesson) — the row rides
+  CustomMenuItem(hideOnClick=false) now; if his test still crashes
+  it, fall back to a mini owned dialog. FOCUS FIX (user bug): after
+  Save/Use in the custom-color child window, focus fell to another
+  OS window — refocusAfterPicker pulls our stage back to front on
+  the next pulse (all pickers).
+- Edit > "Options…" renamed "SNAPPING…" (user spec) — after the
+  viewport rows moved out, snapping is all that's left; the POV
+  graph marker option is GONE, always on (user spec).
+
+Gates: DomainGate 34 + Phase2Gate 253 green (the round-trip fixture
+re-shaped to 5 + 3 stops). Hand-test: walkthrough #85.
+
+## D127. v16.15: node hover/dialog twins, POV reverse, comb + color
+##        polish, custom-color focus ROOT fix (user feedback on
+##        v16.14, closing the pre-Phase-2-finish punch list)
+
+- NODE DIALOG COMPUTED TWINS (user spec): grey labels beside the
+  Transition and Value fields update live as you type — the
+  ABSOLUTE display-axis position the transition lands on
+  (tOff + warpFwd(prev.t + dt)) and the CHANGE from the previous
+  node. NODE HOVER (user bug: the hover stat vanished over a node
+  body): a node under the cursor now wears a GREY ring (white
+  stays the selection ring) and a grey drag-style readout —
+  Δt-from-previous + value; SHIFT swaps in the twins (absolute
+  position + Δvalue). hoverNodeIdx rides the same
+  signature/redraw plumbing as the other hovers.
+- POV REVERSE (user spec): AppSettings.povReversed — the camera
+  looks along −T (up stays U, right re-derives, handedness kept);
+  A toggles it while the ride is CAPTURED, A-again-or-D returns
+  forward, and the View-menu check shares ONE applier
+  (FvdDesigner.setPovReversed; forwarded from popup scenes too).
+  W/S deliberately keep their TRACK direction — reversed W reads
+  as riding backward, per the user's exact spec.
+- COMBS: teeth 2× wider ALONG the track (HW_T 0.06 vs the 0.03
+  cross-thickness). VERTICAL GRADIENT gains CYAN at −0.5 with blue
+  moving to −1 — SIX stops (gradcolors/gradstops 18+6;
+  DesignIO.gradSlot maps legacy: 15+5 keeps the default cyan
+  inserted at slot 2, 12+4 fills slots 2-5). The View item is
+  "G-FORCE COLORS…" with the letters of "G-Force" tinted by the
+  LIVE gradient hottest-first (rebuilt every menu show, so edits
+  re-tint it; 6 letters = 6 stops).
+- CUSTOM-COLOR FOCUS, ROOT CAUSE (user: "flashes to another window
+  before coming back"): the JavaFX Custom Color window is owned by
+  the ColorPicker's POPUP, which has long auto-hidden by the time
+  Save/Use closes it — Windows then activates the next application
+  in Z-order, and v16.14's Platform.runLater(toFront) yanked us
+  back a frame LATER (the visible flash). Now a Window-list
+  watcher in FvdDesigner.start spots every custom-color dialog by
+  its root style class, remembers which of OUR windows was focused
+  when it appeared, and hands focus straight back in the dialog's
+  ON-HIDING handler — before activation ever leaves the app. The
+  refocusAfterPicker band-aid is deleted.
+
+Gates: DomainGate 34 + Phase2Gate 253 green on a forced full
+rebuild (the gate's Cosmetics fixture moved to 6 gradient stops);
+launch smoke test clean. Hand-test: walkthrough #86.
+
+## D128. v16.16: OWN color dialog (the flash, actually killed), View
+##        slider resets, backwards-POV tag, readout twins everywhere
+##        (user feedback on v16.15)
+
+- THE FOCUS FLASH, FOR REAL THIS TIME (user: "why couldn't this
+  window work the same way as other windows?" — exactly the right
+  question): the built-in ColorPicker's Custom Color window is
+  owned by the picker's transient POPUP, so by the time Save/Use
+  closes it the owner is long hidden and WINDOWS decides who gets
+  activation — another app. Both post-hoc fixes lost that race
+  (v16.14 runLater-toFront = the flash; v16.15's on-hiding watcher
+  = still a flash). v16.16 removes the cause: there is NO
+  ColorPicker in the app anymore. Colors are SWATCH buttons
+  (Dialogs.colorSwatch, face = the current color) opening
+  Dialogs.pickColor — an ordinary WINDOW_MODAL Stage owned by OUR
+  window — a QUICK PALETTE (three shades of ten hues + a
+  grayscale row) and the last TEN picked colors (per-user,
+  AppSettings.recentColors, newest first, deduped) above RGB
+  sliders + a hex field, LIVE apply (gradient and track update as
+  you slide), OK keeps / Cancel + X restore, one menu-undo pair
+  per session. Owned window ⇒ focus returns like
+  every other dialog — nothing to intercept. Bonus: the pre-v7.5
+  "Custom Color from a menu row" crash class is extinct, and the
+  rail swatch re-syncs on menu open (Load/New change railColor
+  outside it; railSyncing guard keeps the re-sync from dirtying).
+- View menu SLIDERS wear ↺ resets (both FOVs, sensitivity, comb
+  size — AppSettings.COMB_SCALE_DEFAULT joins the constants).
+- "Backwards POV (A)" tag (user spec): povLabel, the comb
+  readout's styling, bottom-left, visible exactly while POV rides
+  reversed (combLabel can't collide — comb hover bails in POV);
+  synced from togglePov + setPovReversed.
+- READOUT TWINS everywhere: SHIFT while DRAGGING a node swaps the
+  readout to the absolute axis position + Δ-from-previous (the
+  shift+hover format, live via shiftHover's redraw now covering
+  drags); CTRL while hovering the curve makes the insert-dot
+  readout LEAD with the snapped spot's GLOBAL axis position — you
+  see where the grid point sits before clicking.
+
+Gates: DomainGate 34 + Phase2Gate 253 green on a forced rebuild;
+launch smoke test clean. Hand-test: walkthrough #87.
