@@ -14,7 +14,9 @@ import java.util.List;
  *       depends only on those inputs, NEVER on actual speed (§0).
  *   Pass D (dynamics, global):  assembled geometry + coaster v0 ->
  *       true speed per sample from energy vs the FIRST sample's height
- *       (friction and speed regions join in Phase 3).
+ *       minus the document's FRICTION losses (Phase 3, v17.0 D133 —
+ *       rolling + air, marched in travel order; speed regions still
+ *       to come).
  *   Pass A (analysis, global):  geometry + true speed -> resulting
  *       body rates (and, later, true forces).
  *
@@ -58,6 +60,7 @@ public final class TrackCompiler {
     public record Centerline(List<FVDIntegrator.Sample> samples, TrackPose exit) {}
 
     public static Result compile(Coaster c, double dt) {
+        FVDIntegrator.Friction fric = c.fric();   // Phase 3 (v17.0)
         List<FVDIntegrator.Sample> all = new ArrayList<>();
         List<Span> spans = new ArrayList<>();
         // Pass D's run table (§5.1, round A): a RUN starts at every
@@ -80,7 +83,27 @@ public final class TrackCompiler {
             Vec3 anchor = pose.pos();
             int pieceStart = all.size();
             boolean bridgedIn = prevEndsBridge;
-            if (!piece.sections.isEmpty() && !bridgedIn) {
+            // STRICT SEAM (v17.1, D135): a FOLLOWING piece's entry
+            // sits on the previous piece's exit — position always,
+            // orientation per its locks (Coaster.strictEntry). The
+            // piece still GENERATES at its stored generation
+            // orientation (shape frozen — the D100 rigidity) and the
+            // whole difference applies as the rigid tilt below.
+            // Ignored when bridged-in (the bridge IS the connection)
+            // or first/orphaned (falls back to its stored placement).
+            boolean followed = piece.followPrev && p > 0 && !bridgedIn
+                && !spans.isEmpty() && !piece.sections.isEmpty()
+                && !c.pieces.get(p - 1).sections.isEmpty();
+            if (followed) {
+                TrackPose eff = Coaster.strictEntry(
+                    spans.get(spans.size() - 1).exit(), piece);
+                Quat gen = piece.genPose().orient();
+                Quat tq = eff.orient().mul(gen.conjugate());
+                tilt = Math.abs(tq.w()) > 1 - 1e-14 ? Quat.IDENTITY : tq;
+                pose = new TrackPose(eff.pos(), gen);
+                anchor = eff.pos();
+            }
+            if (!piece.sections.isEmpty() && !bridgedIn && !followed) {
                 runs.add(new double[]{ pieceStart,
                     piece.sections.get(0).vDesign() });
             }
@@ -93,8 +116,9 @@ public final class TrackCompiler {
             // exactly with the bridge's exit (the seam contract), so
             // keeping it duplicated the sample: zero-advance tick at
             // every bridge seam (POV froze for a frame, bodyRates
-            // differenced across dt = 0; v13.10 D84)
-            boolean continuation = bridgedIn;
+            // differenced across dt = 0; v13.10 D84). A strict-seam
+            // FOLLOWER's entry coincides the same way (v17.1).
+            boolean continuation = bridgedIn || followed;
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // LIVE-FOLLOW (v13.1, D73): re-capture the solve
@@ -142,7 +166,7 @@ public final class TrackCompiler {
                             // TILTED target's head arrives rigidly
                             // rotated, v15.2 — pieceHead applies it)
                             List<FVDIntegrator.Sample> head =
-                                pieceHead(next, dt);
+                                pieceHead(next, dt, fric);
                             if (!head.isEmpty()) {
                                 bs.vB = head.get(0).v();
                                 // aim at the ACTUAL first-sample frame,
@@ -168,7 +192,7 @@ public final class TrackCompiler {
                         }
                     }
                 }
-                Centerline line = passG(section, pose, dt);
+                Centerline line = passG(section, pose, dt, fric);
                 // chain the NEXT section in design space; the world
                 // gets the rigidly tilted copy (identity = no-op).
                 // Bridges are world-anchored already and never tilt.
@@ -187,7 +211,7 @@ public final class TrackCompiler {
                 continuation = true;
             }
         }
-        double[] trueV = passD(all, runs);
+        double[] trueV = passD(all, runs, c.fricRoll, c.fricAir);
         double[][] rates = passA(all, runs);
         return new Result(all, trueV, rates,
             trueFelt(all, trueV), trueRates(all, rates, trueV), spans);
@@ -263,26 +287,34 @@ public final class TrackCompiler {
      *  the old integrator run, seeded from the entry pose; geo sections
      *  (Phase 2) integrate their authored body rates directly. REVERSED
      *  sections (Phase 2, D67) generate the authored shape in the
-     *  CANONICAL frame and hand it to reverseAndPlace. */
+     *  CANONICAL frame and hand it to reverseAndPlace. Loss-free
+     *  delegate (probes/gates); compile() threads the document
+     *  friction. */
     public static Centerline passG(Section section, TrackPose entry, double dt) {
+        return passG(section, entry, dt, FVDIntegrator.Friction.NONE);
+    }
+
+    public static Centerline passG(Section section, TrackPose entry, double dt,
+                                   FVDIntegrator.Friction fric) {
         if (section instanceof ForceSection fs) {
-            if (fs.influenced()) return influencedLane(fs, entry, dt, false);
-            return forceLane(fs, entry, dt);
+            if (fs.influenced()) return influencedLane(fs, entry, dt, false, fric);
+            return forceLane(fs, entry, dt, fric);
         }
         if (section instanceof GeoSection gs) {
-            if (gs.influenced()) return influencedLane(gs, entry, dt, true);
-            return geoLane(gs, entry, dt);
+            if (gs.influenced()) return influencedLane(gs, entry, dt, true, fric);
+            return geoLane(gs, entry, dt, fric);
         }
         if (section instanceof StraightCurveSection sc) {
             // straight/curve (v11.0): same quaternion-native pattern as
             // geo; reversal generates canonically and yaw-places (D67)
             if (sc.reversed) {
                 ScIntegrator.Result rr = ScIntegrator.integrate(sc, dt,
-                    sc.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY);
+                    sc.vDesign, new Vec3(0, entry.pos().y(), 0),
+                    Quat.IDENTITY, fric);
                 return reverseAndPlace(rr.samples(), entry);
             }
             ScIntegrator.Result r = ScIntegrator.integrate(
-                sc, dt, sc.vDesign, entry.pos(), entry.orient());
+                sc, dt, sc.vDesign, entry.pos(), entry.orient(), fric);
             FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
             TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
                 entry.s0() + last.s(), entry.t0() + last.t());
@@ -293,7 +325,7 @@ public final class TrackCompiler {
             // incoming entry pose is deliberately IGNORED (§4: a bridge
             // never chases its endpoints; the editor shows dirty when
             // they drift). Exit = the solved target pose verbatim.
-            BridgeSection.Result r = bs.integrate(dt);
+            BridgeSection.Result r = bs.integrate(dt, fric);
             FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
             TrackPose exit = new TrackPose(r.exit().pos(), r.exit().orient(),
                 entry.s0() + last.s(), entry.t0() + last.t());
@@ -342,13 +374,18 @@ public final class TrackCompiler {
      *  target-head capture reads this; identity tilt = the historic
      *  call bitwise). */
     static List<FVDIntegrator.Sample> pieceHead(TrackPiece piece, double dt) {
+        return pieceHead(piece, dt, FVDIntegrator.Friction.NONE);
+    }
+
+    static List<FVDIntegrator.Sample> pieceHead(TrackPiece piece, double dt,
+                                                FVDIntegrator.Friction fric) {
         Quat tilt = piece.tilt();
         if (tilt == Quat.IDENTITY) {
-            return passG(piece.sections.get(0), piece.entryPose(), dt)
+            return passG(piece.sections.get(0), piece.entryPose(), dt, fric)
                 .samples();
         }
         TrackPose gen = piece.genPose();
-        Centerline line = passG(piece.sections.get(0), gen, dt);
+        Centerline line = passG(piece.sections.get(0), gen, dt, fric);
         return tiltLine(line, tilt, gen.pos()).samples();
     }
 
@@ -375,7 +412,9 @@ public final class TrackCompiler {
      *  DISTANCE-domain sections (v16.0, D103) bake onto an s-grid and
      *  take the arc-terminated integrator — same physics, other
      *  parameterization. */
-    private static Centerline forceLane(ForceSection fs, TrackPose entry, double dt) {
+    private static Centerline forceLane(ForceSection fs, TrackPose entry,
+                                        double dt,
+                                        FVDIntegrator.Friction fric) {
         boolean dist = fs.domain() == Section.Domain.DISTANCE;
         // 0.05 = the bake grid in the lane's own axis units (s or m) —
         // the same density relative to the axis either way
@@ -383,6 +422,7 @@ public final class TrackCompiler {
         FVDIntegrator.Options opts = new FVDIntegrator.Options();
         opts.dt = dt;
         opts.v0 = fs.vDesign;
+        opts.fric = fric;   // Phase 3 (v17.0, D133)
         opts.rollGlobal = fs.rollGlobal;   // v16.1, D107
         opts.rollPerMeter = fs.ratePerMeter;   // v16.6, D115
         opts.rollAbsolute = fs.rollAbsolute && fs.rollGlobal;   // v16.7, D118
@@ -412,7 +452,8 @@ public final class TrackCompiler {
 
     /** The plain GEO path (extracted v15.0, same rationale; distance
      *  domain v16.0 like forceLane). */
-    private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt) {
+    private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt,
+                                      FVDIntegrator.Friction fric) {
         boolean dist = gs.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(gs.lanes, 0.05);
         boolean gAbs = gs.rollAbsolute && gs.rollGlobal;   // v16.7
@@ -421,10 +462,12 @@ public final class TrackCompiler {
             GeoIntegrator.Result rr = dist
                 ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                     new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
-                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter, gAbs)
+                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
+                    gAbs, fric)
                 : GeoIntegrator.integrate(kfs, dt,
                     gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
-                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter, gAbs);
+                    gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
+                    gAbs, fric);
             return reverseAndPlace(rr.samples(), entry);
         }
         // quaternion-native (the §2 amendment): the exit orientation
@@ -432,10 +475,12 @@ public final class TrackCompiler {
         GeoIntegrator.Result r = dist
             ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
-                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter, gAbs)
+                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
+                gAbs, fric)
             : GeoIntegrator.integrate(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
-                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter, gAbs);
+                gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
+                gAbs, fric);
         FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
         TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t());
@@ -475,6 +520,13 @@ public final class TrackCompiler {
      *  reshaping. */
     static Centerline influencedLane(LaneSection ls, TrackPose entry,
                                      double dt, boolean isGeo) {
+        return influencedLane(ls, entry, dt, isGeo,
+            FVDIntegrator.Friction.NONE);
+    }
+
+    static Centerline influencedLane(LaneSection ls, TrackPose entry,
+                                     double dt, boolean isGeo,
+                                     FVDIntegrator.Friction fric) {
         // GLOBAL-AXIS sections take influence since v16.5 (D112): the
         // ref runs under the section's OWN flags, the base rows come
         // out in the INFLUENCE flags' semantics (worldRates + the
@@ -491,8 +543,8 @@ public final class TrackCompiler {
         // refuses entry, hand-edited files fall back to plain.
         if (ls.rollAbsolute && ls.rollGlobal) {
             ls.baseCurves = null;
-            return isGeo ? geoLane((GeoSection) ls, entry, dt)
-                         : forceLane((ForceSection) ls, entry, dt);
+            return isGeo ? geoLane((GeoSection) ls, entry, dt, fric)
+                         : forceLane((ForceSection) ls, entry, dt, fric);
         }
         // PER-METER sections influence too since v16.7 (D117): the
         // base rows and the delta lanes speak °/m — per-meter rates
@@ -502,8 +554,8 @@ public final class TrackCompiler {
         boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(ls.lanes, 0.05);
         if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored) {
-            Centerline line = isGeo ? geoLane((GeoSection) ls, entry, dt)
-                                    : forceLane((ForceSection) ls, entry, dt);
+            Centerline line = isGeo ? geoLane((GeoSection) ls, entry, dt, fric)
+                                    : forceLane((ForceSection) ls, entry, dt, fric);
             // base guides off the very samples on show (identity
             // re-time); reversed strips never edit influence — skip
             ls.baseCurves = ls.reversed ? null
@@ -519,16 +571,19 @@ public final class TrackCompiler {
         if (isGeo) {
             ref = distAxis
                 ? GeoIntegrator.integrateDist(kfs, dt, ls.vAuthored, pos0, q0,
-                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter)
+                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter, false,
+                    fric)
                     .samples()
                 : GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, q0,
-                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter)
+                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter, false,
+                    fric)
                     .samples();
         } else {
             FVDIntegrator.Options opts = new FVDIntegrator.Options();
             opts.dt = dt;
             opts.v0 = ls.vAuthored;
             opts.pos0 = pos0;
+            opts.fric = fric;
             opts.rollGlobal = ls.rollGlobal;
             opts.rollPerMeter = ls.ratePerMeter;
             if (!ls.reversed) {
@@ -540,14 +595,25 @@ public final class TrackCompiler {
         }
         int n = ref.size();
         // operating profile (+ the re-timed clock for TIME sections;
-        // a DISTANCE section's axis IS the arc — no re-time)
+        // a DISTANCE section's axis IS the arc — no re-time). The
+        // profile carries its OWN friction deficit over ref's arc
+        // (v17.0 — Heun march; skipped entirely when loss-free).
         double yEntry = ref.get(0).pos().y();
         double vApply = Math.max(0.5, ls.vDesign);
         double[] tStar = new double[n];
         double[] vStar = new double[n];
+        double lossStar = 0;
         for (int i = 0; i < n; i++) {
+            if (i > 0 && !fric.off()) {
+                double dsF = ref.get(i).s() - ref.get(i - 1).s();
+                double f0 = fric.dLossDs(vStar[i - 1]);
+                double vp = Math.max(0.5, FVDIntegrator.speedAt(
+                    ref.get(i).pos(), vApply, yEntry, lossStar + f0 * dsF));
+                lossStar += (f0 + fric.dLossDs(vp)) / 2 * dsF;
+            }
             vStar[i] = Math.max(0.1,
-                FVDIntegrator.speedAt(ref.get(i).pos(), vApply, yEntry));
+                FVDIntegrator.speedAt(ref.get(i).pos(), vApply, yEntry,
+                    lossStar));
             if (i > 0) {
                 double ds = ref.get(i).s() - ref.get(i - 1).s();
                 tStar[i] = tStar[i - 1]
@@ -590,6 +656,7 @@ public final class TrackCompiler {
             o2.dt = dt;
             o2.v0 = ls.vDesign;
             o2.pos0 = pos0;
+            o2.fric = fric;
             o2.rollGlobal = ls.inflRollGlobal;
             o2.rollPerMeter = ls.ratePerMeter;
             if (!ls.reversed) {
@@ -607,9 +674,11 @@ public final class TrackCompiler {
         }
         GeoIntegrator.Result r2 = distAxis
             ? GeoIntegrator.integrateDist(synth, dt, ls.vDesign, pos0, q0,
-                ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter)
+                ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter,
+                false, fric)
             : GeoIntegrator.integrate(synth, dt, ls.vDesign, pos0, q0,
-                ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter);
+                ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter,
+                false, fric);
         if (ls.reversed) return reverseAndPlace(r2.samples(), entry);
         FVDIntegrator.Sample last = r2.samples().get(r2.samples().size() - 1);
         return new Centerline(r2.samples(), new TrackPose(last.pos(), r2.qEnd(),
@@ -801,10 +870,22 @@ public final class TrackCompiler {
      *  deliberately not applied — the true curves show the ride
      *  without the blend's invisible brake/boost. A detached piece is
      *  its own run (its trueV references its own entry, not the ride
-     *  start). Friction and speed regions are Phase 3. */
+     *  start). FRICTION (Phase 3, v17.0 D133): the run march
+     *  accumulates the document's rolling + air losses over the
+     *  sample arc (Heun; the true ride always sheds in TRAVEL order —
+     *  which is exactly how a pre-resolve reversed section's design
+     *  profile stays honestly conflicted). Zero coefficients add a
+     *  literal − 0.0 — bitwise. Speed regions still to come. */
     public static double[] passD(List<FVDIntegrator.Sample> samples,
                                  List<double[]> runs) {
+        return passD(samples, runs, 0, 0);
+    }
+
+    public static double[] passD(List<FVDIntegrator.Sample> samples,
+                                 List<double[]> runs,
+                                 double fricRoll, double fricAir) {
         double[] v = new double[samples.size()];
+        boolean fOn = fricRoll != 0 || fricAir != 0;
         for (int r = 0; r < runs.size(); r++) {
             int i0 = (int) runs.get(r)[0];
             int i1 = r + 1 < runs.size()
@@ -812,10 +893,23 @@ public final class TrackCompiler {
             if (i0 >= i1) continue;
             double v0 = runs.get(r)[1];
             double y0 = samples.get(i0).pos().y();
+            double loss = 0;
             for (int i = i0; i < i1; i++) {
                 double vh = Math.sqrt(Math.max(v0 * v0
-                    + 2 * FVDIntegrator.G0 * (y0 - samples.get(i).pos().y()), 0));
+                    + 2 * FVDIntegrator.G0 * (y0 - samples.get(i).pos().y())
+                    - loss, 0));
                 v[i] = Math.max(0.1, vh);
+                if (fOn && i + 1 < i1) {
+                    double ds = samples.get(i + 1).s() - samples.get(i).s();
+                    double f0 = 2 * (fricRoll * FVDIntegrator.G0
+                        + fricAir * vh * vh);
+                    double vp2 = Math.max(v0 * v0 + 2 * FVDIntegrator.G0
+                        * (y0 - samples.get(i + 1).pos().y())
+                        - (loss + f0 * ds), 0);
+                    double f1 = 2 * (fricRoll * FVDIntegrator.G0
+                        + fricAir * vp2);
+                    loss += (f0 + f1) / 2 * ds;
+                }
             }
         }
         return v;

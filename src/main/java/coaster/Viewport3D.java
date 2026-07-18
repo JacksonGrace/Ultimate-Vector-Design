@@ -1687,7 +1687,8 @@ class Viewport3D {
           .append('|').append(into != null ? into.optMode : -1)
           .append('|').append(into != null && into.lockYaw)
           .append(into != null ? into.lockPitch : p.uiLockPitch)
-          .append(into != null ? into.lockRoll : p.uiLockRoll);
+          .append(into != null ? into.lockRoll : p.uiLockRoll)
+          .append('|').append(app.editor.followsPrev(pi));   // v17.1
         appendPose(sb, p);
         if (trail != null) {
             sb.append("|T|").append(trail.optMode)
@@ -1723,8 +1724,14 @@ class Viewport3D {
             && pi + 1 < app.coaster.pieces.size()
             ? app.coaster.pieces.get(pi + 1) : null;
         // reveal markers first: the piece's entry ("first node",
-        // drawn bigger) and — with a trailing bridge — the bridge end
-        addRevealMark(() -> new Vec3(p.x, p.y, p.z), true);
+        // drawn bigger) and — with a trailing bridge — the bridge end.
+        // A STRICT-SEAM follower gets NO entry mark (D136 — its stored
+        // x/y/z is the frozen record, NOT where the entry sits: the
+        // mark floated off-track as a ghost "node"; the seam menu is
+        // that entry's surface and no gizmo builds there anyway)
+        if (!app.editor.followsPrev(pi)) {
+            addRevealMark(() -> new Vec3(p.x, p.y, p.z), true);
+        }
         if (next != null) {
             TrackPiece n = next;
             addRevealMark(() -> new Vec3(n.x, n.y, n.z), false);
@@ -1789,6 +1796,10 @@ class Viewport3D {
     private void buildPieceGizmo(boolean local, int pi, TrackPiece p) {
         BridgeSection into = app.bridgeInto(pi);
         if (into != null && into.optMode != BridgeSection.OPT_NONE) return;
+        // a STRICT-SEAM follower's entry is seam-owned (v17.1, D135):
+        // the seam's settings (click the double line in the graph)
+        // are the surface — no piece gizmo
+        if (app.editor.followsPrev(pi)) return;
         Rig rig = newRig(() -> new Vec3(p.x, p.y, p.z));
         addTranslationArrows(rig, local, () -> p.entryPose().orient(),
             new AxisSink() {

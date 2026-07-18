@@ -4825,3 +4825,444 @@ launch smoke test clean. Hand-test: walkthrough #86.
 
 Gates: DomainGate 34 + Phase2Gate 253 green on a forced rebuild;
 launch smoke test clean. Hand-test: walkthrough #87.
+
+## D129. v16.17: hue/saturation PLANE picker (user feedback on
+##        v16.16's color dialog)
+
+- The RGB sliders in pickColor are REPLACED (user spec) by a HUE ×
+  SATURATION plane — hue across the horizontal, FULL saturation at
+  the top — beside a VERTICAL brightness slider, with the RGB
+  values now TYPED (three int fields, 0-255, live like the hex
+  field). The plane paints at full brightness so hues stay
+  readable wherever the slider sits (the preview shows the true
+  color); its marker is a white+black double ring, visible on any
+  background. The working color lives as HSB so GRAYS keep their
+  hue while sliding brightness/saturation (a pure-RGB round trip
+  snapped the marker to hue 0). Every input path — plane, slider,
+  typed RGB, hex, palette, recents — funnels through one guarded
+  syncAll; live apply, OK/Cancel/recents semantics unchanged
+  (v16.16). Palette + recent rows stayed exactly as shipped.
+
+Gates: DomainGate 34 + Phase2Gate 253 green on a forced rebuild;
+launch smoke test clean. Hand-test: walkthrough #88.
+
+## D130. v16.18: mid-section NODE-ANCHORED SPLIT + the node
+##        right-click menu — PHASE 2 COMPLETE
+
+- "SPLIT SECTION" / "SPLIT TRACK PIECE" at a node (user spec; the
+  roadmap's last Phase-2 item): Coaster.splitSectionAt cuts a lane
+  section in two at a node's local x — all three lanes through the
+  splitLanes de Casteljau identity / node partition (the D89
+  machinery, now with BOTH halves), right half's vDesign = the
+  design speed AT the cut, axis/rate/roll flags + vPinned onto both
+  halves; reversed/influenced/s-c/bridge refuse. The piece variant
+  chains the classic splitPiece at the fresh boundary (D71 rigid
+  pose copy). GATED: split == authored-as-two EXACTLY (0.0 m) and
+  piece variant == section split (0.0 m), Phase2Gate 258.
+- THE HONEST CONTRACT, learned by gating: the first gate draft
+  compared against the UNSPLIT original and FAILED at 2 cm — the
+  probe chain showed the left half's last sample landing one dt
+  short. Root cause is PRE-EXISTING and universal: integrateTrack's
+  `while (t <= totalTime)` walks an accumulated t whose float sum
+  overshoots the authored end, so EVERY time-domain section
+  truncates to the sample grid and every seam absorbs up to one dt
+  of authored profile (the CLAUDE.md "authored section ends
+  truncate to the sample grid" note, now understood mechanically).
+  A split therefore cannot equal the unsplit section — it equals
+  AUTHORING TWO SECTIONS, which is the operation's actual meaning;
+  vs the unsplit original it sits inside the standard seam bound
+  (2.2 cm on the gate's violent ±40°/s fixture, invisible against
+  14 cm rails). Fixing the loop epsilon would change historic
+  bitwise output everywhere — deliberately NOT done.
+- NODE RIGHT-CLICK MENU (user spec): right-clicking a node (or a
+  selection) opens its OPTIONS menu — Edit node…, smooth/broken or
+  boundary match on edges, match-all-lanes, level, level-lock,
+  straighten, straight-lock, the two SPLITS, delete — with LIVE
+  shortcut labels in parentheses (rebinds show up) and items grayed
+  where they can't apply. "Split track piece" on a section's FIRST
+  node routes to the classic boundary piece split, so the menu is
+  the one surface for every split. v10.7's right-click dialog lives
+  on as "Edit node…" (double-click still opens it directly); the
+  segment lock menu is untouched. Editor bookkeeping: the editor
+  stays on the LEFT half, boundary node selected, one undo step.
+- Also flagged while here (background task): partialConvert's KEPT
+  half drops the axis/rate/abs flags — the D89 "keeps its
+  representation exactly" rule needs the same four copies
+  splitSectionAt does.
+
+Gates: DomainGate 34 + Phase2Gate 258 (nodeSplit new, 5 checks)
+green on forced rebuilds; launch smoke test clean. Walkthrough #89.
+PHASE 2 IS COMPLETE — next: Phase 3 (speed sections, friction).
+
+## D131. v16.19: CONNECT sections (the split's inverse), brightness-
+##        aware picker plane (user feedback on v16.17/18)
+
+- COLOR PICKER (user spec): the hue/saturation plane paints at the
+  CURRENT brightness now (v16.17 drew it at full brightness — the
+  user wants the plane to darken with the slider); readability
+  moves to the SLIDER itself: its track wears a black→hue/sat
+  gradient and its thumb centre wears the selected color (both via
+  lazy .track/.thumb lookups — the skin substructure only exists
+  after the first CSS pass, so a runLater re-tints after show and
+  every syncAll pass re-applies).
+- CONNECT TWO LIKE SECTIONS (user spec; the node split's inverse):
+  Coaster.mergeSections joins adjacent sections sharing type,
+  domain and every axis/rate/roll flag (reversed/influenced
+  refuse); offered as "Connect with previous/next section" on the
+  edge nodes' right-click menu, grayed otherwise. The second's
+  lanes append shifted by the first's duration; where BOTH sides
+  own a seam node they become ONE: a MATCHED seam (equal value +
+  slope — what B leaves) merges losslessly, an unmatched one takes
+  the AVERAGE value and the AVERAGE handle slope on both handles,
+  smooth (the user's rule); held lanes just append (the hold
+  becomes a real segment). Merged section keeps the FIRST's
+  vDesign + pin. GATED: split → connect ROUND-TRIPS the original
+  EXACTLY (0.0 m, sample-count equal — the seam's grid-truncation
+  dt comes back when the seam goes away, closing the D130 loop);
+  the averaging fixture lands 0.6/1.4 → 1.0 smooth; force+geo
+  refuse. Phase2Gate 261.
+
+Gates: DomainGate 34 + Phase2Gate 261 green on forced rebuilds;
+launch smoke test clean. Hand-test: walkthrough #90.
+
+## D132. v16.20: connect hold-lane fix, node menu hides instead of
+##        graying, badge-menu connect copy (user feedback on v16.19)
+
+- THE "CONNECT AFTER SHIFT+B CHANGES THE SLOPE" BUG — TWO stacked
+  causes. (1) SIGN: BezierBaker.effInDt is NEGATIVE (−inFrac·gap),
+  so the merge's `inDt > 1e-12` guard never passed and every
+  in-slope read as a phantom 0 — sloped B-matched seams failed the
+  matched test and "averaged" against the phantom flat side,
+  HALVING the slope (the user's "the average slope was not
+  accurate"). Guards are on |dt| now; the gate fixtures were
+  flat-handled and blind — the split node carries a real slope
+  since (sloped round-trip still 0.0 m). (2) DEAD HANDLES: a lane
+  ending before the seam keeps its last node's OUT fields (and the
+  next section's node-0 IN fields) as dead data, and the held
+  branch appended them verbatim, reviving stale slopes into the
+  join. Held joins now run the SAME averaging rule as everything
+  else (user spec): the held side contributes its held value and a
+  FLAT slope — seam value = mean(held, node), slope = sOut/2 on
+  both handles, smooth — so a B-matched hold still merges
+  losslessly, and the gate's dirtied-dead-handle + held-averaging
+  fixtures (40/10 → 25, slope-halved handles) pin both routes.
+- NODE MENU: inapplicable ops DON'T APPEAR instead of graying (user
+  spec — the menu is what you can do here). Lock entries retitle
+  as unlock when the adjacent segment is already locked and show
+  for lone endpoints of locked runs too; DELETE lost its redundant
+  "(Delete)" tag and never shows on a section's END nodes (user
+  rule; node 0/two-node lanes refuse in deleteSelected anyway, and
+  the Delete KEY still shortens the ride from the last node).
+- BADGE MENU gains a "Connect with previous section" copy that
+  GRAYS when unavailable (user spec: the node menu hides, the
+  badge menu is where you discover the op exists) — safe to key
+  off the active section because badges are two-click (v16.4).
+
+Gates: DomainGate 34 + Phase2Gate 261 green (the strengthened
+connect fixture); launch smoke test clean. Hand-test: walkthrough
+#91.
+
+## D133. v17.0: PHASE 3 OPENS — friction (two coefficients) + the
+##        reversed-section design-direction scheme (user spec
+##        2026-07-17)
+
+- THE MODEL (SECTIONS-DESIGN §7; NL2 calls the pair "friction" and
+  "air resistance"): deceleration = fricRoll·g (rolling,
+  dimensionless, constant per meter — the §7 first cut, no
+  normal-force scaling yet) + fricAir·v² (air, 1/m; the Coaster
+  menu edits it per KILOMETER for readable spinner steps).
+  Per-COASTER: Coaster menu rows, `friction` line in FVDD3,
+  document undo (they reshape the track). Defaults 0 0 = the
+  historic loss-free model.
+- PLUMBING: speed keeps its algebraic energy form MINUS a LOSS
+  deficit (v² units) that joined the RK4 state of all three
+  integrators in both domains — v = sqrt(v0² + 2g(y0−y) − loss).
+  With zero coefficients the deficit is exactly 0.0 and x − 0.0 is
+  bitwise x: every pre-friction fixture compiles identically
+  (Phase2Gate 262 + DomainGate green ARE the bitwise-off gate).
+  Profile re-computations march the same deficit: passD (Heun over
+  the sample arc, always TRAVEL order), convertToLanes' re-time —
+  via the new INSTANCE Coaster.fitLanes wrappers; the static
+  convertToLanes tower stays loss-free for probes, and new
+  in-document converts MUST route through fitLanes or they go
+  friction-blind — influencedLane's operating profile, and the
+  bridge's blendedV (a lossTable over its geo rows; the vB ease now
+  absorbs only genuine seam mismatch, not friction too).
+  Deliberately loss-free: the bridge length optimizer's rateCost
+  ladder (a RELATIVE smoothness ranking — friction shifts every
+  candidate alike; the APPLIED geometry is friction-aware).
+- REVERSED SECTIONS (the user's kickoff spec, implemented as
+  written): with friction the speed at a point genuinely differs
+  by travel direction, so a reversed section can never line up —
+  ACCEPTED, surfaced, and resolvable:
+  · Piece reversal NEVER touches the design profile — the track
+    stays put (gated 5e-14 m) — so the design keeps running the
+    AUTHORED direction and its speed DISPLAYS NEGATIVE wherever
+    design direction opposes travel (sign rule: negative iff
+    designRev != reversed). Read along the ride it "loses energy
+    negatively" — a flat reversed section's design speed grows
+    toward the travel exit, exactly his phrasing.
+  · Reversed sections stay OUT of the auto-reconcile AND B's seam
+    re-freeze (new skip): their anchor moves only by explicit
+    action; under friction they are permanently ≠v — by design
+    ("will of course always be speed conflicted").
+  · RE-FREEZE DESIGN SPEED now works on reversed sections: design
+    direction := travel (Section.designRev — force/geo line field
+    10, s/c line field 6, missing = authored), vDesign re-anchors
+    at the TRAVEL entry reading the SEAM sample itself (the
+    continuation span drops its entry sample, D84 — reading one dt
+    inside left a permanent one-step friction offset), lanes
+    untouched. Generation still marches the authored axis: the
+    profile integrates with friction REVERSED (deficit negative —
+    it gains along the march exactly what the real train sheds)
+    and TrackCompiler.solveEndAnchor BISECTS the start energy so
+    the authored end lands on vDesign (~60 full-section probes per
+    compile; only re-frozen reversed sections pay it). Afterward
+    design == true pointwise (gated 1.8e-7 m/s) and a re-press
+    moves nothing (gated 0.0).
+  · MAKE GRAPHS REAL now works on reversed LANE sections:
+    re-authors in the TRAVEL direction at the true entry speed —
+    the span samples are already train-ordered, so the standard
+    fit produces forward lanes and reversed/designRev clear.
+    Geometry kept to the fit residual AT A MATCHED SEAM (gated
+    2.7 cm at matched arc); a KINKED reversed seam (pitched
+    lead-in exit — reverseAndPlace matches heading only) is
+    legitimately consumed by the smooth re-author. Reversed s/c
+    refuses make-real (elements have no mirrored re-author; the
+    resolve submenu explains) — re-freeze covers it.
+  · designRev survives piece reversal untouched (double reversal
+    round-trips, gated 1e-13 m), so an UNREVERSED section can
+    carry designRev (design opposing travel again → negative
+    display); it is excluded exactly like reversed from reconcile,
+    converts, domain switch, bakes, split and merge (the resolve
+    ops are the exits), and influence falls back to the plain path
+    on it (the rollAbs precedent).
+- s/c under friction: the SPINE is friction-invariant — RATE-0
+  roll gated 3e-7 m; GLOBAL-bank elements re-project per
+  integration leg, whose cadence is speed-dependent: ~8 mm of
+  O(dt²) noise on the 61 m fixture, gated under 5 cm and accepted
+  (the projection cadence, not a model error). The clock, felt
+  records and RATE-roll twist move with friction (per-second by
+  design).
+- FIXTURE LESSONS (three gate rounds): a reversed fixture must be
+  TRAVERSABLE BACKWARD — a diving shape run in reverse CLIMBS and
+  stalls, and no resolution can close a stalled split (the
+  "fixtures must dive first" lesson, mirrored). And compare refit
+  geometry at matched ARC, not sample index — make-real re-times
+  the samples onto the true profile, so index-to-index measures
+  the clock.
+
+Gates: Phase3Gate 27 (TESTING #48) + Phase2Gate 262 + DomainGate
+green on forced rebuilds; launch smoke test clean. Hand-test:
+walkthrough #92.
+
+## D134. v17.0 (same round): REVERSAL REWORKED AS A CONVERT — the
+##        D133 design-direction scheme walked back same-day (user
+##        re-spec 2026-07-17)
+
+- THE RE-SPEC (verbatim intent): "walk back all of the changes to
+  reversing sections and completely rework how reversing a section
+  works from the ground up in order to dramatically simplify it:
+  make it essentially just a 'convert' feature." Reversal no longer
+  transforms the model — it REBUILDS the piece: record the speed at
+  the END of the piece (or a user-typed one behind an "unlock"),
+  mirror the compiled geometry, and re-fit it as ordinary FORWARD
+  sections through the standard Convert density popup. The result
+  has NO speed conflict ("in theory reversed track shouldn't have a
+  speed conflict") and almost identically resembles the original —
+  with friction included.
+- WALKED BACK (all of D133's reversed-section half): Section.
+  designRev + both concrete fields, the FVDD3 fields (force/geo 10,
+  s/c 6), Friction.dir + reversed(), TrackCompiler.solveEndAnchor +
+  the designRev branches, the resolve-ops-on-reversed changes
+  (makeGraphsReal/refreezeSpeed refuse reversed again), the
+  negative design-speed display, the reconcile/B-refreeze designRev
+  skips, the SecState field. The FRICTION CORE (D133's other half)
+  is untouched. Old files carrying a field-10 saved by the few
+  hours of D133: the reader ignores extra fields — they load as
+  plain reversed sections.
+- THE NEW OP — Coaster.reversePiece(pieceIdx, dt, spacing, tol,
+  vEntry):
+  · REFUSES pieces containing a BRIDGE (world-anchored A→B).
+  · Entry speed vEntry NaN = the recorded Pass-D TRUE end speed —
+    the padlocked "Entry speed" row the density popup grows for
+    this op (unlock to type; every change re-runs live).
+  · reversedSamples mirrors the compiled piece in place (T/R flip,
+    U kept, felt Gl negated — the D67 identities; per-sample v kept
+    so the fit's κ decode stays exact), reversedProfile marches ONE
+    energy flow from vEntry (Heun on the friction deficit — the
+    passD pattern), and each ORIGINAL section's span re-fits via
+    fitLanes at the flow speed at ITS entry: same boundaries, same
+    types (force→force, geo→geo; s/c re-authors as FORCE lanes —
+    an element list has no mirrored form; influence FOLDS IN like
+    any whole convert; legacy reversed-flag sections just come out
+    plain forward). The piece re-anchors at the old exit running
+    backward (the D71 placement math); tilts are baked into the
+    mirrored samples, deltas reset.
+  · Slice rule: each fit includes its entry-boundary sample (the
+    withEntry/D113 rule) ONLY across a frame-SMOOTH seam — a
+    legacy reversed section's seam can be KINKED (D67 matched
+    heading only) and a cross-kink row poisons the fit's edge.
+  · CONFLICT-FREE BY CONSTRUCTION: the first section anchors the
+    flow, the D95 reconcile keeps the rest real (gated split
+    ≤ 1e-6 m/s).
+- WHAT THE GATES SAY (Phase3Gate 48f-i, Phase2Gate's reworked
+  pieceReversal + influence-i): shape at matched arc 0.87 m over
+  204 m on a roll-carrying two-section piece at the 0.02 s carpet
+  (the per-seam fit-residual reorientation chained converts always
+  had — the measured-roll edge contributes ~0.4°/seam; single
+  sections land 0.04-0.2 m), s/c spine 4 cm, level-seam legacy
+  0.000 m, double reversal 0.6-0.9 m nearest-point, custom entry
+  speed shape-invariant, stalling reversals finite + conflict-free.
+- HONEST CORNERS (documented, not bugs):
+  · FRICTION IS PAID BOTH WAYS: a piece reversed at its natural
+    end speed often cannot climb home — the flow STALLS at the
+    creep floor and the tail balloons. The preview's stats-bar
+    telltale says so ("unlock the entry speed and give it more");
+    the gate pins the stall staying finite. This is real physics,
+    not a defect — the user chooses the entry energy.
+  · A LEGACY KINKED SEAM (pitched reversed entry from old files)
+    cannot survive ANY chained re-author: frame-continuous
+    sections smooth it, rotating the far side by the kink angle.
+    Reversing such pieces changes shape by that lever arm.
+  · The old exact involution (reverse twice = bitwise restore) is
+    gone by design — a fit of a fit; Ctrl+Z is the exact restore.
+  · The reversed FLAG and reverseAndPlace remain ONLY as the
+    legacy-file compile path; nothing in the app sets the flag
+    anymore.
+
+Gates: Phase3Gate 24 + Phase2Gate 265 + DomainGate green on forced
+rebuilds; launch smoke test clean. Hand-test: walkthrough #92
+(rewritten).
+
+## D135. v17.1: STRICT SEAMS (user spec 2026-07-18) + the reversal
+##        conflict clarification
+
+- REVERSAL CLARIFICATION (no code change — the implementation
+  already behaved this way): D134's "no speed conflict" is about
+  the CONVERT itself. The reversed piece is born conflict-free at
+  one energy flow; from then on it is an ordinary piece — it holds
+  its shape and design graphs, and connecting/editing upstream
+  opens honest ≠v conflicts like anywhere else.
+- STRICT SEAMS — the user's unifier ("the track after the seam
+  should work as if the track before it were a bridge", spawned
+  from wanting to convert a bridge and edit it freely while the
+  following track holds its shape):
+  · MODEL: TrackPiece.followPrev + sLockYaw/sLockPitch/sLockRoll
+    (piece line fields 11-14, missing = detached; in DocState). A
+    follower's entry POSITION always sits on the previous piece's
+    exit; its entry ORIENTATION composes per the locks — UNLOCKED
+    axes align to the incoming frame, LOCKED axes keep the values
+    of the piece's own STORED placement, which following never
+    mutates: relocking an axis RETURNS it to the original (the
+    user's relock rule, gated 0.0). Coaster.strictEntry +
+    eulerOf/eulerFrame (the TrackPiece delta axes: heading about
+    world Y, elevation, bank; all-locked and all-unlocked take the
+    exact frames — no Euler round-trip; vertical headings hold the
+    whole frame, the global-axis rule).
+  · COMPILER: the follower still GENERATES at its stored
+    generation orientation and the whole difference applies as the
+    D100 rigid tilt about the seam — upstream edits can NEVER
+    reshape it (gated 4e-14 m), only translate/re-aim. Its design
+    speeds stay independent (piece-first reconcile exemption →
+    honest ≠v, gated 4.4 m/s on the fixture) while the REAL ride
+    flows through: followers join the previous piece's RUN
+    (continuation first-sample drop; runStart/runEnd walk follow
+    links like trailing bridges). B/Shift+B across the seam take
+    the cross-piece sampled path and never auto-refreeze (the
+    seam speed is the follower's own — the vPinned pattern).
+  · OPS: makeSeamStrict = the D71 rigid split (boundary pose →
+    stored placement = the frozen original) + follow flags (yaw
+    unlocked, pitch/roll locked — the bridge convention);
+    unstrictSeam = attachPiece + PIN the first section (user spec:
+    reorient continuous, graphs kept bit-exact — gated — SHAPE
+    re-solves, conflict KEPT); detachStrictSeam = bake the current
+    effective placement + drop the follow (the piece stays put);
+    connectStrict = reorder + follow with ALL axes unlocked (fully
+    continuous — coincident pieces move nothing, gated 5e-15).
+  · FLOWS: '+' "Attach floating piece" and the zero-distance
+    bridge prompt now CONNECT STRICTLY (the settings pop open);
+    whole-bridge converts grow "Make following seam strict (freeze
+    following track shape)" — CHECKED by default, locks carried
+    from the bridge; unchecked = the classic attach+pin. The two
+    paths differ at creation only by how they absorb the lanes'
+    fit residual (classic bends the target continuous through it,
+    strict holds locked axes — ~0.4 m on the coarse fixture), and
+    the user's stated identity holds EXACTLY: convert-with-strict
+    then UN-STRICT == the classic convert, gated bit-identical
+    (0.00 m).
+  · UI: strict seams draw a DOUBLE boundary line; clicking any
+    non-bridge seam line opens the seam menu (make-strict /
+    settings / un-strict / split-at-seam; press rank: after nodes,
+    knobs and badges — edge nodes stay grabbable); the settings
+    are three stay-open padlock checkboxes anchored at the seam;
+    a follower's Placement rows gray entirely (the seam owns
+    position, unlocked axes align, locked ones live in the seam
+    settings — the grayHint says so) and its entry gizmo doesn't
+    build (the seam is the surface); reversing a follower clears
+    the follow (its entry moves to the other end).
+- Corners: a bridge's TARGET can't also follow (the bridge IS the
+  connection — followPrev is ignored there, and bridge-adjacent
+  boundaries take no seam menu); an orphaned follower (previous
+  piece deleted) falls back to its stored placement silently;
+  clicking the active s/c strip's OWN end line keeps meaning
+  resize (its seam is reachable from the neighbor side).
+
+Gates: Phase3Gate 43 (48a-k + 49a-e, TESTING #48/#49) + Phase2Gate
++ DomainGate green; launch smoke clean. Hand-test: walkthrough #93.
+
+## D136. v17.1 feedback round (user 2026-07-18): the strict-seam
+##        RESOLVE bug + Discontinuous settings + seam UX
+
+- THE RESOLVE BUG (user: "both options led to a very different
+  shape that seemed to launch off into the distance"): the resolve
+  ops didn't account for the strict FOLLOW rotation — the D106
+  double-tilt reincarnated. Make-real fit the REAL (follow-rotated)
+  samples and the next compile applied the follow rotation A SECOND
+  time (~95-190 m displacement on the probe); refreeze reshaped
+  against gravity in the STORED frame then rotated. FIX = the D106
+  pattern extended: Coaster.bakeFollow (stored placement := the
+  current effective entry; follow flags/values untouched, the
+  rotation becomes identity) runs inside both ops. ORDER MATTERS
+  for make-real: unlike a rigid tilt-bake, baking a follow CHANGES
+  the generation frame (gravity re-solves), so the bake uses — and
+  the fit reads — the SAME pre-bake compile: "keep shape" fits what
+  the user sees. Gated 49g: make-real end dev 1.4 m on the violent
+  40°-dive+60°/s-roll fixture (was ~190 m), arc preserved; strict
+  refreeze == the UN-STRICTED twin's refreeze to 0.22 m over a
+  ~300 m reshape (the user's own removing-the-seam comparison, now
+  equal by construction). detachStrictSeam reuses bakeFollow.
+- DISCONTINUOUS SETTINGS (reworked, user spec): the seam settings
+  are a POP-OUT (Popup, auto-hide + an Apply button) — one row per
+  axis: a "Discontinuous" toggle wearing a RED OUTLINE while on, a
+  ±360° SPINNER (typed + arrows), and a ↺ back to the value the
+  seam was created with. Discontinuous OFF = the axis follows (the
+  spinner grays and shows the live value); ON = the axis holds the
+  spinner's angle. Toggling ON captures the CURRENT value — nothing
+  jumps. Model: TrackPiece.sYawDeg/sPitchDeg/sRollDeg (piece fields
+  15-17; missing = re-seed from the stored placement; in DocState),
+  strictEntry reads them for locked axes (Coaster.eulerOf now
+  public), seeded at every creation point. Direct model relocks
+  still restore the seeded originals (49b unchanged, 0.0).
+- SEAM UX: boundary lines HIGHLIGHT on hover (brighter + wider +
+  hand cursor) and stay lit while their menu is open (click
+  feedback). The seam menu grew "Connect sections (merge into
+  one)" (= the badge's old connect, like sections only); "Split
+  piece before this section" and "Connect with previous section"
+  LEFT the badge menu (user spec — they live on the seam + the
+  first node's right-click menu now).
+- GHOST NODE (user report): a follower's entry REVEAL MARKER was
+  placed at its STORED x/y/z — the frozen record, not where the
+  entry sits — floating off-track as an unselectable "node".
+  Followers get no entry mark (no gizmo builds there; the seam
+  menu is that entry's surface).
+- Density preview ranges (user spec): accuracy down to 0.001%,
+  time spacing down to 0.01 s, DISTANCE spacing floor raised to
+  0.5 m.
+- withEntry (the shared convert-extraction helper) now includes
+  the entry-boundary sample only across a frame-SMOOTH seam (< 2°)
+  — a kinked row (legacy reversed seams, discontinuous strict
+  seams) poisoned fit edges.
+
+Gates: Phase3Gate 52 (49a-g) + Phase2Gate + DomainGate green;
+launch smoke clean. Hand-test: walkthrough #94.

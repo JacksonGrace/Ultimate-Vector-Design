@@ -40,6 +40,35 @@ public final class TrackPiece {
     public boolean uiLockRoll = true;
     public Quat baseOrient = Quat.IDENTITY;   // natural orientation
 
+    /** STRICT SEAM (v17.1, D135): this piece FOLLOWS the previous
+     *  piece's exit — its entry POSITION always sits on the seam, its
+     *  entry orientation composes per the three locks (unlocked axes
+     *  ALIGN to the incoming frame, locked axes keep the FROZEN
+     *  values stored in this piece's own placement — which never
+     *  mutates by following, so relocking an axis returns it to the
+     *  original). The whole piece places RIGIDLY (the D100 tilt
+     *  machinery): upstream edits can never reshape it, only move/
+     *  re-aim it. Its design speeds stay independent (piece-first
+     *  reconcile exclusion) — upstream speed changes surface as an
+     *  honest ≠v conflict while the real ride flows through (same
+     *  run). Ignored when there is no previous piece or the previous
+     *  piece ends with a bridge (the bridge IS the connection).
+     *  Persisted as `piece` fields 11-14 (missing = detached). */
+    public boolean followPrev = false;
+    public boolean sLockYaw = false;    // heading follows by default
+    public boolean sLockPitch = true;   // pitch/roll DISCONTINUOUS by
+    public boolean sLockRoll = true;    //   default (bridge convention)
+    /** The DISCONTINUOUS axis values (v17.1 feedback round, D136):
+     *  a locked axis holds THIS angle (deg) — user-editable in the
+     *  seam settings (spinners; ↺ restores the value the seam was
+     *  created with, re-read from the stored placement). Initialized
+     *  from the stored placement at strict-creation; toggling an axis
+     *  discontinuous captures the CURRENT followed value (no jump).
+     *  Persisted as `piece` fields 15-17. */
+    public double sYawDeg;
+    public double sPitchDeg;
+    public double sRollDeg;
+
     public final List<Section> sections = new ArrayList<>();
 
     public TrackPiece(double x, double y, double z, double yawDeg) {

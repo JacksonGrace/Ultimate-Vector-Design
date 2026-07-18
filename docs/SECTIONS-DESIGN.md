@@ -570,7 +570,8 @@ toggled, then held in the chosen unit). Three modes:
   the whole node/handle editing stack).
 Pass D applies them in order; overlaps are invalid (reject on placement).
 
-## 7. Dynamics pass details (Phase 3 completes this)
+## 7. Dynamics pass details (FRICTION LANDED v17.0 D133; speed
+##    regions complete it)
 
 `dv/ds` from: gravity component along T, minus rolling friction
 (dimensionless coefficient c_rr, deceleration ≈ c_rr·g·|N|/m ≈ c_rr·g for
@@ -578,6 +579,22 @@ a first cut), minus air drag (k_air·v², k_air in 1/m). NL2 calls these
 "friction" and "air resistance". RK4 for Pass G's frame ODE (DONE in
 Phase 0, D44) and Pass D's speed ODE. v floor 0.5 m/s stays
 (garbage-but-finite on stalls).
+
+SHIPPED v17.0 (D133) exactly as above (the c_rr·g first cut, no |N|
+scaling yet): the two coefficients live on the Coaster (`friction`
+line, Coaster-menu rows, document undo), a loss deficit joined the
+RK4 state of every integrator AND Pass D's per-run march (Heun over
+the sample arc), and every profile re-computation (converts via
+Coaster.fitLanes, influence, bridge blend) marches the same deficit.
+Zero coefficients are bitwise the old model. REVERSAL under friction
+(D134, user re-spec same day — a first design-direction scheme was
+walked back): "Reverse piece" is a CONVERT — the compiled geometry
+mirrors and re-fits as forward sections at one energy flow from the
+recorded end speed (or a custom one, padlocked row in the density
+popup); same section structure, no speed conflict, shape to the fit
+residual with friction on; bridge pieces refuse; the reversed FLAG
+survives only as the legacy-file compile path. See PHYSICS.md §3
+and DECISIONS D133/D134.
 
 ## 8. Persistence, undo, UI
 

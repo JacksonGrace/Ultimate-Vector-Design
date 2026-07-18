@@ -219,17 +219,29 @@ class GraphEditor extends Region {
         return !s.isEmpty() && s.get(s.size() - 1) instanceof BridgeSection;
     }
 
-    /** First piece of the bridged run containing the active piece. */
+    /** Piece p is a STRICT-SEAM follower of p−1 (v17.1, D135) — the
+     *  same rule the compiler applies: follow is ignored when
+     *  bridged-in or orphaned. */
+    boolean followsPrev(int p) {
+        return p > 0 && app.coaster.pieces.get(p).followPrev
+            && !endsWithBridge(p - 1)
+            && !app.coaster.pieces.get(p - 1).sections.isEmpty()
+            && !app.coaster.pieces.get(p).sections.isEmpty();
+    }
+
+    /** First piece of the connected run containing the active piece —
+     *  pieces chained by trailing bridges OR strict seams (v17.1). */
     private int runStart() {
         int p = activePiece;
-        while (p > 0 && endsWithBridge(p - 1)) p--;
+        while (p > 0 && (endsWithBridge(p - 1) || followsPrev(p))) p--;
         return p;
     }
 
-    /** Last piece of the bridged run containing the active piece. */
+    /** Last piece of the connected run containing the active piece. */
     private int runEnd() {
         int p = activePiece;
-        while (p < app.coaster.pieces.size() - 1 && endsWithBridge(p)) p++;
+        while (p < app.coaster.pieces.size() - 1
+                && (endsWithBridge(p) || followsPrev(p + 1))) p++;
         return p;
     }
 
@@ -330,6 +342,322 @@ class GraphEditor extends Region {
             }
         }
         return out;
+    }
+
+    // ---------- STRICT SEAMS (v17.1, D135) ----------
+    // clicking a boundary LINE between strips opens the seam menu:
+    // make-strict / settings / un-strict / split. Bridge-adjacent
+    // boundaries are the bridge's own surface and take no seam menu.
+
+    /** The runLayout boundary index within grab range of (x, y): the
+     *  boundary AFTER rl[i] (between rl[i] and rl[i+1]); −1 = none.
+     *  Bridge-adjacent boundaries are excluded. */
+    private int hitSeam(double x, double y) {
+        if (y < MARGIN_TOP || y > MARGIN_TOP + plotHeight()) return -1;
+        List<RunSec> rl = runLayout();
+        for (int i = 0; i < rl.size() - 1; i++) {
+            double bx = tToX(rl.get(i).t0() + rl.get(i).dur());
+            if (Math.abs(x - bx) > 4) continue;
+            if (rl.get(i).sec() instanceof BridgeSection
+                    || rl.get(i + 1).sec() instanceof BridgeSection) {
+                return -1;   // the bridge's own surface
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    /** Is the boundary after rl[i] a STRICT seam (a follower piece's
+     *  entry)? */
+    private boolean seamStrict(List<RunSec> rl, int i) {
+        return i + 1 < rl.size() && rl.get(i + 1).section() == 0
+            && followsPrev(rl.get(i + 1).piece());
+    }
+
+    /** The seam dropdown (user spec): make-strict on ordinary section
+     *  boundaries; settings / un-strict on strict ones; split always. */
+    private void showSeamMenu(int i, double screenX, double screenY) {
+        List<RunSec> rl = runLayout();
+        if (i < 0 || i + 1 >= rl.size()) return;
+        RunSec right = rl.get(i + 1);
+        boolean strict = seamStrict(rl, i);
+        ContextMenu cm = new ContextMenu();
+        if (strict) {
+            MenuItem settings = new MenuItem("Strict seam settings…");
+            settings.setOnAction(ev ->
+                showStrictSeamSettings(right.piece()));
+            MenuItem un = new MenuItem(
+                "Un-strict seam (reorient continuous, keep conflict)");
+            un.setOnAction(ev -> {
+                pushUndoSnapshot();
+                int fp = right.piece();
+                if (app.coaster.unstrictSeam(fp)) {
+                    if (activePiece >= fp) {
+                        activePiece = Math.max(0, activePiece - 1);
+                    }
+                    activeSection = (int) FvdDesigner.clamp(activeSection,
+                        0, sections().size() - 1);
+                    app.lanes = lanesFor(sections().get(activeSection));
+                    syncLaneButtons();
+                    app.markDirty();
+                    app.rebuildTrack();
+                    app.updatePieceButton();
+                    app.syncPlacementSpinners();
+                    refreshOffset();
+                }
+                redraw();
+            });
+            MenuItem split = new MenuItem(
+                "Split track at seam (detach piece)");
+            split.setOnAction(ev -> {
+                pushUndoSnapshot();
+                if (app.coaster.detachStrictSeam(right.piece(),
+                        FvdDesigner.INTEGRATE_DT)) {
+                    app.markDirty();
+                    app.rebuildTrack();
+                    app.syncPlacementSpinners();
+                    refreshOffset();
+                }
+                redraw();
+            });
+            cm.getItems().addAll(settings, un, split);
+        } else if (right.section() > 0) {
+            // CONNECT the two sections into one (D136 — the badge's
+            // "Connect with previous section", now living here):
+            // like sections only, the mergeSections rules
+            List<Section> ps =
+                app.coaster.pieces.get(right.piece()).sections;
+            Section sa = ps.get(right.section() - 1);
+            Section sb = ps.get(right.section());
+            boolean like = sa instanceof LaneSection la
+                && sb instanceof LaneSection lb
+                && sa.getClass() == sb.getClass()
+                && sa.domain() == sb.domain()
+                && la.rollGlobal == lb.rollGlobal
+                && la.yawPitchGlobal == lb.yawPitchGlobal
+                && la.ratePerMeter == lb.ratePerMeter
+                && la.rollAbsolute == lb.rollAbsolute
+                && !sa.reversed() && !sb.reversed()
+                && !la.influenced() && !lb.influenced();
+            MenuItem conn = new MenuItem(like
+                ? "Connect sections (merge into one)"
+                : "Connect sections — needs two LIKE sections");
+            conn.setDisable(!like);
+            final int rp = right.piece(), rk = right.section();
+            conn.setOnAction(ev -> {
+                activateRunSec(rp, rk);
+                connectSections(rk - 1);
+            });
+            cm.getItems().add(conn);
+            MenuItem make = new MenuItem(
+                "Make seam strict (freeze downstream shape)…");
+            make.setOnAction(ev -> {
+                pushUndoSnapshot();
+                int np = app.coaster.makeSeamStrict(right.piece(),
+                    right.section(), FvdDesigner.INTEGRATE_DT);
+                if (np >= 0) {
+                    activateRunSec(np, 0);
+                    app.markDirty();
+                    app.rebuildTrack();
+                    app.updatePieceButton();
+                    app.syncPlacementSpinners();
+                    refreshOffset();
+                    redraw();
+                    showStrictSeamSettings(np);
+                } else {
+                    redraw();   // refused: the snapshot is a no-op
+                }
+            });
+            MenuItem split = new MenuItem("Split track at seam");
+            split.setOnAction(ev -> {
+                activateRunSec(right.piece(), right.section());
+                splitAt(right.section());
+            });
+            cm.getItems().addAll(make, split);
+        } else {
+            return;   // detached-piece junctions aren't seams
+        }
+        // click feedback (D136): the seam stays highlighted while its
+        // menu is open
+        openSeam = i;
+        cm.setOnHidden(ev -> {
+            openSeam = -1;
+            redraw();
+        });
+        cm.show(canvas, screenX, screenY);
+        openMenu = cm;
+        redraw();
+    }
+
+    private javafx.stage.Popup seamPopup;
+    private boolean seamSyncing;
+
+    /** The follower's CURRENT effective entry orientation as
+     *  {heading, elevation, bank} (deg) — read off the compiled entry
+     *  sample; falls back to the discontinuous values. */
+    private double[] followerEuler(int followerIdx) {
+        TrackCompiler.Span sp = spanAt(followerIdx, 0);
+        if (sp != null && app.lastSamples != null
+                && !app.lastSamples.isEmpty()) {
+            int i0 = Math.min(sp.i0(), app.lastSamples.size() - 1);
+            FVDIntegrator.Sample sm = app.lastSamples.get(i0);
+            double[] e = Coaster.eulerOf(Quat.fromFrame(sm.T(), sm.U()));
+            if (!Double.isNaN(e[0]) && !Double.isNaN(e[2])) return e;
+        }
+        TrackPiece f = app.coaster.pieces.get(followerIdx);
+        return new double[]{ f.sYawDeg, f.sPitchDeg, f.sRollDeg };
+    }
+
+    /** The strict seam SETTINGS pop-out (reworked D136, user spec):
+     *  one row per axis — a DISCONTINUOUS toggle (red outline while
+     *  on), a value spinner, and a ↺. Discontinuous OFF = the axis
+     *  follows the seam (the spinner grays and just shows the live
+     *  value); ON = the axis holds the spinner's angle — type or
+     *  arrow it, ↺ returns the value the seam was created with.
+     *  Toggling ON captures the CURRENT value (nothing jumps).
+     *  Apply closes (clicking off still works too). */
+    void showStrictSeamSettings(int followerIdx) {
+        if (followerIdx < 0 || followerIdx >= app.coaster.pieces.size()) {
+            return;
+        }
+        TrackPiece f = app.coaster.pieces.get(followerIdx);
+        if (!f.followPrev) return;
+        if (seamPopup != null) {
+            seamPopup.hide();
+            seamPopup = null;
+        }
+        javafx.stage.Popup pop = new javafx.stage.Popup();
+        pop.setAutoHide(true);
+        seamPopup = pop;
+        GridPane grid = new GridPane();
+        grid.setHgap(8);
+        grid.setVgap(6);
+        grid.setStyle("-fx-background-color: rgb(38,40,46);"
+            + " -fx-padding: 12; -fx-border-color: rgb(95,100,112);"
+            + " -fx-border-radius: 6; -fx-background-radius: 6;");
+        Label head = new Label("Strict seam — Discontinuous axes hold "
+            + "their angle; others follow the track before the seam");
+        head.setStyle("-fx-text-fill: rgb(200,205,215);"
+            + " -fx-font-size: 11px;");
+        grid.add(head, 0, 0, 4, 1);
+        String[] names = { "Yaw (heading °)", "Pitch (°)", "Roll (bank °)" };
+        Runnable[] rowSyncs = new Runnable[3];
+        for (int a = 0; a < 3; a++) {
+            final int axis = a;
+            Label lbl = new Label(names[a]);
+            lbl.setStyle("-fx-text-fill: rgb(200,205,215);"
+                + " -fx-font-size: 11px;");
+            javafx.scene.control.ToggleButton disc =
+                new javafx.scene.control.ToggleButton("Discontinuous");
+            disc.setFocusTraversable(false);
+            javafx.scene.control.Spinner<Double> sp =
+                new javafx.scene.control.Spinner<>(
+                    new javafx.scene.control.SpinnerValueFactory
+                        .DoubleSpinnerValueFactory(-360, 360, 0, 1));
+            sp.setPrefWidth(86);
+            sp.setEditable(true);
+            sp.getEditor().setTextFormatter(
+                new javafx.scene.control.TextFormatter<String>(ch ->
+                    ch.getControlNewText().matches("-?\\d*\\.?\\d*")
+                        ? ch : null));
+            Button rst = new Button("↺");
+            rst.setFocusTraversable(false);
+            Tooltip.install(rst, new Tooltip(
+                "Back to the value the seam was created with"));
+            Runnable sync = () -> {
+                boolean on = axis == 0 ? f.sLockYaw
+                    : axis == 1 ? f.sLockPitch : f.sLockRoll;
+                disc.setSelected(on);
+                // the red outline IS the discontinuity telltale
+                disc.setStyle("-fx-font-size: 11px;"
+                    + " -fx-border-width: 2; -fx-border-radius: 4;"
+                    + (on ? " -fx-border-color: rgb(220,70,70);"
+                          : " -fx-border-color: transparent;"));
+                seamSyncing = true;
+                sp.getValueFactory().setValue(on
+                    ? (axis == 0 ? f.sYawDeg
+                        : axis == 1 ? f.sPitchDeg : f.sRollDeg)
+                    : followerEuler(followerIdx)[axis]);
+                seamSyncing = false;
+                sp.setDisable(!on);
+                rst.setDisable(!on);
+            };
+            rowSyncs[a] = sync;
+            disc.setOnAction(ev -> {
+                pushUndoSnapshot();
+                boolean on = disc.isSelected();
+                if (on) {
+                    // capture the CURRENT value — nothing jumps
+                    double cur = followerEuler(followerIdx)[axis];
+                    if (axis == 0) f.sYawDeg = cur;
+                    else if (axis == 1) f.sPitchDeg = cur;
+                    else f.sRollDeg = cur;
+                }
+                if (axis == 0) f.sLockYaw = on;
+                else if (axis == 1) f.sLockPitch = on;
+                else f.sLockRoll = on;
+                app.markDirty();
+                app.rebuildTrack();
+                app.syncPlacementSpinners();
+                for (Runnable rsy : rowSyncs) rsy.run();
+                redraw();
+            });
+            sp.valueProperty().addListener((o, was, val) -> {
+                if (seamSyncing || val == null) return;
+                boolean on = axis == 0 ? f.sLockYaw
+                    : axis == 1 ? f.sLockPitch : f.sLockRoll;
+                if (!on) return;
+                pushUndoSnapshot();
+                if (axis == 0) f.sYawDeg = val;
+                else if (axis == 1) f.sPitchDeg = val;
+                else f.sRollDeg = val;
+                app.markDirty();
+                app.rebuildTrack();
+                redraw();
+            });
+            rst.setOnAction(ev -> {
+                pushUndoSnapshot();
+                double[] orig = Coaster.eulerOf(f.entryPose().orient());
+                double v = axis == 0
+                    ? (Double.isNaN(orig[0]) ? 0 : orig[0])
+                    : axis == 1 ? orig[1]
+                    : (Double.isNaN(orig[2]) ? 0 : orig[2]);
+                if (axis == 0) f.sYawDeg = v;
+                else if (axis == 1) f.sPitchDeg = v;
+                else f.sRollDeg = v;
+                app.markDirty();
+                app.rebuildTrack();
+                for (Runnable rsy : rowSyncs) rsy.run();
+                redraw();
+            });
+            sync.run();
+            grid.addRow(a + 1, lbl, disc, sp, rst);
+        }
+        Button apply = new Button("Apply");
+        apply.setDefaultButton(true);
+        apply.setOnAction(ev -> {
+            pop.hide();
+            seamPopup = null;
+        });
+        HBox foot = new HBox(apply);
+        foot.setAlignment(Pos.CENTER_RIGHT);
+        grid.add(foot, 0, 4, 4, 1);
+        pop.getContent().add(grid);
+        // anchor at the seam's on-screen x (the follower's first strip)
+        double sx = -1;
+        for (RunSec rs : runLayout()) {
+            if (rs.piece() == followerIdx && rs.section() == 0) {
+                sx = tToX(rs.t0());
+                break;
+            }
+        }
+        Point2D at = canvas.localToScreen(
+            sx >= MARGIN_LEFT && sx <= canvas.getWidth()
+                ? sx : canvas.getWidth() / 2,
+            MARGIN_TOP + 30);
+        if (at != null) {
+            pop.show(canvas.getScene().getWindow(), at.getX(), at.getY());
+        }
     }
 
     /** The run strip under global time t, or null. */
@@ -1175,6 +1503,15 @@ class GraphEditor extends Region {
     private void convertSection(int k, boolean toGeo, Section.Domain dom,
                                 boolean rollG, boolean ypG, boolean rateM,
                                 boolean rollAbs) {
+        convertSection(k, toGeo, dom, rollG, ypG, rateM, rollAbs, false);
+    }
+
+    /** strictSeam (v17.1, D135 — bridge whole-converts only): keep
+     *  the next piece as a strict-seam FOLLOWER — shape frozen, the
+     *  bridge's locks carried — instead of the classic attach+pin. */
+    private void convertSection(int k, boolean toGeo, Section.Domain dom,
+                                boolean rollG, boolean ypG, boolean rateM,
+                                boolean rollAbs, boolean strictSeam) {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()) return;
         Section sec = secs.get(k);
@@ -1183,13 +1520,14 @@ class GraphEditor extends Region {
         // the model twin runs the sampling + replacement so the
         // density preview can re-run it per change (v14.0, D90); a
         // BRIDGE whole-convert routes to convertBridgeWhole in there —
-        // the next piece attaches and the track stays connected (D89)
+        // the next piece attaches (or strict-follows) and the track
+        // stays connected (D89/D135)
         beginDensityPreview(k, toGeo, false,
             dom == Section.Domain.DISTANCE,
             (sp, tol) ->
             app.coaster.convertWholeSection(piece, k, toGeo,
                 FvdDesigner.INTEGRATE_DT, sp, tol, dom, rollG, ypG, rateM,
-                rollAbs),
+                rollAbs, strictSeam),
             () -> {
                 activePiece = piece;
                 activeSection = k;
@@ -1404,16 +1742,18 @@ class GraphEditor extends Region {
         applyBridgeGap(bs, dOpt);
     }
 
-    /** Replace the active piece's trailing bridge with a DIRECT attach
-     *  of the next piece (the zero-distance answer): the bridge goes,
-     *  the next piece's sections continue this chain. */
+    /** Replace the active piece's trailing bridge with a DIRECT
+     *  connection of the next piece (the zero-distance answer) —
+     *  a STRICT SEAM since v17.1 (D135): the bridge goes, the next
+     *  piece FOLLOWS with every axis unlocked (the seamless re-join,
+     *  shape frozen), and the seam settings pop up. */
     private void attachThroughBridge() {
         List<Section> secs = sections();
         int k = secs.size() - 1;
         if (!(secs.get(k) instanceof BridgeSection)
                 || activePiece + 1 >= app.coaster.pieces.size()) return;
         secs.remove(k);
-        app.coaster.attachPiece(activePiece, activePiece + 1);
+        int np = app.coaster.connectStrict(activePiece, activePiece + 1);
         activeSection = Math.min(k, sections().size() - 1);
         app.lanes = lanesFor(sections().get(activeSection));
         selIdx = -1;
@@ -1424,6 +1764,7 @@ class GraphEditor extends Region {
         app.updatePieceButton();
         refreshOffset();
         redraw();
+        if (np >= 0) showStrictSeamSettings(np);
     }
 
     // ---------- bridge placement modes (v13.5) ----------
@@ -1804,6 +2145,18 @@ class GraphEditor extends Region {
     private double[][] pvRef;               // {globalT, v0, v1, v2} rows
     private int pvPiece = -1, pvSec = -1;   // the preview's own activation
     private boolean pvApplying;             // restore-in-progress guard
+    // REVERSE-PIECE preview (v17.0, D134 — reversal IS a convert):
+    // the popup grows a padlocked entry-speed row; the guide inputs
+    // are STASHED from the pristine compile at begin time (the live
+    // arrays hold the applied result during the preview)
+    private double pvRevBase = Double.NaN;  // recorded end speed;
+                                            // NaN = not a reversal
+    private double pvRevCustom = Double.NaN; // unlocked value; NaN = auto
+    private List<FVDIntegrator.Sample> pvRevSamples;  // pristine mirror
+    private double[][] pvRevRates;          // design rates, rev order
+    private double pvRevT0;                 // piece's global start time
+    private int pvRevQMax;                  // new section 0's rev extent
+    private boolean pvRevGeo;               // its mode (guide quantities)
     private double pvSpacing = Coaster.NODE_SPACING_DEFAULT;   // sticky
     // DISTANCE-target fits space nodes in METERS (v16.1, D104) —
     // separate sticky value + its own slider range
@@ -1893,6 +2246,23 @@ class GraphEditor extends Region {
         app.updatePieceButton();
         refreshOffset();
         if (pvCount != null) pvCount.setText(pvCountText());
+        // REVERSAL stall telltale (v17.0, D134): friction is lost in
+        // BOTH directions, so a piece reversed at its natural end
+        // speed often can't climb back over what the forward ride
+        // descended — the flow floors at the creep speed and the
+        // tail goes garbage-but-finite. Say so instead of leaving
+        // the user to puzzle out a ballooned strip.
+        if (ok && !Double.isNaN(pvRevBase)) {
+            boolean stalled = false;
+            if (app.trueV != null) {
+                for (double v : app.trueV) stalled |= v < 0.6;
+            }
+            app.statsLabel.setText(stalled
+                ? "The reversed ride STALLS partway — friction is paid "
+                  + "both ways. Unlock the entry speed and give it more."
+                : "Reversing the piece — tune the node density, then "
+                  + "Apply.");
+        }
         redraw();
         return ok;
     }
@@ -1929,6 +2299,10 @@ class GraphEditor extends Region {
         pvRef = null;
         pvPiece = -1;
         pvSec = -1;
+        pvRevBase = Double.NaN;   // reversal preview state (D134)
+        pvRevCustom = Double.NaN;
+        pvRevSamples = null;
+        pvRevRates = null;
     }
 
     private String pvCountText() {
@@ -1993,6 +2367,57 @@ class GraphEditor extends Region {
         HBox.setHgrow(pvCount, Priority.ALWAYS);
         pvCount.setMaxWidth(Double.MAX_VALUE);
         VBox box = new VBox(7, row1, row2);
+        // REVERSE-piece preview (v17.0, D134): a padlocked ENTRY
+        // SPEED row on top — locked shows the recorded end speed
+        // (what the ride reaches the piece's end with), unlock to
+        // type a custom one; every change re-runs the reversal live
+        if (!Double.isNaN(pvRevBase)) {
+            Label sl = new Label("Entry speed (m/s)");
+            sl.setStyle("-fx-text-fill: rgb(200,205,215);"
+                + " -fx-font-size: 11px;");
+            TextField sf = new TextField();
+            sf.setPrefColumnCount(4);
+            sf.setStyle("-fx-font-size: 11px;");
+            sf.setTextFormatter(new javafx.scene.control.TextFormatter<String>(
+                ch -> ch.getControlNewText().matches("\\d*\\.?\\d*")
+                    ? ch : null));
+            ToggleButton lock = new ToggleButton("🔒");
+            lock.setFocusTraversable(false);
+            lock.setStyle("-fx-font-size: 10px; -fx-padding: 1 5 1 5;");
+            Runnable syncRow = () -> {
+                boolean unlocked = lock.isSelected();
+                lock.setText(unlocked ? "🔓" : "🔒");
+                sf.setDisable(!unlocked);
+                sf.setText(String.format(Locale.US, "%.1f",
+                    Double.isNaN(pvRevCustom) ? pvRevBase : pvRevCustom));
+            };
+            lock.setOnAction(ev -> {
+                if (!lock.isSelected()) pvRevCustom = Double.NaN;
+                syncRow.run();
+                rebuildReversedGuides();
+                pvRerun();
+            });
+            sf.setOnAction(ev -> {
+                try {
+                    pvRevCustom = FvdDesigner.clamp(
+                        Double.parseDouble(sf.getText().trim()), 1, 100);
+                } catch (NumberFormatException ex) {
+                    // keep the previous value
+                }
+                syncRow.run();
+                rebuildReversedGuides();
+                pvRerun();
+            });
+            syncRow.run();
+            Tooltip.install(sl, new Tooltip(
+                "The reversed run's starting speed. Locked = the speed\n"
+                + "the ride REACHES this piece's end with (the natural\n"
+                + "entry for running it backward). Unlock to type a\n"
+                + "custom speed."));
+            HBox rowS = new HBox(6, sl, lock, sf);
+            rowS.setAlignment(Pos.CENTER_LEFT);
+            box.getChildren().add(0, rowS);
+        }
         box.setStyle("-fx-background-color: rgb(38,40,46);"
             + " -fx-padding: 10; -fx-border-color: rgb(95,100,112);"
             + " -fx-border-radius: 6; -fx-background-radius: 6;");
@@ -2058,32 +2483,33 @@ class GraphEditor extends Region {
             });
     }
 
-    /** Slider/field ranges per mode: spacing 0.02–2 s, accuracy
-     *  0.05–10 % of the lane's value range — both log-scaled. */
+    /** Slider/field ranges per mode (widened D136, user spec):
+     *  spacing 0.01–2 s / 0.5–20 m, accuracy 0.001–10 % of the
+     *  lane's value range — all log-scaled. */
     private void syncPvControls() {
         if (pvSlider == null) return;
         pvSyncing = true;
         if (pvAdaptive) {
             pvLabel.setText("Accuracy (% of range)");
-            pvSlider.setMin(Math.log10(0.01));
+            pvSlider.setMin(Math.log10(0.001));
             pvSlider.setMax(Math.log10(10));
             pvSlider.setValue(Math.log10(FvdDesigner.clamp(
-                pvTol * 100, 0.01, 10)));
-            pvField.setText(String.format(Locale.US, "%.2f", pvTol * 100));
+                pvTol * 100, 0.001, 10)));
+            pvField.setText(String.format(Locale.US, "%.3f", pvTol * 100));
         } else if (pvDist) {
-            // DISTANCE target (v16.1): meters, the ×10 range
+            // DISTANCE target (v16.1): meters, the ×10-ish range
             pvLabel.setText("Node spacing (m)");
-            pvSlider.setMin(Math.log10(0.2));
+            pvSlider.setMin(Math.log10(0.5));
             pvSlider.setMax(Math.log10(20.0));
             pvSlider.setValue(Math.log10(FvdDesigner.clamp(
-                pvSpacingDist, 0.2, 20.0)));
+                pvSpacingDist, 0.5, 20.0)));
             pvField.setText(String.format(Locale.US, "%.2f", pvSpacingDist));
         } else {
             pvLabel.setText("Node spacing (s)");
-            pvSlider.setMin(Math.log10(0.02));
+            pvSlider.setMin(Math.log10(0.01));
             pvSlider.setMax(Math.log10(2.0));
             pvSlider.setValue(Math.log10(FvdDesigner.clamp(
-                pvSpacing, 0.02, 2.0)));
+                pvSpacing, 0.01, 2.0)));
             pvField.setText(String.format(Locale.US, "%.2f", pvSpacing));
         }
         pvSyncing = false;
@@ -2091,11 +2517,11 @@ class GraphEditor extends Region {
 
     private void setPvValue(double v) {
         if (pvAdaptive) {
-            pvTol = FvdDesigner.clamp(v, 0.01, 10) / 100.0;
+            pvTol = FvdDesigner.clamp(v, 0.001, 10) / 100.0;
         } else if (pvDist) {
-            pvSpacingDist = FvdDesigner.clamp(v, 0.2, 20.0);
+            pvSpacingDist = FvdDesigner.clamp(v, 0.5, 20.0);
         } else {
-            pvSpacing = FvdDesigner.clamp(v, 0.02, 2.0);
+            pvSpacing = FvdDesigner.clamp(v, 0.01, 2.0);
         }
         syncPvControls();
         pvRerun();
@@ -2381,18 +2807,22 @@ class GraphEditor extends Region {
         applyBridgeGap(bs, gap);
     }
 
-    /** Append floating piece p's sections to the ACTIVE piece (v12.0):
-     *  they re-chain from its exit pose on the rebuild; the emptied
-     *  piece dissolves. One undo step. */
+    /** Connect floating piece p after the ACTIVE piece (v12.0;
+     *  a STRICT SEAM since v17.1, D135): the piece reorders to come
+     *  next, snaps onto this piece's end fully continuous (all axes
+     *  unlocked) with its SHAPE frozen rigid, and the seam settings
+     *  pop up — lock axes there to freeze parts of its orientation.
+     *  One undo step. */
     private void attachFloating(int p) {
         pushUndoSnapshot();
-        app.coaster.attachPiece(activePiece, p);
+        int np = app.coaster.connectStrict(activePiece, p);
         if (p < activePiece) activePiece--;   // list shifted under us
         app.rebuildTrack();
         app.updatePieceButton();
         app.syncPlacementSpinners();
         refreshOffset();
         redraw();
+        if (np >= 0) showStrictSeamSettings(np);
     }
 
     /** Split the ACTIVE piece before section k (v12.0; exact since
@@ -2404,9 +2834,17 @@ class GraphEditor extends Region {
      *  step. */
     private void splitAt(int k) {
         if (k <= 0 || k >= sections().size()) return;
+        pushUndoSnapshot();
+        splitAtCore(k);
+    }
+
+    /** The piece-split body without the undo push (v16.18 — the
+     *  node-anchored split chains it after its own section cut,
+     *  inside ONE undo step). */
+    private void splitAtCore(int k) {
+        if (k <= 0 || k >= sections().size()) return;
         TrackCompiler.Span sp = spanOf(k - 1);
         if (sp == null) return;
-        pushUndoSnapshot();
         int np = app.coaster.splitPiece(activePiece, k, sp.exit());
         if (np >= 0 && activeSection >= k) {
             activePiece = np;         // follow the section being edited
@@ -2423,34 +2861,181 @@ class GraphEditor extends Region {
         redraw();
     }
 
-    /** Reverse the ACTIVE piece (v12.1, D71 — the Coaster menu item):
-     *  the model transformation lives in Coaster.reversePiece (train
-     *  order + toggled section flags + placement re-anchored at the
-     *  old exit); the editor follows the section it was editing to its
-     *  new list position. One undo step. */
+    /** NODE-ANCHORED SPLIT (v16.18, D130 — the last Phase-2 item):
+     *  cut the ACTIVE section in two at active-lane node idx —
+     *  exactly the chain authoring two sections there would give
+     *  (Coaster.splitSectionAt; the new seam carries the standard
+     *  grid-truncation every seam has) — and optionally split the
+     *  PIECE at the fresh boundary too (the D71 rigid pose copy).
+     *  The editor stays on the LEFT half with the boundary node
+     *  selected. One undo step; refusals post their reason. */
+    void splitAtNode(int idx, boolean alsoPiece) {
+        List<BezierBaker.Node> lane = active();
+        if (activeInfl() != null) {
+            app.statsLabel.setText("Splitting edits the design lanes — "
+                + "leave the influence surface first.");
+            return;
+        }
+        Section sec = sections().get(activeSection);
+        if (!(sec instanceof LaneSection) || sec.reversed()) {
+            app.statsLabel.setText(sec.reversed()
+                ? "A reversed section's lanes read against the train — "
+                    + "reverse the piece back to split it."
+                : "Only force/geo sections split at a node.");
+            return;
+        }
+        if (idx <= 0 || idx >= lane.size()
+                || lane.get(idx).t >= sectionEnd() - 1e-9) {
+            app.statsLabel.setText("Split at an INTERIOR node — the "
+                + "section ends are boundaries already.");
+            return;
+        }
+        double xc = lane.get(idx).t;
+        pushUndoSnapshot();
+        if (!app.coaster.splitSectionAt(activePiece, activeSection, xc,
+                FvdDesigner.INTEGRATE_DT)) {
+            app.statsLabel.setText("Couldn't split here.");
+            return;
+        }
+        // the editor keeps the LEFT half; its last active-lane node
+        // is the fresh boundary
+        app.lanes = lanesFor(sections().get(activeSection));
+        selIdx = Math.min(idx, active().size() - 1);
+        selSet.clear();
+        selSet.add(selIdx);
+        elSel = -1;
+        app.rebuildTrack();   // fresh spans before a piece split
+        if (alsoPiece) {
+            splitAtCore(activeSection + 1);
+        } else {
+            syncLaneButtons();
+            app.updatePieceButton();
+            app.syncPlacementSpinners();
+            refreshOffset();
+            redraw();
+        }
+    }
+
+    /** Reverse the ACTIVE piece (REWORKED v17.0, D134 — reversal IS
+     *  a convert, user re-spec): the whole flow runs through the
+     *  standard density preview driving Coaster.reversePiece — the
+     *  compiled geometry re-fits as forward sections running the
+     *  other way, entry speed = the recorded end speed (the popup's
+     *  padlocked row; unlock to type a custom one), NO speed
+     *  conflict in the result. Apply = one undo step; Cancel
+     *  restores exactly. */
     void reverseActivePiece() {
         for (Section s : sections()) {
             if (s instanceof BridgeSection) {
                 // a bridge's poses are world-anchored A→B; running the
                 // piece backward through it has no defined meaning
                 app.statsLabel.setText("Reversing a piece with a bridge"
-                    + " isn't supported — delete the bridge first.");
+                    + " isn't supported — delete or convert the bridge"
+                    + " first.");
                 return;
             }
         }
-        TrackCompiler.Span last = spanOf(sections().size() - 1);
-        if (last == null) return;
-        pushUndoSnapshot();
-        app.coaster.reversePiece(activePiece, last.exit());
-        activeSection = sections().size() - 1 - activeSection;
-        activeSection = (int) FvdDesigner.clamp(activeSection, 0,
-            sections().size() - 1);
-        app.lanes = lanesFor(sections().get(activeSection));
-        syncLaneButtons();
-        app.rebuildTrack();
-        app.syncPlacementSpinners();
-        refreshOffset();
-        redraw();
+        TrackCompiler.Span lastSp = spanOf(sections().size() - 1);
+        if (lastSp == null || app.lastSamples == null
+                || app.trueV == null || app.lastSamples.isEmpty()) {
+            app.statsLabel.setText("Nothing compiled to reverse yet.");
+            return;
+        }
+        int e = Math.min(lastSp.i1(),
+            Math.min(app.lastSamples.size(), app.trueV.length) - 1);
+        int piece = activePiece;
+        cancelDensityPreview();          // one preview at a time
+        pvDist = false;
+        pvRevBase = FvdDesigner.clamp(app.trueV[e], 1, 100);
+        pvRevCustom = Double.NaN;
+        stashReversedGuides();
+        pvBefore = snapshot();
+        pvOp = (sp, tol) -> app.coaster.reversePiece(piece,
+            FvdDesigner.INTEGRATE_DT, sp, tol, pvRevCustom);
+        pvActivate = () -> {
+            activePiece = piece;
+            activeSection = 0;
+        };
+        if (!pvRerun()) {
+            clearPv(false);
+            app.statsLabel.setText(
+                "Reverse refused — the piece is too short to re-fit.");
+            redraw();
+            return;
+        }
+        viewT0 = 0;
+        viewT1 = -1;                     // structure changed: re-fit
+        openPvPopup();
+    }
+
+    /** Stash the PRISTINE inputs the reversal guides need (the live
+     *  arrays show the applied result once the preview runs): the
+     *  mirrored samples, the design rates in mirror order, the
+     *  piece's global start time and the first new section's extent. */
+    private void stashReversedGuides() {
+        pvRevSamples = null;
+        pvRef = null;
+        List<Section> secs = sections();
+        TrackCompiler.Span firstSp = spanOf(0);
+        TrackCompiler.Span lastSp = spanOf(secs.size() - 1);
+        if (firstSp == null || lastSp == null
+                || app.resultRates == null) return;
+        int i0 = firstSp.i0();
+        int i1 = Math.min(lastSp.i1(), app.lastSamples.size() - 1);
+        if (i1 - i0 < 8 || i1 >= app.resultRates.length) return;
+        pvRevSamples = Coaster.reversedSamples(app.lastSamples, i0, i1);
+        pvRevRates = new double[i1 - i0 + 1][];
+        for (int q = 0; q <= i1 - i0; q++) {
+            pvRevRates[q] = app.resultRates[i1 - q];
+        }
+        pvRevT0 = firstSp.t0();
+        int aBound = Math.max(i0, lastSp.i0() - 1);
+        pvRevQMax = i1 - aBound;
+        // the original LAST section's mode = the new FIRST section's
+        // (s/c re-authors as force lanes)
+        pvRevGeo = secs.get(secs.size() - 1) instanceof GeoSection;
+        rebuildReversedGuides();
+    }
+
+    /** The reversed ride's curves for the active (first) new section,
+     *  from the stashed mirror + the CURRENT entry speed — the mirror
+     *  identities (κ_U kept, κ_R flipped, roll traversal-invariant,
+     *  rates ∝ the new profile speed; felt via the §5.1 scaling). */
+    private void rebuildReversedGuides() {
+        pvRef = null;
+        if (pvRevSamples == null || pvRevQMax < 4) return;
+        double vE = Double.isNaN(pvRevCustom) ? pvRevBase : pvRevCustom;
+        double[] prof = Coaster.reversedProfile(pvRevSamples, vE,
+            app.coaster.fric());
+        double[] tq = new double[pvRevQMax + 1];
+        for (int q = 1; q <= pvRevQMax; q++) {
+            double ds = pvRevSamples.get(q).s()
+                - pvRevSamples.get(q - 1).s();
+            tq[q] = tq[q - 1]
+                + ds / Math.max(0.5, (prof[q] + prof[q - 1]) / 2);
+        }
+        int n = Math.min(400, pvRevQMax);
+        double[][] ref = new double[n + 1][4];
+        for (int i = 0; i <= n; i++) {
+            int q = (int) Math.round((double) i * pvRevQMax / n);
+            FVDIntegrator.Sample sm = pvRevSamples.get(q);
+            double ratio = prof[q] / Math.max(0.1, sm.v());
+            ref[i][0] = pvRevT0 + tq[q];
+            if (pvRevGeo) {
+                // the mirror already lives in the stashed sample list
+                // (Gl negated); rates come from the ORIGINAL arrays,
+                // so yaw flips here, pitch/roll carry (D67)
+                ref[i][1] = pvRevRates[q][1] * ratio;
+                ref[i][2] = -pvRevRates[q][2] * ratio;
+                ref[i][3] = pvRevRates[q][3] * ratio;
+            } else {
+                double r2 = ratio * ratio;
+                ref[i][1] = r2 * (sm.Gv() - sm.U().y()) + sm.U().y();
+                ref[i][2] = r2 * (sm.Gl() - sm.R().y()) + sm.R().y();
+                ref[i][3] = pvRevRates[q][3] * ratio;
+            }
+        }
+        pvRef = ref;
     }
 
     private static String modeName(Section s) {
@@ -2535,9 +3120,10 @@ class GraphEditor extends Region {
         // deletes the piece itself when others remain (v12.0)
         del.setDisable(sections().size() <= 1 && app.coaster.pieces.size() <= 1);
         del.setOnAction(ev -> deleteSection(k));
-        MenuItem split = new MenuItem("Split piece before this section");
-        split.setDisable(k == 0);   // the piece starts here already
-        split.setOnAction(ev -> splitAt(k));
+        // ("Split piece before this section" and "Connect with
+        // previous section" left the badge menu in D136 — user spec:
+        // they live on the SEAM (click the boundary line) and on the
+        // section's first node's right-click menu now.)
         cm.getItems().add(info);
         // SECTION SETTINGS (v16.0, D103 — user spec: the type/domain
         // options live with the section, where "force"/"geo" do): the
@@ -2635,7 +3221,7 @@ class GraphEditor extends Region {
             }
             cm.getItems().add(resolve);
         }
-        cm.getItems().addAll(new SeparatorMenuItem(), split, del);
+        cm.getItems().addAll(new SeparatorMenuItem(), del);
         if (sec instanceof StraightCurveSection s) {
             MenuItem addEl = new MenuItem("Append element (10 m straight)");
             addEl.setOnAction(ev -> {
@@ -3188,6 +3774,27 @@ class GraphEditor extends Region {
         rg.selectedToggleProperty().addListener((o, w, n2) -> syncAbs.run());
         syncAbs.run();
 
+        // STRICT SEAM on a whole-bridge convert (v17.1, D135 — user
+        // spec, checked by default): keep the following track's shape
+        // frozen behind a strict seam instead of stitching it into
+        // this piece. Unchecked = the classic attach + pinned seam.
+        javafx.scene.control.CheckBox strictCb = null;
+        if (sec instanceof BridgeSection
+                && activePiece + 1 < app.coaster.pieces.size()) {
+            strictCb = new javafx.scene.control.CheckBox(
+                "Make following seam strict (freeze following track shape)");
+            strictCb.setSelected(true);
+            Tooltip.install(strictCb, new Tooltip(
+                "Checked: the next piece keeps its exact shape behind a\n"
+                + "STRICT SEAM (double line) — the converted lanes can be\n"
+                + "edited freely and the track after only moves/re-aims\n"
+                + "(the bridge's padlocks carry over). Unchecked: the\n"
+                + "classic stitch — the next piece's sections join this\n"
+                + "piece's chain with the seam's speed split pinned."));
+            grid.add(strictCb, 0, row++, 3, 1);
+        }
+        final javafx.scene.control.CheckBox strictRef = strictCb;
+
         Button go = new Button("Convert");
         go.setDefaultButton(true);
         Button cancel = new Button("Cancel");
@@ -3204,8 +3811,10 @@ class GraphEditor extends Region {
             boolean ypG = toGeo && yGlobal.isSelected();
             boolean rateM = uMet.isSelected();
             boolean rollAbs = aAbs.isSelected() && rollG;
+            boolean strict = strictRef != null && strictRef.isSelected();
             if (sWhole.isSelected()) {
-                convertSection(k, toGeo, dom, rollG, ypG, rateM, rollAbs);
+                convertSection(k, toGeo, dom, rollG, ypG, rateM, rollAbs,
+                    strict);
             } else {
                 beginPartialConvert(k, toGeo, dom, rollG, ypG, rateM,
                     rollAbs);
@@ -3770,11 +4379,27 @@ class GraphEditor extends Region {
             }
             if (i < rl.size() - 1) {   // boundary between sections
                 double bx = tToX(rs.t0() + rs.dur());
-                gc.setGlobalAlpha(0.55);
-                gc.setStroke(Color.rgb(150, 156, 175));
-                gc.setLineWidth(1);
-                gc.strokeLine(bx, MARGIN_TOP, bx, MARGIN_TOP + plotHeight());
+                // hover/open highlight (D136): the seam reads as
+                // clickable — brighter + wider under the cursor, and
+                // it STAYS lit while its menu is open
+                boolean hot = i == hoverSeam || i == openSeam;
+                gc.setGlobalAlpha(hot ? 0.95 : 0.55);
+                gc.setStroke(hot ? Color.rgb(225, 230, 245)
+                                 : Color.rgb(150, 156, 175));
+                gc.setLineWidth(hot ? 2 : 1);
+                if (seamStrict(rl, i)) {
+                    // STRICT seam (v17.1, D135): a DOUBLE line — the
+                    // user's visual for "the downstream is frozen"
+                    gc.strokeLine(bx - 1.5, MARGIN_TOP,
+                        bx - 1.5, MARGIN_TOP + plotHeight());
+                    gc.strokeLine(bx + 1.5, MARGIN_TOP,
+                        bx + 1.5, MARGIN_TOP + plotHeight());
+                } else {
+                    gc.strokeLine(bx, MARGIN_TOP,
+                        bx, MARGIN_TOP + plotHeight());
+                }
                 gc.setGlobalAlpha(1.0);
+                gc.setLineWidth(1);
             }
         }
     }
@@ -4643,6 +5268,13 @@ class GraphEditor extends Region {
             }
             return;
         }
+        // seam lines outside the active s/c strip (v17.1) — the strip's
+        // own boundaries were claimed by hitScBoundary above
+        int seam = hitSeam(e.getX(), e.getY());
+        if (seam >= 0) {
+            showSeamMenu(seam, e.getScreenX(), e.getScreenY());
+            return;
+        }
         RunSec rs = runSecAt(gt);
         if (rs != null && (rs.piece() != activePiece
                 || rs.section() != activeSection)) {
@@ -4977,6 +5609,10 @@ class GraphEditor extends Region {
     private int dragHandleIdx = -1;
     private boolean dragHandleIsOut = false;
     private double hoverT = Double.NaN;   // insert preview position on the curve
+    // SEAM hover/click feedback (D136): the boundary index under the
+    // cursor, and the one whose menu is open (stays highlighted)
+    private int hoverSeam = -1;
+    private int openSeam = -1;
     private int hoverNodeIdx = -1;        // grey ring + readout (v16.15)
     private boolean hoverSlope = false;   // Shift while hovering: show the slope
 
@@ -5189,6 +5825,13 @@ class GraphEditor extends Region {
                         dragGrowTimer.start();
                         return;
                     }
+                    // seam lines elsewhere in the run (v17.1; bridge-
+                    // adjacent boundaries are excluded by the hit)
+                    int bseam = hitSeam(e.getX(), e.getY());
+                    if (bseam >= 0) {
+                        showSeamMenu(bseam, e.getScreenX(), e.getScreenY());
+                        return;
+                    }
                     RunSec rs = runSecAt(xToT(e.getX()));
                     if (rs != null && (rs.piece() != activePiece
                             || rs.section() != activeSection)) {
@@ -5261,6 +5904,15 @@ class GraphEditor extends Region {
                     int badge = hitBadge(e.getX(), e.getY());
                     if (badge >= 0) {
                         showRunBadgeMenu(badge, e.getScreenX(), e.getScreenY());
+                        return;
+                    }
+                    // a SEAM line between strips (v17.1, D135) — after
+                    // nodes/knobs/badges (edge nodes stay grabbable),
+                    // before the curve insert (inserting exactly ON a
+                    // boundary is refused by INSERT_GAP anyway)
+                    int seam = hitSeam(e.getX(), e.getY());
+                    if (seam >= 0) {
+                        showSeamMenu(seam, e.getScreenX(), e.getScreenY());
                         return;
                     }
                     // a click ON the active curve inserts a node there —
@@ -5352,15 +6004,17 @@ class GraphEditor extends Region {
                 }
                 int hit = hitNode(e.getX(), e.getY());
                 if (hit >= 0) {
-                    // right-click a node = its editor dialog (v10.7 —
-                    // was delete; the Delete key keeps that job)
+                    // right-click a node = its OPTIONS menu (v16.18,
+                    // user spec — v10.7's direct dialog lives inside
+                    // it as "Edit node…"). The clicked node joins or
+                    // starts the selection the ops apply to.
                     selIdx = hit;
                     if (!selSet.contains(hit)) {
                         selSet.clear();
                         selSet.add(hit);
                     }
                     redraw();
-                    showNodeEditor(hit);
+                    showNodeMenu(hit, e.getScreenX(), e.getScreenY());
                     return;
                 }
                 // right-click a SEGMENT = its lock menu — but only on a
@@ -5401,15 +6055,28 @@ class GraphEditor extends Region {
                 && Math.abs(e.getX() - pcLineX()) <= 6
                 && e.getY() >= MARGIN_TOP
                 && e.getY() <= MARGIN_TOP + plotHeight();
+            // SEAM hover (D136, user spec): the boundary line
+            // highlights + the cursor turns to a hand so it reads as
+            // clickable. Drag surfaces keep priority (their cursor
+            // wins below); nodes/knobs win at press time anyway.
+            int hs = pcSec >= 0 ? -1 : hitSeam(e.getX(), e.getY());
+            if (hs != hoverSeam) {
+                hoverSeam = hs;
+                redraw();
+            }
             if (pcLine) {   // the split line drags in ANY mode (v14.0)
                 canvas.setCursor(Cursor.H_RESIZE);
             } else if (activeSc() != null) {   // grab cursor over drag targets
                 boolean grab = hitScBoundary(e.getX(), e.getY()) >= 1
                     || hitScDiamond(e.getX(), e.getY()) >= 1;
-                canvas.setCursor(grab ? Cursor.H_RESIZE : Cursor.DEFAULT);
+                canvas.setCursor(grab ? Cursor.H_RESIZE
+                    : hs >= 0 ? Cursor.HAND : Cursor.DEFAULT);
             } else if (activeBridge() != null) {   // the end line drags
                 canvas.setCursor(hitBridgeEnd(e.getX(), e.getY())
-                    ? Cursor.H_RESIZE : Cursor.DEFAULT);
+                    ? Cursor.H_RESIZE
+                    : hs >= 0 ? Cursor.HAND : Cursor.DEFAULT);
+            } else {
+                canvas.setCursor(hs >= 0 ? Cursor.HAND : Cursor.DEFAULT);
             }
             // node under the cursor (v16.15): grey ring + the drag
             // readout's numbers, without the click
@@ -7836,6 +8503,195 @@ class GraphEditor extends Region {
         unlockSegments(lane, locked, true);
         redraw();
         app.rebuildTrack();
+    }
+
+    /** Are sections i and j of the active piece adjacent LIKE lane
+     *  sections the CONNECT op accepts (v16.19 — mirror of
+     *  Coaster.mergeSections' test, for menu enablement)? */
+    private boolean likeSections(int i, int j) {
+        List<Section> secs = sections();
+        if (i < 0 || j >= secs.size()) return false;
+        if (!(secs.get(i) instanceof LaneSection a)
+                || !(secs.get(j) instanceof LaneSection b)) return false;
+        return !a.reversed() && !b.reversed()
+            && !a.influenced() && !b.influenced()
+            && (a instanceof GeoSection) == (b instanceof GeoSection)
+            && a.domain() == b.domain()
+            && a.rollGlobal == b.rollGlobal
+            && a.yawPitchGlobal == b.yawPitchGlobal
+            && a.ratePerMeter == b.ratePerMeter
+            && a.rollAbsolute == b.rollAbsolute;
+    }
+
+    /** CONNECT the active piece's sections leftIdx and leftIdx+1
+     *  into one (v16.19, D131 — the node split's inverse): matched
+     *  seams merge losslessly, unmatched seam nodes take the average
+     *  value + averaged handle slopes (Coaster.mergeSections). One
+     *  undo step; refusals post their reason. */
+    void connectSections(int leftIdx) {
+        if (!likeSections(leftIdx, leftIdx + 1)) {
+            app.statsLabel.setText("Connect needs two adjacent "
+                + "force/geo sections of the SAME type, domain and "
+                + "axis/rate/roll settings (not reversed or "
+                + "influenced) — convert one to match first.");
+            return;
+        }
+        pushUndoSnapshot();
+        if (!app.coaster.mergeSections(activePiece, leftIdx)) {
+            app.statsLabel.setText("Couldn't connect these sections.");
+            return;
+        }
+        activeSection = leftIdx;
+        app.lanes = lanesFor(sections().get(activeSection));
+        selIdx = -1;
+        selSet.clear();
+        elSel = -1;
+        syncLaneButtons();
+        app.rebuildTrack();
+        app.updatePieceButton();
+        refreshOffset();
+        redraw();
+    }
+
+    /** Right-click menu for a node / the current selection (v16.18;
+     *  reworked v16.20 D132, user spec: inapplicable ops do not
+     *  APPEAR at all instead of graying — the menu is what you can
+     *  do HERE): every node op in one place, LIVE shortcut labels in
+     *  parentheses (rebinds show up). The split entries are the
+     *  mid-section node-anchored split — "Split track piece" on a
+     *  section's FIRST node routes to the classic boundary piece
+     *  split; CONNECT is the split's inverse on edge nodes facing a
+     *  LIKE neighbor (the badge menu carries a GRAYED copy for
+     *  discoverability — here absent means unavailable). DELETE
+     *  drops its redundant "(Delete)" tag and never shows on edge
+     *  nodes (user rule; the Delete KEY still shortens the ride
+     *  from the last node). */
+    private void showNodeMenu(int idx, double sx, double sy) {
+        List<BezierBaker.Node> lane = active();
+        boolean edge = idx == 0 || idx == lane.size() - 1;
+        boolean multi = selSet.size() > 1;
+        boolean infl = activeInfl() != null;
+        Section sec = sections().get(activeSection);
+        boolean canCut = !multi && !infl && idx > 0
+            && sec instanceof LaneSection && !sec.reversed()
+            && idx < lane.size()
+            && lane.get(idx).t < sectionEnd() - 1e-9;
+        List<List<MenuItem>> groups = new ArrayList<>();
+        List<MenuItem> g = new ArrayList<>();
+        if (!multi) {
+            MenuItem edit = new MenuItem("Edit node…");
+            edit.setOnAction(ev -> showNodeEditor(idx));
+            g.add(edit);
+        }
+        groups.add(g);
+
+        g = new ArrayList<>();
+        if (!multi) {
+            MenuItem smooth = new MenuItem((edge
+                ? "Match boundary (" : "Toggle smooth/broken (")
+                + app.settings.shortcut("smooth") + ")");
+            smooth.setOnAction(ev -> {
+                selIdx = idx;
+                toggleSmooth();
+            });
+            g.add(smooth);
+            if (edge) {
+                MenuItem matchAll = new MenuItem(
+                    "Match boundary, all lanes ("
+                    + app.settings.shortcut("matchAll") + ")");
+                matchAll.setOnAction(ev -> {
+                    selIdx = idx;
+                    matchBoundaryAll();
+                });
+                g.add(matchAll);
+            }
+        }
+        groups.add(g);
+
+        g = new ArrayList<>();
+        MenuItem level = new MenuItem("Level selection / flatten ("
+            + app.settings.shortcut("flath") + ")");
+        level.setOnAction(ev -> levelSelected());
+        g.add(level);
+        boolean adjLevel = (idx < lane.size() - 1 && lane.get(idx).levelOut)
+            || (idx > 0 && lane.get(idx - 1).levelOut);
+        boolean adjStraight = (idx < lane.size() - 1
+                && lane.get(idx).straightOut)
+            || (idx > 0 && lane.get(idx - 1).straightOut);
+        if (multi || adjLevel) {
+            MenuItem levelLock = new MenuItem((adjLevel && !multi
+                ? "Level-unlock (" : "Level-lock selection (")
+                + app.settings.shortcut("levelSel") + ")");
+            levelLock.setOnAction(ev -> toggleLevelLock());
+            g.add(levelLock);
+        }
+        if (multi) {
+            MenuItem straighten = new MenuItem("Straighten between pair ("
+                + app.settings.shortcut("align") + ")");
+            straighten.setOnAction(ev -> straightenSelected());
+            g.add(straighten);
+        }
+        if (multi || adjStraight) {
+            MenuItem strLock = new MenuItem((adjStraight && !multi
+                ? "Straight-unlock (" : "Straight-lock (")
+                + app.settings.shortcut("alignLock") + ")");
+            strLock.setOnAction(ev -> toggleStraightLock());
+            g.add(strLock);
+        }
+        groups.add(g);
+
+        g = new ArrayList<>();
+        if (canCut) {
+            MenuItem splitSec = new MenuItem("Split section here");
+            splitSec.setOnAction(ev -> splitAtNode(idx, false));
+            g.add(splitSec);
+        }
+        // a section's FIRST node = the classic boundary piece split
+        boolean firstNodeSplit = !multi && idx == 0 && activeSection > 0;
+        if (canCut || firstNodeSplit) {
+            MenuItem splitPc = new MenuItem("Split track piece here");
+            splitPc.setOnAction(ev -> {
+                if (firstNodeSplit) splitAt(activeSection);
+                else splitAtNode(idx, true);
+            });
+            g.add(splitPc);
+        }
+        // CONNECT (v16.19): the split's inverse — shown only where a
+        // LIKE neighbor faces this edge node
+        boolean canConnect = !multi && !infl
+            && ((idx == 0 && activeSection > 0
+                    && likeSections(activeSection - 1, activeSection))
+                || (idx == lane.size() - 1 && idx > 0
+                    && likeSections(activeSection, activeSection + 1)));
+        if (canConnect) {
+            MenuItem connect = new MenuItem(idx == 0
+                ? "Connect with previous section"
+                : "Connect with next section");
+            connect.setOnAction(ev -> connectSections(
+                idx == 0 ? activeSection - 1 : activeSection));
+            g.add(connect);
+        }
+        groups.add(g);
+
+        g = new ArrayList<>();
+        if (multi || (idx > 0 && idx < lane.size() - 1
+                && lane.size() > 2)) {
+            MenuItem del = new MenuItem("Delete");
+            del.setOnAction(ev -> deleteSelected());
+            g.add(del);
+        }
+        groups.add(g);
+
+        ContextMenu cm = new ContextMenu();
+        boolean first = true;
+        for (List<MenuItem> gr : groups) {
+            if (gr.isEmpty()) continue;
+            if (!first) cm.getItems().add(new SeparatorMenuItem());
+            cm.getItems().addAll(gr);
+            first = false;
+        }
+        openMenu = cm;   // dismisses on the next graph click (D57)
+        cm.show(canvas, sx, sy);
     }
 
     /** Double-click on a node: type its settings directly. Transition

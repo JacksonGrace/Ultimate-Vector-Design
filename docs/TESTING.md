@@ -1127,6 +1127,81 @@
     classes, so editor compile breaks hide; force-delete
     target/classes/coaster when in doubt.)
 
+48. **v17.0 gates (Phase3Gate, new scratch file; D133 friction +
+    D134 reverse-as-convert).** All passed 2026-07-17: (48a)
+    rolling closed form on flat track, v² = v0² − 2μg·s per sample
+    to 1.7e-13; (48b) air-drag closed form v = v0·e^(−ks) to
+    2.1e-14; (48c) Pass D reproduces the design profile on an
+    undrifted hilly section with both coefficients on (1.1e-6 m/s);
+    (48d) a two-section chain reconciles design == true under
+    friction (8e-7 m/s); (48e) the s/c SPINE is friction-invariant
+    — RATE-0 roll 3.1e-7 m exit dev; GLOBAL-0 bank 8.2e-3 m (the
+    projection-cadence O(dt²) noise, accepted bound 5 cm) — while
+    the design end speed drops 5-7 m/s; (48f) REVERSE PIECE = a
+    convert (D134): a bridge-carrying piece refuses; a force+geo
+    piece comes back as the same structure mirrored, ALL-forward,
+    entry speed = the recorded Pass-D end speed, NO speed conflict
+    (split ≤ 1e-6 m/s), shape at matched arc 0.87 m over 204 m
+    with friction on at the 0.02 s carpet (the per-seam
+    fit-residual reorientation chained converts always had); a
+    STALLING reversal (heavy friction — the energy for the climb
+    home was already spent once) stays finite and conflict-free at
+    the creep floor; (48g) a custom (unlocked) entry speed is
+    honored and the shape is independent of it; (48h) an s/c piece
+    reverses into forward FORCE lanes, spine held to 4 cm; (48i) a
+    LEGACY reversed-flag piece reverses to all-forward exactly at
+    a level seam (0.000 m; a KINKED legacy seam cannot survive any
+    chained re-author — documented, not gated), and double
+    reversal lands back on the original shape (0.86 m, a fit of a
+    fit); (48j) the FVDD3 friction line round-trips
+    byte-identically, the legacy reversed flag still round-trips,
+    friction-less legacy text loads with zero friction; (48k)
+    whole force→geo convert under friction lands the end to 2 mm
+    over 329 m (the fitLanes friction-aware re-time). Phase2Gate
+    265 (incl. the reworked pieceReversal + influence-reversal
+    checks) + DomainGate green = the friction-OFF bitwise
+    contract. (Fixture lessons: friction is paid BOTH ways, so a
+    reversal fixture must have the energy to climb home — heavy
+    coefficients on a long piece stall by real physics; and
+    compare refit geometry at matched ARC, not sample index — the
+    fit re-times the samples.)
+
+49. **v17.1 gates (Phase3Gate extension; D135 — strict seams).** All
+    passed 2026-07-18: (49a) make-seam-strict splits + marks the
+    follower, creation moves nothing; an upstream Gv edit leaves
+    the downstream LOCAL shape frozen to 4.3e-14 m while position
+    and REAL speed stay continuous at the seam, the design speed
+    holds (honest 4.4 m/s split opens), unlocked yaw follows the
+    incoming heading and locked pitch holds the original; (49b)
+    all-unlocked aligns fully; relocking all three axes returns
+    the ORIGINAL orientation to 0.0 (the stored placement never
+    mutates); (49c) un-strict merges back to one piece with the
+    conflict PINNED, the design graphs bit-exact, and the track
+    reoriented continuous; (49d) a strict bridge-convert keeps the
+    follower with the bridge's locks; strict vs classic agree to
+    the fit residual at creation, and convert+strict+UN-STRICT ==
+    the classic convert BIT-IDENTICALLY (0.00 m — the user's
+    stated identity); (49e) piece fields 11-14 round-trip
+    byte-identically, and connect-directly (= strict, all axes
+    unlocked) moves nothing on coincident pieces (5e-15 m); (49f)
+    the ATTACH CONTRACT (user report 2026-07-18 — the pre-v17.1
+    attach dissolved the piece into the chain and the reconcile
+    silently re-froze its design speed to the seam's, re-deriving
+    the shape): attaching a foreign piece (vDesign 20, tilted,
+    parked elsewhere) KEEPS its design speed (an 11.9 m/s ≠v split
+    opens against the ~28 m/s arriving), keeps its design
+    orientation (the joint reorients fully continuous — the
+    pitch/roll difference becomes the hidden design/real felt
+    split, exactly like editing piece pitch/roll), and the shape
+    stays RIGID (local delta = one-sample alignment noise only);
+    (49g) RESOLVING a follower's conflict (D136 — the user's
+    "launches off into the distance"): the strict bake precedes the
+    ops — make-real keeps the on-screen shape to the fit residual
+    (end dev 1.4 m on the violent 40°-dive + 60°/s-roll fixture,
+    arc preserved; ~190 m off before), and strict refreeze equals
+    the UN-STRICTED twin's refreeze to 0.22 m over a ~300 m
+    reshape (the reshape happens from the REAL frame either way).
+
 78. v16.7 feel round (untested by the user yet): (a) °/m sections:
     both vertical axes now say the units (left title + the right
     Resulting axis on °/m force sections), and °/m lanes get their
@@ -1343,7 +1418,141 @@
     reopen any swatch: it leads the Recent row; clicking swatches
     live-applies exactly like sliding.
 
-## The historical headless harness (context, not a prescription)
+88. v16.17 (D129): the color dialog's RGB sliders are gone — a
+    HUE/SATURATION plane (hue left-to-right, saturated at the top)
+    with a vertical BRIGHTNESS slider beside it, and typed RGB
+    fields. Check: dragging on the plane moves the double-ring
+    marker and live-updates the track/gradient; the brightness
+    slider darkens the preview (the plane itself stays readable);
+    typing RGB (e.g. 255 0 0) or hex jumps the marker to match;
+    picking a GRAY then raising saturation keeps the hue you were
+    on (marker doesn't snap left); palette/recent swatches, OK,
+    Cancel and the no-flash close all behave as in #87.
+
+89. v16.18 (D130): (a) right-click any node — the OPTIONS menu
+    (edit, smooth/match, level(-lock), straighten/straight-lock,
+    splits, delete) with your CURRENT shortcut bindings in the
+    labels; items gray where they can't apply (pair ops need 2+,
+    splits need an interior node on a normal force/geo section).
+    (b) "Split section here" on a mid-lane node: the strip gains a
+    boundary at the node, both halves edit natively, the ride
+    LOOKS identical (the new seam behaves exactly like one you'd
+    authored — the gate pins split == authored-as-two at 0.0 m),
+    downstream design speed = the speed at the cut (no ≠v badge).
+    (c) "Split track piece here": same cut plus a new piece — the
+    Placement dropdown/piece selector show it; moving the new
+    piece moves only itself. On a section's FIRST node it does the
+    classic boundary split. (d) Ctrl+Z restores either split in
+    ONE step. (e) Reversed and influenced sections refuse with a
+    stats-bar reason.
+
+90. v16.19 (D131): (a) color picker — the plane darkens with the
+    brightness slider; the slider's track shows black->your-color
+    and its thumb centre is the picked color, all live. (b) Split
+    a section (right-click menu), then right-click the seam's edge
+    node -> "Connect with next/previous section": the sections
+    rejoin into ONE and the ride is EXACTLY the original (gated
+    0.0 m). (c) Connect two sections whose seam you left
+    UNMATCHED: the joined node sits at the average value with
+    averaged (smooth) handles — the curves bend to meet it.
+    (d) The connect entries gray against unlike neighbors
+    (different type/domain/axis flags) and on reversed/influenced
+    sections.
+
+91. v16.20 (D132): (a) THE SLOPE FIX — make two sections whose
+    seam has a real SLOPE, Shift+B it, Connect: the joined curve
+    keeps that slope exactly (it used to HALVE — a sign-blind
+    guard read every in-slope as 0). Let a lane HOLD across the
+    seam too: matched holds join bit-identically (dead handle data
+    used to bend them), and an UNMATCHED hold joins at the average
+    of the held value and the neighbor's node, easing in smoothly. (b) Right-click nodes of every flavor: interior,
+    edge, multi-select, on locked runs — the menu only ever lists
+    ops that work there (locked segments offer "unlock" wording;
+    Delete is absent on end nodes and shows no shortcut tag).
+    (c) The badge menu's "Connect with previous section" grays
+    against unlike neighbors and works on matching ones.
+
+92. v17.0 (D133 friction + D134 reverse-as-convert): (a) Coaster
+    menu grows "Friction (rolling μ)" and "Air drag (per km)" rows
+    (tooltips carry the model). Set μ ≈ 0.03 on the default
+    layout: the whole ride slows toward the end (stats-bar top
+    speed, POV pace, speed comb) and the graphs re-derive —
+    same-piece chains stay REAL automatically (no ≠v inside a
+    plain chain). Ctrl+Z steps the coefficient back; Save/Load
+    round-trips it; New zeroes it. (b) REVERSE PIECE (Placement ▾
+    > "Reverse piece (rebuild backward)…"): the density popup
+    opens with a padlocked ENTRY SPEED row on top reading the
+    speed the ride reaches the piece's end with. The 3D track
+    flips travel direction in place (same shape to the fit
+    residual — crank the density and watch it tighten), the strips
+    re-author as ordinary FORWARD sections (same types at the same
+    boundaries; a straight/curve strip comes back as force lanes),
+    and NO ≠v badges appear anywhere — the reversed piece is
+    conflict-free by construction, friction included. Apply = one
+    Ctrl+Z step; Cancel restores exactly. (c) Unlock the padlock
+    and type a bigger entry speed: the whole flow re-runs live and
+    the shape stays put (only the graphs/speeds change). With
+    HEAVY friction on a long piece, reverse it at the locked
+    speed: the stats bar warns "the reversed ride STALLS partway —
+    friction is paid both ways"; give it more speed and the warn
+    clears. (d) A piece ending in a bridge refuses with the hint.
+    An influenced piece reverses with its influence FOLDED IN
+    (plain sections out). Old files' reversed-flag sections (◀
+    badges) still compile exactly as before; reversing such a
+    piece re-authors it all-forward. (e) With friction 0
+    everything else behaves exactly as before (bitwise — the whole
+    old gate suite pins it).
+
+93. v17.1 (D135) — STRICT SEAMS: (a) On a two-section piece, click
+    the boundary LINE between the strips → "Make seam strict…" —
+    the line turns DOUBLE and the settings pop up (three padlocks;
+    default yaw unlocked, pitch/roll locked). Edit the FIRST
+    section violently: the downstream track keeps its exact shape
+    in 3D, sliding/re-aiming to stay on the seam; its badge wears
+    ≠v (design speed kept — thin true strokes split) while POV
+    rides through the seam at continuous real speed. (b) Unlock
+    all three locks in the seam settings: the downstream aligns
+    fully (a smooth joint again, still shape-frozen). Relock them:
+    it snaps back to its ORIGINAL orientation exactly. (c) Click
+    the double line → "Un-strict seam": one piece again, track
+    re-bent continuous, graphs untouched, the ≠v conflict KEPT
+    (pinned). Ctrl+Z steps each of these back. (d) Convert a WHOLE
+    bridge: the dialog's new "Make following seam strict" is
+    checked — after Apply the next piece keeps its shape exactly
+    behind a double line and the converted lanes edit freely
+    without disturbing it. Un-strict that seam: you get exactly
+    what the old convert used to produce. Uncheck the box instead:
+    the classic stitch directly. (e) ⊕ > Attach floating piece and
+    the zero-distance bridge prompt now connect with a strict seam
+    (all unlocked — seamless) and open the settings. (f) A
+    follower's Placement rows gray (hover says why) and its entry
+    gizmo doesn't build; "Split track at seam" detaches it in
+    place as an ordinary piece.
+
+94. v17.1 feedback round (D136): (a) hover a boundary line — it
+    brightens and the cursor becomes a hand; click it — the line
+    stays lit while the menu is open. (b) The seam menu on a
+    section boundary offers "Connect sections (merge into one)"
+    (grayed against unlike sections); the badge menu no longer
+    carries Split-piece or Connect-with-previous (seam + first-node
+    menus own them). (c) The strict seam settings are a pop-out:
+    per axis a DISCONTINUOUS button (red outline while on), a
+    typed/arrow spinner, and a ↺ back to the creation value —
+    toggling Discontinuous ON freezes the CURRENT angle (nothing
+    jumps), editing the spinner re-aims the whole downstream
+    rigidly, ↺ returns it, Apply closes. (d) Select a section
+    after a strict seam: no ghost "node" floats off-track anymore
+    (it was the follower's entry reveal marker at its stale stored
+    position). (e) Make a seam strict, edit upstream, unlock
+    everything, then resolve the follower's conflict: MAKE-REAL
+    keeps the shape you see (re-timed at the real speed) and
+    RE-FREEZE reshapes exactly like the un-stricted section would
+    — no more launching into the distance. (f) The density
+    preview reaches 0.001% accuracy and 0.01 s spacing (distance
+    fits floor at 0.5 m).
+
+
+
 
 The dev sandbox had only a JRE, so multi-file compilation was impossible.
 Tests ran via Java's single-file source launcher against a concatenation:

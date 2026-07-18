@@ -237,6 +237,15 @@ public final class BridgeSection implements Section {
     private record Geo(double s, Vec3 pos, Vec3 T, Vec3 U, Vec3 kappa) {}
 
     public Result integrate(double dt) {
+        return integrate(dt, FVDIntegrator.Friction.NONE);
+    }
+
+    /** FRICTION variant (Phase 3, v17.0 D133): the bridge's design
+     *  profile sheds the document losses along its own arc like every
+     *  section's — the vB ease then absorbs only the genuine seam
+     *  mismatch instead of masking friction too. NONE = loss-free,
+     *  bitwise. */
+    public Result integrate(double dt, FVDIntegrator.Friction fric) {
         Vec3 p0 = solvedEntry.pos(), p1 = solvedTarget.pos();
 
         // MARCH SPINE (v13.12, D86): when this bridge was OPTIMIZED
@@ -271,7 +280,7 @@ public final class BridgeSection implements Section {
             double twist = Math.atan2(end.U().cross(wantU).dot(end.T()),
                 end.U().dot(wantU));
             double[] tw = { 0, 0, 10 * twist, -15 * twist, 6 * twist, 0, 0 };
-            return resample(geo, total, tw, dt);
+            return resample(geo, total, tw, dt, lossTable(geo, fric));
         }
 
         double la = Math.max(0.01, lenA), lb = Math.max(0.01, lenB);
@@ -326,12 +335,15 @@ public final class BridgeSection implements Section {
         }
         double total = Math.max(s, 1e-6);
 
-        // --- speed profile: energy from the entry, sine-eased onto the
-        // target's design entry speed (v13.2) so the far seam has no v
-        // step — the ease has zero end slope, keeping dv/dt = -g·T.y
+        // --- speed profile: energy from the entry (minus the friction
+        // losses along the arc, v17.0), sine-eased onto the target's
+        // design entry speed (v13.2) so the far seam has no v step —
+        // the ease has zero end slope, keeping dv/dt = -g·T.y
         // continuous at both seams. vB ≤ 0 = pure energy (old files).
         double y0 = p0.y();
-        double vEnd = Math.max(0.5, FVDIntegrator.speedAt(p1, vDesign, y0));
+        double[] loss = lossTable(geo, fric);
+        double vEnd = Math.max(0.5,
+            FVDIntegrator.speedAt(p1, vDesign, y0, loss[loss.length - 1]));
         double dv = vB > 0 ? vB - vEnd : 0;
 
         // --- residual roll vs the target, distributed as a QUINTIC
@@ -355,8 +367,8 @@ public final class BridgeSection implements Section {
             .sub(end.T().scale(solvedTarget.U().dot(end.T()))).normalize();
         double twist = Math.atan2(end.U().cross(wantU).dot(end.T()),
             end.U().dot(wantU));
-        double v0b = blendedV(0, total, geo, dv, y0);
-        double v1b = blendedV(total, total, geo, dv, y0);
+        double v0b = blendedV(0, total, geo, dv, y0, loss);
+        double v1b = blendedV(total, total, geo, dv, y0, loss);
         double tw0 = total * rollA / v0b;   // dtwist/dx at the ends
         double tw1 = total * rollB / v1b;
         double dvdt0 = -FVDIntegrator.G0 * solvedEntry.T().y();
@@ -373,25 +385,59 @@ public final class BridgeSection implements Section {
             -15 * qA + 7 * qB - qC,
             6 * qA - 3 * qB + qC / 2, 0, 0 };
 
-        return resample(geo, total, tw, dt);
+        return resample(geo, total, tw, dt, loss);
+    }
+
+    /** Cumulative friction deficit (v² units) along the geo rows
+     *  (v17.0, D133) — Heun march at the design profile; all zeros
+     *  (bitwise-free) when the coefficients are off. */
+    private double[] lossTable(List<Geo> geo, FVDIntegrator.Friction fric) {
+        double[] loss = new double[geo.size()];
+        if (fric.off()) return loss;
+        double y0 = solvedEntry.pos().y();
+        for (int i = 1; i < geo.size(); i++) {
+            Geo a = geo.get(i - 1);
+            double ds = geo.get(i).s() - a.s();
+            double v = Math.max(0.5,
+                FVDIntegrator.speedAt(a.pos(), vDesign, y0, loss[i - 1]));
+            double lp = loss[i - 1] + fric.dLossDs(v) * ds;
+            double vp = Math.max(0.5, FVDIntegrator.speedAt(
+                geo.get(i).pos(), vDesign, y0, lp));
+            loss[i] = loss[i - 1]
+                + (fric.dLossDs(v) + fric.dLossDs(vp)) / 2 * ds;
+        }
+        return loss;
+    }
+
+    /** Linear read of the loss table at arc s. */
+    private static double lossAt(List<Geo> geo, double[] loss, double s) {
+        int i = indexAt(geo, s);
+        int j = Math.min(i + 1, geo.size() - 1);
+        double ds = geo.get(j).s() - geo.get(i).s();
+        double u = ds < 1e-12 ? 0
+            : Math.max(0, Math.min(1, (s - geo.get(i).s()) / ds));
+        return loss[i] + (loss[j] - loss[i]) * u;
     }
 
     /** The shared tail of both spine kinds: speed blend + time-domain
      *  resample (uniform dt, exact landing). */
     private Result resample(List<Geo> geo, double total, double[] tw,
-                            double dt) {
+                            double dt, double[] loss) {
         double y0 = solvedEntry.pos().y();
         double vEnd = Math.max(0.5,
-            FVDIntegrator.speedAt(solvedTarget.pos(), vDesign, y0));
+            FVDIntegrator.speedAt(solvedTarget.pos(), vDesign, y0,
+                loss[loss.length - 1]));
         double dv = vB > 0 ? vB - vEnd : 0;
         List<FVDIntegrator.Sample> out = new ArrayList<>();
         double t = 0, sAt = 0;
         int guard = 0;
         while (guard++ < 500_000) {
             boolean last = sAt >= total - 1e-9;
-            out.add(sampleAt(geo, Math.min(sAt, total), total, tw, dv, y0, t));
+            out.add(sampleAt(geo, Math.min(sAt, total), total, tw, dv, y0, t,
+                loss));
             if (last) break;
-            double v = blendedV(Math.min(sAt, total), total, geo, dv, y0);
+            double v = blendedV(Math.min(sAt, total), total, geo, dv, y0,
+                loss);
             // LANDING (v13.10, D84, two bugs in the old step): the
             // partial time read sAt AFTER clamping, so the last sample
             // was stamped a FULL dt late — the train crawled the final
@@ -466,12 +512,14 @@ public final class BridgeSection implements Section {
         return acc;
     }
 
-    /** Energy speed eased onto the target's entry speed (dv = the far-
-     *  seam correction; the sine ease has zero end slopes). */
+    /** Energy speed (minus arc losses, v17.0) eased onto the target's
+     *  entry speed (dv = the far-seam correction; the sine ease has
+     *  zero end slopes). */
     private double blendedV(double s, double total, List<Geo> geo,
-                            double dv, double y0) {
+                            double dv, double y0, double[] loss) {
         double ve = Math.max(0.5,
-            FVDIntegrator.speedAt(posAt(geo, s), vDesign, y0));
+            FVDIntegrator.speedAt(posAt(geo, s), vDesign, y0,
+                lossAt(geo, loss, s)));
         if (dv == 0) return ve;
         return Math.max(0.5,
             ve + dv * (1 - Math.cos(Math.PI * s / total)) / 2);
@@ -487,7 +535,7 @@ public final class BridgeSection implements Section {
 
     private FVDIntegrator.Sample sampleAt(List<Geo> geo, double s, double total,
                                           double[] tw, double dv, double y0,
-                                          double t) {
+                                          double t, double[] loss) {
         int i = indexAt(geo, s);
         Geo a = geo.get(i), b = geo.get(Math.min(i + 1, geo.size() - 1));
         double ds = b.s() - a.s();
@@ -507,7 +555,7 @@ public final class BridgeSection implements Section {
         }
         if (Math.abs(w) > 1e-15) U = U.rotate(T, w);
         Vec3 R = U.cross(T);
-        double v = blendedV(s, total, geo, dv, y0);
+        double v = blendedV(s, total, geo, dv, y0, loss);
         Vec3 accel = kappa.scale(v * v);   // centripetal at design speed
         double gv = accel.dot(U) / FVDIntegrator.G0 + U.y();
         double gl = accel.dot(R) / FVDIntegrator.G0 + R.y();

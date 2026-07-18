@@ -79,6 +79,11 @@ public final class DesignIO {
     public static void save(Coaster c, Cosmetics cos, PrintWriter out) {
         out.println("FVDD3");
         out.printf(Locale.US, "v0 %.4f%n", c.v0);
+        // PHASE 3 friction (v17.0, D133): rolling coefficient
+        // (decel = roll·g) + air drag (1/m, decel = air·v²);
+        // missing = 0 0 = the historic loss-free model, and old
+        // readers ignore the unknown line
+        out.printf(Locale.US, "friction %.6f %.8f%n", c.fricRoll, c.fricAir);
         out.printf(Locale.US, "heart %.4f%n", cos.heart());
         out.printf(Locale.US, "gauge %.4f%n", cos.gauge());
         out.printf(Locale.US, "tiespace %.4f%n", cos.tiespace());
@@ -111,12 +116,20 @@ public final class DesignIO {
             // loader's re-normalize threshold — round-trips stay byte-
             // identical
             // fields 9-10: pitch/roll deltas (v13.13; missing = 0)
+            // fields 11-14 (v17.1, D135): STRICT SEAM — followPrev +
+            // the three orientation locks; missing = detached.
+            // fields 15-17 (D136): the DISCONTINUOUS axis values
+            // (deg); missing = re-seed from the stored placement
             out.printf(Locale.US,
-                "piece %.4f %.4f %.4f %.4f %.10f %.10f %.10f %.10f %.4f %.4f%n",
+                "piece %.4f %.4f %.4f %.4f %.10f %.10f %.10f %.10f %.4f %.4f"
+                + " %d %d %d %d %.6f %.6f %.6f%n",
                 piece.x, piece.y, piece.z, piece.yawDeg,
                 piece.baseOrient.w(), piece.baseOrient.x(),
                 piece.baseOrient.y(), piece.baseOrient.z(),
-                piece.pitchDeg, piece.rollDeg);
+                piece.pitchDeg, piece.rollDeg,
+                piece.followPrev ? 1 : 0, piece.sLockYaw ? 1 : 0,
+                piece.sLockPitch ? 1 : 0, piece.sLockRoll ? 1 : 0,
+                piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg);
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // bridge (v13.0): the FROZEN solve inputs — poses at
@@ -289,6 +302,13 @@ public final class DesignIO {
             if (parts.length == 0 || parts[0].isEmpty()) continue;
             switch (parts[0]) {
                 case "v0" -> v0 = clamp(Double.parseDouble(parts[1]), 1, 100);
+                // Phase 3 friction (v17.0, D133); missing = 0 0
+                case "friction" -> {
+                    c.fricRoll = clamp(Double.parseDouble(parts[1]), 0, 1);
+                    if (parts.length > 2) {
+                        c.fricAir = clamp(Double.parseDouble(parts[2]), 0, 1);
+                    }
+                }
                 case "heart" -> heart = Double.parseDouble(parts[1]);
                 case "gauge" -> gauge = Double.parseDouble(parts[1]);
                 case "tiespace" -> tie = clamp(Double.parseDouble(parts[1]), 0.2, 10);
@@ -352,6 +372,20 @@ public final class DesignIO {
                     if (parts.length > 10) {  // pitch/roll deltas (v13.13)
                         curPiece.pitchDeg = Double.parseDouble(parts[9]);
                         curPiece.rollDeg = Double.parseDouble(parts[10]);
+                    }
+                    if (parts.length > 14) {  // strict seam (v17.1, D135)
+                        curPiece.followPrev = parts[11].equals("1");
+                        curPiece.sLockYaw = parts[12].equals("1");
+                        curPiece.sLockPitch = parts[13].equals("1");
+                        curPiece.sLockRoll = parts[14].equals("1");
+                        if (parts.length > 17) {   // D136 values
+                            curPiece.sYawDeg = Double.parseDouble(parts[15]);
+                            curPiece.sPitchDeg = Double.parseDouble(parts[16]);
+                            curPiece.sRollDeg = Double.parseDouble(parts[17]);
+                        } else if (curPiece.followPrev) {
+                            Coaster.seedStrictValues(curPiece,
+                                curPiece.entryPose().orient());
+                        }
                     }
                     c.pieces.add(curPiece);
                     curSection = null;

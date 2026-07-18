@@ -243,10 +243,15 @@ public class FvdDesigner extends Application {
                       // must not RELOCK a padlock the user opened —
                       // rebuilding TrackPiece defaulted them shut, so
                       // every undo slammed the locks)
-                      boolean lockPitch, boolean lockRoll) {}
+                      boolean lockPitch, boolean lockRoll,
+                      // strict seam (v17.1, D135; values D136)
+                      boolean followPrev, boolean sLockYaw,
+                      boolean sLockPitch, boolean sLockRoll,
+                      double sYaw, double sPitch, double sRoll) {}
 
     record DocState(List<PieceState> pieces, int activePiece, int active,
-                    double heart, double gauge, double v0) {}
+                    double heart, double gauge, double v0,
+                    double fricRoll, double fricAir) {}
 
     private boolean docApplying = false;   // suppress spinner listeners while
                                            // an undo/redo writes them back
@@ -285,12 +290,16 @@ public class FvdDesigner extends Application {
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
-                piece.baseOrient, piece.uiLockPitch, piece.uiLockRoll));
+                piece.baseOrient, piece.uiLockPitch, piece.uiLockRoll,
+                piece.followPrev, piece.sLockYaw,
+                piece.sLockPitch, piece.sLockRoll,
+                piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg));
         }
         return new DocState(ps,
             editor != null ? editor.activePiece() : 0,
             editor != null ? editor.activeSection() : 0,
-            heartOffset, railGauge, coaster.v0);
+            heartOffset, railGauge, coaster.v0,
+            coaster.fricRoll, coaster.fricAir);
     }
 
     /** Restore a document snapshot: pieces, path settings, and the
@@ -307,6 +316,13 @@ public class FvdDesigner extends Application {
             piece.baseOrient = pst.base();
             piece.uiLockPitch = pst.lockPitch();
             piece.uiLockRoll = pst.lockRoll();
+            piece.followPrev = pst.followPrev();
+            piece.sLockYaw = pst.sLockYaw();
+            piece.sLockPitch = pst.sLockPitch();
+            piece.sLockRoll = pst.sLockRoll();
+            piece.sYawDeg = pst.sYaw();
+            piece.sPitchDeg = pst.sPitch();
+            piece.sRollDeg = pst.sRoll();
             for (SecState st : pst.sections()) {
                 Section sec = switch (st.mode()) {
                     case 3  -> st.bridge();   // deep copy, adopted
@@ -344,9 +360,13 @@ public class FvdDesigner extends Application {
         heartOffset = s.heart();
         railGauge = s.gauge();
         coaster.v0 = s.v0();
+        coaster.fricRoll = s.fricRoll();
+        coaster.fricAir = s.fricAir();
         heartSpinner.getValueFactory().setValue(s.heart());
         gaugeSpinner.getValueFactory().setValue(s.gauge());
         startSpeedSpinner.getValueFactory().setValue(s.v0());
+        fricRollSpinner.getValueFactory().setValue(s.fricRoll());
+        fricAirSpinner.getValueFactory().setValue(s.fricAir() * 1000);
         docApplying = false;
         syncPlacementSpinners();
         updatePieceButton();
@@ -392,13 +412,18 @@ public class FvdDesigner extends Application {
         // mode; yaw when locked or march-aligned. The grayHint
         // wrappers say to edit through the bridge.
         BridgeSection binto = bridgeInto(editor.activePiece());
-        boolean posOwned = binto != null
-            && binto.optMode != BridgeSection.OPT_NONE;
+        // a STRICT-SEAM follower (v17.1, D135): the seam owns the
+        // position outright, and every orientation row too — locked
+        // axes are frozen at the stored original (edit via the seam's
+        // settings), unlocked ones align to the seam each compile
+        boolean follows = editor.followsPrev(editor.activePiece());
+        boolean posOwned = follows || (binto != null
+            && binto.optMode != BridgeSection.OPT_NONE);
         startXSpinner.setDisable(posOwned);
         startYSpinner.setDisable(posOwned);
         startZSpinner.setDisable(posOwned);
-        yawSpinner.setDisable(binto != null && (binto.lockYaw
-            || binto.optMode == BridgeSection.OPT_POS_YAW));
+        yawSpinner.setDisable(follows || (binto != null && (binto.lockYaw
+            || binto.optMode == BridgeSection.OPT_POS_YAW)));
         if (piecePitchSpinner != null) {
             // pitch/roll rows (v15.3): values off the piece; lock
             // state off the bridge connecting into it when one exists
@@ -414,8 +439,8 @@ public class FvdDesigner extends Application {
             pieceLockRollBtn.setSelected(!lr);
             boolean marchOwns = bs != null
                 && bs.optMode == BridgeSection.OPT_POS_YAW;
-            piecePitchSpinner.setDisable(lp || marchOwns);
-            pieceRollSpinner.setDisable(lr || marchOwns);
+            piecePitchSpinner.setDisable(follows || lp || marchOwns);
+            pieceRollSpinner.setDisable(follows || lr || marchOwns);
         }
         docApplying = was;
     }
@@ -708,6 +733,9 @@ public class FvdDesigner extends Application {
     boolean slideKey;           // S held: slide nodes/handles along a line
     boolean cKey;               // C held: click the track = recenter orbit
     private Spinner<Double> heartSpinner, gaugeSpinner, tieSpinner;
+    // Phase 3 friction (v17.0, D133): rolling μ + air drag (shown
+    // per km — the raw 1/m coefficient is unreadable at spinner steps)
+    private Spinner<Double> fricRollSpinner, fricAirSpinner;
     private Spinner<Double> startXSpinner, startYSpinner, startZSpinner;
     private Spinner<Double> yawSpinner;   // active piece's heading (v12.0)
     // piece START pitch/roll + padlocks (v15.3, D101 — the rigid-tilt
@@ -1046,7 +1074,8 @@ public class FvdDesigner extends Application {
         });
         Tooltip.install(placementBtn, new Tooltip(
             "The ACTIVE piece's placement: x/y/z, yaw (a delta on its\n"
-            + "natural orientation — 0 reverts), and Reverse piece.\n"
+            + "natural orientation — 0 reverts), and Reverse piece\n"
+            + "(rebuilds the piece backward through the convert popup).\n"
             + "With a BRIDGE active it places the NEXT piece instead:\n"
             + "optimize position+yaw (default), position only (you\n"
             + "set the yaw), or fully manual."));
@@ -1523,6 +1552,21 @@ public class FvdDesigner extends Application {
             coaster.v0 = v;
             coaster.soleSection().vDesign(v);
         });
+        // PHASE 3 FRICTION (v17.0, D133): the coaster's two loss
+        // coefficients — per-coaster, saved in the .fvd, in document
+        // undo (they change the track path: design profiles shed)
+        fricRollSpinner = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0, 0.2, coaster.fricRoll, 0.005));
+        fricRollSpinner.setPrefWidth(80);
+        wireDocSpinner(fricRollSpinner, v -> coaster.fricRoll = v);
+        // air drag edits in 1/km (raw 1/m needs 4+ decimals); the
+        // model stores 1/m
+        fricAirSpinner = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0, 20, coaster.fricAir * 1000, 0.1));
+        fricAirSpinner.setPrefWidth(80);
+        wireDocSpinner(fricAirSpinner, v -> coaster.fricAir = v / 1000);
 
         Label heartLbl = new Label("Heart (m)");
         heartLbl.setTextFill(Color.BLACK);   // menu popup is light; default fill washed out
@@ -1547,10 +1591,11 @@ public class FvdDesigner extends Application {
         tieRow.setAlignment(Pos.CENTER_LEFT);
         // gray-out explainers (v16.13): a bridged-in piece's owned
         // values say to edit through the BRIDGE instead
-        String bridgeOwned = "The bridge connecting into this piece "
-            + "owns this value — edit it through the BRIDGE (activate "
-            + "the bridge section: its placement mode and rows), or "
-            + "set the bridge to \"No optimization\".";
+        String bridgeOwned = "The bridge or STRICT SEAM connecting "
+            + "into this piece owns this value — edit through the "
+            + "bridge's placement rows, or the seam's settings (click "
+            + "the double line): locked axes hold the piece's original "
+            + "orientation, unlocked ones follow the seam.";
         placementRow = new HBox(8, startLbl,
             GraphEditor.grayHint(startXSpinner, bridgeOwned),
             GraphEditor.grayHint(startYSpinner, bridgeOwned),
@@ -1703,23 +1748,46 @@ public class FvdDesigner extends Application {
         bridgePosRow.setAlignment(Pos.CENTER_LEFT);
         HBox speedRow = new HBox(8, speedLbl, startSpeedSpinner);
         speedRow.setAlignment(Pos.CENTER_LEFT);
+        // friction rows (v17.0): tooltips carry the model
+        Label fricRollLbl = new Label("Friction (rolling μ)");
+        fricRollLbl.setTextFill(Color.BLACK);
+        HBox fricRollRow = new HBox(8, fricRollLbl, fricRollSpinner);
+        fricRollRow.setAlignment(Pos.CENTER_LEFT);
+        Tooltip.install(fricRollRow, new Tooltip(
+            "Rolling/mechanical losses: constant deceleration μ·g\n"
+            + "per meter of track (0.01–0.05 is typical; 0 = the old\n"
+            + "loss-free model). Applies to the whole coaster — design\n"
+            + "profiles and the true ride both shed it."));
+        Label fricAirLbl = new Label("Air drag (per km)");
+        fricAirLbl.setTextFill(Color.BLACK);
+        HBox fricAirRow = new HBox(8, fricAirLbl, fricAirSpinner);
+        fricAirRow.setAlignment(Pos.CENTER_LEFT);
+        Tooltip.install(fricAirRow, new Tooltip(
+            "Air resistance: deceleration k·v² with k entered per\n"
+            + "KILOMETER of track (1.0 here = 0.001/m; a few tenths\n"
+            + "to ~2 is typical). Fast track sheds much more than\n"
+            + "slow track."));
 
         // (the rail-color radios + "Rail colors…" dialog item moved to
         // the VIEW menu in v16.14 — Dialogs.buildViewMenu assigns the
         // gradientModeItem/solidModeItem RadioButtons there)
 
-        // reversal is a PIECE operation (v12.1, D71 — was a per-section
-        // badge check): flips the travel direction of the active piece,
-        // track staying put (level seams exactly; others re-join with
-        // the usual yaw-only honesty). Lives in the Placement dropdown.
-        reverseItem = new MenuItem("Reverse piece (flip travel direction)");
+        // reversal is a PIECE operation (v12.1, D71), REWORKED as a
+        // CONVERT in v17.0 (D134, user re-spec): the compiled geometry
+        // re-fits as ordinary forward sections running the other way
+        // through the density preview — entry speed = the recorded
+        // end speed (padlocked row; unlock for custom), no speed
+        // conflict in the result. Lives in the Placement dropdown.
+        reverseItem = new MenuItem("Reverse piece (rebuild backward)…");
         reverseItem.setOnAction(e -> editor.reverseActivePiece());
 
         coasterMenu = new Menu("Coaster", null,
             new CustomMenuItem(heartRow, false),
             new CustomMenuItem(gaugeRow, false),
             new CustomMenuItem(tieRow, false),
-            new CustomMenuItem(speedRow, false));
+            new CustomMenuItem(speedRow, false),
+            new CustomMenuItem(fricRollRow, false),
+            new CustomMenuItem(fricAirRow, false));
         // menu-local undo/redo lives exactly as long as the menu is open;
         // the popup has its own Scene, so the Ctrl+Z filter goes there
         coasterMenu.setOnShown(e -> {
@@ -1843,6 +1911,8 @@ public class FvdDesigner extends Application {
         startZSpinner.getValueFactory().setValue(0.0);
         yawSpinner.getValueFactory().setValue(0.0);
         startSpeedSpinner.getValueFactory().setValue(26.0);
+        fricRollSpinner.getValueFactory().setValue(0.0);
+        fricAirSpinner.getValueFactory().setValue(0.0);
         (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
         docApplying = false;
 
@@ -1917,6 +1987,8 @@ public class FvdDesigner extends Application {
             gaugeSpinner.getValueFactory().setValue(railGauge);
             tieSpinner.getValueFactory().setValue(tieSpacing);
             startSpeedSpinner.getValueFactory().setValue(coaster.v0);
+            fricRollSpinner.getValueFactory().setValue(coaster.fricRoll);
+            fricAirSpinner.getValueFactory().setValue(coaster.fricAir * 1000);
             syncPlacementSpinners();   // active piece (0 after reset)
             updatePieceButton();
             (railSolid ? solidModeItem : gradientModeItem).setSelected(true);

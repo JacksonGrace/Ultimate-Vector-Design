@@ -20,7 +20,22 @@ import java.util.List;
 public class Coaster {
 
     public double v0 = 26;         // dynamics entry speed, m/s
-    public double friction = 0;    // Phase 3 (kept 0, matching the integrator)
+
+    /** PHASE 3 FRICTION (v17.0, D133) — the two per-coaster loss
+     *  coefficients (SECTIONS-DESIGN §7; NL2's "friction" and "air
+     *  resistance"): ROLLING is dimensionless (deceleration
+     *  fricRoll·g — constant per meter, the first cut without
+     *  normal-force scaling) and AIR is 1/m (deceleration
+     *  fricAir·v²). Both 0 = the historic loss-free model, bitwise.
+     *  Saved as the `friction` line; ride document undo (they change
+     *  the track path). */
+    public double fricRoll = 0;
+    public double fricAir = 0;
+
+    /** The document's friction model as one bundle. */
+    FVDIntegrator.Friction fric() {
+        return new FVDIntegrator.Friction(fricRoll, fricAir);
+    }
 
     public final List<TrackPiece> pieces = new ArrayList<>();
 
@@ -156,28 +171,237 @@ public class Coaster {
         return pieceIdx + 1;
     }
 
-    /** REVERSE a whole piece (v12.1, D71 — the user-facing reversal;
-     *  the per-section flag is its mechanism): a pure MODEL
-     *  transformation, so the rest of the app needs no reversal mode —
-     *  the section list flips to TRAIN order with each section's
-     *  reversed flag toggled, and the placement re-anchors at the old
-     *  EXIT pose (position + full orientation with T flipped, into
-     *  baseOrient, yaw delta reset). On a level-seamed piece the track
-     *  STAYS PUT and the train runs it backward (gated); pitched or
-     *  banked seams re-join with the same yaw-only honesty as always
-     *  (D67). Applying it twice restores the original (level: bitwise).
-     *  The caller passes the piece's compiled exit pose. */
-    public void reversePiece(int pieceIdx, TrackPose exit) {
+    /** REVERSE PIECE = a CONVERT (v17.0, D134 — user re-spec,
+     *  replacing both the D71 model transformation and the short-lived
+     *  D133 design-direction scheme): the piece's compiled geometry is
+     *  mirrored into the opposite travel order and re-fitted as
+     *  ordinary FORWARD sections at ONE energy flow from the reversed
+     *  entry speed — the speed the original ride REACHES its end with
+     *  (Pass D true), or the caller's custom value. The output piece
+     *  re-anchors at the old exit running backward, keeps one new
+     *  section per original section at the same boundaries
+     *  (force→force, geo→geo; straight/curve re-authors as FORCE
+     *  lanes — an element list has no mirrored form; influence folds
+     *  in like any whole convert; a LEGACY reversed-flag section just
+     *  comes out as plain forward lanes), and carries NO speed
+     *  conflict by construction — the first section anchors the flow
+     *  and the D95 reconcile keeps the rest real. Pieces containing a
+     *  BRIDGE refuse (world-anchored A→B has no reverse). Friction-
+     *  aware end to end: the fit's target profile sheds the document
+     *  losses over the mirrored arc, so the reversed track
+     *  re-integrates onto the original shape to the fit residual with
+     *  friction on. vEntry NaN = the recorded end speed. Undo/preview
+     *  are the caller's (the editor runs this through the standard
+     *  density preview). */
+    public boolean reversePiece(int pieceIdx, double dt, double spacing,
+                                double adaptTol, double vEntry) {
         TrackPiece piece = pieces.get(pieceIdx);
-        piece.x = exit.pos().x();
-        piece.y = exit.pos().y();
-        piece.z = exit.pos().z();
+        if (piece.sections.isEmpty()) return false;
+        for (Section s : piece.sections) {
+            if (s instanceof BridgeSection) return false;
+        }
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int span0 = 0;
+        for (int p = 0; p < pieceIdx; p++) {
+            span0 += pieces.get(p).sections.size();
+        }
+        int nSec = piece.sections.size();
+        if (span0 + nSec > r.spans().size()) return false;
+        int i0 = r.spans().get(span0).i0();
+        int i1 = Math.min(r.spans().get(span0 + nSec - 1).i1(),
+            r.samples().size() - 1);
+        // a piece BRIDGED INTO drops its first sample (continuation,
+        // D84) — step back onto the true entry when position-continuous
+        if (i0 > 0) {
+            FVDIntegrator.Sample a = r.samples().get(i0 - 1);
+            FVDIntegrator.Sample b = r.samples().get(i0);
+            if (b.pos().sub(a.pos()).length()
+                    < 3 * Math.max(0.5, b.v()) * dt) {
+                i0--;
+            }
+        }
+        if (i1 - i0 < 8) return false;
+        double vE = Double.isNaN(vEntry)
+            ? (i1 < r.trueV().length ? r.trueV()[i1]
+                : piece.sections.get(nSec - 1).vDesign())
+            : vEntry;
+        vE = Math.max(1, Math.min(100, vE));
+        // mirrored samples (world positions kept): rev[q] = orig[i1−q]
+        List<FVDIntegrator.Sample> rev =
+            reversedSamples(r.samples(), i0, i1);
+        // ONE energy flow over the mirrored arc — each new section's
+        // design speed reads off it at that section's entry, so the
+        // whole reversed piece is conflict-free from the start
+        double[] prof = reversedProfile(rev, vE, fric());
+        List<Section> out = new ArrayList<>(nSec);
+        for (int j = 0; j < nSec; j++) {
+            int k = nSec - 1 - j;                  // original index
+            TrackCompiler.Span sk = r.spans().get(span0 + k);
+            // include the entry-boundary sample (the withEntry rule,
+            // D113) — but only across a frame-SMOOTH seam: a LEGACY
+            // reversed section's seam can be KINKED (D67 matched
+            // heading only), and a cross-kink row poisons the fit's
+            // edge extraction
+            int a = sk.i0();
+            if (a - 1 >= i0
+                    && r.samples().get(a - 1).T()
+                        .dot(r.samples().get(a).T())
+                        > Math.cos(Math.toRadians(2))) {
+                a--;
+            }
+            int b = Math.min(sk.i1(), i1);         // exit boundary
+            int qa = i1 - b, qb = i1 - a;          // rev-index range
+            if (qb - qa < 4) return false;         // too short to fit
+            double vJ = Math.max(1, Math.min(100, prof[qa]));
+            boolean toGeo = piece.sections.get(k) instanceof GeoSection;
+            out.add(fitLanes(rev.subList(qa, qb + 1), vJ, toGeo, dt,
+                spacing, adaptTol));
+        }
+        // re-anchor at the old exit running backward (the D71
+        // placement math); any piece tilt is already baked into the
+        // mirrored samples — the deltas reset so it can't apply twice
+        FVDIntegrator.Sample end = r.samples().get(i1);
+        piece.x = end.pos().x();
+        piece.y = end.pos().y();
+        piece.z = end.pos().z();
         piece.yawDeg = 0;
         piece.pitchDeg = 0;
         piece.rollDeg = 0;
-        piece.baseOrient = Quat.fromFrame(exit.T().scale(-1), exit.U());
-        java.util.Collections.reverse(piece.sections);
-        for (Section s : piece.sections) s.reversed(!s.reversed());
+        piece.baseOrient = Quat.fromFrame(end.T().scale(-1), end.U());
+        piece.followPrev = false;   // v17.1: the entry moved to the old
+                                    // exit — a strict follow-link would
+                                    // point at the wrong end now
+        piece.sections.clear();
+        piece.sections.addAll(out);
+        return true;
+    }
+
+    /** A sample range mirrored into the opposite travel direction,
+     *  world positions kept: T and R flip, U stays, felt Gl negates
+     *  (the D67 identities), t/s re-base from the old end. The
+     *  recorded per-sample v (the DESIGN profile) is kept — the fit
+     *  decodes curvature from the felt at that speed, which is
+     *  direction-blind. */
+    static List<FVDIntegrator.Sample> reversedSamples(
+            List<FVDIntegrator.Sample> all, int i0, int i1) {
+        List<FVDIntegrator.Sample> out = new ArrayList<>(i1 - i0 + 1);
+        FVDIntegrator.Sample endS = all.get(i1);
+        for (int m = i1; m >= i0; m--) {
+            FVDIntegrator.Sample sm = all.get(m);
+            Vec3 T = sm.T().scale(-1);
+            Vec3 U = sm.U();
+            out.add(new FVDIntegrator.Sample(endS.t() - sm.t(),
+                endS.s() - sm.s(), sm.pos(), T, U, U.cross(T),
+                sm.v(), sm.Gv(), -sm.Gl()));
+        }
+        return out;
+    }
+
+    /** Speed profile over a mirrored sample list from one entry
+     *  speed — the passD march (Heun on the friction deficit).
+     *  Shared by the reversal's boundary speeds and the editor's
+     *  preview guides. */
+    static double[] reversedProfile(List<FVDIntegrator.Sample> rev,
+                                    double vEntry,
+                                    FVDIntegrator.Friction fric) {
+        int n = rev.size();
+        double[] v = new double[n];
+        double y0 = rev.get(0).pos().y();
+        double loss = 0;
+        v[0] = Math.max(0.5, vEntry);
+        for (int q = 1; q < n; q++) {
+            double ds = rev.get(q).s() - rev.get(q - 1).s();
+            if (!fric.off() && ds > 0) {
+                double f0 = fric.dLossDs(v[q - 1]);
+                double vp = Math.max(0.5, FVDIntegrator.speedAt(
+                    rev.get(q).pos(), vEntry, y0, loss + f0 * ds));
+                loss += (f0 + fric.dLossDs(vp)) / 2 * ds;
+            }
+            v[q] = Math.max(0.5, FVDIntegrator.speedAt(
+                rev.get(q).pos(), vEntry, y0, loss));
+        }
+        return v;
+    }
+
+    /** STRICT-SEAM effective entry (v17.1, D135): where a FOLLOWING
+     *  piece's entry really sits this compile — position = the seam
+     *  (the previous piece's exit), orientation composed per the
+     *  locks: unlocked axes read the INCOMING frame, locked axes the
+     *  piece's own STORED placement (the frozen original — never
+     *  mutated by following, so relocking restores it). All-locked
+     *  and all-unlocked take the exact frames (no Euler round-trip);
+     *  a vertical heading on either side has no defined heading/bank
+     *  — that side's frame is taken whole (the global-axis hold-off
+     *  rule). */
+    public static TrackPose strictEntry(TrackPose prevExit, TrackPiece p) {
+        Quat eo;
+        if (!p.sLockYaw && !p.sLockPitch && !p.sLockRoll) {
+            eo = prevExit.orient();            // fully continuous — exact
+        } else {
+            // locked (DISCONTINUOUS) axes hold the piece's editable
+            // sYaw/sPitch/sRollDeg values (D136 — created from the
+            // stored placement, spinner-edited since); unlocked axes
+            // read the incoming frame. A vertical incoming heading
+            // has no defined heading/bank — hold the frozen triple
+            // whole (the global-axis rule).
+            double[] in = eulerOf(prevExit.orient());
+            eo = Double.isNaN(in[0])
+                ? eulerFrame(p.sYawDeg, p.sPitchDeg, p.sRollDeg)
+                : eulerFrame(
+                    p.sLockYaw ? p.sYawDeg : in[0],
+                    p.sLockPitch ? p.sPitchDeg : in[1],
+                    p.sLockRoll ? p.sRollDeg : in[2]);
+        }
+        return new TrackPose(prevExit.pos(), eo);
+    }
+
+    /** Seed a follower's DISCONTINUOUS values from an orientation
+     *  (creation + the settings' ↺). Vertical frames seed what they
+     *  can (heading/bank 0). */
+    static void seedStrictValues(TrackPiece p, Quat q) {
+        double[] e = eulerOf(q);
+        p.sYawDeg = Double.isNaN(e[0]) ? 0 : e[0];
+        p.sPitchDeg = e[1];
+        p.sRollDeg = Double.isNaN(e[2]) ? 0 : e[2];
+    }
+
+    /** {heading°, elevation°, bank°} of a frame — the TrackPiece
+     *  delta axes (heading about world Y, elevation = asin T.y, bank
+     *  about T with the roll-lane sign). heading/bank NaN near a
+     *  vertical T. PUBLIC since D136 (the seam settings + gates read
+     *  it). */
+    public static double[] eulerOf(Quat q) {
+        Vec3 T = q.T();
+        double horiz = Math.sqrt(T.x() * T.x() + T.z() * T.z());
+        if (horiz < 1e-6) {
+            return new double[]{ Double.NaN,
+                T.y() > 0 ? 90 : -90, Double.NaN };
+        }
+        return new double[]{
+            Math.toDegrees(Math.atan2(-T.z(), T.x())),
+            Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, T.y())))),
+            Math.toDegrees(FVDIntegrator.bankOfTU(T, q.U())) };
+    }
+
+    /** Frame from {heading, elevation, bank} — composed exactly like
+     *  TrackPiece's deltas: yaw about Y, pitch about the heading's
+     *  horizontal right, roll about the resulting heading. */
+    static Quat eulerFrame(double headingDeg, double elevDeg,
+                           double bankDeg) {
+        Quat q = Quat.aboutY(headingDeg);
+        if (elevDeg != 0) {
+            Vec3 t = q.T();
+            Vec3 r = new Vec3(-t.z(), 0, t.x());
+            double len = r.length();
+            if (len > 1e-9) {
+                q = Quat.aboutAxis(r.scale(1 / len),
+                    Math.toRadians(elevDeg)).mul(q);
+            }
+        }
+        if (bankDeg != 0) {
+            q = Quat.aboutAxis(q.T(), Math.toRadians(bankDeg)).mul(q);
+        }
+        return q;
     }
 
     /** ATTACH a floating piece to the end of another (v12.0, D70): its
@@ -185,7 +409,9 @@ public class Coaster {
      *  target's exit pose on the next compile — their LOCAL shapes are
      *  untouched, §0) and the emptied piece dissolves. The floating
      *  placement is deliberately discarded — attaching MEANS "continue
-     *  from the target's end". */
+     *  from the target's end". Since v17.1 (D135) the UI's connect
+     *  flows route through connectStrict instead; this remains the
+     *  model-level merge (and unstrictSeam's engine). */
     public void attachPiece(int targetIdx, int floatingIdx) {
         if (targetIdx == floatingIdx) return;
         TrackPiece target = pieces.get(targetIdx);
@@ -202,6 +428,134 @@ public class Coaster {
         if (from == to) return;
         TrackPiece p = pieces.remove(from);
         pieces.add(to, p);
+    }
+
+    /** MAKE SEAM STRICT (v17.1, D135 — the user's "the track after
+     *  the seam should work as if the track before it were a
+     *  bridge"): split the piece at the section boundary (the D71
+     *  rigid split — the boundary pose becomes the new piece's
+     *  STORED placement, i.e. the frozen original orientation) and
+     *  mark the new piece as FOLLOWING. Nothing moves at creation
+     *  (the effective entry equals the stored one); from then on
+     *  upstream edits translate/re-aim the downstream rigidly —
+     *  unlocked axes align, locked axes hold the original — and its
+     *  design speeds stay independent (honest ≠v instead of a
+     *  reshape). Returns the follower's piece index, −1 refused. */
+    public int makeSeamStrict(int pieceIdx, int secIdx, double dt) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (secIdx <= 0 || secIdx >= piece.sections.size()) return -1;
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int spanIdx = secIdx - 1;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        if (spanIdx >= r.spans().size()) return -1;
+        int np = splitPiece(pieceIdx, secIdx, r.spans().get(spanIdx).exit());
+        if (np < 0) return -1;
+        TrackPiece f = pieces.get(np);
+        f.followPrev = true;
+        f.sLockYaw = false;      // heading follows (bridge convention);
+        f.sLockPitch = true;     // pitch/roll DISCONTINUOUS at the
+        f.sLockRoll = true;      //   original values (editable, D136)
+        seedStrictValues(f, f.entryPose().orient());
+        return np;
+    }
+
+    /** Is piece p an ACTIVE follower (the compiler's guard)? */
+    boolean followerActive(int p) {
+        if (p <= 0 || p >= pieces.size()) return false;
+        TrackPiece f = pieces.get(p);
+        TrackPiece prev = pieces.get(p - 1);
+        return f.followPrev && !f.sections.isEmpty()
+            && !prev.sections.isEmpty()
+            && !(prev.sections.get(prev.sections.size() - 1)
+                instanceof BridgeSection);
+    }
+
+    /** BAKE a follower's CURRENT effective placement into its stored
+     *  fields (D136 — the D106 bakeTilt lesson extended to strict
+     *  seams): the follow rotation becomes identity, so generation
+     *  resumes FROM the real frame. Without this, "Make graphs real"
+     *  fit the REAL (follow-rotated) samples and the next compile
+     *  applied the follow rotation A SECOND TIME (the user's "launches
+     *  off into the distance"), and re-freeze reshaped against
+     *  gravity in the stored frame. The follow itself stays ACTIVE
+     *  (flags + discontinuous values untouched). */
+    boolean bakeFollow(int followerIdx, TrackCompiler.Result r) {
+        if (!followerActive(followerIdx)) return false;
+        int spanIdx = -1;
+        for (int p = 0; p < followerIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        if (spanIdx < 0 || spanIdx >= r.spans().size()) return false;
+        TrackPiece f = pieces.get(followerIdx);
+        TrackPose eff = strictEntry(r.spans().get(spanIdx).exit(), f);
+        f.x = eff.pos().x();
+        f.y = eff.pos().y();
+        f.z = eff.pos().z();
+        f.baseOrient = eff.orient();
+        f.yawDeg = 0;
+        f.pitchDeg = 0;
+        f.rollDeg = 0;
+        return true;
+    }
+
+    /** UN-STRICT a seam (v17.1, D135 — user spec: "KEEPS SPEED
+     *  CONFLICT, but reorients track to be continuous"): the follower
+     *  merges back into the previous piece as a normal continuation —
+     *  orientation continuity restored (sections re-chain through the
+     *  seam, so force sections re-solve and the shape CAN change),
+     *  graphs kept exactly, and the speed conflict deliberately KEPT
+     *  via the D97 pin. This is exactly the historic whole-bridge-
+     *  convert stitch, which is what makes "convert bridge with a
+     *  strict seam, then un-strict" identical to the old convert. */
+    public boolean unstrictSeam(int followerIdx) {
+        if (followerIdx <= 0 || followerIdx >= pieces.size()) return false;
+        TrackPiece f = pieces.get(followerIdx);
+        if (!f.followPrev) return false;
+        TrackPiece prev = pieces.get(followerIdx - 1);
+        if (prev.sections.isEmpty() || prev.sections
+                .get(prev.sections.size() - 1) instanceof BridgeSection) {
+            return false;
+        }
+        Section first = f.sections.isEmpty() ? null : f.sections.get(0);
+        f.followPrev = false;
+        attachPiece(followerIdx - 1, followerIdx);
+        if (first != null) first.vPinned(true);   // the conflict stays
+        return true;
+    }
+
+    /** SPLIT TRACK AT a strict seam (v17.1): bake the CURRENT
+     *  effective placement into the stored fields (the piece stays
+     *  exactly where it sits) and drop the follow — an ordinary
+     *  detached piece from here on. */
+    public boolean detachStrictSeam(int followerIdx, double dt) {
+        if (!followerActive(followerIdx)) return false;
+        if (!bakeFollow(followerIdx, TrackCompiler.compile(this, dt))) {
+            return false;
+        }
+        pieces.get(followerIdx).followPrev = false;
+        return true;
+    }
+
+    /** CONNECT pieces directly = a STRICT SEAM (v17.1, D135 — user
+     *  spec; replaces the dissolving attach in the UI flows): the
+     *  floating piece reorders to come next on the timeline and
+     *  FOLLOWS with all axes UNLOCKED — fully continuous, the closest
+     *  thing to the old attach but with the downstream shape frozen
+     *  rigid. Its stored placement stays untouched (the frozen
+     *  original, for later relocks). Returns the follower's index. */
+    public int connectStrict(int targetIdx, int floatingIdx) {
+        if (targetIdx == floatingIdx) return -1;
+        int to = floatingIdx < targetIdx ? targetIdx : targetIdx + 1;
+        movePiece(floatingIdx, to);
+        TrackPiece f = pieces.get(to);
+        f.followPrev = true;
+        f.sLockYaw = false;
+        f.sLockPitch = false;
+        f.sLockRoll = false;
+        seedStrictValues(f, f.entryPose().orient());
+        return to;
     }
 
     /** "Optimize placement" (v13.1 D73 dead-ahead; v13.4 D76 bisector;
@@ -656,13 +1010,26 @@ public class Coaster {
      *  sections re-fit in their own mode; s/c sections just
      *  re-freeze vDesign (shape speed-independent — both resolutions
      *  coincide). Bridges have no split (pure geometry in Pass D);
-     *  REVERSED sections refuse (§5.3's rule). */
+     *  REVERSED sections refuse (§5.3's rule — reversal itself is
+     *  the convert-based rebuild now, v17.0 D134). */
     public boolean makeGraphsReal(int pieceIdx, int secIdx, double dt,
                                   double spacing, double adaptTol) {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        // a STRICT-SEAM follower BAKES its follow rotation into the
+        // stored placement (D136 — the D106 lesson: without it the
+        // next compile applied the follow rotation a SECOND time on
+        // top of the fitted world-frame lanes, the user's "launches
+        // off into the distance"). The bake uses — and the fit reads —
+        // THIS compile's samples: unlike a rigid tilt-bake, baking a
+        // follow changes the generation frame, so a post-bake compile
+        // would gravity re-solve into a different shape than the one
+        // on screen, and "keep shape" must fit what the user sees.
+        if (followerActive(pieceIdx)) {
+            bakeFollow(pieceIdx, r);
+        }
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
             spanIdx += pieces.get(p).sections.size();
@@ -684,7 +1051,7 @@ public class Coaster {
             return true;
         }
         if (sp.i1() - sp.i0() < 4) return false;
-        piece.sections.set(secIdx, convertToLanes(
+        piece.sections.set(secIdx, fitLanes(
             withEntry(r.samples(), sp, dt),
             vTrue, sec instanceof GeoSection, dt, spacing, adaptTol));
         return true;
@@ -714,7 +1081,13 @@ public class Coaster {
             FVDIntegrator.Sample a = all.get(i0 - 1);
             FVDIntegrator.Sample b = all.get(i0);
             double step = 3 * Math.max(0.5, b.v()) * dt;
-            if (b.pos().sub(a.pos()).length() < step) i0--;
+            // frame-SMOOTH seams only (D136): a KINKED entry (legacy
+            // reversed seams, discontinuous strict seams) would hand
+            // the fit a cross-kink row and poison its edge extraction
+            if (b.pos().sub(a.pos()).length() < step
+                    && a.T().dot(b.T()) > Math.cos(Math.toRadians(2))) {
+                i0--;
+            }
         }
         return all.subList(i0, sp.i1() + 1);
     }
@@ -723,7 +1096,8 @@ public class Coaster {
      *  resolution — keep the graphs and set the section's design
      *  speed to its true entry speed; the geometry re-derives from
      *  the same graphs at the new speed (the shape changes — the
-     *  user's explicit trade). Reversed sections refuse. */
+     *  user's explicit trade). Reversed sections refuse (reversal
+     *  is the convert-based rebuild now, v17.0 D134). */
     public boolean refreezeSpeed(int pieceIdx, int secIdx, double dt) {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
@@ -741,6 +1115,12 @@ public class Coaster {
         // whole design/real split closes. Piece-scoped by nature (the
         // tilt is a piece property): sibling sections re-solve too.
         if (piece.pitchDeg != 0 || piece.rollDeg != 0) piece.bakeTilt();
+        // a follower resolves FROM the real frame (D136, the D106
+        // rule): bake the follow rotation so the reshape is
+        // gravity-honest where the track really sits
+        if (followerActive(pieceIdx)) {
+            bakeFollow(pieceIdx, TrackCompiler.compile(this, dt));
+        }
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
@@ -848,7 +1228,7 @@ public class Coaster {
         }
         TrackCompiler.Span sp = r.spans().get(spanIdx);
         if (sp.i1() - sp.i0() < 4) return false;   // too short to measure
-        LaneSection conv = convertToLanes(
+        LaneSection conv = fitLanes(
             withEntry(r.samples(), sp, dt),
             ls.vDesign(), ls instanceof GeoSection, dt, spacing, adaptTol,
             toDist ? Section.Domain.DISTANCE : Section.Domain.TIME);
@@ -1050,6 +1430,33 @@ public class Coaster {
         return convertToLanes(s, vDesign, toGeo, dt, NODE_SPACING_DEFAULT, 0);
     }
 
+    /** Instance fit wrappers (v17.0, D133): converts INSIDE the
+     *  document thread the coaster's friction into the re-timed
+     *  target profile — new call sites must use these, not the static
+     *  tower, or the fit goes friction-blind. */
+    LaneSection fitLanes(List<FVDIntegrator.Sample> s, double vDesign,
+                         boolean toGeo, double dt, double spacing,
+                         double adaptTol) {
+        return fitLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
+            Section.Domain.TIME);
+    }
+
+    LaneSection fitLanes(List<FVDIntegrator.Sample> s, double vDesign,
+                         boolean toGeo, double dt, double spacing,
+                         double adaptTol, Section.Domain outDom) {
+        return fitLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
+            outDom, false, false, false, false);
+    }
+
+    LaneSection fitLanes(List<FVDIntegrator.Sample> s, double vDesign,
+                         boolean toGeo, double dt, double spacing,
+                         double adaptTol, Section.Domain outDom,
+                         boolean toRollG, boolean toYpG, boolean toRateM,
+                         boolean toRollAbs) {
+        return convertToLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
+            outDom, toRollG, toYpG, toRateM, toRollAbs, fric());
+    }
+
     /** Default target node spacing for conversions (s) — the density
      *  dialog's starting value (v14.0, D90). */
     public static final double NODE_SPACING_DEFAULT = 0.1;
@@ -1139,6 +1546,26 @@ public class Coaster {
                                              boolean toRollG, boolean toYpG,
                                              boolean toRateM,
                                              boolean toRollAbs) {
+        return convertToLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
+            outDom, toRollG, toYpG, toRateM, toRollAbs,
+            FVDIntegrator.Friction.NONE);
+    }
+
+    /** Convert with the document FRICTION (Phase 3, v17.0 D133): the
+     *  re-timed target profile sheds the coaster's rolling + air
+     *  losses along the extracted samples' arc, so a fitted section
+     *  reproduces the shape when compiled under the same friction.
+     *  Every in-document convert routes here via fitLanes; the
+     *  loss-free tower above stays for probes and gates. */
+    public static LaneSection convertToLanes(List<FVDIntegrator.Sample> s,
+                                             double vDesign, boolean toGeo,
+                                             double dt, double spacing,
+                                             double adaptTol,
+                                             Section.Domain outDom,
+                                             boolean toRollG, boolean toYpG,
+                                             boolean toRateM,
+                                             boolean toRollAbs,
+                                             FVDIntegrator.Friction fric) {
         if (toRollAbs) toRollG = true;   // the angle IS the target
         int n = s.size();
         double vD = Math.max(1, vDesign);
@@ -1147,10 +1574,18 @@ public class Coaster {
         double[] vGs = new double[n];
         double[][] rate = new double[n][3];
         double prevVG = Math.max(0.5, vD);
+        double lossG = 0;
         for (int i = 0; i < n; i++) {
             FVDIntegrator.Sample sm = s.get(i);
+            if (i > 0 && !fric.off()) {
+                double dsF = sm.s() - s.get(i - 1).s();
+                double f0 = fric.dLossDs(prevVG);
+                double vp = Math.max(0.5, FVDIntegrator.speedAt(
+                    sm.pos(), vD, y0, lossG + f0 * dsF));
+                lossG += (f0 + fric.dLossDs(vp)) / 2 * dsF;
+            }
             double vG = Math.max(0.5,
-                FVDIntegrator.speedAt(sm.pos(), vD, y0));
+                FVDIntegrator.speedAt(sm.pos(), vD, y0, lossG));
             vGs[i] = vG;
             if (i > 0) {
                 double ds = sm.s() - s.get(i - 1).s();
@@ -1373,10 +1808,10 @@ public class Coaster {
         }
         TrackCompiler.Span sp = r.spans().get(spanIdx);
         if (sp.i1() - sp.i0() < 4) return false;
-        LaneSection conv = convertToLanes(
+        LaneSection conv = fitLanes(
             withEntry(r.samples(), sp, dt),
             ls.vDesign(), ls instanceof GeoSection, dt, spacing, adaptTol,
-            ls.domain(), toRollG, toYpG);
+            ls.domain(), toRollG, toYpG, false, false);
         conv.vPinned = sec.vPinned();
         piece.sections.set(secIdx, conv);
         return true;
@@ -1903,7 +2338,7 @@ public class Coaster {
         if (!(piece.sections.get(secIdx) instanceof BridgeSection bs)) {
             return false;
         }
-        List<FVDIntegrator.Sample> s = bs.integrate(dt).samples();
+        List<FVDIntegrator.Sample> s = bs.integrate(dt, fric()).samples();
         int n = s.size();
         if (n < 20) return false;   // too short to split meaningfully
         // EXACT-fraction cut (v14.0, D89): the cut pose interpolates
@@ -1932,7 +2367,7 @@ public class Coaster {
         boolean wasMarch = bs.optMode != BridgeSection.OPT_NONE
             && marchSpine(bs, bs.optMode == BridgeSection.OPT_POS_YAW) != null;
         if (left) {
-            LaneSection conv = convertToLanes(sideOf(s, cs, true),
+            LaneSection conv = fitLanes(sideOf(s, cs, true),
                 bs.vDesign, toGeo, dt, spacing, adaptTol,
                 outDom, rollG, ypG, rateM, rollAbs);
             BridgeSection rem = new BridgeSection(
@@ -1966,7 +2401,7 @@ public class Coaster {
             piece.sections.add(secIdx + 1, rem);
         } else {
             List<FVDIntegrator.Sample> side = sideOf(s, cs, false);
-            LaneSection conv = convertToLanes(side, vCut, toGeo, dt,
+            LaneSection conv = fitLanes(side, vCut, toGeo, dt,
                 spacing, adaptTol, outDom, rollG, ypG, rateM, rollAbs);
             // the kept bridge now ends at the cut; seed the far seam
             // with the dynamics MEASURED there (the next compile
@@ -2167,7 +2602,7 @@ public class Coaster {
                 convSide = tmp;
             }
         }
-        LaneSection conv = convertToLanes(convSide,
+        LaneSection conv = fitLanes(convSide,
             left ? sec.vDesign() : vCut, toGeo, dt, spacing, adaptTol,
             outDom, rollG, ypG, rateM, rollAbs);
         // BOTH halves continue the original's DESIGN speed profile, so
@@ -2179,6 +2614,189 @@ public class Coaster {
         conv.vPinned = sec.vPinned();
         piece.sections.set(secIdx, left ? conv : keep);
         piece.sections.add(secIdx + 1, left ? keep : conv);
+        return true;
+    }
+
+    /** MID-SECTION NODE-ANCHORED SPLIT (v16.18, D130 — the last
+     *  Phase-2 item): cut lane section secIdx of piece pieceIdx in
+     *  TWO at LOCAL x `xc` (seconds or meters per its domain). All
+     *  three lanes go through splitLanes' de Casteljau identity /
+     *  node partition and the RIGHT half's vDesign re-freezes to
+     *  the design speed AT the cut, so the result is EXACTLY the
+     *  chain the user would get authoring two sections there
+     *  (gated 0.0 m). Versus the UNSPLIT original the new seam
+     *  inherits the STANDARD grid-truncation every seam has
+     *  (authored ends truncate to the dt grid — up to one dt of
+     *  profile absorbed at the boundary; ~2 cm path shift on the
+     *  gate's violent fixture, invisible against the 14 cm rails).
+     *  Axis/rate/roll flags and the vPinned conflict ride onto
+     *  both halves. Refuses reversed, influenced, s/c and bridge
+     *  sections and cuts at the very ends. The editor's "Split
+     *  section/track piece here" both ride on this (the piece
+     *  variant chains splitPiece at the fresh boundary — D71's
+     *  rigid pose copy, gated 0.0 m against the section split). */
+    public boolean splitSectionAt(int pieceIdx, int secIdx, double xc,
+                                  double dt) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        Section sec = piece.sections.get(secIdx);
+        if (!(sec instanceof LaneSection ls) || sec.reversed()
+                || ls.influenced()) return false;
+        double end = BezierBaker.rideEnd(ls.lanes);
+        if (xc <= 1e-9 || xc >= end - 1e-9) return false;
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        if (spanIdx >= r.spans().size()) return false;
+        TrackCompiler.Span sp = r.spans().get(spanIdx);
+        int i1 = Math.min(sp.i1(), r.samples().size() - 1);
+        if (i1 - sp.i0() < 1) return false;
+        List<FVDIntegrator.Sample> s = r.samples().subList(sp.i0(), i1 + 1);
+        FVDIntegrator.Sample cs = ls.domain() == Section.Domain.DISTANCE
+            ? sampleAtArc(s, sp.s0() + xc)
+            : sampleAtTime(s, sp.t0() + xc);
+        // plain math — FvdDesigner.clamp would drag JavaFX into the
+        // headless gates through its static Color fields
+        double vCut = Math.max(1, Math.min(100, cs.v()));
+        List<List<BezierBaker.Node>> leftL = splitLanes(ls.lanes, xc, false);
+        List<List<BezierBaker.Node>> rightL = splitLanes(ls.lanes, xc, true);
+        LaneSection a = ls instanceof GeoSection
+            ? new GeoSection(leftL, ls.vDesign)
+            : new ForceSection(leftL, ls.vDesign);
+        LaneSection b = ls instanceof GeoSection
+            ? new GeoSection(rightL, vCut)
+            : new ForceSection(rightL, vCut);
+        for (LaneSection h : new LaneSection[]{ a, b }) {
+            h.domain(ls.domain());
+            h.rollGlobal = ls.rollGlobal;
+            h.yawPitchGlobal = ls.yawPitchGlobal;
+            h.ratePerMeter = ls.ratePerMeter;
+            h.rollAbsolute = ls.rollAbsolute;
+            h.vPinned(ls.vPinned());
+        }
+        piece.sections.set(secIdx, a);
+        piece.sections.add(secIdx + 1, b);
+        return true;
+    }
+
+    /** CONNECT two adjacent LIKE sections into one (v16.19, D131 —
+     *  the split's inverse, user spec): secIdx and secIdx+1 of the
+     *  piece merge when they share type, domain and every axis/rate/
+     *  roll flag (reversed/influenced refuse). The second section's
+     *  lanes append shifted by the first's duration; where BOTH
+     *  sides own a seam node they become ONE node — a seam that was
+     *  MATCHED (equal value + slope, what B leaves behind) merges
+     *  losslessly (split→connect round-trips to the original,
+     *  gated), an unmatched seam takes the AVERAGE of the two
+     *  values and the AVERAGE of the two handle slopes on both
+     *  handles (smooth — the user's rule); a side whose lane held
+     *  early just appends, the hold becoming a real segment. The
+     *  merged section keeps the FIRST's vDesign and pin. */
+    public boolean mergeSections(int pieceIdx, int secIdx) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (secIdx < 0 || secIdx + 1 >= piece.sections.size()) return false;
+        Section sa = piece.sections.get(secIdx);
+        Section sb = piece.sections.get(secIdx + 1);
+        if (!(sa instanceof LaneSection a) || !(sb instanceof LaneSection b)
+                || a.reversed() || b.reversed()
+                || a.influenced() || b.influenced()) {
+            return false;
+        }
+        boolean like = (a instanceof GeoSection) == (b instanceof GeoSection)
+            && a.domain() == b.domain()
+            && a.rollGlobal == b.rollGlobal
+            && a.yawPitchGlobal == b.yawPitchGlobal
+            && a.ratePerMeter == b.ratePerMeter
+            && a.rollAbsolute == b.rollAbsolute;
+        if (!like) return false;
+        double dA = BezierBaker.rideEnd(a.lanes);
+        List<List<BezierBaker.Node>> merged = new ArrayList<>(3);
+        for (int L = 0; L < 3; L++) {
+            List<BezierBaker.Node> la = new ArrayList<>();
+            for (BezierBaker.Node nd : a.lanes.get(L)) la.add(nd.copy());
+            List<BezierBaker.Node> lb = new ArrayList<>();
+            for (BezierBaker.Node nd : b.lanes.get(L)) {
+                BezierBaker.Node c = nd.copy();
+                c.t += dA;
+                lb.add(c);
+            }
+            List<BezierBaker.Node> m = new ArrayList<>(la);
+            BezierBaker.Node endA = la.get(la.size() - 1);
+            BezierBaker.Node startB = lb.get(0);
+            if (Math.abs(endA.t - startB.t) <= 1e-9) {
+                // both sides own the seam → ONE node: A's in-handle,
+                // B's out-handle and lock flags
+                // effInDt is NEGATIVE (−inFrac·gap) — guards must be
+                // on |dt| or every in-slope reads 0 (v16.20: that
+                // phantom flat side failed the matched test on any
+                // sloped seam and the "average" HALVED the slope —
+                // the user's "the average slope was not accurate";
+                // the flat-handled gate fixtures were blind to it)
+                double inDt = la.size() >= 2
+                    ? BezierBaker.effInDt(la.get(la.size() - 2), endA) : 0;
+                double outDt = lb.size() >= 2
+                    ? BezierBaker.effOutDt(startB, lb.get(1)) : 0;
+                double sIn = Math.abs(inDt) > 1e-12 ? endA.inDv / inDt : 0;
+                double sOut = Math.abs(outDt) > 1e-12 ? startB.outDv / outDt : 0;
+                BezierBaker.Node seam = endA.copy();
+                seam.outFrac = startB.outFrac;
+                seam.outDv = startB.outDv;
+                seam.straightOut = startB.straightOut;
+                seam.levelOut = startB.levelOut;
+                boolean matched = Math.abs(endA.val - startB.val) <= 1e-9
+                    && Math.abs(sIn - sOut) <= 1e-9;
+                if (matched) {
+                    seam.smooth = true;
+                } else {
+                    seam.val = (endA.val + startB.val) / 2;
+                    double sAvg = (sIn + sOut) / 2;
+                    seam.inDv = sAvg * inDt;
+                    seam.outDv = sAvg * outDt;
+                    seam.smooth = true;
+                }
+                m.set(m.size() - 1, seam);
+                for (int k = 1; k < lb.size(); k++) m.add(lb.get(k));
+            } else {
+                // A's lane HELD to the seam: its value there is the
+                // hold, its slope 0 — and the seam node (B's node 0)
+                // takes the AVERAGE of the two sides like every other
+                // seam (v16.20, user rule: the dividing node averages
+                // value and handle slope; a held side contributes its
+                // held value + flat slope). A B-MATCHED hold (equal
+                // value, slope 0) therefore still merges losslessly.
+                // Both facing handles of the revived segment carried
+                // DEAD data while the lanes ended here (a lane's last
+                // node keeps its out fields, unused) — appending them
+                // verbatim bent the join (D132, the user's "connect
+                // after Shift+B changes the slope"): endA leaves the
+                // hold FLAT, b0's handles re-derive from the average.
+                BezierBaker.Node b0 = lb.get(0);
+                double outDt = lb.size() >= 2
+                    ? BezierBaker.effOutDt(b0, lb.get(1)) : 0;
+                double sOut = Math.abs(outDt) > 1e-12 ? b0.outDv / outDt : 0;
+                double sAvg = sOut / 2;          // held side is flat
+                b0.val = (endA.val + b0.val) / 2;
+                double inDtNew = BezierBaker.effInDt(endA, b0);
+                b0.inDv = Math.abs(inDtNew) > 1e-12 ? sAvg * inDtNew : 0;
+                if (Math.abs(outDt) > 1e-12) b0.outDv = sAvg * outDt;
+                b0.smooth = true;
+                endA.outDv = 0;
+                m.addAll(lb);
+            }
+            merged.add(m);
+        }
+        LaneSection ms = a instanceof GeoSection
+            ? new GeoSection(merged, a.vDesign)
+            : new ForceSection(merged, a.vDesign);
+        ms.domain(a.domain());
+        ms.rollGlobal = a.rollGlobal;
+        ms.yawPitchGlobal = a.yawPitchGlobal;
+        ms.ratePerMeter = a.ratePerMeter;
+        ms.rollAbsolute = a.rollAbsolute;
+        ms.vPinned(a.vPinned());
+        piece.sections.set(secIdx, ms);
+        piece.sections.remove(secIdx + 1);
         return true;
     }
 
@@ -2350,11 +2968,23 @@ public class Coaster {
             boolean toGeo, double dt, double spacing, double adaptTol,
             Section.Domain outDom, boolean rollG, boolean ypG,
             boolean rateM, boolean rollAbs) {
+        return convertWholeSection(pieceIdx, secIdx, toGeo, dt, spacing,
+            adaptTol, outDom, rollG, ypG, rateM, rollAbs, false);
+    }
+
+    /** strictSeam applies to BRIDGE whole-converts only (v17.1, D135):
+     *  keep the next piece as a strict-seam follower instead of the
+     *  classic attach + pin. */
+    public boolean convertWholeSection(int pieceIdx, int secIdx,
+            boolean toGeo, double dt, double spacing, double adaptTol,
+            Section.Domain outDom, boolean rollG, boolean ypG,
+            boolean rateM, boolean rollAbs, boolean strictSeam) {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec instanceof BridgeSection) {
             return convertBridgeWhole(pieceIdx, secIdx, toGeo, dt,
-                spacing, adaptTol, outDom, rollG, ypG, rateM, rollAbs);
+                spacing, adaptTol, outDom, rollG, ypG, rateM, rollAbs,
+                strictSeam);
         }
         if (sec.reversed()) return false;
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
@@ -2364,7 +2994,7 @@ public class Coaster {
         }
         TrackCompiler.Span sp = r.spans().get(spanIdx);
         if (sp.i1() - sp.i0() < 4) return false;   // too short to measure
-        LaneSection conv = convertToLanes(
+        LaneSection conv = fitLanes(
             withEntry(r.samples(), sp, dt),
             sec.vDesign(), toGeo, dt, spacing, adaptTol,
             outDom, rollG, ypG, rateM, rollAbs);
@@ -2404,22 +3034,48 @@ public class Coaster {
             boolean toGeo, double dt, double spacing, double adaptTol,
             Section.Domain outDom, boolean rollG, boolean ypG,
             boolean rateM, boolean rollAbs) {
+        return convertBridgeWhole(pieceIdx, secIdx, toGeo, dt, spacing,
+            adaptTol, outDom, rollG, ypG, rateM, rollAbs, false);
+    }
+
+    /** strictSeam (v17.1, D135 — the Convert dialog's "Make following
+     *  seam strict", checked by default): instead of dissolving the
+     *  target piece into this one, KEEP it as a strict-seam FOLLOWER —
+     *  its shape frozen exactly as the bridge left it, position + the
+     *  bridge's unlocked axes following the converted lanes' end, its
+     *  design speeds independent (no pin needed — piece-firsts are
+     *  reconcile-exempt). The locks CARRY from the bridge, so the
+     *  seam behaves like the bridge did. Un-stricting later
+     *  reproduces the classic stitch exactly (attach + pin). */
+    public boolean convertBridgeWhole(int pieceIdx, int secIdx,
+            boolean toGeo, double dt, double spacing, double adaptTol,
+            Section.Domain outDom, boolean rollG, boolean ypG,
+            boolean rateM, boolean rollAbs, boolean strictSeam) {
         TrackPiece piece = pieces.get(pieceIdx);
         if (!(piece.sections.get(secIdx) instanceof BridgeSection bs)) {
             return false;
         }
-        List<FVDIntegrator.Sample> s = bs.integrate(dt).samples();
+        List<FVDIntegrator.Sample> s = bs.integrate(dt, fric()).samples();
         if (s.size() < 5) return false;
         piece.sections.set(secIdx,
-            convertToLanes(s, bs.vDesign, toGeo, dt, spacing, adaptTol,
+            fitLanes(s, bs.vDesign, toGeo, dt, spacing, adaptTol,
                 outDom, rollG, ypG, rateM, rollAbs));
         if (pieceIdx + 1 < pieces.size()) {
-            // PIN the first attached section's design speed (v14.5,
-            // D97, user rule): the target's design speeds and its
-            // design/true split must survive the conversion exactly —
-            // without the pin the D95 reconcile re-froze the attached
-            // chain to the lanes' design end and closed the split.
             TrackPiece next = pieces.get(pieceIdx + 1);
+            if (strictSeam) {
+                next.followPrev = true;
+                next.sLockYaw = bs.lockYaw;
+                next.sLockPitch = bs.lockPitch;
+                next.sLockRoll = bs.lockRoll;
+                seedStrictValues(next, next.entryPose().orient());
+                return true;
+            }
+            // classic stitch — PIN the first attached section's design
+            // speed (v14.5, D97, user rule): the target's design
+            // speeds and its design/true split must survive the
+            // conversion exactly — without the pin the D95 reconcile
+            // re-froze the attached chain to the lanes' design end
+            // and closed the split.
             if (!next.sections.isEmpty()) {
                 next.sections.get(0).vPinned(true);
             }

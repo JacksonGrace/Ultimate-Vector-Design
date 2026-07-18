@@ -26,10 +26,14 @@ import java.util.List;
  * Integration (Phase 0 upgrade, see DECISIONS.md D44): classic RK4 on the
  * state (pos, T, U) with T' = Omega x T, U' = Omega x U, pos' = T*v; the
  * frame is re-orthonormalized after every step and R = U x T is derived.
- * Speed is ALGEBRAIC, not part of the ODE state: energy conservation vs
- * the start height, v = sqrt(v0^2 + 2g(y0 - y)), evaluated wherever a
- * stage needs it. Each stage re-normalizes its local frame copy so the
- * physics never sees the slightly non-unit vectors RK4 stages produce.
+ * Speed is ALGEBRAIC in the frame sense — energy conservation vs the
+ * start height, v = sqrt(v0^2 + 2g(y0 - y) - loss), evaluated wherever a
+ * stage needs it — with `loss` the FRICTION deficit that joined the RK4
+ * state in Phase 3 (v17.0, D133: rolling mu*g + air k*v^2 per meter,
+ * exactly 0.0 while the document's coefficients are 0, keeping every
+ * pre-friction result bitwise). Each stage re-normalizes its local frame
+ * copy so the physics never sees the slightly non-unit vectors RK4
+ * stages produce.
  *
  * (The old integrator applied one exact Rodrigues rotation per step from
  * the step-START Omega — first-order in the rate of change of Omega.
@@ -39,6 +43,24 @@ import java.util.List;
 public class FVDIntegrator {
 
     public static final double G0 = 9.80665; // m/s^2
+
+    /** PHASE 3 FRICTION (v17.0, D133): the document's two loss
+     *  coefficients — ROLLING (dimensionless; deceleration roll·g,
+     *  the SECTIONS-DESIGN §7 "first cut" without normal-force
+     *  scaling) and AIR drag (1/m; deceleration air·v²). Losses
+     *  ride the RK4 state as a specific-energy deficit (v² units):
+     *  v² = v0² + 2g(y0−y) − loss. Both coefficients 0 keeps the
+     *  deficit exactly 0.0 — every historic path stays bitwise. */
+    public record Friction(double roll, double air) {
+        public static final Friction NONE = new Friction(0, 0);
+
+        public boolean off() { return roll == 0 && air == 0; }
+
+        /** d(loss)/ds at speed v (v² units per meter of travel). */
+        double dLossDs(double v) {
+            return 2 * (roll * G0 + air * v * v);
+        }
+    }
 
     public record Keyframe(double t, double Gv, double Gl, double rollRateDeg) {}
 
@@ -52,7 +74,11 @@ public class FVDIntegrator {
         public Vec3 pos0 = Vec3.ZERO;
         public Vec3 startHeading = new Vec3(1, 0, 0);
         public Vec3 startUp = new Vec3(0, 1, 0);   // entry-pose seeding (Phase 1)
-        public double friction = 0;   // crude per-second speed bleed factor
+        /** Phase 3 (v17.0, D133): the document's friction model +
+         *  design direction. NONE = the historic loss-free profile,
+         *  bitwise (the old crude per-second bleed factor this
+         *  replaces was hardwired 0 and inert). */
+        public Friction fric = Friction.NONE;
         /** GLOBAL roll (v16.1, D107): the roll lane integrates to a
          *  BANK TARGET vs the horizon, enforced by an algebraic
          *  post-step projection (the s/c GLOBAL pattern) — the roll
@@ -95,10 +121,12 @@ public class FVDIntegrator {
         return U.rotate(T, d);
     }
 
-    /** RK4 state: position + two frame vectors (R is derived). */
-    private record State(Vec3 pos, Vec3 T, Vec3 U) {}
+    /** RK4 state: position + two frame vectors (R is derived) + the
+     *  accumulated friction deficit (v17.0 — exactly 0.0 while the
+     *  coefficients are 0, keeping every value bitwise-historic). */
+    private record State(Vec3 pos, Vec3 T, Vec3 U, double loss) {}
 
-    private record Deriv(Vec3 dPos, Vec3 dT, Vec3 dU) {}
+    private record Deriv(Vec3 dPos, Vec3 dT, Vec3 dU, double dLoss) {}
 
     /** Keyframe lerp at t. Binary search — RK4 calls this 4x per step.
      *  Package-visible: GeoIntegrator reuses it (same bake grid). */
@@ -131,18 +159,27 @@ public class FVDIntegrator {
         return Math.sqrt(Math.max(v0 * v0 + 2 * G0 * (y0 - pos.y()), 0));
     }
 
+    /** Energy speed minus an accumulated friction deficit (v17.0,
+     *  D133) — loss in v² units, carried in the RK4 state. loss 0.0
+     *  is bitwise the plain expression (x − 0.0 == x). */
+    static double speedAt(Vec3 pos, double v0, double y0, double loss) {
+        return Math.sqrt(Math.max(
+            v0 * v0 + 2 * G0 * (y0 - pos.y()) - loss, 0));
+    }
+
     /** State derivative. The stage frame is re-orthonormalized locally so
      *  omega and the advance direction come from unit vectors even when
      *  RK4 hands us a mid-stage (slightly denormalized) state. */
     private static Deriv deriv(State st, double t, List<Keyframe> kfs,
                                double v0, double y0, boolean rollGlobal,
-                               boolean rollPM, boolean rollAbs) {
+                               boolean rollPM, boolean rollAbs,
+                               Friction fric) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T); // frame convention: T x R = U, R x U = T, U x T = R
 
         Keyframe kf = interpAt(kfs, t);
-        double v = speedAt(st.pos(), v0, y0);
+        double v = speedAt(st.pos(), v0, y0, st.loss());
         double vSafe = Math.max(v, 0.5);
 
         double omegaU = (G0 * (kf.Gv() - U.y())) / vSafe;
@@ -152,7 +189,10 @@ public class FVDIntegrator {
             ? rollTermPhi(Math.toRadians(rollSlopeAt(kfs, t)), T, omega)
             : rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
 
-        return new Deriv(T.scale(v), omega.cross(T), omega.cross(U));
+        // d(loss)/dt = d(loss)/ds · v (the advance rate); exactly 0.0
+        // with zero coefficients — the bitwise-off contract
+        return new Deriv(T.scale(v), omega.cross(T), omega.cross(U),
+            fric.dLossDs(v) * v);
     }
 
     /** The Ω roll term (rad/s). LOCAL: the lane verbatim (the
@@ -254,7 +294,8 @@ public class FVDIntegrator {
         return new State(
             y.pos().add(k.dPos().scale(h)),
             y.T().add(k.dT().scale(h)),
-            y.U().add(k.dU().scale(h)));
+            y.U().add(k.dU().scale(h)),
+            y.loss() + k.dLoss() * h);
     }
 
     public static List<Sample> integrateTrack(List<Keyframe> keyframes, Options opts) {
@@ -281,17 +322,18 @@ public class FVDIntegrator {
         boolean rG = opts.rollGlobal;
         double bank0 = rG ? bankOfTU(T, U) : 0;
         double cumRoll = 0;
+        double loss = 0;   // friction deficit (v² units), rides RK4
 
         double t = 0;
         while (t <= totalTime) {
             Keyframe kf = interpAt(keyframes, t);
             samples.add(new Sample(t, s, pos, T, U, R, v, kf.Gv(), kf.Gl()));
 
-            State y = new State(pos, T, U);
-            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute);
-            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute);
-            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute);
-            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute);
+            State y = new State(pos, T, U, loss);
+            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
@@ -303,6 +345,8 @@ public class FVDIntegrator {
                 k1.dU().add(k2.dU().scale(2)).add(k3.dU().scale(2)).add(k4.dU())
                     .scale(dt / 6));
             U = U.sub(T.scale(U.dot(T))).normalize();   // re-orthonormalize
+            loss += (k1.dLoss() + 2 * k2.dLoss() + 2 * k3.dLoss()
+                + k4.dLoss()) * dt / 6;
             if (rG && opts.rollAbsolute) {
                 // ABSOLUTE roll (D118): the target IS the lane value
                 // at the just-reached time - no integral, no entry-
@@ -314,7 +358,7 @@ public class FVDIntegrator {
                 if (opts.rollPerMeter) {
                     // bank target integrates the lane over ARC (D115):
                     // trapezoid of rate·v over the step
-                    double v1 = speedAt(newPos, opts.v0, y0);
+                    double v1 = speedAt(newPos, opts.v0, y0, loss);
                     cumRoll += Math.toRadians(
                         kf.rollRateDeg() * v
                         + interpAt(keyframes, t + dt).rollRateDeg() * v1)
@@ -336,10 +380,11 @@ public class FVDIntegrator {
             s += newPos.sub(pos).length();
             pos = newPos;
 
-            // recorded speed: energy conservation, then the (inert while
-            // friction = 0) one-step bleed the old integrator applied
-            double vFromHeight = speedAt(pos, opts.v0, y0);
-            v = Math.max(0.1, vFromHeight - opts.friction * vFromHeight * dt);
+            // recorded speed: energy minus the accumulated friction
+            // deficit (v17.0 — with zero coefficients loss is exactly
+            // 0.0 and this equals the historic expression bitwise; the
+            // old inert per-second bleed factor is gone)
+            v = Math.max(0.1, speedAt(pos, opts.v0, y0, loss));
 
             t += dt;
         }
@@ -358,19 +403,20 @@ public class FVDIntegrator {
     // ScIntegrator's so a stalling section still terminates (creep) —
     // the same floor the time path already applies to ω via vSafe.
 
-    private record DState(Vec3 pos, Vec3 T, Vec3 U, double s) {}
+    private record DState(Vec3 pos, Vec3 T, Vec3 U, double s, double loss) {}
 
-    private record DDeriv(Vec3 dPos, Vec3 dT, Vec3 dU, double dS) {}
+    private record DDeriv(Vec3 dPos, Vec3 dT, Vec3 dU, double dS, double dLoss) {}
 
     private static DDeriv derivDist(DState st, List<Keyframe> kfs,
                                     double v0, double y0, boolean rollGlobal,
-                                    boolean rollPM, boolean rollAbs) {
+                                    boolean rollPM, boolean rollAbs,
+                                    Friction fric) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T);
 
         Keyframe kf = interpAt(kfs, st.s());   // lookup by ARC length
-        double v = Math.max(0.5, speedAt(st.pos(), v0, y0));
+        double v = Math.max(0.5, speedAt(st.pos(), v0, y0, st.loss()));
 
         double omegaU = (G0 * (kf.Gv() - U.y())) / v;
         double omegaR = (G0 * (kf.Gl() - R.y())) / v;
@@ -381,7 +427,8 @@ public class FVDIntegrator {
                 T, omega)
             : rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
 
-        return new DDeriv(T.scale(v), omega.cross(T), omega.cross(U), v);
+        return new DDeriv(T.scale(v), omega.cross(T), omega.cross(U), v,
+            fric.dLossDs(v) * v);
     }
 
     private static DState advanceDist(DState y, DDeriv k, double h) {
@@ -389,17 +436,18 @@ public class FVDIntegrator {
             y.pos().add(k.dPos().scale(h)),
             y.T().add(k.dT().scale(h)),
             y.U().add(k.dU().scale(h)),
-            y.s() + k.dS() * h);
+            y.s() + k.dS() * h,
+            y.loss() + k.dLoss() * h);
     }
 
     private static DState rk4Dist(DState y, List<Keyframe> kfs,
                                   double v0, double y0, double h,
                                   boolean rollGlobal, boolean rollPM,
-                                  boolean rollAbs) {
-        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal, rollPM, rollAbs);
-        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs);
-        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs);
-        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal, rollPM, rollAbs);
+                                  boolean rollAbs, Friction fric) {
+        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -411,7 +459,9 @@ public class FVDIntegrator {
                 .scale(h / 6));
         U = U.sub(T.scale(U.dot(T))).normalize();
         double s = y.s() + (k1.dS() + 2 * k2.dS() + 2 * k3.dS() + k4.dS()) * h / 6;
-        return new DState(pos, T, U, s);
+        double loss = y.loss() + (k1.dLoss() + 2 * k2.dLoss()
+            + 2 * k3.dLoss() + k4.dLoss()) * h / 6;
+        return new DState(pos, T, U, s, loss);
     }
 
     private static void addSampleDist(List<Sample> samples, DState st, double t,
@@ -419,7 +469,7 @@ public class FVDIntegrator {
         Vec3 T = st.T();
         Vec3 U = st.U();
         Keyframe kf = interpAt(kfs, st.s());
-        double v = speedAt(st.pos(), v0, y0);
+        double v = speedAt(st.pos(), v0, y0, st.loss());
         samples.add(new Sample(t, st.s(), st.pos(), T, U, U.cross(T),
             Math.max(0.1, v), kf.Gv(), kf.Gl()));
     }
@@ -435,7 +485,7 @@ public class FVDIntegrator {
 
         Vec3 T = opts.startHeading.normalize();
         Vec3 U = opts.startUp.sub(T.scale(opts.startUp.dot(T))).normalize();
-        DState st = new DState(opts.pos0, T, U, 0);
+        DState st = new DState(opts.pos0, T, U, 0, 0);
         double y0 = opts.pos0.y();
         double t = 0;
         List<Sample> samples = new ArrayList<>();
@@ -446,12 +496,12 @@ public class FVDIntegrator {
 
         while (st.s() < totalLen - 1e-9 && guard++ < 500_000) {
             addSampleDist(samples, st, t, keyframes, opts.v0, y0);
-            double v = Math.max(0.5, speedAt(st.pos(), opts.v0, y0));
+            double v = Math.max(0.5, speedAt(st.pos(), opts.v0, y0, st.loss()));
             double sPrev = st.s();
             double hUsed;
             if (st.s() + v * dt < totalLen - 1e-12) {
                 st = rk4Dist(st, keyframes, opts.v0, y0, dt, rG,
-                    opts.rollPerMeter, opts.rollAbsolute);
+                    opts.rollPerMeter, opts.rollAbsolute, opts.fric);
                 t += dt;
                 hUsed = dt;
             } else {
@@ -461,11 +511,13 @@ public class FVDIntegrator {
                 DState end = st;
                 for (int it = 0; it < 3; it++) {
                     end = rk4Dist(st, keyframes, opts.v0, y0, h, rG,
-                        opts.rollPerMeter, opts.rollAbsolute);
-                    double vEnd = Math.max(0.5, speedAt(end.pos(), opts.v0, y0));
+                        opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+                    double vEnd = Math.max(0.5,
+                        speedAt(end.pos(), opts.v0, y0, end.loss()));
                     h += (totalLen - end.s()) / vEnd;
                 }
-                st = new DState(end.pos(), end.T(), end.U(), totalLen);
+                st = new DState(end.pos(), end.T(), end.U(), totalLen,
+                    end.loss());
                 t += h;
                 hUsed = h;
             }
@@ -475,7 +527,7 @@ public class FVDIntegrator {
                 Vec3 pu = projectBank(st.T(), st.U(), Math.toRadians(
                     bankAt(keyframes, st.s())));
                 if (pu != st.U()) {
-                    st = new DState(st.pos(), st.T(), pu, st.s());
+                    st = new DState(st.pos(), st.T(), pu, st.s(), st.loss());
                 }
             } else if (rG) {
                 // per-meter roll: the bank target is the lane's ARC
@@ -496,7 +548,8 @@ public class FVDIntegrator {
                 if (!Double.isNaN(bank0)) {
                     Vec3 pu = projectBank(st.T(), st.U(), bank0 + cumRoll);
                     if (pu != st.U()) {
-                        st = new DState(st.pos(), st.T(), pu, st.s());
+                        st = new DState(st.pos(), st.T(), pu, st.s(),
+                            st.loss());
                     }
                 }
             }

@@ -63,6 +63,14 @@ FVDIntegrator.java  PHYSICS. Pure Java, no JavaFX. Takes keyframes
                     roll term leaves Ω; rate 0 holds the bank through
                     pitched turns; vertical track holds off
                     (bankOfTU NaN). Local = bitwise-historic.
+                    FRICTION (Phase 3, v17.0 D133): the Friction
+                    record (roll·g + air·v² per meter, ± design
+                    direction) + a LOSS deficit in the RK4 state of
+                    BOTH domains — v = sqrt(v0² + 2g(y0−y) − loss),
+                    4-arg speedAt; zero coefficients keep loss exactly
+                    0.0 = bitwise-historic (the old inert per-second
+                    bleed field is gone). Geo/Sc/Bridge and every
+                    profile re-computation march the same deficit.
 
 AppSettings.java    APP-WIDE PERSISTENT SETTINGS. Pure Java, no JavaFX.
                     Shortcut bindings + FOV in ~/.fvd-designer.properties
@@ -328,12 +336,61 @@ TrackPiece.java     placement (origin + BASE ORIENTATION quat + yaw
                     guards, not persisted; a bridged-in piece uses
                     the bridge's lock fields instead) + section
                     chain; editing one piece can never move another.
+                    STRICT SEAMS (v17.1, D135): followPrev +
+                    sLockYaw/sLockPitch/sLockRoll (piece fields
+                    11-14) make a piece FOLLOW the previous piece's
+                    exit — position always, unlocked axes align,
+                    locked axes keep the STORED placement (never
+                    mutated by following: relock = back to the
+                    original, gated 0.0). The compiler generates at
+                    the stored orientation and rigid-tilts the
+                    difference (D100) — upstream edits can never
+                    reshape a follower (gated 4e-14 m), only move/
+                    re-aim it; design speeds stay independent
+                    (honest ≠v) while the real ride runs through
+                    (followers join the previous piece's RUN).
+                    Coaster ops: makeSeamStrict (D71 split + flags),
+                    unstrictSeam (attach + PIN — graphs bit-kept,
+                    track re-bent continuous, conflict kept),
+                    detachStrictSeam (bake effective placement),
+                    connectStrict (reorder + all-unlocked follow —
+                    the '+'-attach and zero-distance flows). A
+                    bridge's target never follows (the bridge IS
+                    the connection); orphaned followers fall back
+                    to their stored placement.
                     CORNER (D100): split/reverse of a TILTED piece
                     bakes the tilt into baseOrient — those re-solve.
-Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
+Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
+                    coefficients (v17.0, D133: fricRoll dimensionless
+                    decel μ·g, fricAir 1/m decel k·v²; fric() bundles
+                    them; `friction` line, Coaster-menu rows, document
+                    undo), pieces, SpeedRegion
                     slots (Phase 3). Section-0 lanes are shared BY
                     REFERENCE with the editor. Cosmetics stay UI-side
                     until milestone B (travel via DesignIO.Cosmetics).
+                    In-document converts route through the INSTANCE
+                    fitLanes wrappers (friction-aware re-time; the
+                    static convertToLanes tower stays loss-free for
+                    probes — new converts MUST use fitLanes).
+                    REVERSE PIECE = a CONVERT since v17.0 (D134,
+                    user re-spec replacing D71's model
+                    transformation AND D133's short-lived
+                    design-direction scheme): reversePiece(piece,
+                    dt, spacing, tol, vEntry) mirrors the compiled
+                    piece (reversedSamples — T/R flip, U kept, Gl
+                    negated, sample v kept) and re-fits each
+                    section's span FORWARD at one energy flow
+                    (reversedProfile from the recorded true end
+                    speed, or vEntry) — same boundaries, same types
+                    (s/c→force lanes; influence folds in; legacy
+                    reversed-flag sections come out plain), piece
+                    re-anchored at the old exit, NO speed conflict
+                    by construction; bridge pieces refuse; the
+                    entry-boundary sample joins each fit only
+                    across a frame-SMOOTH seam (legacy kinked seams
+                    poison edges). Runs through the editor's
+                    density preview (padlocked entry-speed row,
+                    stall telltale).
                     Also home to the bridge placement MARCH/optimizer +
                     the auto-reoptimize pass (v13.14), the CONVERT
                     engine (convertToLanes uniform/adaptive fits +
@@ -367,6 +424,18 @@ Coaster.java        THE DOCUMENT: global v0/friction, pieces, SpeedRegion
                     only roll is measured, ±1 sample — and converts
                     CARRY vPinned: a conflicted section stays
                     conflicted, both partial halves pin),
+                    the NODE-ANCHORED SPLIT (splitSectionAt, v16.18
+                    D130 — splitLanes both-halves + vDesign-at-cut;
+                    == authored-as-two, gated 0.0 m) + its inverse
+                    mergeSections (v16.19 D131 — like sections only;
+                    matched seams lossless, unmatched averaged;
+                    split→connect round-trips exactly, gated 0.0 m
+                    with SLOPED seams + dirtied dead handles; HELD
+                    lanes average like every seam — held value +
+                    flat slope as that side's contribution (v16.20;
+                    same round: effInDt is NEGATIVE, and a sign-blind
+                    guard had halved matched slopes via a phantom
+                    flat side),
                     the INFLUENCE enter/discard ops (v15.0 D98 —
                     model-side so the gates drive the real thing;
                     reconcileChainedSpeeds SKIPS influenced sections:
@@ -443,7 +512,10 @@ TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
                     first section's vDesign; bridges are pure
                     geometry — the D74 speed blend is design-side
                     only; passD was global AND write-only since
-                    Phase 1),
+                    Phase 1; FRICTION since v17.0 D133 — the run
+                    march sheds the document losses in TRAVEL order,
+                    Heun over the sample arc, zero coefficients
+                    bitwise),
                     passA resulting rates + TRUE felt/rates (no
                     differencing: Gv_true = (v_t²/v_d²)(Gv_d − U.y)
                     + U.y per sample, rates scale by v_t/v_d —
@@ -528,9 +600,25 @@ source tree — they won't compile against the current time-domain API.
   evaluated from energy wherever a stage needs it. Accuracy: analytic
   circle radial deviation < 1e-9 m (old per-step Rodrigues stepper:
   10 cm) at the same dt=0.01.
-- Speed from energy conservation vs start height:
-  `v = sqrt(v0² + 2g(y0 − y))`, then a crude friction bleed
-  (`friction` option exists but is currently 0 / not exposed in UI).
+- Speed from energy conservation vs start height MINUS path-integrated
+  friction (Phase 3, v17.0 D133): `v = sqrt(v0² + 2g(y0 − y) − loss)`,
+  where loss rides the RK4 state with d(loss)/ds = 2(μ·g + k·v²) —
+  μ = Coaster.fricRoll (rolling, dimensionless), k = fricAir (air,
+  1/m; the Coaster menu edits it per km). Both default 0 = bitwise
+  the historic loss-free model. Closed forms gated: flat rolling
+  v² = v0² − 2μgs; drag v = v0·e^(−ks). Pass D marches the same
+  deficit per run in TRAVEL order (Heun over the sample arc).
+  REVERSAL under friction is a CONVERT (v17.0, D134 — a same-day
+  design-direction scheme was walked back, D133): with losses the
+  speed at a point differs by travel direction, so "Reverse piece"
+  REBUILDS — Coaster.reversedSamples mirrors the compiled geometry
+  (T/R flip, U kept, Gl negated, per-sample v kept for the κ decode),
+  reversedProfile marches ONE flow from the recorded end speed (or a
+  custom one), each section re-fits forward via fitLanes: no speed
+  conflict, shape to the fit residual, friction included. Friction
+  is paid BOTH ways, so a natural-speed reversal can STALL (the
+  preview warns; more entry speed fixes). The reversed FLAG remains
+  only as the legacy-file compile path (D67 semantics unchanged).
 - `vSafe = max(v, 0.5)` guards divide-by-zero near stalls.
 - The integrated path **is the heartline** (forces are felt at the rider's
   heart). Rails are derived: `spine = heart − U·heartOffset`, rails at
@@ -623,6 +711,8 @@ source tree — they won't compile against the current time-domain API.
   on comma-decimal systems), unknown lines ignored for forward
   compatibility, extra fields on known lines ignored (the straight-lock
   8th and level-lock 9th `n` fields ride on this). Global lines (v0,
+  `friction mu kair` — the Phase 3 coefficients, v17.0 D133, missing =
+  0 0 = loss-free,
   heart, gauge,
   tiespace, railmode/railcolor/gradcolors/gradstops — SIX
   gradient stops since v16.15 (18+6 values; DesignIO.gradSlot maps
@@ -634,7 +724,8 @@ source tree — they won't compile against the current time-domain API.
   shipped), missing = defaults — speedregion), then
   `piece x y z yaw [qw qx qy qz]` blocks (fields 5-8 = the base
   orientation, v12.1; missing = identity; %.10f so round-trips skip
-  the loader's re-normalize) holding `section force|geo|sc|bridge
+  the loader's re-normalize; fields 11-14 = the STRICT-SEAM follow
+  flag + its three locks, v17.1 D135, missing = detached) holding `section force|geo|sc|bridge
   vDesign domain
   reversed` blocks (the domain field — written since Phase 1 — is
   HONORED for force/geo since v16.0 D103: "distance" = lane x in
@@ -953,11 +1044,50 @@ mildly iterative: our exit pose moves its felt values. Clicking a
 greyed strip ALWAYS activates it — checked BEFORE the dimmed-lane test
 (v10.2: held end-values used to steal those clicks as lane switches).
 PIECES (v12.0 D70, exact-split + piece reversal v12.1 D71; bridged
-RUNS v13.4 D76): the graph
-shows ONE bridged RUN at a time in its GLOBAL time window — a run =
-consecutive pieces linked by trailing bridges, laid out strip by
+RUNS v13.4 D76; STRICT SEAMS v17.1 D135): the graph
+shows ONE connected RUN at a time in its GLOBAL time window — a run =
+consecutive pieces linked by trailing bridges OR strict-seam follow
+links, laid out strip by
 strip via runLayout (piece+section+t0); a lone piece is a run of one
-(the pre-v13.4 behavior exactly). Clicking any strip/badge in the
+(the pre-v13.4 behavior exactly). STRICT SEAMS (v17.1, D135;
+feedback round D136 — "the
+track after the seam works as if the track before it were a
+bridge"): a strict junction draws a DOUBLE boundary line; seam
+lines HIGHLIGHT on hover (hand cursor) and stay lit while their
+menu is open (D136). Clicking
+any non-bridge seam LINE (press rank after nodes/knobs/badges)
+opens the SEAM MENU — on section boundaries "Connect sections
+(merge into one)" (= mergeSections, like sections only) + "Make
+seam strict (freeze downstream shape)…" (= the D71 rigid split +
+follow; the settings auto-open) + "Split track at seam"; on strict
+ones "Strict seam settings…" / "Un-strict seam (reorient
+continuous, keep conflict)" / "Split track at seam". ("Split piece
+before this section" and "Connect with previous section" LEFT the
+badge menu in D136 — the seam + the first node's menu own them.)
+The SETTINGS are a POP-OUT (D136): per axis a DISCONTINUOUS toggle
+(RED outline while on), a ±360° spinner (typed + arrows) and a ↺
+to the creation value — Discontinuous OFF = follows the seam
+(spinner grayed, live value), ON = holds the spinner's angle
+(TrackPiece.sYawDeg/sPitchDeg/sRollDeg, piece fields 15-17;
+toggling ON captures the CURRENT value so nothing jumps), Apply
+closes. Defaults: yaw-continuous pitch/roll-discontinuous (the
+bridge convention); connect flows all-continuous. The whole-bridge
+Convert dialog grows "Make following seam strict (freeze following
+track shape)" — CHECKED by default, locks carried from the bridge;
+convert+strict then un-strict == the classic attach+pin stitch
+BIT-IDENTICALLY (gated). '+'-attach and the zero-distance prompt
+connect strictly now. RESOLVE ops on a follower BAKE the follow
+first (Coaster.bakeFollow, D136 — the D106 lesson: without it
+make-real double-applied the follow rotation, the "launches off
+into the distance" bug; make-real bakes with the SAME compile the
+fit reads, since baking a follow changes the generation frame);
+gated: make-real keeps the on-screen shape, strict refreeze == the
+un-stricted twin's. A follower's Placement rows gray wholesale,
+its entry gizmo doesn't build, and it gets NO entry reveal marker
+(D136 — the stored-position marker floated off-track as a ghost
+node); B/Shift+B
+across a strict seam take the sampled cross-piece path and never
+auto-close its speed independence. Clicking any strip/badge in the
 run activates that piece+section WITHOUT resetting the zoom
 (activateRunSec; the toolbar selector still resets); the '+' sits at
 the RUN's end and appends to its last piece (activating it first);
@@ -985,13 +1115,21 @@ orientation) and re-sync
 on switches — rows a connecting BRIDGE owns gray out with a
 grayHint pointing at the bridge (v16.13, D125: position under any
 optimize mode, yaw when locked or march-aligned; hand-edits there
-silently fought the auto re-optimize before); Coaster menu "REVERSE PIECE (flip travel direction)" =
-the user-facing reversal since v12.1: a MODEL transformation
-(placement re-anchors at the old exit via baseOrient, section list
-flips to train order, each section's reversed flag toggles) — the
-track STAYS PUT and the train runs it backward (level seams exactly,
-gated; others re-join with D67's yaw-only per-section honesty);
-applying twice restores the model exactly. Deleting a piece's last
+silently fought the auto re-optimize before); Placement ▾ "REVERSE
+PIECE (rebuild backward)…" = the user-facing reversal, a CONVERT
+since v17.0 (D134 — replacing D71's model transformation): the
+density preview opens with a padlocked ENTRY SPEED row (locked =
+the recorded Pass-D end speed, unlock to type; a stats-bar STALL
+telltale fires when the reversed flow can't climb home — friction
+is paid both ways) and Coaster.reversePiece re-fits the mirrored
+compiled geometry as FORWARD sections at one energy flow — same
+boundaries/types (s/c→force lanes, influence folds in), piece
+re-anchored at the old exit, NO speed conflict, shape to the fit
+residual; bridge pieces refuse; Apply = one undo step (Ctrl+Z is
+the exact restore — the old exact involution is gone); the
+`reversed` FLAG + reverseAndPlace survive only as the LEGACY-file
+compile path (D67 semantics unchanged; the ◀ badge still marks
+those). Deleting a piece's last
 section deletes the piece; 3D
 Ctrl+click activates piece + section under the cursor; a clean PLAIN
 click on any piece's track does too (v13.1 — drag still orbits), and
@@ -1104,7 +1242,9 @@ speed (the design-time advance scales by v_true/v_design at the
 current sample) and the stats-bar top speed reads Pass D; both are
 identical to before until a drift exists. RESOLVE SPEED CONFLICT (§5 round B, LIVE
 since v14.5 D97; REWORKED v15.2 D101, SIMPLIFIED v15.4 D102 —
-conflicts resolve LEFT TO RIGHT, one section at a time): a drifted
+conflicts resolve LEFT TO RIGHT, one section at a time; reversed
+sections refuse — reversal itself is the conflict-free rebuild
+since v17.0 D134): a drifted
 section's badge menu grows a SUBMENU with TWO ops — "Make graphs
 real (keep shape)…" (re-fit at the TRUE entry speed through the
 density preview; s/c just re-freezes; grays while the DIRECT left
@@ -1353,7 +1493,8 @@ data within a tolerance × its value range; per-lane counts, flat
 lanes = bare endpoints; 1/3-frac C1 handles make the time cubic
 exactly linear). EVERY convert commits through the DENSITY
 PREVIEW popup (GraphEditor pv*): typed value + log slider
-(spacing 0.02–2 s / accuracy 0.01–10 %), conversion re-applied
+(spacing 0.01–2 s / 0.5–20 m, accuracy 0.001–10 % — D136 widened),
+conversion re-applied
 LIVE per change against a restore of the pristine state
 (re-captured per restore — applyDocState ADOPTS snapshot
 objects), the ORIGINAL compiled curves dashed behind in lane
@@ -1444,8 +1585,23 @@ straight into a node DRAG — one gesture, one undo step, Ctrl snaps
 live, v10.1; Ctrl while HOVERING snaps the dot in TIME per the
 horizontal snap reference — value stays on the curve — and the click
 inserts there; the dot hides where the snapped spot lacks INSERT_GAP
-room, shared insertRoomAt) · right-click a NODE = its editor dialog
-(v10.7 — was delete; Delete key only now) · right-click a SEGMENT =
+room, shared insertRoomAt) · right-click a NODE (or selection) = its
+OPTIONS menu (v16.18, D130: Edit node…, smooth/broken — boundary
+match on edges — match-all, level, level-lock, straighten,
+straight-lock, SPLIT SECTION HERE, SPLIT TRACK PIECE HERE, CONNECT
+WITH PREVIOUS/NEXT SECTION (v16.19 D131 — edge nodes facing a LIKE
+neighbor: same type/domain/axis flags; Coaster.mergeSections —
+matched seams merge losslessly, split→connect round-trips EXACTLY,
+gated 0.0 m; unmatched seam nodes take the AVERAGE value + averaged
+smooth handle slopes), delete;
+LIVE shortcut labels in parentheses; inapplicable items are
+HIDDEN, not grayed, since v16.20 (D132 — the menu is what you can
+do HERE; Delete lost its redundant shortcut tag and never shows on
+edge nodes; the BADGE menu carries a GRAYED "Connect with previous
+section" copy for discoverability); the
+piece split on a section's FIRST node routes to the classic
+boundary split; v10.7's dialog lives on as Edit node… and
+double-click still opens it directly) · right-click a SEGMENT =
 its lock menu (Unlocked/Straight/Horizontal radios, one segment, same
 flags as Shift+F/Shift+H; opens on a CLEAN release ≤3 px so
 right-drag pan still works from the curve) · `A` append 1 s
@@ -1628,7 +1784,9 @@ flash on close (Windows re-activated another app before any
 refocus could run — the v16.14 toFront and v16.15 Window-watcher
 band-aids lost the race and are deleted). Colors are SWATCH
 buttons (Dialogs.colorSwatch) opening Dialogs.pickColor — an
-ordinary owned WINDOW_MODAL Stage (RGB sliders + hex, LIVE apply,
+ordinary owned WINDOW_MODAL Stage (a hue×saturation PLANE + vertical
+brightness slider + typed RGB/hex since v16.17 D129, plus the quick
+palette + last-ten recents; LIVE apply,
 OK keeps / Cancel + X restore, one menu-undo pair per session; the
 rail swatch re-syncs on menu show via the railSyncing guard so
 Load/New don't leave it stale or mark dirty), Help
@@ -1731,7 +1889,10 @@ active. Toolbar "Resulting ▾" is a plain Button + ContextMenu (a
 MenuButton's arrow region broke the flat button look). Coaster (Heart
 spinner −3..3 default 1.0, Gauge spinner 0.3..2.5 default 1.0, Tie-spacing
 spinner 0.2..10 m default 1.0 (cross ties placed by arc length, flush with
-the rails), Start speed spinner 1–100 m/s default 26 — the PIECE rows
+the rails), Start speed spinner 1–100 m/s default 26, "Friction
+(rolling μ)" 0..0.2 step 0.005 + "Air drag (per km)" 0..20 step 0.1
+(v17.0 D133 — the model's fricAir is 1/m, the spinner edits ×1000;
+tooltips carry the model; both wireDocSpinner = document undo) — the PIECE rows
 (x/y/z ±500 m + yaw ±360°, the ACTIVE piece's placement, re-synced on
 piece switches; saved per `piece` line; y = height above the y=0
 ground, default 21) MOVED to the toolbar "Placement ▾" dropdown next
@@ -1795,6 +1956,21 @@ non-obvious behavior. Do not ship a feature without touching it.
   visible uneven-spacing bug). The tie grid anchors at each PIECE's
   starting arc length (v13.3 — per-piece meshes start mid-ride; a
   zero anchor put a tie on every sample until it caught up).
+- FRICTION corners (v17.0, D133/D134): the bridge length optimizer's
+  rateCost ladder stays LOSS-FREE (a relative smoothness ranking —
+  friction shifts every candidate alike; the applied geometry is
+  friction-aware). An s/c GLOBAL-bank element's spine moves ~mm-cm
+  under friction (the bank projection's per-leg cadence is
+  speed-dependent, O(dt²) — RATE-roll spines are exact, gated).
+  Stalling designs (easier to hit with friction) still creep through
+  at the 0.5 floor — real stall/rollback is future speed-section
+  work. REVERSAL corners: a natural-speed reversal STALLS wherever
+  the climb home exceeds the recorded end energy (real physics —
+  the preview telltale + a higher entry speed are the answer); a
+  LEGACY kinked reversed seam cannot survive the chained re-author
+  (frame-continuous sections smooth it — the far side rotates by
+  the kink angle); reverse-twice is a fit-of-a-fit, not an exact
+  involution (Ctrl+Z restores exactly).
 - Undo/redo exclude tie spacing and rail colors (cosmetics; menu-local
   Ctrl+Z only — but they do mark the file dirty).
 - Friction is hardcoded (0), not in the UI. (v0 became the per-coaster
@@ -1804,6 +1980,16 @@ non-obvious behavior. Do not ship a feature without touching it.
   constant sub-sample phase. POV/marker code indexes time as t/dt
   (nearest sample) — the lag is < 10 ms of ride and invisible, but
   don't add code that assumes sample i sits exactly at i·dt.
+- EVERY TIME-domain section truncates its authored end to the sample
+  grid (understood mechanically in D130): integrateTrack's
+  `while (t <= totalTime)` accumulates t, whose float sum overshoots
+  round ends (300 × 0.01 = 3.0000000000000027 > 3.0), so the last
+  step is refused and every seam absorbs up to one dt of authored
+  profile. Universal + historic — the bitwise gates pin it. This is
+  why a node SPLIT equals authoring-two-sections (exact, gated 0 m)
+  but differs from the unsplit original by a seam's worth (~2 cm on
+  the violent gate fixture). Don't "fix" the loop epsilon: it
+  re-times every compile ever made.
 - SPLITTING or REVERSING a TILTED piece (pitch/roll deltas ≠ 0)
   bakes the tilt into the new baseOrient — generation resumes FROM
   the tilted pose there, so those two ops re-solve force sections
@@ -1916,8 +2102,14 @@ feedback round (D124: middle-drag = THE orbit, double-click
 insert, gizmo REVEAL markers + both rigs at once, absolute-from-
 press drags with Ctrl snap, live re-aim, depth-based scale,
 fly-visible; walkthrough #83) →
-mid-section piece split (node-anchored: select a node,
-split the section's lanes there — de Casteljau, user-confirmed) →
+~~mid-section piece split~~ DONE v16.18 (D130, node-anchored:
+Coaster.splitSectionAt — both halves via the splitLanes de
+Casteljau identity, right half's vDesign = speed at the cut, flags
++ pins carry; == authoring two sections there EXACTLY (gated
+0.0 m; vs the unsplit original only the standard seam
+grid-truncation — see Known quirks); "Split track piece" chains
+the D71 rigid boundary split (gated 0.0 m); both live in the new
+node right-click menu; Phase2Gate 258. PHASE 2 IS COMPLETE) →
 influence
 curves + "become real" (direct attach REMAINS first-class next to
 bridges, user decision; SECTIONS-DESIGN §5 spec'd in full + user-
@@ -1957,8 +2149,18 @@ whole-span conflict detection; node moves keep handle slopes
 (supersedes D63); zoom survives axis flips. Gated TESTING #41 +
 walkthrough #72).
 
-**Phase 3 — dynamics:** speed-controlled sections (constant-v /
-constant-longitudinal-G / curve), air + rolling friction.
+**Phase 3 — dynamics:** ~~air + rolling friction~~ DONE v17.0 (D133:
+two per-coaster coefficients — rolling μ·g + air k·v² — as a loss
+deficit in every integrator's RK4 state AND Pass D's run march;
+bitwise-off gated by the whole old suite. REVERSAL reworked as a
+CONVERT the same day — D134, user re-spec walking back a first
+design-direction scheme: "Reverse piece" mirrors the compiled
+geometry and re-fits it as forward sections at one energy flow from
+the recorded end speed (padlocked row, custom on unlock), same
+structure, NO speed conflict, friction included; bridge pieces
+refuse; the reversed flag = legacy files only. Gated TESTING #48 +
+walkthrough #92) → speed-controlled sections (constant-v /
+constant-longitudinal-G / curve) + real stall/rollback handling.
 
 **Phase 4 — interop & full interactivity:** NL2 CSV import (external-
 geometry sections), viewport editing part 2 (drag values/times/handles in

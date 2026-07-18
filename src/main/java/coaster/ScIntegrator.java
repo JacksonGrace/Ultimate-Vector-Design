@@ -196,12 +196,13 @@ public final class ScIntegrator {
 
     // ---------- RK4 on (pos, q, s) ----------
 
-    private record State(Vec3 pos, Quat q, double s) {}
+    private record State(Vec3 pos, Quat q, double s, double loss) {}
 
-    private record Deriv(Vec3 dPos, Quat dQ, double dS) {}
+    private record Deriv(Vec3 dPos, Quat dQ, double dS, double dLoss) {}
 
     private static Deriv deriv(State st, Profile prof, double vDesign, double y0,
-                               double[] scratch, double sCap) {
+                               double[] scratch, double sCap,
+                               FVDIntegrator.Friction fric) {
         Quat q = st.q().normalize();
         Vec3 T = q.T();
         Vec3 U = q.U();
@@ -209,7 +210,8 @@ public final class ScIntegrator {
         // vSafe floor: pos' and q' scale by the SAME v, so dq/ds — the
         // shape — is exact regardless; the floor only keeps the
         // distance-terminated loop finite through a stall
-        double v = Math.max(0.5, FVDIntegrator.speedAt(st.pos(), vDesign, y0));
+        double v = Math.max(0.5,
+            FVDIntegrator.speedAt(st.pos(), vDesign, y0, st.loss()));
         // sCap keeps every stage's lookup on THIS leg's side of the
         // breakpoint the leg lands on: the k4 stage evaluates AT the
         // endpoint, and reading the next element's kappa there costs
@@ -220,20 +222,22 @@ public final class ScIntegrator {
         Vec3 omega = U.scale(v * scratch[0]).add(R.scale(v * scratch[1]))
             .add(T.scale(scratch[2]));
         Quat dQ = new Quat(0, omega.x(), omega.y(), omega.z()).mul(q).scale(0.5);
-        return new Deriv(T.scale(v), dQ, v);
+        return new Deriv(T.scale(v), dQ, v, fric.dLossDs(v) * v);
     }
 
     private static State advance(State y, Deriv k, double h) {
         return new State(y.pos().add(k.dPos().scale(h)),
-            y.q().add(k.dQ().scale(h)), y.s() + k.dS() * h);
+            y.q().add(k.dQ().scale(h)), y.s() + k.dS() * h,
+            y.loss() + k.dLoss() * h);
     }
 
     private static State rk4(State y, Profile prof, double vDesign, double y0,
-                             double h, double[] scratch, double sCap) {
-        Deriv k1 = deriv(y, prof, vDesign, y0, scratch, sCap);
-        Deriv k2 = deriv(advance(y, k1, h / 2), prof, vDesign, y0, scratch, sCap);
-        Deriv k3 = deriv(advance(y, k2, h / 2), prof, vDesign, y0, scratch, sCap);
-        Deriv k4 = deriv(advance(y, k3, h), prof, vDesign, y0, scratch, sCap);
+                             double h, double[] scratch, double sCap,
+                             FVDIntegrator.Friction fric) {
+        Deriv k1 = deriv(y, prof, vDesign, y0, scratch, sCap, fric);
+        Deriv k2 = deriv(advance(y, k1, h / 2), prof, vDesign, y0, scratch, sCap, fric);
+        Deriv k3 = deriv(advance(y, k2, h / 2), prof, vDesign, y0, scratch, sCap, fric);
+        Deriv k4 = deriv(advance(y, k3, h), prof, vDesign, y0, scratch, sCap, fric);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -241,7 +245,9 @@ public final class ScIntegrator {
             k1.dQ().add(k2.dQ().scale(2)).add(k3.dQ().scale(2)).add(k4.dQ())
                 .scale(h / 6)).normalize();
         double s = y.s() + (k1.dS() + 2 * k2.dS() + 2 * k3.dS() + k4.dS()) * h / 6;
-        return new State(pos, q, s);
+        double loss = y.loss() + (k1.dLoss() + 2 * k2.dLoss()
+            + 2 * k3.dLoss() + k4.dLoss()) * h / 6;
+        return new State(pos, q, s, loss);
     }
 
     /** GLOBAL-bank bookkeeping: which element's ease is running and the
@@ -254,11 +260,22 @@ public final class ScIntegrator {
 
     public static Result integrate(StraightCurveSection sc, double dt,
                                    double vDesign, Vec3 pos0, Quat q0) {
+        return integrate(sc, dt, vDesign, pos0, q0,
+            FVDIntegrator.Friction.NONE);
+    }
+
+    /** FRICTION variant (Phase 3, v17.0 D133): the loss deficit rides
+     *  the RK4 state. The SPINE is speed-independent as ever (pos' and
+     *  q' scale by the same v) — friction moves only the clock, the
+     *  felt records and the RATE-roll twist (per-second by design). */
+    public static Result integrate(StraightCurveSection sc, double dt,
+                                   double vDesign, Vec3 pos0, Quat q0,
+                                   FVDIntegrator.Friction fric) {
         Profile prof = new Profile(sc);
         double totalLen = Math.max(prof.totalLen, 1e-6);
         double[] scratch = new double[3];
 
-        State st = new State(pos0, q0.normalize(), 0);
+        State st = new State(pos0, q0.normalize(), 0, 0);
         double y0 = pos0.y();
         double t = 0;
         List<FVDIntegrator.Sample> samples = new ArrayList<>();
@@ -274,23 +291,25 @@ public final class ScIntegrator {
             addSample(samples, st, t, prof, vDesign, y0, scratch);
             double remaining = dt;
             while (remaining > 1e-12 && st.s() < totalLen - 1e-9) {
-                double v = Math.max(0.5, FVDIntegrator.speedAt(st.pos(), vDesign, y0));
+                double v = Math.max(0.5,
+                    FVDIntegrator.speedAt(st.pos(), vDesign, y0, st.loss()));
                 double target = Math.min(prof.nextBreak(st.s()), totalLen);
                 double sCap = target - 1e-9;   // stay on THIS leg's side
                 if (st.s() + v * remaining < target - 1e-12) {
-                    st = rk4(st, prof, vDesign, y0, remaining, scratch, sCap);
+                    st = rk4(st, prof, vDesign, y0, remaining, scratch, sCap, fric);
                     t += remaining;
                     remaining = 0;
                 } else {
                     double h = (target - st.s()) / v;
                     State end = st;
                     for (int it = 0; it < 3; it++) {
-                        end = rk4(st, prof, vDesign, y0, h, scratch, sCap);
+                        end = rk4(st, prof, vDesign, y0, h, scratch, sCap, fric);
                         double vEnd = Math.max(0.5,
-                            FVDIntegrator.speedAt(end.pos(), vDesign, y0));
+                            FVDIntegrator.speedAt(end.pos(), vDesign, y0,
+                                end.loss()));
                         h += (target - end.s()) / vEnd;
                     }
-                    st = new State(end.pos(), end.q(), target);
+                    st = new State(end.pos(), end.q(), target, end.loss());
                     t += h;
                     remaining = Math.max(0, remaining - h);
                 }
@@ -327,7 +346,7 @@ public final class ScIntegrator {
         double d = roll.from + (prof.rollTarget[i] - roll.from) * f - bank;
         if (Math.abs(d) < 1e-12) return st;
         return new State(st.pos(),
-            Quat.aboutAxis(T, d).mul(q).normalize(), st.s());
+            Quat.aboutAxis(T, d).mul(q).normalize(), st.s(), st.loss());
     }
 
     /** Signed bank of U vs the level up at T (rad), about T; positive
@@ -347,7 +366,7 @@ public final class ScIntegrator {
         Vec3 T = q.T();
         Vec3 U = q.U();
         Vec3 R = U.cross(T);
-        double v = FVDIntegrator.speedAt(st.pos(), vDesign, y0);
+        double v = FVDIntegrator.speedAt(st.pos(), vDesign, y0, st.loss());
         prof.componentsAt(Math.min(st.s(), prof.totalLen), scratch);
         // felt forces at design speed (readout, not a division)
         double gv = -scratch[1] * v * v / FVDIntegrator.G0 + U.y();

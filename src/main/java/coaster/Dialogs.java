@@ -169,7 +169,7 @@ class Dialogs {
         helpKey(box, "Hover curve", "white dot + the value there; hold Shift for the slope instead. Hold CTRL and the dot snaps along the axis with the readout LEADING with the snapped spot's global axis position (v16.16). Where a thin TRUE stroke has split off (see True speed), the readout adds the true value in parentheses.");
         helpKey(box, "Hover node", "a GREY ring marks the node under the cursor (white stays the click/selection ring) and a grey readout shows its Δt-from-previous + value — the drag readout without the click (v16.15). Hold SHIFT for the computed twins instead: the node's ABSOLUTE position on the axis and its CHANGE from the previous node.");
         helpKey(box, "Resulting (toolbar)", "read-only derived curves across the whole CONNECTED run (thin dashed; a small gap at each section boundary is deliberate; detached pieces draw their own when you edit them): with a force section active, pitch/yaw rates (°/s, geo colors); with a geo section active, felt vertical/lateral G (force colors). The picks live in a menu that stays open while you toggle them and closes when the mouse leaves it (or the button). Enabled curves get their OWN axis on the RIGHT edge of the plot — fitted to the visible view like the lanes — and hovering a curve shows its value there (Shift for its slope). No roll entry: the resulting roll rate IS the roll lane. These overlays are the one thing without a zero-line tint.");
-        helpKey(box, "True speed", "a THIN solid line splitting off a curve is the TRUE ride — the same quantity at the speed the train ACTUALLY arrives with, instead of the section's design speed. The curves separate only where those speeds have drifted apart (an upstream edit changed what reaches the section, a bridge is quietly adjusting speed to meet the next piece, converting a bridge stitched pieces with different speeds, influencing a section, or a piece was pitched/rolled); where they split, the thin line is what you'd really feel — smooth where the track is truly smooth, stepping where it truly kinks, even when the design curves say otherwise. Sections chained directly in one piece re-freeze themselves automatically, so splits live at PIECE boundaries and deliberately-kept seams. Converting a conflicted section (whole or part) KEEPS its conflict and its shape exactly — nothing resolves silently. The drifted section's badge wears ≠v — detected ANYWHERE in the section now, not just its entry (v16.1): a pitched/rolled piece splits mid-section with a matching entry, and the info line then says \"true splits inside\" — and carries a RESOLVE SPEED CONFLICT submenu — conflicts resolve LEFT TO RIGHT, one section at a time: \"Make graphs real (keep shape)\" re-authors the curves at the true speed — the track stays put and the thin strokes vanish; it works even directly AFTER another conflicted section (v16.2) and resolves ONLY itself — the neighbors keep their own conflicts; \"Re-freeze design speed (keep graphs, reshape)\" keeps your curves and lets the geometry re-derive at the real speed — on a PITCHED/ROLLED piece it also folds the tilt into the piece's natural orientation first (the deltas read 0 after; v16.1 — the whole design/real split closes instead of just the entry point, and sibling sections of the piece re-solve with it) — available even right after another conflicted section, and THAT is how you transition a chain onto the real ride: re-freeze, then press Shift+B on the section's first node. In fact B/Shift+B ALWAYS line up the REAL graphs (v16.2; completed v16.3): wherever EITHER side of a seam carries a design/true split — a deliberate custom-speed section, a pinned stitch, a piece boundary — the match reads the neighbor's TRUE curves and writes the design values that reproduce them at YOUR design speed (real continuity is curvature continuity, since the true speed itself never jumps). It works from BOTH sides: the unconflicted side matches the conflicted neighbor's real curves too (that side may need a re-press or two to settle — the seam moves under it slightly). Deliberately-kept (pinned) speeds are matched AROUND, never silently closed. A custom-speed section added from the ⊕ dialog already arrives lined up (its held values are speed-converted), so B there only re-aims handles. And whenever B can't act — wrong node, no neighbor, nothing compiled, a vertical global-axis seam — the stats bar says exactly why. Re-pressing B changes nothing; matching from the conflicted section's LAST node toward a re-anchored neighbor refuses (the stats bar explains — that direction would chase itself). Only a live BRIDGE directly before a section blocks its submenu — it re-blends to follow anything you resolve, so convert the bridge first. ADDING a section after a conflicted one asks first: CONTINUE SPEED CONFLICT lines the new section up with the design graphs as before; TRANSITION TO REAL starts it from the true speed and true end values — a clean seam off the real ride, no resolving needed. The stats bar's top speed and the POV camera already ride the true speed.");
+        helpKey(box, "True speed", "a THIN solid line splitting off a curve is the TRUE ride — the same quantity at the speed the train ACTUALLY arrives with, instead of the section's design speed. The curves separate only where those speeds have drifted apart (an upstream edit changed what reaches the section, a bridge is quietly adjusting speed to meet the next piece, converting a bridge stitched pieces with different speeds, influencing a section, or a piece was pitched/rolled); where they split, the thin line is what you'd really feel — smooth where the track is truly smooth, stepping where it truly kinks, even when the design curves say otherwise. Sections chained directly in one piece re-freeze themselves automatically, so splits live at PIECE boundaries and deliberately-kept seams. Converting a conflicted section (whole or part) KEEPS its conflict and its shape exactly — nothing resolves silently. The drifted section's badge wears ≠v — detected ANYWHERE in the section now, not just its entry (v16.1): a pitched/rolled piece splits mid-section with a matching entry, and the info line then says \"true splits inside\" — and carries a RESOLVE SPEED CONFLICT submenu — conflicts resolve LEFT TO RIGHT, one section at a time: \"Make graphs real (keep shape)\" re-authors the curves at the true speed — the track stays put and the thin strokes vanish; it works even directly AFTER another conflicted section (v16.2) and resolves ONLY itself — the neighbors keep their own conflicts; \"Re-freeze design speed (keep graphs, reshape)\" keeps your curves and lets the geometry re-derive at the real speed — on a PITCHED/ROLLED piece it also folds the tilt into the piece's natural orientation first (the deltas read 0 after; v16.1 — the whole design/real split closes instead of just the entry point, and sibling sections of the piece re-solve with it) — available even right after another conflicted section, and THAT is how you transition a chain onto the real ride: re-freeze, then press Shift+B on the section's first node. In fact B/Shift+B ALWAYS line up the REAL graphs (v16.2; completed v16.3): wherever EITHER side of a seam carries a design/true split — a deliberate custom-speed section, a pinned stitch, a piece boundary — the match reads the neighbor's TRUE curves and writes the design values that reproduce them at YOUR design speed (real continuity is curvature continuity, since the true speed itself never jumps). It works from BOTH sides: the unconflicted side matches the conflicted neighbor's real curves too (that side may need a re-press or two to settle — the seam moves under it slightly). Deliberately-kept (pinned) speeds are matched AROUND, never silently closed. A custom-speed section added from the ⊕ dialog already arrives lined up (its held values are speed-converted), so B there only re-aims handles. And whenever B can't act — wrong node, no neighbor, nothing compiled, a vertical global-axis seam — the stats bar says exactly why. Re-pressing B changes nothing; matching from the conflicted section's LAST node toward a re-anchored neighbor refuses (the stats bar explains — that direction would chase itself). Only a live BRIDGE directly before a section blocks its submenu — it re-blends to follow anything you resolve, so convert the bridge first. ADDING a section after a conflicted one asks first: CONTINUE SPEED CONFLICT lines the new section up with the design graphs as before; TRANSITION TO REAL starts it from the true speed and true end values — a clean seam off the real ride, no resolving needed. The stats bar's top speed and the POV camera already ride the true speed. (Legacy reversed-flag sections from old files can't resolve — reversing the piece with the new rebuild-backward flow, which produces conflict-free forward sections, is the modern path.)");
         helpText(box, "Value axes auto-scale to the curves; every lane curve is "
             + "tinted toward its zero line. The dotted line after a "
             + "lane's last node is its held final value — click it to add a real node. "
@@ -212,7 +212,7 @@ class Dialogs {
             + "(exact for same-kind neighbors, from the resulting curves "
             + "across kinds; also a button in the node's double-click "
             + "dialog).");
-        helpKey(box, "Type badge", "the small force/geo/s/c tag at the top of each strip names its kind; click it for per-section actions: Split piece before this section (see Pieces below) and Delete section (the document keeps at least one; downstream sections re-chain from the new end; a piece's last section deletes the piece). A ◀ on the badge marks a section that runs back-to-front — that happens when its PIECE is reversed (Coaster menu; see Pieces): the section's lanes still read in the AUTHORED direction while the faint strip shows the train-direction picture, and pitched/banked seams show honestly.");
+        helpKey(box, "Type badge", "the small force/geo/s/c tag at the top of each strip names its kind; click it for per-section actions and settings, plus Delete section (the document keeps at least one; downstream sections re-chain from the new end; a piece's last section deletes the piece). Splitting and connecting moved to the SEAM lines and the first node's right-click menu (v17.1). A ◀ on the badge marks a section that runs back-to-front — that happens when its PIECE is reversed (Coaster menu; see Pieces): the section's lanes still read in the AUTHORED direction while the faint strip shows the train-direction picture, and pitched/banked seams show honestly. Since v17.0 the ◀ appears only in OLD FILES — \"Reverse piece\" now REBUILDS the piece as ordinary forward sections instead of flagging them (see Pieces), and reversing a ◀-carrying piece converts it to plain forward too.");
         helpKey(box, "Domain (time/distance)", "every force/geo section authors over TIME (seconds — the classic FVD model) or DISTANCE (meters of track); the badge wears ·m when it's meters, and the CONVERT… dialog's Domain row switches it through the NODE DENSITY window, exactly like every other convert: a fresh node carpet re-fits the same curves over the other unit (meters spacing for →distance) against the dashed originals — crank the density and the shape converges onto what you had; Apply commits (one Ctrl+Z back), Cancel restores exactly. Speeds, pins and any speed conflicts carry through; an influenced section folds its influence in (the whole-convert rule); reversed sections refuse. A distance section's badge wears ·m; its lanes hold the same quantities (G, °/s) over meters, and editing feels identical — Ctrl-snap and arrow nudges step by the element-length step (Options, default 1 m), A appends 10 m instead of 1 s, and the section's length is simply its last node. VIEW IN METERS / SECONDS is the EXACT-shape tool: a pure VIEW — the section keeps its native domain and nodes, but the plot's axis flips to the other unit and the strip warps to match (slow track stretches, fast track compresses; nothing is refit). You edit straight THROUGH the warp: drags, Ctrl-snaps and readouts work in the units you SEE and write back through the speed profile (the warp freezes per gesture so live rebuilds never slide the curve under the cursor); it works while influencing too. YOUR ZOOM SURVIVES all of it: flipping the domain, the view, or clicking a strip of the other domain lines the window's ends up in the new units instead of resetting. Straight/curve sections are inherently distance (radios read-only, but the seconds view shows their classic time layout); bridges have neither.");
         helpKey(box, "Axes (local/global)", "the same badge-menu block sets what the lanes rotate ABOUT. Roll: LOCAL (default, the classic behavior) twists about the track's own axis, so with zero roll rate the bank rides along with pitched turns; GLOBAL makes the roll lane drive the BANK VS THE HORIZON — its rate integrates to a bank target held by the same projection straight/curve sections use, so zero roll through an upward turn gives a level UPWARD SPIRAL instead of an inclined loop, and a constant rate winds the horizon-bank steadily whatever the track does. Geo sections also choose Yaw/pitch: LOCAL (track axes — the classic body rates) or GLOBAL (yaw = heading rate about the world's vertical, pitch = elevation rate; the two switch together). Vertical track has no heading or bank — global control holds off there, like s/c global banking. Global-axis lanes aren't body rates, but B/Shift+B still work on them (v16.3): the matcher reads the neighbor's WORLD-angle rates — heading, elevation and bank-vs-horizon rates, computed exactly — so every seam combination matches, including global|global, except seams on vertical track (no defined heading/bank there; the stats bar says so). Seams whose two sides pick DIFFERENT roll orientations match exactly too (v16.6): the neighbor's roll converts into your semantics through the transport relation at the boundary — value exact, so re-presses never creep. Other strips show their compiled curves, converts produce ordinary local sections, and a ⊕ same-kind hold carries the axis choice. All of it lives in ONE badge-menu window since v16.4 — ORIENTATION SETTINGS: pick the target semantics with the radios, then \"Switch to This Orientation\" (same graphs, the shape changes) or \"Bake This Orientation\" (converts the graphs through the node-density window, the track keeps its shape — millimeter-accurate, vertical stretches remaining the accepted rough edge); both enable once the radios differ from the section's current settings. While a strip EDITS INFLUENCE the same entry reads INFLUENCE ORIENTATION SETTINGS… and sets the axes the influence deltas integrate about instead (a force section's geo deltas pick roll and yaw/pitch; a geo section's force deltas pick roll) — switch only, since the delta lanes are yours to keep. Clicking an inactive section's badge just activates it; click again for its menu.");
         helpKey(box, "Rate units (°/s vs °/m)", "every force/geo section also picks what its RATE lanes mean (v16.6): PER SECOND (the classic FVD reading — degrees of rotation per second of ride) or PER METER (degrees per meter of track — the consumed rate is value × speed, so a °/m profile twists the same angles into the same meters whatever the train's speed; pair it with the DISTANCE domain and a geometric section's shape stops depending on design speed entirely, like straight/curve track). Set it when adding a section or convert an existing one through the Convert… dialog's Rate-units row. VERTICAL/LATERAL FORCE lanes are targets, not rates — a 2 g target is 2 g at any speed, there is no per-meter version of it — so on a force section the setting governs the roll lane. B/Shift+B convert across °/s|°/m seams (value and slope, at the seam speed); influence works on °/m sections too, with the delta lanes in °/m (v16.7). VIEW RATES IN °/m|°/s (badge menu, v16.7; completed v16.9) lets you EDIT the strip in the OTHER units: curve, nodes and handles all warp together through the speed profile, the left axis and default scales speak the viewed units (roll ±15 °/m, pitch/yaw ±10 °/m), a RIGHT-EDGE axis shows the lane's NATIVE units at the section's design speed, and hovering a curve appends the exact native value at that spot; drags and Ctrl-snaps work in the units you SEE and write back through the warp, and the view drops when you leave the section. ABSOLUTE ROLL (v16.7): with GLOBAL roll, the Roll behavior setting (Add or Convert… dialog) can make the roll lane the BANK ANGLE itself — the graph's height in degrees IS the bank vs the horizon (50 = banked 50° there, 0 = level, whatever came before). B/Shift+B read the seam's bank off the NEIGHBOR's side of the boundary and keep your lane's UNWRAPPED story — banking authored past ±180° (a cutback) matches at its own values instead of snapping to the mirrored equivalent; the SLOPE match is best-effort (an absolute lane sits one derivative below the rate lanes). Smooth an absolute section's ENTRY seam from ITS side: B/Shift+B on the LAST node of the section before it refuse with a hint (v16.10) — the absolute lane enforces its own start state, so the transition is made on its first node. Switching roll to Local reverts the lane to a rate; influence needs rate lanes. The badge wears · rates °/m.");
@@ -237,10 +237,11 @@ class Dialogs {
             + "placement, split and reverse still act on the ACTIVE piece. "
             + "Plain-click (or Ctrl+click) any piece's track in 3D to jump "
             + "straight to it — this works in orbit and in hands-off POV.");
-        helpKey(box, "Split", "a section badge > \"Split piece before this section\" cuts the piece there: the later sections move to a new piece placed at the EXACT boundary pose — position and full orientation — so splitting NEVER moves or tilts the track, wherever you cut (mid-hill, banked, anywhere). Splitting at an arbitrary point INSIDE a section — likely by selecting a node — is on the roadmap.");
-        helpKey(box, "Attach", "⊕ menu > Attach floating piece: the chosen piece's sections continue this piece's chain (re-laid from its end; their shapes are untouched) and the empty piece disappears. Direct attach stays available alongside the future bridge sections.");
+        helpKey(box, "Split", "click a SEAM line > \"Split track at seam\" (or a section's first node > \"Split track piece here\") cuts the piece there: the later sections move to a new piece placed at the EXACT boundary pose — position and full orientation — so splitting NEVER moves or tilts the track, wherever you cut (mid-hill, banked, anywhere). Any node's right-click menu splits INSIDE a section too (the node-anchored split).");
+        helpKey(box, "Attach", "⊕ menu > Attach floating piece: the chosen piece comes next on the timeline and snaps onto this piece's end through a STRICT SEAM (v17.1 — all axes unlocked, so the joint is fully continuous) with its SHAPE FROZEN: it rides the end of this piece rigidly instead of re-solving. The seam settings pop up so you can lock axes; see Strict seams below.");
+        helpKey(box, "Strict seams", "the unifier (v17.1): a STRICT seam makes the track AFTER it behave as if the track before it were a bridge — nothing you do before the seam can ever RESHAPE what follows; the following track only TRANSLATES and re-aims. Seam lines HIGHLIGHT under the cursor (hand cursor — they're clickable) and stay lit while their menu is open. Click one for the seam menu: CONNECT SECTIONS merges two like sections into one (the old badge connect); MAKE SEAM STRICT freezes the downstream (it becomes its own piece, following the seam) and pops the SETTINGS — one row per axis with a DISCONTINUOUS button (red outline while on), a value spinner and a ↺: Discontinuous OFF = that axis follows the track before the seam (the spinner grays and just shows the live angle); ON = the axis HOLDS the spinner's angle — type or arrow it to re-aim the whole downstream rigidly, ↺ returns the angle the seam was created with; turning Discontinuous on freezes the CURRENT angle, so nothing jumps; Apply closes (clicking off works too). The seam draws as a DOUBLE LINE. Speeds stay independent: the following track keeps its design graphs and speed, so edits before the seam open an honest ≠v conflict (sharp transition and all — that's the point) while the REAL ride still flows through continuously; B/Shift+B line the real graphs up across it (iteratively), and RESOLVING the follower's conflict works like anywhere else — make-real keeps the shape you see, re-freeze reshapes from the real frame. UN-STRICT SEAM re-bends the track continuous through the joint (graphs kept exactly, shape re-solves, the speed conflict deliberately KEPT); SPLIT TRACK AT SEAM detaches the follower in place as an ordinary piece. Where strict seams come from: making one by hand, attaching a floating piece, answering YES to the zero-distance bridge prompt, and CONVERTING A WHOLE BRIDGE with the dialog's \"Make following seam strict\" checked (the default — the bridge's padlocks carry over): the bridge becomes editable lanes while everything after keeps its exact shape, and un-stricting later gives exactly what the old convert produced. A follower's Placement rows gray (the seam owns them) and its entry gizmo and reveal marker stay hidden — the seam menu is the surface.");
         helpKey(box, "Move", "toolbar \"Placement ▾\" (next to the piece selector) > Piece x/y/z + Piece yaw edit the ACTIVE piece's placement — the whole piece slides/turns rigidly; other pieces never move. Yaw is a DELTA on top of the piece's natural orientation: set it back to 0 and the original heading returns exactly. PIECE PITCH/ROLL rows sit below (each behind a PADLOCK, locked by default — click it to unlock and edit): these tilt the piece's START and the whole piece rotates RIGIDLY with it — the geometric shape is preserved exactly, and because gravity now cuts through the track differently, the force graphs split design-vs-real (thin true strokes show what the tilted track really feels; the design lanes stay yours). Zeroing pitch/roll reverts exactly. When a BRIDGE connects into this piece, these padlocks are the SAME locks as the bridge panel's — flip them in either place — and whatever the bridge OWNS grays out here (position under any optimize mode, yaw when locked or march-aligned; hover a grayed row and the tip says to edit through the bridge, v16.13). One corner to know: SPLITTING or REVERSING a tilted piece bakes the tilt in (the new piece re-solves from the tilted start instead of staying rigid). The spinners re-sync when you switch pieces. The piece being edited renders FULL-COLOR in 3D; the others are desaturated — and the placement GIZMOS (see 3D view) drag all of this directly.");
-        helpKey(box, "Reverse", "toolbar \"Placement ▾\" > \"Reverse piece (flip travel direction)\": the TRACK STAYS PUT and the train runs the piece the other way — the old exit becomes the entry. The strips reorder to train order and every section badge wears ◀; sections keep editing in their authored direction. Where a seam isn't level it re-joins with an honest kink; reversing again restores everything exactly. One undo step. (A piece containing a bridge refuses to reverse — delete the bridge first.)");
+        helpKey(box, "Reverse", "toolbar \"Placement ▾\" > \"Reverse piece (rebuild backward)…\" (reworked v17.0): reversing is a CONVERT — the piece is REBUILT as ordinary forward sections that run the other way, in place (the old exit becomes the entry; the shape holds to the fit accuracy you choose). The NODE DENSITY window opens with an ENTRY SPEED row on top: locked (🔒) it reads the speed the ride actually REACHES the piece's end with — the natural starting speed for the backward run — and unlocking (🔓) lets you type any speed; every change re-fits live, in the graphs and the 3D view. The result keeps one section per original section at the same boundaries (force stays force, geo stays geo; a straight/curve strip comes back as force lanes — element lists have no mirrored form; an influenced section folds its influence in), and carries NO speed conflict — no ≠v, no true-stroke splits — because the whole reversed piece is authored at one energy flow from its entry. With FRICTION on, watch the stats bar: losses are paid both ways, so a reversal at the natural end speed can STALL partway (the hint says so — unlock and raise the entry speed). Apply commits as ONE undo step; Cancel restores exactly (reversing twice is a re-fit of a re-fit — Ctrl+Z is the precise way back). A piece containing a bridge refuses — delete or convert the bridge first.");
         helpKey(box, "Bridge", "⊕ menu > \"Bridge to piece\" > pick ANY other piece: a smooth connector from this piece's end to that piece's entry — position, direction, roll (its rate AND how fast that rate is changing), curvature, the RATE GRAPHS' slopes and even the SPEED all flow across both seams (the bridge's design speed eases onto the next piece's), so the joined pieces ride, read and EDIT as ONE track (see Pieces above). A reversed section on the far side is aimed at exactly as it really starts. Picking a piece that isn't next on the timeline moves it there (connecting means \"this one follows\"). The bridge FOLLOWS LIVE: move either piece or edit the track and it re-joins as you drag. RESIZE it by DRAGGING the vertical line at the END of its strip (the cursor becomes ↔ there): the next piece slides along and the bridge re-solves live — Ctrl snaps whole meters (the element-length step), a readout shows the length, and one Ctrl+Z undoes the whole drag (disabled while Optimize length is checked). OPTIMIZE LENGTH (checked automatically when you switch into an optimize mode) picks the length itself: the shortest bridge whose transition is as smooth as any longer one would be — one exact answer for a given pair of seams, no matter where the next piece currently sits or how it's yawed; Uncheck it to set the length by hand. When the seams continue each other perfectly — a split piece bridged back together, even after its second half was dragged and spun anywhere — the optimum collapses to zero and the app offers to CONNECT THE PIECES DIRECTLY instead (the next piece snaps back into the seamless join). With a bridge active, the toolbar button becomes BRIDGE PROPERTIES ▾ — the bridge's own panel. A FRESH bridge starts in \"No optimization\" — it hasn't moved anything and the panel says so (place the next piece fully by hand: x/y/z plus any UNLOCKED orientation). The next piece's YAW, PITCH and ROLL rows each wear a PADLOCK, tinted red when LOCKED and green when UNLOCKED: locked (the default for pitch and roll) = the value is frozen and the bridge bends to meet it; click the padlock to unlock and edit. Pick \"Optimize position and ORIENTATION\" to have the Length box place the next piece where the track would NATURALLY go — rotating every unlocked axis to meet it, while locked axes keep your values (all three locked grays the mode out — unlock something first) — and an optimized bridge's own shape IS that natural path (the seams' turn and roll carried forward, blended across the bridge, so the graphs change as little as possible and the turning spreads evenly instead of bunching near the seams — split a constant turn and re-bridge it and the bridge IS that same turn, longer lengths simply carry the piece further around the circle, straight track continues dead ahead), or \"Optimize position\" (same march for position, but YOU own the whole orientation and the bridge bends to it); switching into an optimize mode applies it immediately, and switching BETWEEN the two optimize modes keeps the current length. A round trip through \"No optimization\" is polite: leave everything untouched there and coming back restores Optimize length exactly as you left it; move the piece by hand and coming back keeps THAT bridge's length (Optimize length unchecked) — and the grayed Length box keeps reading the manual bridge live. Hovering the bridge's curves reads their values like any lane (Shift = slope). An optimized bridge is deterministic: the same seams at the same length give THE same bridge, every time (grow the length and bring it back: identical). And when you want to sculpt the bridge directly, badge > \"Convert whole bridge to geo/force section\" turns ALL of it into editable lanes and CONNECTS the pieces (the next piece's track carries on after the lanes), while \"Convert part to geo/force section…\" opens a SPLIT LINE on its strip: drag the line (a readout shows the exact % of the bridge — the cut lands precisely there), click either side to choose which portion becomes editable lanes (left is the default; the chosen side tints), then press the [Convert … part] chip — the other side REMAINS a live bridge and the track stays CONNECTED end to end (left part: the lanes slot in before the bridge; right part: the lanes become the start of the next piece, whose own track carries on after them). Either way the NODE DENSITY window opens to tune the fit live (see Convert under Sections). Cutting an OPTIMIZED bridge keeps the remainder on its natural path: the next piece nudges a few centimeters so the join stays exact and the graphs keep their shape — cutting a hand-placed (no-optimization) bridge moves nothing. [Cancel] or clicking another strip leaves the mode; Ctrl+Z brings the whole bridge back. A cramped bridge (big drop or clashing headings over a short gap) still swings hard INSIDE — smooth but fast; lengthen it to calm it. While an optimize mode is on, editing the track BEFORE the bridge re-places the next piece automatically — the whole connection follows your upstream edits live. If the target piece is ever deleted, the bridge keeps its last shape and its badge shows \"bridge !\". A piece ending with a bridge can't be extended — its end is glued; extend the next piece instead. Deleting the bridge just disconnects: both pieces stay exactly where they are.");
         helpText(box, "Deleting a piece's only section deletes the piece. The POV "
             + "camera rides pieces in timeline order, jumping the gap between "
@@ -270,7 +271,8 @@ class Dialogs {
 
         helpHead(box, "Nodes");
         helpKey(box, "Click curve", "insert a node exactly ON it — the shape does not change. Keep the button down to drag the new node away in the same motion (Ctrl snaps as usual; insert + drag = one undo step). Holding Ctrl while HOVERING snaps the insert dot in time (per the horizontal snap reference; its value keeps riding the curve) — the click inserts at that snapped spot.");
-        helpKey(box, "Right-click", "on a NODE: its editor dialog (same as double-click). On a SEGMENT: its lock menu — Unlocked / Straight / Horizontal (one segment at a time; same locks as Shift+F / Shift+H). Right-DRAG still pans: the menu only opens on a clean click.");
+        helpKey(box, "Right-click", "on a NODE (or a selection): its OPTIONS menu (v16.18) — Edit node…, smooth/broken (boundary match on edge nodes), match all lanes, level / level-lock, straighten / straight-lock, SPLIT SECTION HERE, SPLIT TRACK PIECE HERE, CONNECT WITH PREVIOUS/NEXT SECTION, and Delete; your current shortcut for each op shows in parentheses, and ops that can't apply to the clicked node simply DON'T APPEAR (v16.20) — so the menu is exactly what you can do there (Delete never shows on a section's end nodes; the badge menu keeps a GRAYED \"Connect with previous section\" so you can discover it exists even when the neighbors don't match). On a SEGMENT: its lock menu — Unlocked / Straight / Horizontal (one segment at a time; same locks as Shift+F / Shift+H). Right-DRAG still pans: the menu only opens on a clean click.");
+        helpKey(box, "Split at a node", "the right-click menu's two split entries cut the ACTIVE section at that node (v16.18). SPLIT SECTION makes it two sections in the same piece — every lane cuts through the exact curve identity, so the result is precisely the chain you'd have gotten authoring two sections there: same shape, same graphs, downstream design speed = the speed at the cut (no conflict appears). SPLIT TRACK PIECE does the same and then starts a NEW piece at the boundary (the classic exact-pose split), so the far side becomes independently movable — on a section's FIRST node it's exactly the badge menu's \"Split piece before this section\". Reversed and influenced sections refuse (reverse back / bake first); one Ctrl+Z restores everything. The INVERSE lives on the seam's edge nodes: CONNECT WITH PREVIOUS/NEXT SECTION rejoins two LIKE sections (same type, domain and axis/rate/roll settings) into one — a seam you matched with B merges losslessly (split then connect gives back exactly what you had), an unmatched seam's two edge nodes become ONE node at their average value with averaged smooth handles — a lane that was HOLDING through the seam counts as its held value with a flat slope, so the joined node sits halfway and eases in.");
         helpKey(box, "Drag", "move freely; the readout shows Δt from the previous node + value — hold SHIFT mid-drag to read the ABSOLUTE axis position + the Δ from the previous node instead (v16.16). A lane's LAST node stops at the section end (where the other lanes already are) — release and grab it again to pull past and extend the section.");
         helpKey(box, "Ctrl", "snap time and value (steps set in Options; transitions can be as short as 0.01 s). A rate lane DISPLAYED in °/m snaps by its own, finer step (default 1 °/m — the °/s step stays 5; the displayed units govern, so the °/m|°/s view counts, v16.10). Each axis can snap relative to the previous node or to the absolute grid — two Options checkboxes; defaults: time = Δt, value = absolute. The section end is a snap point of its own, and grid points right next to it are ignored — snapping near the end lands exactly ON it.");
         helpKey(box, "S (hold)", "slide along one axis from the start point — picked instantly from the dominant direction, switches if you pull the other way. Combines with Ctrl snapping: pressing S mid-drag with Ctrl held slides — it never triggers Ctrl+S save (no modifier combo fires during a drag).");
@@ -313,9 +315,10 @@ class Dialogs {
         helpHead(box, "Menus & app.settings");
         helpKey(box, "File > Export NL2 CSV", "(Ctrl+E) writes the track for NoLimits 2's CSV import. Choose heartline (default) or rail center (the spline NL2 builds its track around), plus the point spacing; both remembered per-user.");
         helpKey(box, "Edit > Shortcuts", "grouped by category (Graph editor · View · File · History): click a key button, press the new combo (Esc cancels); ↺ resets a binding. Per-user.");
-        helpKey(box, "View menu", "everything about the 3D viewport in one place (v16.13-15): gizmo axes local/global · show heartline · node markers · REVERSE POV VIEW DIRECTION (same state as A/D while riding captured) · RAIL COLOR (G-force gradient vs solid — pick the solid color right in the row, with a ↺ back to default) · the comb three-way (No / G-force / Speed) and comb size % · \"G-FORCE COLORS…\" (its letters tinted by your own gradient, hottest first: the SIX vertical stops — shared by the rail gradient and the vertical comb; defaults purple −1.5, blue −1, cyan −0.5, green 1, yellow 3, red 5 — plus the lateral comb's three ± stops, each color with its own ↺; per-coaster) · POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit). Every slider wears a ↺ back to its default (v16.16); rows keep the menu open while you adjust; Ctrl+Z inside undoes menu edits. Colors everywhere are SWATCH buttons opening the app's own picker — a quick palette, your last ten picked colors, and RGB sliders + hex with live preview; OK keeps, Cancel restores (v16.16 — the built-in picker's Custom Color window was the focus-flash, by construction).");
+        helpKey(box, "View menu", "everything about the 3D viewport in one place (v16.13-15): gizmo axes local/global · show heartline · node markers · REVERSE POV VIEW DIRECTION (same state as A/D while riding captured) · RAIL COLOR (G-force gradient vs solid — pick the solid color right in the row, with a ↺ back to default) · the comb three-way (No / G-force / Speed) and comb size % · \"G-FORCE COLORS…\" (its letters tinted by your own gradient, hottest first: the SIX vertical stops — shared by the rail gradient and the vertical comb; defaults purple −1.5, blue −1, cyan −0.5, green 1, yellow 3, red 5 — plus the lateral comb's three ± stops, each color with its own ↺; per-coaster) · POV FOV · fly+orbit FOV (shared so mode switches never zoom-jump) · mouse sensitivity (fly + orbit). Every slider wears a ↺ back to its default (v16.16); rows keep the menu open while you adjust; Ctrl+Z inside undoes menu edits. Colors everywhere are SWATCH buttons opening the app's own picker — a quick palette, your last ten picked colors, a HUE/SATURATION plane (hue across, full saturation at the top) with a vertical BRIGHTNESS slider, and typed RGB + hex, all with live preview; OK keeps, Cancel restores (v16.16/17 — the built-in picker's Custom Color window was the focus-flash, by construction).");
         helpKey(box, "Edit > Snapping", "(was \"Options\") snap steps incl. the straight/curve element length (arrows walk the 1-2-5 series) · horizontal/vertical snap LOCAL vs GLOBAL (horizontal: local = Δt from the previous node, global = absolute ride time — default local; vertical: local = Δ value from the previous node, global = absolute values — default global). Per-user. (Everything viewport-side lives in the VIEW menu; the POV graph marker is always on since v16.14.)");
-        helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start speed (also on the first node's double-click dialog). Per-coaster, saved in the .fvd. (Rail colors moved to the VIEW menu in v16.14; piece placement + Reverse piece live in the toolbar's \"Placement ▾\" dropdown since v13.2 — y = height above the ground plane.)");
+        helpKey(box, "Coaster menu", "heart offset, gauge, tie spacing, start speed (also on the first node's double-click dialog), and the two FRICTION coefficients (v17.0). Per-coaster, saved in the .fvd. (Rail colors moved to the VIEW menu in v16.14; piece placement + Reverse piece live in the toolbar's \"Placement ▾\" dropdown since v13.2 — y = height above the ground plane.)");
+        helpKey(box, "Friction (Coaster menu)", "two loss coefficients, both 0 by default (= the loss-free classic model, exactly as before). FRICTION (ROLLING μ) is a constant deceleration of μ·g per meter of track — 0.01–0.05 is a typical range. AIR DRAG (PER KM) decelerates by k·v², entered per kilometer (1.0 = 0.001/m) — fast track sheds much more than slow track. Both apply to the WHOLE coaster: every section's design profile sheds them (directly-chained sections keep their graphs real automatically, like always) and the true ride sheds them in Pass D — so bigger layouts genuinely run out of steam, and the speed comb / stats / POV pace all show it. They ride document undo and the save file. One physical consequence to know: friction is paid BOTH WAYS, so a piece REVERSED at its natural end speed often can't climb back over what the forward ride descended — the reversal preview warns when the reversed run stalls; unlock its entry speed and give it more. (And to be clear: a reversed piece is only conflict-free AT CREATION — from then on it's an ordinary piece that holds its shape and graphs, conflicts included.)");
         helpKey(box, "Ctrl+Z in menus", "while a menu/dialog is open, Ctrl+Z / Ctrl+Shift+Z undo/redo the edits made IN it. Path-shaping values (heart, gauge, start, speed) ALSO land in the document history, so after closing, plain Ctrl+Z steps them back too.");
 
         ScrollPane scroll = new ScrollPane(box);
@@ -974,30 +977,109 @@ class Dialogs {
         javafx.scene.layout.Region preview = new javafx.scene.layout.Region();
         preview.setPrefSize(240, 30);
         grid.add(preview, 0, 0, 3, 1);
-        Slider[] sl = new Slider[3];
-        Label[] slVal = new Label[3];
+        // the working color lives as HSB (v16.17): a HUE × SATURATION
+        // plane picks the tint, a vertical slider sets brightness —
+        // and grays keep their hue while you slide, instead of the
+        // marker snapping to hue 0
+        double[] hsb = { initial.getHue(), initial.getSaturation(),
+            initial.getBrightness() };
         TextField hex = new TextField(toHex(initial));
         hex.setPrefColumnCount(7);
+        TextField[] rgbF = new TextField[3];
+        for (int i = 0; i < 3; i++) {
+            rgbF[i] = new TextField();
+            rgbF[i].setPrefColumnCount(3);
+        }
         boolean[] updating = { false };
         Runnable paintPreview = () -> preview.setStyle(
             "-fx-background-color: " + hex.getText()
             + "; -fx-border-color: rgba(120,125,135,0.85);");
-        java.util.function.Supplier<Color> fromSliders = () -> Color.rgb(
-            (int) Math.round(sl[0].getValue()),
-            (int) Math.round(sl[1].getValue()),
-            (int) Math.round(sl[2].getValue()));
-        // one entry point for palette/recent picks: sliders + hex +
-        // preview + live apply in a single guarded update
-        java.util.function.Consumer<Color> setColor = c -> {
+        java.util.function.Supplier<Color> current = () ->
+            Color.hsb(hsb[0], hsb[1], hsb[2]);
+        // the PLANE (hue across, FULL saturation at the top — user
+        // spec) paints at the CURRENT brightness since v16.19 (user
+        // re-spec of v16.17's fixed-brightness draw); the slider's
+        // own track + thumb carry the readability instead
+        Canvas plane = new Canvas(252, 132);
+        Slider bright = new Slider(0, 1, hsb[2]);
+        bright.setOrientation(Orientation.VERTICAL);
+        bright.setPrefHeight(132);
+        Tooltip.install(bright, new Tooltip("Brightness"));
+        Runnable paintPlane = () -> {
+            GraphicsContext gc = plane.getGraphicsContext2D();
+            var pw = gc.getPixelWriter();
+            int w = (int) plane.getWidth(), h = (int) plane.getHeight();
+            for (int y = 0; y < h; y++) {
+                double s = 1 - y / (double) (h - 1);
+                for (int x = 0; x < w; x++) {
+                    pw.setColor(x, y, Color.hsb(x * 360.0 / w, s, hsb[2]));
+                }
+            }
+            // double-ring marker reads on any background
+            double mx = hsb[0] / 360 * w;
+            double my = (1 - hsb[1]) * (h - 1);
+            gc.setLineWidth(1.5);
+            gc.setStroke(Color.WHITE);
+            gc.strokeOval(mx - 5, my - 5, 10, 10);
+            gc.setStroke(Color.BLACK);
+            gc.strokeOval(mx - 6, my - 6, 12, 12);
+        };
+        // the slider TRACK shows the brightness gradient of the
+        // selected hue/sat, and the THUMB's centre wears the selected
+        // color (v16.19, user spec) — the skin substructure only
+        // exists after CSS applies, so look it up lazily each pass
+        Runnable paintSlider = () -> {
+            Color top = Color.hsb(hsb[0], hsb[1], 1.0);
+            javafx.scene.Node track = bright.lookup(".track");
+            if (track != null) {
+                track.setStyle("-fx-background-color: linear-gradient("
+                    + "to top, black, " + toHex(top) + ");"
+                    + " -fx-background-radius: 4;");
+            }
+            javafx.scene.Node thumb = bright.lookup(".thumb");
+            if (thumb != null) {
+                thumb.setStyle("-fx-background-color: "
+                    + "rgba(235,235,240,0.95), " + hex.getText() + ";"
+                    + " -fx-background-insets: 0, 2.5;");
+            }
+        };
+        // ONE guarded refresh: fields, slider, marker, preview, live
+        // apply — every input path funnels through here
+        Runnable syncAll = () -> {
+            Color c = current.get();
             updating[0] = true;
-            sl[0].setValue(c.getRed() * 255);
-            sl[1].setValue(c.getGreen() * 255);
-            sl[2].setValue(c.getBlue() * 255);
+            rgbF[0].setText(String.valueOf((int) Math.round(c.getRed() * 255)));
+            rgbF[1].setText(String.valueOf((int) Math.round(c.getGreen() * 255)));
+            rgbF[2].setText(String.valueOf((int) Math.round(c.getBlue() * 255)));
             hex.setText(toHex(c));
+            bright.setValue(hsb[2]);
             updating[0] = false;
+            paintPlane.run();
             paintPreview.run();
+            paintSlider.run();
             apply.accept(c);
         };
+        // entry point for palette/recent/typed picks — a GRAY color
+        // keeps the current hue (its own hue is degenerate 0)
+        java.util.function.Consumer<Color> setColor = c -> {
+            if (c.getSaturation() > 1e-9) hsb[0] = c.getHue();
+            if (c.getBrightness() > 1e-9) hsb[1] = c.getSaturation();
+            hsb[2] = c.getBrightness();
+            syncAll.run();
+        };
+        javafx.event.EventHandler<MouseEvent> planePick = e -> {
+            double w = plane.getWidth(), h = plane.getHeight();
+            hsb[0] = FvdDesigner.clamp(e.getX() / w, 0, 0.9999) * 360;
+            hsb[1] = FvdDesigner.clamp(1 - e.getY() / (h - 1), 0, 1);
+            syncAll.run();
+        };
+        plane.setOnMousePressed(planePick);
+        plane.setOnMouseDragged(planePick);
+        bright.valueProperty().addListener((o, a, v) -> {
+            if (updating[0]) return;
+            hsb[2] = v.doubleValue();
+            syncAll.run();
+        });
         // QUICK SWATCHES (v16.16, user spec): three shades of ten
         // hues + a grayscale row, and the last TEN colors picked in
         // this dialog (per-user, newest first)
@@ -1031,43 +1113,39 @@ class Dialogs {
             }
             grid.addRow(row++, new Label("Recent"), recRow);
         }
-        String[] names = { "R", "G", "B" };
-        double[] init = { initial.getRed() * 255,
-            initial.getGreen() * 255, initial.getBlue() * 255 };
-        for (int i = 0; i < 3; i++) {
-            sl[i] = new Slider(0, 255, init[i]);
-            sl[i].setPrefWidth(240);
-            slVal[i] = new Label(String.format("%.0f", init[i]));
-            final int fi = i;
-            sl[i].valueProperty().addListener((o, a, v) -> {
-                slVal[fi].setText(String.format("%.0f", v.doubleValue()));
-                if (updating[0]) return;
-                Color c = fromSliders.get();
-                updating[0] = true;
-                hex.setText(toHex(c));
-                updating[0] = false;
-                paintPreview.run();
-                apply.accept(c);
-            });
-            grid.addRow(row++, new Label(names[i]), sl[i], slVal[i]);
+        HBox planeRow = new HBox(8, plane, bright);
+        planeRow.setAlignment(Pos.CENTER_LEFT);
+        grid.add(planeRow, 0, row++, 3, 1);
+        // TYPED RGB (v16.17, user spec — the sliders are gone)
+        Runnable rgbTyped = () -> {
+            if (updating[0]) return;
+            try {
+                int r = Integer.parseInt(rgbF[0].getText().trim());
+                int g = Integer.parseInt(rgbF[1].getText().trim());
+                int b = Integer.parseInt(rgbF[2].getText().trim());
+                if (r < 0 || r > 255 || g < 0 || g > 255
+                        || b < 0 || b > 255) return;
+                setColor.accept(Color.rgb(r, g, b));
+            } catch (NumberFormatException ignored) {
+                // keep typing; incomplete = no-op
+            }
+        };
+        for (TextField f : rgbF) {
+            f.textProperty().addListener((o, a, v) -> rgbTyped.run());
         }
+        HBox rgbRow = new HBox(6, rgbF[0], rgbF[1], rgbF[2]);
+        grid.addRow(row++, new Label("RGB"), rgbRow);
         hex.textProperty().addListener((o, a, v) -> {
             if (updating[0]) return;
             try {
-                Color c = Color.web(v.trim());
-                updating[0] = true;
-                sl[0].setValue(c.getRed() * 255);
-                sl[1].setValue(c.getGreen() * 255);
-                sl[2].setValue(c.getBlue() * 255);
-                updating[0] = false;
-                paintPreview.run();
-                apply.accept(c);
+                setColor.accept(Color.web(v.trim()));
             } catch (IllegalArgumentException ignored) {
-                updating[0] = false;   // keep typing; invalid = no-op
+                // keep typing; invalid = no-op
             }
         });
         grid.addRow(row++, new Label("Hex"), hex);
-        paintPreview.run();
+        syncAll.run();   // fields, marker, preview — and the first
+                         // apply is the color it already had
         Button ok = new Button("OK");
         ok.setDefaultButton(true);
         Button cancel = new Button("Cancel");
@@ -1076,7 +1154,7 @@ class Dialogs {
         buttons.setAlignment(Pos.CENTER_RIGHT);
         grid.add(buttons, 0, row, 3, 1);
         ok.setOnAction(e -> {
-            Color fin = fromSliders.get();
+            Color fin = current.get();
             if (!fin.equals(initial)) {
                 app.settings.pushRecentColor(toHex(fin));
             }
@@ -1092,6 +1170,9 @@ class Dialogs {
         dlg.setOnCloseRequest(e -> apply.accept(initial));
         dlg.setScene(new Scene(grid));
         dlg.show();
+        // the slider's .track/.thumb nodes exist only after the first
+        // CSS pass — re-run the tint once the skin is up (v16.19)
+        javafx.application.Platform.runLater(paintSlider);
     }
 
     /** Visual/interaction options (app-wide, persisted). */

@@ -152,20 +152,51 @@ bank held to 1e-9, spine unbent in both modes, and the motivating
 case — a 20° dip into a 90° flat turn — dead level under GLOBAL 0
 (R.y ~1e-17) vs R.y = 0.342 of drift under RATE 0.
 
-Energy conservation relative to the *start* height, then a crude quadratic
-friction bleed:
+## 3. Speed: energy minus path-integrated friction (Phase 3, v17.0 D133)
+
+Speed is energy conservation relative to the *start* height minus an
+accumulated **loss deficit** (v² units) that rides the RK4 state:
 
 ```
-v_ideal = sqrt( v0² + 2·g·(y0 − y) )
-v = max(0.1, v_ideal − friction · v_ideal · dt)
+v = sqrt( max( v0² + 2·g·(y0 − y) − loss, 0 ) )
+d(loss)/ds = dir · 2·( fricRoll·g  +  fricAir·v² )      [per meter]
+d(loss)/dt = d(loss)/ds · v                              [the ODE form]
 ```
 
-Deliberate simplifications (fine for a designer, revisit for realism):
-friction isn't path-integrated (it's recomputed from height, so it doesn't
-accumulate losses properly over undulating track), and there's no rolling
-resistance / air-drag split. `vSafe = max(v, 0.5)` prevents ω → ∞ near
-stalls; if a design nearly stalls on a hill crest the result is garbage-but-
-finite rather than NaN.
+The two per-coaster coefficients (SECTIONS-DESIGN §7; NL2's "friction"
+and "air resistance"): **fricRoll** is dimensionless — a constant
+deceleration fricRoll·g per meter (the first cut deliberately skips
+normal-force scaling) — and **fricAir** is 1/m, deceleration
+fricAir·v². Closed forms on flat track (both gated to float noise):
+rolling only ⇒ v² = v0² − 2·μ·g·s; drag only ⇒ v = v0·e^(−k·s).
+
+Both coefficients 0 keeps `loss` exactly 0.0, and `x − 0.0` is
+bitwise `x` — the entire pre-friction behavior is preserved
+bit-for-bit (the old per-second "friction bleed" stub was inert and
+is gone). Pass D marches the same deficit over the assembled samples
+per run (Heun steps, always in TRAVEL order); converts, the influence
+two-pass and the bridge's blended profile each march their own copy so
+every re-derived profile agrees with the integrators.
+
+REVERSAL under friction (v17.0, D134 — reversal is a CONVERT): with
+losses, the speed at a point genuinely differs by travel direction,
+so no fixed authored profile can serve both ways. "Reverse piece"
+therefore REBUILDS: Coaster.reversedSamples mirrors the compiled
+geometry in place (T/R flip, U kept, felt Gl negated — the D67
+identities; per-sample v kept so the κ decode from felt stays exact),
+reversedProfile marches ONE energy flow from the recorded end speed
+(or a user-typed one) with the same Heun deficit, and each section's
+span re-fits as ordinary forward lanes at the flow speed at its
+entry — the result is conflict-free by construction and matches the
+original shape to the fit residual, friction included. Corollary of
+"friction is paid both ways": a piece reversed at its natural end
+speed often cannot climb home and the reversed flow STALLS — the
+preview says so; more entry speed is the fix.
+
+`vSafe = max(v, 0.5)` still prevents ω → ∞ near stalls; a genuinely
+stalling design (friction makes this easier to hit) creeps through at
+the floor and reads garbage-but-finite rather than NaN — real stall /
+rollback physics stays future Phase-3 work (speed sections).
 
 ## 4. Validations performed (keep these as regression tests)
 
