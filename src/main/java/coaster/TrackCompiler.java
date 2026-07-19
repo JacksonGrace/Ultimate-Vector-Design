@@ -94,6 +94,13 @@ public final class TrackCompiler {
             boolean followed = piece.followPrev && p > 0 && !bridgedIn
                 && !spans.isEmpty() && !piece.sections.isEmpty()
                 && !c.pieces.get(p - 1).sections.isEmpty();
+            // strict-seam SMOOTHING (v17.2, D139): blend the junction
+            // right after the follower's FIRST section lands; the
+            // window-end position delta then translates the piece's
+            // remaining sections (postShift). 0 = the pass never runs.
+            boolean smoothSeam = followed && piece.sSmoothLen > 0.01;
+            Vec3 postShift = null;
+            int secIdx = 0;
             if (followed) {
                 TrackPose eff = Coaster.strictEntry(
                     spans.get(spans.size() - 1).exit(), piece);
@@ -134,7 +141,11 @@ public final class TrackCompiler {
                     // (tilted) seam (v15.2).
                     TrackPose worldPose = tilt == Quat.IDENTITY ? pose
                         : tiltPose(pose, tilt, anchor);
-                    bs.solvedEntry = new TrackPose(worldPose.pos(),
+                    // a smoothed strict seam upstream in THIS piece
+                    // translated the chain (v17.2): the bridge starts
+                    // where the track really ends
+                    bs.solvedEntry = new TrackPose(postShift == null
+                        ? worldPose.pos() : worldPose.pos().add(postShift),
                         worldPose.orient());
                     if (continuation && all.size() - pieceStart >= 9) {
                         int e = all.size() - 1;
@@ -201,6 +212,14 @@ public final class TrackCompiler {
                         && !(section instanceof BridgeSection)) {
                     line = tiltLine(line, tilt, anchor);
                 }
+                // a smoothed seam's window-end delta translates the
+                // rest of the piece (v17.2 — the design-space chain
+                // stays untouched; only the world output shifts).
+                // Bridges skip: their entry already shifted above.
+                if (postShift != null
+                        && !(section instanceof BridgeSection)) {
+                    line = shiftLine(line, postShift);
+                }
                 int i0 = all.size();
                 double t0 = all.isEmpty() ? 0 : all.get(all.size() - 1).t();
                 double s0 = all.isEmpty() ? 0 : all.get(all.size() - 1).s();
@@ -209,6 +228,12 @@ public final class TrackCompiler {
                 spans.add(new Span(i0, all.size() - 1, t0, end.t(),
                     s0, end.s() - s0, line.exit()));
                 continuation = true;
+                if (smoothSeam && secIdx == 0
+                        && !(section instanceof BridgeSection)) {
+                    postShift = smoothStrictSeam(all, spans,
+                        piece.sSmoothLen);
+                }
+                secIdx++;
             }
         }
         double[] trueV = passD(all, runs, c.fricRoll, c.fricAir);
@@ -387,6 +412,283 @@ public final class TrackCompiler {
         TrackPose gen = piece.genPose();
         Centerline line = passG(piece.sections.get(0), gen, dt, fric);
         return tiltLine(line, tilt, gen.pos()).samples();
+    }
+
+    // -----------------------------------------------------------------
+    // STRICT-SEAM GEOMETRIC SMOOTHING (v17.2, D139 — user spec: the s/c
+    // entry-smoothing idea for the frozen junction; "make sure it
+    // doesn't impact anything outside the influence — no orientation
+    // change, moving the position slightly is okay")
+    // -----------------------------------------------------------------
+
+    /** Blend the strict seam between the LAST TWO spans across a
+     *  ±len/2 arc window. Orientations SLERP from the upstream curve
+     *  onto the follower's — each side extrapolated across the seam at
+     *  its own measured per-sample rate, quintic-smoothstep weight over
+     *  arc — so the window ends sit EXACTLY on the original frames and
+     *  nothing outside reorients, ever. Positions re-march along the
+     *  blended tangents with the ORIGINAL per-step arc (lengths kept);
+     *  the window's interior felt re-derives from the blended rates by
+     *  the κ identity at the design profile (sample v kept — the
+     *  window's height shift is cm-scale, and Pass D re-reads real
+     *  heights anyway). The follower's remainder rigidly TRANSLATES by
+     *  the window-end delta (returned; the compile loop shifts the
+     *  piece's later sections the same way — the user's "position may
+     *  move slightly"). Both spans' exits re-stamp to the drawn
+     *  samples (the D80 contract). Halves clamp to HALF of each
+     *  adjacent section's arc, so windows never reach a second seam.
+     *  Returns null (blend skipped) when the window is too tight. */
+    static Vec3 smoothStrictSeam(List<FVDIntegrator.Sample> all,
+                                 List<Span> spans, double len) {
+        int nsp = spans.size();
+        if (nsp < 2) return null;
+        Span sa = spans.get(nsp - 2);   // upstream piece's last section
+        Span sb = spans.get(nsp - 1);   // the follower's first section
+        int iSeam = sa.i1();
+        double sSeam = all.get(iSeam).s();
+        double hUp = Math.min(len / 2, sa.sLen() * 0.5);
+        double hDn = Math.min(len / 2, sb.sLen() * 0.5);
+        int iA = iSeam;
+        while (iA > sa.i0() + 1
+                && sSeam - all.get(iA - 1).s() <= hUp) iA--;
+        int iB = iSeam + 1;
+        while (iB < sb.i1() - 1
+                && all.get(iB + 1).s() - sSeam <= hDn) iB++;
+        // engage as soon as 2/3 samples exist per side (v17.4 — the
+        // 1 m default window is sub-sample at speed otherwise; the
+        // rate-measurement windows below adapt via mU/mD)
+        if (iSeam - iA < 2 || iB - iSeam < 3) return null;
+        // each side's per-sample world rotation, measured just inside
+        // it — the extrapolation carries the side's own turning across
+        // the seam so the blend morphs RATES, not just angles
+        Quat qSeam = frameQ(all.get(iSeam));
+        Quat qDn0 = frameQ(all.get(iSeam + 1));
+        int mU = Math.min(3, iSeam - iA);
+        int mD = Math.min(3, iB - iSeam - 1);
+        Quat stepUp = quatPow(
+            qSeam.mul(frameQ(all.get(iSeam - mU)).conjugate()), 1.0 / mU);
+        Quat stepDn = quatPow(
+            frameQ(all.get(iSeam + 1 + mD)).mul(qDn0.conjugate()), 1.0 / mD);
+        double sA = all.get(iA).s(), sB = all.get(iB).s();
+        int n = iB - iA + 1;
+        Quat[] q = new Quat[n];
+        double[] uu = new double[n];
+        for (int i = iA; i <= iB; i++) {
+            Quat up = i <= iSeam ? frameQ(all.get(i))
+                : quatPow(stepUp, i - iSeam).mul(qSeam);
+            Quat dn = i > iSeam ? frameQ(all.get(i))
+                : quatPow(stepDn, i - iSeam - 1).mul(qDn0);
+            double u = (all.get(i).s() - sA) / Math.max(1e-9, sB - sA);
+            double w = u * u * u * (10 + u * (-15 + 6 * u));
+            uu[i - iA] = u;
+            q[i - iA] = slerp(up, dn, w);
+        }
+        // re-march positions along the blended tangents; per-step arc
+        // = the original lengths (times the closure stretch below)
+        double[] st = new double[n];   // per-step hump weight (mid)
+        for (int j = 1; j < n; j++) {
+            st[j] = hump((uu[j - 1] + uu[j]) / 2);
+        }
+        Vec3[] pos = marchWindow(all, iA, n, q, 0, st);
+        // POSITION CLOSURE (v17.3, D140 — the user's "still a little
+        // drift ... noticeable on longer sections"): the window is
+        // bent and stretched until its re-march lands back on the
+        // ORIGINAL end position, so the downstream translation all
+        // but vanishes. Per iteration: (1) corrective rotation HUMPS
+        // (sin²(πu) — zero value AND slope at both ends: outside
+        // frames and edge rates stay exact) close the ⊥-to-chord
+        // components — two axes, first-order least squares; (2) a
+        // hump-weighted per-step ARC STRETCH closes the along-chord
+        // foreshortening a bend cannot reach (measured: 100% of the
+        // moderate-fixture residual). Caps — 0.2 rad of bend, ±5%
+        // of stretch — make pathological kinks accept a leftover
+        // translation instead of corkscrewing. The stretch means
+        // the drawn arc inside the window exceeds the s fields by
+        // ≤ the cap (mm–cm; ties/combs inside a smoothed window sit
+        // that hair wide — documented corner). The felt recompute
+        // below reads the corrected quats: the closing bend shows
+        // honestly in the graphs.
+        Vec3 origEnd = all.get(iB).pos();
+        Vec3 chord = origEnd.sub(pos[0]);
+        double clen = chord.length();
+        if (clen > 1e-9) {
+            chord = chord.scale(1 / clen);
+            Vec3 e1 = (Math.abs(chord.y()) < 0.9
+                ? chord.cross(new Vec3(0, 1, 0))
+                : chord.cross(new Vec3(1, 0, 0))).normalize();
+            Vec3 e2 = chord.cross(e1);
+            double amp = 0, beta = 0;
+            for (int it = 0; it < 4; it++) {
+                Vec3 dp = pos[n - 1].sub(origEnd);
+                if (dp.length() < 1e-5) break;
+                if (amp < 0.2) {   // (1) bend ⊥
+                    Vec3 k1 = Vec3.ZERO, k2 = Vec3.ZERO;
+                    for (int j = 1; j < n; j++) {
+                        Vec3 seg = pos[j].sub(pos[j - 1]);
+                        k1 = k1.add(e1.cross(seg).scale(st[j]));
+                        k2 = k2.add(e2.cross(seg).scale(st[j]));
+                    }
+                    double a11 = k1.dot(k1), a12 = k1.dot(k2),
+                           a22 = k2.dot(k2);
+                    double det = a11 * a22 - a12 * a12;
+                    if (Math.abs(det) > 1e-12) {
+                        double b1 = -k1.dot(dp), b2 = -k2.dot(dp);
+                        Vec3 w = e1.scale((b1 * a22 - b2 * a12) / det)
+                            .add(e2.scale((a11 * b2 - a12 * b1) / det));
+                        double wl = w.length();
+                        if (wl > 1e-12) {
+                            if (amp + wl > 0.2) {
+                                double sc = (0.2 - amp) / wl;
+                                w = w.scale(sc);
+                                wl *= sc;
+                            }
+                            amp += wl;
+                            Vec3 axis = w.scale(1 / wl);
+                            for (int j = 1; j < n - 1; j++) {
+                                double h = hump(uu[j]);
+                                if (h > 1e-12) {
+                                    q[j] = Quat.aboutAxis(axis, wl * h)
+                                        .mul(q[j]);
+                                }
+                            }
+                            pos = marchWindow(all, iA, n, q, beta, st);
+                        }
+                    }
+                }
+                dp = pos[n - 1].sub(origEnd);   // (2) stretch ∥
+                Vec3 k3 = Vec3.ZERO;
+                for (int j = 1; j < n; j++) {
+                    k3 = k3.add(pos[j].sub(pos[j - 1]).scale(st[j]));
+                }
+                double k3n = k3.dot(k3);
+                if (k3n < 1e-12) break;
+                double binc = -dp.dot(k3) / k3n;
+                binc = Math.max(-0.05 - beta, Math.min(0.05 - beta, binc));
+                if (Math.abs(binc) < 1e-9) continue;
+                beta += binc;
+                pos = marchWindow(all, iA, n, q, beta, st);
+            }
+        }
+        // interior samples: blended frame + marched position + felt
+        // from the blended rotation measured PER ARC (κ — the
+        // speed-free invariant; a time-based Ω would mix the two
+        // sides' design speeds across a conflicted seam and jitter
+        // the decoded curvature). Felt = κ·v²/g + axis.y at the
+        // sample's own design speed; κ·U = curvature toward R,
+        // −κ·R = toward U (the §2 composition read back).
+        for (int j = 1; j < n - 1; j++) {
+            int i = iA + j;
+            FVDIntegrator.Sample sm = all.get(i);
+            Vec3 T = q[j].T(), U = q[j].U(), R = U.cross(T);
+            double dsc = all.get(i + 1).s() - all.get(i - 1).s();
+            Vec3 kap = dsc < 1e-9 ? Vec3.ZERO
+                : axisAngle(q[j + 1].mul(q[j - 1].conjugate()))
+                    .scale(1 / dsc);
+            double v = sm.v();
+            all.set(i, new FVDIntegrator.Sample(sm.t(), sm.s(), pos[j],
+                T, U, R, v,
+                -kap.dot(R) * v * v / FVDIntegrator.G0 + U.y(),
+                kap.dot(U) * v * v / FVDIntegrator.G0 + R.y()));
+        }
+        // the follower's remainder translates rigidly; its span exit
+        // moves with it (orientation untouched). The UPSTREAM span's
+        // exit deliberately does NOT re-stamp to the blended seam
+        // sample: that pose is the FOLLOW CONTRACT — strictEntry and
+        // bakeFollow read it, and handing them the blended (half-kink)
+        // frame would bake smoothing INTO the placement on the next
+        // resolve. The D80 "exit == last drawn sample" contract bends
+        // knowingly inside a smoothed window: samples are the cosmetic
+        // blend, the exit is the junction's true state.
+        Vec3 dp = pos[n - 1].sub(all.get(iB).pos());
+        for (int i = iB; i <= sb.i1(); i++) {
+            FVDIntegrator.Sample sm = all.get(i);
+            all.set(i, new FVDIntegrator.Sample(sm.t(), sm.s(),
+                sm.pos().add(dp), sm.T(), sm.U(), sm.R(), sm.v(),
+                sm.Gv(), sm.Gl()));
+        }
+        TrackPose xb = sb.exit();
+        spans.set(nsp - 1, new Span(sb.i0(), sb.i1(), sb.t0(), sb.t1(),
+            sb.s0(), sb.sLen(), new TrackPose(xb.pos().add(dp),
+                xb.orient(), xb.s0(), xb.t0())));
+        return dp;
+    }
+
+    /** A world Centerline rigidly translated (the post-smoothing shift
+     *  for a piece's later sections). */
+    static Centerline shiftLine(Centerline line, Vec3 dp) {
+        List<FVDIntegrator.Sample> out =
+            new ArrayList<>(line.samples().size());
+        for (FVDIntegrator.Sample sm : line.samples()) {
+            out.add(new FVDIntegrator.Sample(sm.t(), sm.s(),
+                sm.pos().add(dp), sm.T(), sm.U(), sm.R(), sm.v(),
+                sm.Gv(), sm.Gl()));
+        }
+        TrackPose e = line.exit();
+        return new Centerline(out, new TrackPose(e.pos().add(dp),
+            e.orient(), e.s0(), e.t0()));
+    }
+
+    private static Quat frameQ(FVDIntegrator.Sample sm) {
+        return Quat.fromFrame(sm.T(), sm.U());
+    }
+
+    /** The smoothing window's re-march: positions along the blended
+     *  tangents at the original per-step arc lengths, each scaled by
+     *  (1 + beta·st[j]) — the closure's along-chord stretch. */
+    private static Vec3[] marchWindow(List<FVDIntegrator.Sample> all,
+                                      int iA, int n, Quat[] q,
+                                      double beta, double[] st) {
+        Vec3[] pos = new Vec3[n];
+        pos[0] = all.get(iA).pos();
+        for (int j = 1; j < n; j++) {
+            double ds = (all.get(iA + j).s() - all.get(iA + j - 1).s())
+                * (1 + beta * st[j]);
+            Vec3 dir = q[j - 1].T().add(q[j].T()).normalize();
+            pos[j] = pos[j - 1].add(dir.scale(ds));
+        }
+        return pos;
+    }
+
+    /** Closure hump sin²(πu): zero value AND slope at both ends. */
+    private static double hump(double u) {
+        double s = Math.sin(Math.PI * u);
+        return s * s;
+    }
+
+    /** q^k by axis–angle scaling (k may be fractional or negative —
+     *  per-sample steps and their inverses stay far from ±180°). */
+    private static Quat quatPow(Quat q, double k) {
+        Vec3 aa = axisAngle(q);
+        double ang = aa.length();
+        if (ang < 1e-15) return Quat.IDENTITY;
+        return Quat.aboutAxis(aa.scale(1 / ang), ang * k);
+    }
+
+    /** Rotation vector (axis × angle, rad) of a unit quaternion,
+     *  shortest representation. (Package-visible: the seam carets
+     *  read the seam's angular jump through it, v17.3.) */
+    static Vec3 axisAngle(Quat q) {
+        double w = q.w(), x = q.x(), y = q.y(), z = q.z();
+        if (w < 0) { w = -w; x = -x; y = -y; z = -z; }
+        double sl = Math.sqrt(x * x + y * y + z * z);
+        if (sl < 1e-15) return Vec3.ZERO;
+        double ang = 2 * Math.atan2(sl, Math.min(1, w));
+        return new Vec3(x / sl * ang, y / sl * ang, z / sl * ang);
+    }
+
+    /** Shortest-arc SLERP (nlerp under 1.8° — indistinguishable there
+     *  and division-safe). */
+    private static Quat slerp(Quat a, Quat b, double t) {
+        double dot = a.w() * b.w() + a.x() * b.x() + a.y() * b.y()
+            + a.z() * b.z();
+        if (dot < 0) { b = b.scale(-1); dot = -dot; }
+        if (dot > 0.99988) {
+            return a.scale(1 - t).add(b.scale(t)).normalize();
+        }
+        double th = Math.acos(Math.min(1, dot));
+        double s = Math.sin(th);
+        return a.scale(Math.sin((1 - t) * th) / s)
+            .add(b.scale(Math.sin(t * th) / s)).normalize();
     }
 
     /** ABSOLUTE roll lanes get their bank knots re-read EXACTLY off

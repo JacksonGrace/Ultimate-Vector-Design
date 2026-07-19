@@ -287,12 +287,10 @@ class Viewport3D {
             FVDIntegrator.Sample hit = pickTrackSample(e.getScreenX(), e.getScreenY());
             if (hit != null) {
                 app.editor.activateAt(hit.t());
-            } else if (gizmoRevealed) {
-                // a clean click on EMPTY SPACE hides the gizmos —
-                // the selection stays (v16.13, user spec)
-                gizmoRevealed = false;
-                refreshGizmo(true);
             }
+            // (the v16.13 empty-click gizmo hide is gone — gizmos are
+            // always on for the active piece since v17.7, D144; the
+            // View menu's check is the off switch)
         });
         sub.setOnMouseDragged(e -> {
             if (povActive || flyActive) return;
@@ -1607,8 +1605,13 @@ class Viewport3D {
     final Group gizmoGroup = new Group();
     private String gizmoSig;
     private boolean gizmoDragging, gizmoPushed;
-    private boolean gizmoRevealed;       // entry marker toggles it
-    private int gizmoPiece = -1;         // reveal resets on piece switch
+    private int gizmoPiece = -1;         // rebuild on piece switch
+
+    /** Gizmos show whenever the View-menu check says so (v17.7, D144
+     *  — the per-piece reveal-click gating is gone). */
+    private boolean gizmosOn() {
+        return app.settings.showGizmos();
+    }
     private double gDragX, gDragY;       // screen point of the press
 
     /** One gizmo assembly (piece entry / bridge end): its own anchor,
@@ -1654,7 +1657,6 @@ class Viewport3D {
         int ap = app.editor != null ? app.editor.activePiece() : -1;
         if (ap != gizmoPiece) {
             gizmoPiece = ap;
-            gizmoRevealed = false;   // the reveal is per-piece
         }
         if (gizmoDragging) {
             positionGizmo();
@@ -1682,13 +1684,21 @@ class Viewport3D {
         BridgeSection trail = app.bridgeInto(pi + 1);
         StringBuilder sb = new StringBuilder();
         sb.append(app.settings.gizmoLocal() ? 'L' : 'G')
-          .append(gizmoRevealed ? 'R' : 'h')
+          .append(gizmosOn() ? 'R' : 'h')
           .append('|').append(pi)
           .append('|').append(into != null ? into.optMode : -1)
           .append('|').append(into != null && into.lockYaw)
           .append(into != null ? into.lockPitch : p.uiLockPitch)
           .append(into != null ? into.lockRoll : p.uiLockRoll)
           .append('|').append(app.editor.followsPrev(pi));   // v17.1
+        if (app.editor.followsPrev(pi)) {
+            // the SEAM gizmo's rings follow the lock toggles + held
+            // angles live (v17.3, D140)
+            sb.append('|').append(p.sLockYaw).append(p.sLockPitch)
+              .append(p.sLockRoll).append('|').append(p.sYawDeg)
+              .append(',').append(p.sPitchDeg)
+              .append(',').append(p.sRollDeg);
+        }
         appendPose(sb, p);
         if (trail != null) {
             sb.append("|T|").append(trail.optMode)
@@ -1725,25 +1735,32 @@ class Viewport3D {
             ? app.coaster.pieces.get(pi + 1) : null;
         // reveal markers first: the piece's entry ("first node",
         // drawn bigger) and — with a trailing bridge — the bridge end.
-        // A STRICT-SEAM follower gets NO entry mark (D136 — its stored
-        // x/y/z is the frozen record, NOT where the entry sits: the
-        // mark floated off-track as a ghost "node"; the seam menu is
-        // that entry's surface and no gizmo builds there anyway)
+        // A STRICT-SEAM follower's mark sits ON THE SEAM instead
+        // (v17.3, D140 — the D136 ghost was the STALE stored x/y/z;
+        // the true junction is a real surface now): single click
+        // reveals the seam gizmo, DOUBLE click opens the seam
+        // settings pop-out.
         if (!app.editor.followsPrev(pi)) {
-            addRevealMark(() -> new Vec3(p.x, p.y, p.z), true);
+            addRevealMark(() -> new Vec3(p.x, p.y, p.z), true, null);
+        } else if (app.editor.seamWorldPos(pi) != null) {
+            final int fpi = pi;
+            addRevealMark(() -> {
+                Vec3 v = app.editor.seamWorldPos(fpi);
+                return v != null ? v : new Vec3(p.x, p.y, p.z);
+            }, true, () -> app.editor.showStrictSeamSettings(fpi));
         }
         if (next != null) {
             TrackPiece n = next;
-            addRevealMark(() -> new Vec3(n.x, n.y, n.z), false);
+            addRevealMark(() -> new Vec3(n.x, n.y, n.z), false, null);
         }
-        if (gizmoRevealed) {
+        if (gizmosOn()) {
             boolean local = app.settings.gizmoLocal();
             buildPieceGizmo(local, pi, p);
             if (trail != null && next != null) {
                 buildBridgeGizmo(local, trail, next);
             }
         }
-        app.syncGizmoAxesBtn(gizmoRevealed && !gizmoRigs.isEmpty());
+        app.syncGizmoAxesBtn(gizmosOn() && !gizmoRigs.isEmpty());
         positionGizmo();
     }
 
@@ -1761,10 +1778,10 @@ class Viewport3D {
      *  with the piece's first section active also selects lane node 0
      *  (it sits on the same spot as the node marker it covers). */
     private void addRevealMark(java.util.function.Supplier<Vec3> at,
-                               boolean pieceEntry) {
+                               boolean pieceEntry, Runnable onDouble) {
         Sphere ball = new Sphere(0.34, 14);
-        Color idle = gizmoRevealed ? Color.rgb(255, 248, 200)
-                                   : Color.rgb(205, 215, 235);
+        Color idle = gizmosOn() ? Color.rgb(255, 248, 200)
+                                : Color.rgb(205, 215, 235);
         PhongMaterial mat = new PhongMaterial(idle);
         ball.setMaterial(mat);
         ball.setOnMouseEntered(e -> mat.setDiffuseColor(Color.WHITE));
@@ -1775,14 +1792,19 @@ class Viewport3D {
         ball.setOnMouseReleased(e -> {
             if (e.getButton() != MouseButton.PRIMARY) return;
             e.consume();
-            // a double-click's second click would toggle right back
+            // DOUBLE-CLICK (v17.3, D140): the seam ball opens the
+            // strict seam settings. Single clicks no longer toggle a
+            // reveal (gizmos are always on, v17.7 D144) — the entry
+            // ball still selects the covered node 0.
+            if (e.getClickCount() == 2) {
+                if (onDouble != null) onDouble.run();
+                return;
+            }
             if (e.getClickCount() != 1) return;
-            gizmoRevealed = !gizmoRevealed;
-            if (pieceEntry && gizmoRevealed && app.editor != null
+            if (pieceEntry && app.editor != null
                     && app.editor.activeSection() == 0) {
                 app.editor.selectNodeFromViewport(0);
             }
-            refreshGizmo(true);
         });
         revealMarks.add(new RevealMark(ball, at));
         gizmoGroup.getChildren().add(ball);
@@ -1797,9 +1819,12 @@ class Viewport3D {
         BridgeSection into = app.bridgeInto(pi);
         if (into != null && into.optMode != BridgeSection.OPT_NONE) return;
         // a STRICT-SEAM follower's entry is seam-owned (v17.1, D135):
-        // the seam's settings (click the double line in the graph)
-        // are the surface — no piece gizmo
-        if (app.editor.followsPrev(pi)) return;
+        // its gizmo is the SEAM gizmo (v17.3, D140) — rings only for
+        // the DISCONTINUOUS axes, anchored on the junction itself
+        if (app.editor.followsPrev(pi)) {
+            buildSeamGizmo(pi, p);
+            return;
+        }
         Rig rig = newRig(() -> new Vec3(p.x, p.y, p.z));
         addTranslationArrows(rig, local, () -> p.entryPose().orient(),
             new AxisSink() {
@@ -1851,6 +1876,51 @@ class Viewport3D {
                     app.rebuildTrack();
                 });
         }
+    }
+
+    /** A STRICT SEAM's orientation gizmo (v17.3, D140 — user spec):
+     *  anchored ON the junction, rings ONLY for the DISCONTINUOUS
+     *  axes (they hold an editable angle; a following axis has no
+     *  number to turn — toggle it Discontinuous in the seam settings
+     *  first). Writes go through the editor's seam path; one undo
+     *  per gesture, the gizmo contract. */
+    private void buildSeamGizmo(int pi, TrackPiece f) {
+        Rig rig = newRig(() -> {
+            Vec3 v = app.editor.seamWorldPos(pi);
+            return v != null ? v : new Vec3(f.x, f.y, f.z);
+        });
+        if (f.sLockYaw) {
+            addRing(rig, 1.0, RING_YAW, () -> new Vec3(0, 1, 0),
+                () -> f.sYawDeg, deg -> {
+                    pushOnce();
+                    app.editor.gizmoSetSeamOrient(pi, 0, wrapDeg(deg));
+                });
+        }
+        if (f.sLockPitch) {
+            addRing(rig, 0.85, RING_PITCH, () -> seamPitchAxis(pi),
+                () -> f.sPitchDeg, deg -> {
+                    pushOnce();
+                    app.editor.gizmoSetSeamOrient(pi, 1,
+                        FvdDesigner.clamp(deg, -85, 85));
+                });
+        }
+        if (f.sLockRoll) {
+            addRing(rig, 0.7, RING_ROLL,
+                () -> app.editor.seamEntryOrient(pi).T(),
+                () -> f.sRollDeg, deg -> {
+                    pushOnce();
+                    app.editor.gizmoSetSeamOrient(pi, 2, wrapDeg(deg));
+                });
+        }
+    }
+
+    /** The seam frame's pitch axis: horizontal right of the EFFECTIVE
+     *  entry heading (the follow contract's frame). */
+    private Vec3 seamPitchAxis(int pi) {
+        Vec3 t = app.editor.seamEntryOrient(pi).T();
+        Vec3 r = new Vec3(-t.z(), 0, t.x());
+        double len = r.length();
+        return len > 1e-9 ? r.scale(1 / len) : new Vec3(1, 0, 0);
     }
 
     /** The trailing bridge's end gizmo = the NEXT piece's entry,

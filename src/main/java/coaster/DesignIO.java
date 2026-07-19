@@ -119,17 +119,20 @@ public final class DesignIO {
             // fields 11-14 (v17.1, D135): STRICT SEAM — followPrev +
             // the three orientation locks; missing = detached.
             // fields 15-17 (D136): the DISCONTINUOUS axis values
-            // (deg); missing = re-seed from the stored placement
+            // (deg); missing = re-seed from the stored placement.
+            // field 18 (v17.2, D139): seam SMOOTHING length (m);
+            // missing = 0 = off
             out.printf(Locale.US,
                 "piece %.4f %.4f %.4f %.4f %.10f %.10f %.10f %.10f %.4f %.4f"
-                + " %d %d %d %d %.6f %.6f %.6f%n",
+                + " %d %d %d %d %.6f %.6f %.6f %.4f%n",
                 piece.x, piece.y, piece.z, piece.yawDeg,
                 piece.baseOrient.w(), piece.baseOrient.x(),
                 piece.baseOrient.y(), piece.baseOrient.z(),
                 piece.pitchDeg, piece.rollDeg,
                 piece.followPrev ? 1 : 0, piece.sLockYaw ? 1 : 0,
                 piece.sLockPitch ? 1 : 0, piece.sLockRoll ? 1 : 0,
-                piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg);
+                piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg,
+                piece.sSmoothLen);
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // bridge (v13.0): the FROZEN solve inputs — poses at
@@ -382,6 +385,10 @@ public final class DesignIO {
                             curPiece.sYawDeg = Double.parseDouble(parts[15]);
                             curPiece.sPitchDeg = Double.parseDouble(parts[16]);
                             curPiece.sRollDeg = Double.parseDouble(parts[17]);
+                            if (parts.length > 18) {   // smoothing (v17.2)
+                                curPiece.sSmoothLen = clamp(
+                                    Double.parseDouble(parts[18]), 0, 200);
+                            }
                         } else if (curPiece.followPrev) {
                             Coaster.seedStrictValues(curPiece,
                                 curPiece.entryPose().orient());

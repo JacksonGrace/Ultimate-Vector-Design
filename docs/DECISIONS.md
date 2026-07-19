@@ -5266,3 +5266,415 @@ Gates: Phase3Gate 43 (48a-k + 49a-e, TESTING #48/#49) + Phase2Gate
 
 Gates: Phase3Gate 52 (49a-g) + Phase2Gate + DomainGate green;
 launch smoke clean. Hand-test: walkthrough #94.
+
+## D137. v17.2: the SYNTHESIZED entry row — converts at a jump seam
+##        anchor on the section's own values (user 2026-07-18)
+
+USER REPORT: "whenever there is an instant change in a graph between
+two sections, converting the second section oscillates no matter how
+high the density — the first node always lands BETWEEN the previous
+section's end value and this section's. Shouldn't it be at exactly
+the current section's value? What comes before shouldn't matter."
+He was exactly right, and his second report — make-real after a
+strict seam "converts okay but the ≠v stays" — was the SAME bug
+seen through the resolve op.
+
+- MECHANISM: withEntry (D113) prepends the boundary sample to every
+  span-based convert extraction so the fit doesn't run one dt short.
+  That sample's felt/design-speed belong to the PREVIOUS section, so
+  at any DISCONTINUOUS seam (a deliberate target jump, a conflicted
+  seam's design-speed step, a strict seam's frozen-curvature step)
+  the fit's t=0 row holds the OLD value. fitLaneUniform pins node 0
+  on that row and matchSegmentAreas spreads the miss — node 0
+  between the two values at coarse density, exactly ON the wrong
+  value at fine density, C1 handles ringing the miss down the lane
+  (probe: 20 sign flips at 0.1 s spacing). D136's guard only caught
+  T-KINKS > 2° — value steps ride a continuous frame.
+- FIX: withEntry's discontinuity test grew U-kinks and VALUE steps
+  (felt Gv/Gl, design v — each read against the section's own first
+  interval, |a−b| > floor + 6·|b−c|, so smooth seams stay BITWISE —
+  the whole old suite passes untouched), and a discontinuous entry
+  is now SYNTHESIZED instead of dropped: exact seam clock/arc/pos
+  (no D113 one-step-short regression) with the section's OWN
+  dynamics — frame back-rotated one step at the b→c world rate
+  (qi = qb·qc⁻¹), felt and design speed linearly extrapolated. The
+  entry row becomes the section's limit from the right: what comes
+  before no longer matters.
+- FALLOUT: 49g's make-real shape residual fell 1.38 → 0.25 m for
+  free. Gated 50a-d: jump-seam converts land node 0 exactly (0.1 s
+  AND 0.02 s), make-real after locked AND unlocked strict seams
+  clears ≠v (11.9/20.0 → 0.008/0.040 m/s) with node 0 on the true
+  felt (the unlocked fixture's pre-fix node 0 read −0.409 g against
+  a true −0.706 — the user's visible "conflict still present").
+
+## D138. v17.2: strict-seam JUMP CARETS (user request)
+
+"Show which direction the resulting 'infinite' value is with little
+caret hats in the respective colors on the stricted seam." A strict
+seam joins frozen shapes, so the real ride's curves generally STEP
+there — drawn as an unreadable near-vertical stroke. Per lane, a
+small chevron on the double line points the way the TRUE value jumps
+(GraphEditor.drawSeamCarets: trueDisp read 3 samples clear of each
+side — the bodyRates ±2-sample smear, the SEAM_TRIM rationale —
+lane color, staggered x per lane, centered in the jump's pixel gap,
+hidden under CARET_MIN_PX 8 px on the lane's scale). TRUE arrays,
+not design: the jump the rider takes is the thing being annotated,
+and it is defined whatever mix of authored/derived the strips draw.
+JavaFX-side — walkthrough #95c.
+
+## D139. v17.2: strict-seam geometric SMOOTHING (user request —
+##        "like the s/c curves; nothing outside may change")
+
+The s/c entry-smoothing idea applied to the frozen junction: the
+seam settings pop-out grew a "Smoothing (m)" row —
+TrackPiece.sSmoothLen, piece field 18, missing = 0 = bitwise-sharp.
+
+- GEOMETRY (TrackCompiler.smoothStrictSeam, right after the
+  follower's first section lands): across a ±len/2 arc window
+  (halves clamped to HALF of each adjacent section's arc — windows
+  can never reach a second seam) the orientations SLERP from the
+  upstream curve onto the follower's, each side EXTRAPOLATED across
+  the seam at its own measured per-sample rate (quatPow of the
+  world step) under a quintic-smoothstep weight over arc. The
+  window ends sit EXACTLY on the original frames, so NOTHING
+  outside reorients, ever — the user's hard constraint. Positions
+  re-march along the blended tangents with the ORIGINAL per-step
+  arc (lengths kept, s honest); the follower's remainder rigidly
+  TRANSLATES by the window-end delta ("moving the position slightly
+  is okay") — postShift carries it through the piece's later
+  sections and a trailing bridge's captured entry. Gated 50e:
+  upstream bitwise, outside frames bit-exact, translation constant
+  to 6e-14 m.
+- FELT: the window's interior felt re-derives from the blended
+  rotation measured PER ARC — κ, the speed-free invariant; a
+  time-based Ω would mix the two sides' design speeds across a
+  conflicted seam and jitter the decoded curvature (probed: 0.875 g
+  phantom steps). Felt = κ·v²/g + axis.y at each sample's own
+  design speed keeps trueFelt = κ·v_t²/g continuous while the
+  design felt keeps the honest ≠v step. Gated 50f: a 30 m window
+  turns a ~9° kink's 589 °/s spike into 23 °/s with 0.062 g/sample
+  felt steps. PHYSICS IS HONEST: a hard kink in a short window IS
+  a strong finite g-swing (9° in 8 m at 38 m/s ≈ 5.4 g) — the
+  window trades "infinite for an instant" for "real for a while";
+  widen it to calm it. The true strokes show the whole excursion.
+- CONTRACTS: the upstream span's EXIT deliberately does NOT
+  re-stamp to the blended seam sample — that pose is the FOLLOW
+  CONTRACT (strictEntry, bakeFollow read it; baking the half-kink
+  blend into the placement was the D136 bug's ghost). The D80
+  "exit == last drawn sample" rule bends knowingly inside a
+  smoothed window. followerEuler reads the contract pose
+  analytically now (the entry SAMPLE sits inside the blend).
+- FITS READ THROUGH THE SMOOTHING (Coaster.compileForFit): every
+  lane-refit op (make-real, refreeze, convert, domain, bakeAxes,
+  partial) compiles with smoothing suspended — a fit of the
+  BLENDED samples re-anchored at the contract frame swung the tail
+  122 m (gate 50h caught it; 0.16 m after). The still-active
+  smoothing re-applies on top of the refit shape. Reversal
+  deliberately reads the smoothed truth (it captures reality).
+- Save: field 18 (%.4f), legacy 17-field lines = 0 (gated 50g);
+  DocState carries it; the settings row is spinner + ↺, one undo
+  step per change.
+
+Gates: Phase3Gate 60 (48a-k, 49a-g, 50a-h) + Phase2Gate +
+DomainGate green; launch smoke clean. Hand-test: walkthrough #95.
+
+## D140. v17.3: the v17.2 feedback round (user 2026-07-18) — spike
+##        carets, the smoothing diamond, position closure, the seam
+##        gizmo
+
+Nine-item batch on the (uncommitted) v17.2 work; all landed:
+
+- CARETS RE-SPEC'D (his: "point the direction the rate graphs would
+  go at the exact point on the seam"): the caret is the SIGN OF THE
+  DELTA-FUNCTION SPIKE an orientation step is — not the value jump
+  across the seam. The seam's instant angular jump Δφ =
+  axisAngle(qR·qL⁻¹) projects the way Ω decomposes (§2):
+  {−Δφ·R, Δφ·U, Δφ·T} = the spike signs of lanes 0/1/2 in BOTH
+  views (an instant pitch-up in a valley = +∞ felt = up caret; a
+  negative-direction roll step = −∞ roll rate = down). His two
+  examples verified against the algebra. Carets sit DIRECTLY on the
+  seam line (stagger removed, per spec) at each curve's height;
+  enabled RESULTING overlays wear theirs too (components 0/1, the
+  overlay palette + scale); threshold CARET_KINK_MIN 2° (continuous
+  track turns ≤ ~1°/sample, so smooth axes stay quiet); a SMOOTHED
+  seam draws none — no instant change left (his rule). D138's
+  value-jump semantics + CARET_MIN_PX are gone.
+- SMOOTHING = A DIAMOND ON THE SEAM (his: "like for the s/c
+  curves"): the settings-row spinner is gone; a white diamond at
+  the s/c diamonds' height on the strict seam line (filled =
+  active) drags the window length — twice the ARC between cursor
+  and seam, read off the compiled samples so time AND distance
+  axes work — with a live "smoothing X m" readout, Ctrl snapping
+  by the element-length step, snap-shut under 0.5 m, cap 80 m, a
+  shaded blend-zone band (the s/c look), one undo per gesture
+  (the beginGesture/commitGestureSnapshot contract), H_RESIZE
+  cursor, press rank above the seam-line menu.
+- POSITION CLOSURE (his: "still a little drift ... noticeable for
+  longer track sections"; measured: the ⊥ residual was 1e-4 and
+  the drift was 100% ALONG-CHORD foreshortening — the blend path
+  curves differently at the same arc length): the window now bends
+  AND stretches until its re-march lands back on the original end
+  position. Per iteration: sin²(πu) rotation humps (zero value +
+  slope at the ends — outside frames stay exact) close the
+  ⊥-to-chord components by a 2-axis least-squares; a hump-weighted
+  per-step ARC STRETCH closes the ∥ rest. Caps 0.2 rad / ±5%:
+  pathological kinks keep a residual translation instead of
+  corkscrewing. Gated 50e: moderate fixture 0.011 → 3e-6 m; the
+  violent 147°-kink probe 0.689 → 0.000. COST, documented: the
+  drawn arc inside the window exceeds the s fields by ≤ the
+  stretch (ties/combs sit a hair wide there), and the closing
+  bend adds its (honest, felt-recorded) curvature.
+- SEAM GIZMO (his spec): the follower's reveal ball sits ON the
+  junction now (the D136 removal was about the STALE stored
+  position — the true seam is a real surface; seamWorldPos reads
+  the follower's first sample). Single click reveals rings for
+  the DISCONTINUOUS axes only (locked = an editable held angle;
+  following axes have no number to turn), writing
+  sYaw/sPitch/sRollDeg through GraphEditor.gizmoSetSeamOrient —
+  the standard absolute-from-press ring drags, one undo per
+  gesture; DOUBLE-CLICK opens the seam settings pop-out (the
+  first click's reveal toggle is undone, net = settings only).
+  Ring axes read the FOLLOW CONTRACT frame (seamEntryOrient —
+  strictEntry off the prev span exit, smoothing-proof).
+- SETTINGS POP-OUT: white like the context menus (the dark
+  pv-popup styling read as foreign), "Strict seam" title only
+  (explanation removed), MOVABLE by its body (the pv grab
+  pattern), and toggling an axis DISCONTINUOUS seeds the ORIGINAL
+  creation angle (as if ↺ were pressed — was: capture-current).
+- Density-preview ranges reverted to pre-D136 (spacing 0.02–2 s /
+  0.2–20 m, accuracy 0.01–10%) on his word.
+- LESSON re-learned: the incremental compile accepted a static
+  field initializer with an illegal forward reference (stale
+  classes); the clean rebuild caught it. rm -rf
+  target/classes/coaster before believing MVN_EXIT=0.
+
+Gates: Phase3Gate 60 (50e re-pinned on the closure) + Phase2Gate +
+DomainGate green; launch smoke clean. Hand-test: walkthrough #96
+(+ #95 revised in place — v17.2 never shipped alone).
+
+## D141. v17.4: the v17.3 feedback round (user 2026-07-18) —
+##        enable/disable smoothing, the red conflict band, edge
+##        carets, grabbable band edges
+
+- ENABLE/DISABLE SMOOTHING (user spec): the strict seam menu grew a
+  toggle — "Enable smoothing (1 m)" / "Disable smoothing" — and the
+  DIAMOND + band show only while enabled (a drag that snaps shut
+  keeps its readout until release, then the widget hides; the menu
+  re-enables). DEFAULTS: hand-made strict seams start OFF;
+  CONVERTED-BRIDGE seams and piece CONNECTS start ON at 1 m (the
+  joint replaces something smooth — Coaster.convertBridgeWhole's
+  strict path + connectStrict seed sSmoothLen 1 when unset). The
+  blend's minimum-sample guard softened 3/4 → 2/3 samples per side
+  so a 1 m window ENGAGES at speed instead of being silently
+  sub-sample (mU/mD already adapt).
+- SMOOTHING-CAUSED ≠v (user spec): when the follower's conflict
+  exists ONLY because of the window — drifted as compiled, clean
+  in a smoothing-suspended compile (GraphEditor.
+  smoothingCausedDrift, ONE extra compile cached per rebuild keyed
+  on the sample-list identity + window length) — the band tints
+  RED and the badge menu's "Resolve speed conflict" submenu is
+  REPLACED by a grayed "Resolve speed conflict by decreasing seam
+  smoothing size": the resolve ops would chase a moving target the
+  window itself created. Physics note: the closure's stretch/bend
+  changes heights inside the window while the design profile keeps
+  its speeds — big windows on violent kinks CAN open a real split.
+- CARETS AT THE LINE'S EDGES (user re-spec of D140's curve-height
+  placement): fixed positions signaling DIRECTION only — up-spikes
+  stack from the TOP edge of the seam line, down-spikes from the
+  BOTTOM, so pan/zoom never moves them; overlay carets join the
+  stacks in their palette. No magnitude channel, per spec.
+- GRABBABLE BAND EDGES (user spec, seam AND s/c): either edge of a
+  smoothing band drags its size — the seam edges route into the
+  diamond's own drag (the window is symmetric, len = 2·|cursor↔
+  seam| arc), the s/c edges into the existing elDragSmooth
+  machinery. Press rank DELIBERATELY LOWEST: nodes/knobs, '+',
+  badges, the seam line and the curve insert all win first (the
+  user's rule); in the s/c handler the edges sit just above the
+  element select, which would otherwise eat every click. H_RESIZE
+  hover on all edges.
+
+Gates: Phase3Gate 60 + Phase2Gate + DomainGate green (the 1 m
+defaults ride under the strict identity checks' tolerances);
+launch smoke clean. Hand-test: walkthrough #97.
+
+## D142. v17.5: the v17.4 feedback round (user 2026-07-18) —
+##        always-on carets, 10 m defaults, relative diamond drag,
+##        diamond double-click + node dodge
+
+- CARETS ALWAYS DRAW (user: "they disappear if the value doesn't
+  change much"): every lane's caret (and every enabled overlay's)
+  now draws at every sharp strict seam — components under the old
+  CARET_KINK_MIN 2° threshold go TRANSLUCENT (alpha 0.30 vs 0.95)
+  instead of vanishing. Direction only, as before; smoothed seams
+  still draw none.
+- 10 m DEFAULTS (user spec): "Enable smoothing" seeds 10 m (was
+  1), and the bridge-convert + connect flows arrive at 10 m too.
+  Gate 49e re-pinned: it now asserts the 10 m default explicitly,
+  then zeroes the window before the placement-contract check — a
+  continuous seam blends to ~1e-5 m of numeric residual, which is
+  the deliberate cosmetic, not a placement bug.
+- RELATIVE DIAMOND DRAG (user: "rather than restarting from
+  zero"): grabbing the diamond now ADJUSTS the current length —
+  len = base + 2·(arc(cursor) − arc(press)), rightward grows,
+  leftward shrinks (seamDragRel/seamDragBase/seamDragPressS).
+  Band-EDGE grabs keep the absolute window-to-cursor semantics
+  (natural there: the edge goes where the cursor is).
+- DIAMOND DOUBLE-CLICK = the seam settings pop-out (the 3D ball's
+  rule; click 1's drag is cancelled), and the diamond DODGES NODES
+  exactly like the '+' button: seamDiaYAt walks the same y-ladder
+  (48 px, 30/50/70%, bottom) to the first spot ≥ 22 px clear of
+  any node, clearest otherwise — draw and hit-test share it.
+
+Gates: Phase3Gate 60 + Phase2Gate + DomainGate green; launch smoke
+clean. Hand-test: walkthrough #98.
+
+## D143. v17.6: the both-global continuation bug + resulting graph
+##        settings + canonical dialog order (user 2026-07-19)
+
+- THE BOTH-GLOBAL BUG (user: adding a geo section with global roll
+  AND global yaw/pitch "stayed flat at zero ... nothing changed
+  with B"): the root cause was D108's STRAIGHT-CONTINUATION holds —
+  the add zeroed lanes 0/1 for global yaw/pitch and the roll lane
+  for global roll, so with BOTH flags every lane held flat zero and
+  nothing lined up (either flag alone left some lane carrying real
+  values, which read as "works okay"). FIX (user re-spec, the D137
+  "what comes before" principle): GLOBAL-axis holds now take the
+  incoming WORLD rates — elevation'/heading' for yaw/pitch, bank'
+  for roll — via Coaster.worldRates at the end sample (NaN-vertical
+  falls back to zero; the κ-scale rH and °/m division ride along;
+  the same-flags authored copy now outranks the world hold, it was
+  shadowed before). Gated 51a-c: seam steps 0.37-0.44 °/s across
+  all three flag combos (19-25 °/s flat-zero before). The B matcher
+  itself checked out clean in an end-to-end headless repro (probe:
+  world targets + integrator respond correctly in every combo) —
+  if B still misbehaves in-app, the stats bar hint will say which
+  branch refused. Known corner: a ypG-only section's LOCAL roll
+  lane keeps its transport shift (p = φ' + ψ'·sinθ) once the
+  section turns — inherent to mixed axes (D109).
+- CARETS SMOOTHING-INDEPENDENT (user rule: "enabling and disabling
+  smoothing should naturally not make carets move or disappear"):
+  seamSpikes reads the CONTRACT frames now — the upstream span's
+  exit pose against strictEntry's effective entry — which are the
+  junction's sharp states whatever the blended samples look like.
+  D141's smoothed-seam-draws-none rule is gone.
+- CONNECT DEFAULT OFF (user walk-back of D141): connectStrict no
+  longer seeds smoothing; only bridge converts arrive at 10 m.
+  Gate 49e re-pinned (sSmoothLen == 0 after connect).
+- RESULTING GRAPH SETTINGS (user spec): the Resulting dropdown
+  grew "Resulting graph settings…" — a live-apply dialog picking
+  how the overlays present: Rate units (°/s|°/m), Roll axis
+  (local|global), Yaw/pitch axis (local|global; enabled only while
+  the resulting graphs are GEO — i.e. over a force section), Roll
+  behavior (rate|absolute bank; needs global roll). Persisted
+  per-user (AppSettings resRateM/resRollG/resYpG/resRollAbs) and
+  wired through resValueAt: global = analytic worldRates, °/m =
+  ÷v, absolute = bankOfTU. SUPERSEDES v16.7's automatic °/m-follow
+  of the active section's units. A third overlay check joined the
+  dropdown — resulting ROLL/BANK (resRoll; FORCE view only — over
+  geo the roll lane already is the shared quantity; wears the roll
+  palette, hover/carets/scale included; check labels re-title live
+  via FvdDesigner.syncResChecks).
+- CANONICAL DIALOG ORDER (user spec): Type, Domain, Rate units,
+  Roll axis, Yaw/pitch axis, Roll behavior — applied to the
+  Convert dialog, the Add-section dialog and the Resulting
+  settings (which has no Type/Domain).
+
+Gates: Phase3Gate 63 (51a-c new) + Phase2Gate + DomainGate green;
+launch smoke clean. Hand-test: walkthrough #99.
+
+## D144. v17.7: the v17.6 feedback round (user 2026-07-19) —
+##        always-on gizmos, caret sizing/dodge, resulting roll
+##        everywhere, scale defaults
+
+- GIZMOS ALWAYS ON (user spec — ends the v16.12 reveal-click era):
+  the active piece's gizmos (entry + trailing bridge end + seam
+  rings) show whenever the View menu's new "Show placement/seam
+  gizmos" check is on (AppSettings.showGizmos, default true; the
+  menu-local undo pattern). The reveal spheres stay as ANCHORS:
+  the entry ball still selects node 0, the seam ball's
+  double-click still opens the seam settings; the empty-click
+  hide and per-piece re-hide are gone.
+- CARETS: sub-threshold components draw SMALLER and thinner (w 3 /
+  h 2.5 / 1.2 px vs 4.5 / 4 / 2 px) at full alpha — the v17.5
+  translucency read as "disappearing". And carets DODGE nodes with
+  the '+'-ladder idea, edge-anchored: each caret takes the rung
+  nearest its OWN edge (top for up-spikes, bottom for down) that
+  has ≥ 14 px of node clearance, walking inward only as needed
+  (GraphEditor.caretY).
+- RESULTING BANK wears its own RED-ORANGE (BANK_COLOR
+  rgb(235,70,45)) — distinct from the roll-rate orange.
+- RESULTING ROLL IN BOTH VIEWS (user question answered: the
+  force-only restriction was just redundancy-avoidance — over a
+  geo section a LOCAL-rate resulting roll IS the authored lane):
+  the check now grays ONLY while the overlay would duplicate the
+  active section's own roll graph exactly — same rate units, roll
+  axis and roll behavior (resRollRedundant; bridges/s-c never
+  gray). The checked state persists across sections, so it
+  re-appears wherever it means something new. Geo view accepts
+  the felt-g + roll-rate unit mix on the shared resulting scale.
+- SCALE DEFAULTS: every °/m lane's default (minimum) scale is
+  ±5 °/m now (was roll ±15 / pitch-yaw ±10, v16.7); the resulting
+  scale's defaults MATCH the normal lane defaults — felt −1..4,
+  rates ±60, ±5 in °/m, and an absolute-bank overlay opens the
+  scale to at least ±90 (the abs lane's default).
+
+Gates: Phase3Gate 63 + Phase2Gate + DomainGate green; launch smoke
+clean. Hand-test: walkthrough #100.
+
+## D145. v17.8: the v17.7 feedback round (user 2026-07-19) — seam
+##        settings polish, tinted checks, Track Piece panel
+
+- FIRST-OPEN vs LATER (user spec): only the FIRST time a seam's
+  settings open does a Discontinuous toggle seed the CREATION
+  angle (the D140 rule, usually right after make-strict); every
+  later open captures the CURRENT angle instead — "it stays where
+  it is" — with ↺ still returning to the creation angle.
+  TrackPiece.sSeenSettings tracks it: interaction history,
+  deliberately NOT persisted and NOT in undo (a reload's first
+  open behaves first-time again — natural).
+- APPLY OR CANCEL ONLY (user spec): the seam settings popup no
+  longer auto-hides on click-off; a CANCEL button reverts the
+  locks + angles to what this open found (one undo step for the
+  revert — the live edits already pushed theirs).
+- BANK COLOR reddened: rgb(240,45,20) — almost pure red, a
+  whisper of orange (BANK_COLOR moved to FvdDesigner: the check
+  tints below need it too).
+- TINTED RESULTING CHECKS (user spec): a CHECKED Resulting box
+  fills with its curve's color (white mark), via the lazy .box
+  lookup (skins exist only after the popup shows — the
+  color-picker precedent); re-tinted on toggle, popup show and
+  every syncResChecks.
+- "PLACEMENT ▾" → "TRACK PIECE ▾", and the dropdown became a
+  MOVABLE dark Popup (a ContextMenu cannot be dragged): same
+  rows, grab any non-control spot, click-off still closes, the
+  menu-local undo session wiring carried over; the reverse action
+  is a button inside it now. The bridge-mode relabel ("Bridge
+  properties ▾") is unchanged.
+
+Gates: Phase3Gate 63 + Phase2Gate + DomainGate green; launch smoke
+clean. Hand-test: walkthrough #101.
+
+## D146. v17.9: the v17.8 feedback round (user 2026-07-19) — bank
+##        color unification, caret trim, axis-row swap, movable
+##        Resulting
+
+- BANK COLOR UNIFIED + red-orange again (D145's near-red walked
+  back): BANK_COLOR = rgb(235,70,45), and a REAL absolute-bank
+  lane now wears it too (laneColor's abs branch) — the authored
+  bank curve and the resulting bank overlay read as one quantity.
+- NO SEAM CARETS for the resulting roll/bank overlays (user: the
+  roll-rate overlay's spike is the roll lane's own caret anyway).
+  Overlay carets = components 0/1 only again.
+- AXIS-ROW SWAP (user spec): the canonical dialog order is now
+  Type, Domain, Rate units, YAW/PITCH AXIS, ROLL AXIS, Roll
+  behavior — swapped in the Convert dialog, the Add-section
+  dialog and the Resulting settings.
+- RESULTING POPUP MOVABLE (the Track Piece pattern): grab any
+  non-control spot; once dragged, the hover-dismiss stands down
+  for that showing (click-off still closes; a fresh open re-arms
+  it). And the Track Piece panel's labels are WHITE now — they
+  were black holdovers from the old white ContextMenu.
+
+Gates: Phase3Gate 63 + Phase2Gate + DomainGate green; launch smoke
+clean. Hand-test: walkthrough #102. COMMITTED with the whole
+v17.2-v17.9 stack on user request.

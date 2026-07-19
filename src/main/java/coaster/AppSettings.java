@@ -207,6 +207,70 @@ public class AppSettings {
         save();
     }
 
+    /** The ROLL/BANK resulting overlay (v17.6, D143): meaningful once
+     *  the resulting settings below leave the local-rate default (a
+     *  local resulting roll IS the authored lane). Force view only. */
+    public boolean resRoll() {
+        return Boolean.parseBoolean(props.getProperty("resRoll", "false"));
+    }
+
+    public void setResRoll(boolean on) {
+        props.setProperty("resRoll", String.valueOf(on));
+        save();
+    }
+
+    /** RESULTING GRAPH SETTINGS (v17.6, D143 — user spec): how the
+     *  resulting overlays present — rate units, roll axis, yaw/pitch
+     *  axis, roll behavior; the same representation options sections
+     *  themselves have. Display-only, per-user. */
+    public boolean resRateM() {
+        return Boolean.parseBoolean(props.getProperty("resRateM", "false"));
+    }
+
+    public void setResRateM(boolean on) {
+        props.setProperty("resRateM", String.valueOf(on));
+        save();
+    }
+
+    public boolean resRollG() {
+        return Boolean.parseBoolean(props.getProperty("resRollG", "false"));
+    }
+
+    public void setResRollG(boolean on) {
+        props.setProperty("resRollG", String.valueOf(on));
+        save();
+    }
+
+    public boolean resYpG() {
+        return Boolean.parseBoolean(props.getProperty("resYpG", "false"));
+    }
+
+    public void setResYpG(boolean on) {
+        props.setProperty("resYpG", String.valueOf(on));
+        save();
+    }
+
+    public boolean resRollAbs() {
+        return Boolean.parseBoolean(props.getProperty("resRollAbs", "false"));
+    }
+
+    public void setResRollAbs(boolean on) {
+        props.setProperty("resRollAbs", String.valueOf(on));
+        save();
+    }
+
+    /** Placement/seam gizmos always show for the active piece since
+     *  v17.7 (D144 — the reveal-click gating is gone); this View-menu
+     *  check is the only off switch. */
+    public boolean showGizmos() {
+        return Boolean.parseBoolean(props.getProperty("showGizmos", "true"));
+    }
+
+    public void setShowGizmos(boolean on) {
+        props.setProperty("showGizmos", String.valueOf(on));
+        save();
+    }
+
     /** Show the active lane's nodes as small spheres on the track. */
     public boolean trackMarkers() {
         return Boolean.parseBoolean(props.getProperty("trackMarkers", "true"));

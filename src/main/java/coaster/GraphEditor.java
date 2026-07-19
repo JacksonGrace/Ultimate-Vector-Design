@@ -386,6 +386,20 @@ class GraphEditor extends Region {
             MenuItem settings = new MenuItem("Strict seam settings…");
             settings.setOnAction(ev ->
                 showStrictSeamSettings(right.piece()));
+            // ENABLE/DISABLE smoothing (v17.4, D141 — user spec): off
+            // by default on hand-made strict seams; bridge converts
+            // and piece connects arrive with it ON at 1 m
+            TrackPiece fsm = app.coaster.pieces.get(right.piece());
+            MenuItem smTog = new MenuItem(fsm.sSmoothLen > 0.01
+                ? "Disable smoothing"
+                : "Enable smoothing (10 m)");
+            smTog.setOnAction(ev -> {
+                pushUndoSnapshot();
+                fsm.sSmoothLen = fsm.sSmoothLen > 0.01 ? 0 : 10;
+                app.markDirty();
+                app.rebuildTrack();
+                redraw();
+            });
             MenuItem un = new MenuItem(
                 "Un-strict seam (reorient continuous, keep conflict)");
             un.setOnAction(ev -> {
@@ -420,7 +434,7 @@ class GraphEditor extends Region {
                 }
                 redraw();
             });
-            cm.getItems().addAll(settings, un, split);
+            cm.getItems().addAll(settings, smTog, un, split);
         } else if (right.section() > 0) {
             // CONNECT the two sections into one (D136 — the badge's
             // "Connect with previous section", now living here):
@@ -492,10 +506,75 @@ class GraphEditor extends Region {
     private javafx.stage.Popup seamPopup;
     private boolean seamSyncing;
 
+    /** The strict seam's WORLD position — the follower's first
+     *  compiled sample; the 3D seam gizmo anchors here (v17.3,
+     *  D140). Null without a compile. */
+    Vec3 seamWorldPos(int followerIdx) {
+        TrackCompiler.Span sp = spanAt(followerIdx, 0);
+        if (sp == null || app.lastSamples == null
+                || sp.i0() >= app.lastSamples.size()) return null;
+        return app.lastSamples.get(sp.i0()).pos();
+    }
+
+    /** The follower's EFFECTIVE entry orientation (the follow
+     *  contract) — the seam gizmo's ring axes read it (v17.3). */
+    Quat seamEntryOrient(int followerIdx) {
+        TrackPiece f = app.coaster.pieces.get(followerIdx);
+        if (followerIdx > 0 && f.followPrev) {
+            TrackPiece prev = app.coaster.pieces.get(followerIdx - 1);
+            TrackCompiler.Span psp = prev.sections.isEmpty() ? null
+                : spanAt(followerIdx - 1, prev.sections.size() - 1);
+            if (psp != null) {
+                return Coaster.strictEntry(psp.exit(), f).orient();
+            }
+        }
+        return f.entryPose().orient();
+    }
+
+    /** Seam-gizmo write path (v17.3, D140): set a DISCONTINUOUS
+     *  axis's held angle. No undo of its own — the viewport pushes
+     *  one per gesture, the gizmo contract. */
+    void gizmoSetSeamOrient(int pieceIdx, int axis, double deg) {
+        if (pieceIdx < 0 || pieceIdx >= app.coaster.pieces.size()) {
+            return;
+        }
+        TrackPiece f = app.coaster.pieces.get(pieceIdx);
+        if (!f.followPrev) return;
+        double v = FvdDesigner.clamp(deg, -360, 360);
+        if (axis == 0) {
+            if (!f.sLockYaw) return;
+            f.sYawDeg = v;
+        } else if (axis == 1) {
+            if (!f.sLockPitch) return;
+            f.sPitchDeg = v;
+        } else {
+            if (!f.sLockRoll) return;
+            f.sRollDeg = v;
+        }
+        app.markDirty();
+        app.rebuildTrack();
+        redraw();
+    }
+
     /** The follower's CURRENT effective entry orientation as
-     *  {heading, elevation, bank} (deg) — read off the compiled entry
-     *  sample; falls back to the discontinuous values. */
+     *  {heading, elevation, bank} (deg). Read ANALYTICALLY from the
+     *  follow contract (previous piece's exit through strictEntry)
+     *  since v17.2 — with seam SMOOTHING on, the compiled entry
+     *  sample sits inside the blend window and showed (and toggle-ON
+     *  captured) the half-blended angle. Sample read = the fallback;
+     *  last resort the discontinuous values. */
     private double[] followerEuler(int followerIdx) {
+        TrackPiece f = app.coaster.pieces.get(followerIdx);
+        if (followerIdx > 0 && f.followPrev) {
+            TrackPiece prev = app.coaster.pieces.get(followerIdx - 1);
+            TrackCompiler.Span psp = prev.sections.isEmpty() ? null
+                : spanAt(followerIdx - 1, prev.sections.size() - 1);
+            if (psp != null) {
+                double[] e = Coaster.eulerOf(
+                    Coaster.strictEntry(psp.exit(), f).orient());
+                if (!Double.isNaN(e[0]) && !Double.isNaN(e[2])) return e;
+            }
+        }
         TrackCompiler.Span sp = spanAt(followerIdx, 0);
         if (sp != null && app.lastSamples != null
                 && !app.lastSamples.isEmpty()) {
@@ -504,7 +583,6 @@ class GraphEditor extends Region {
             double[] e = Coaster.eulerOf(Quat.fromFrame(sm.T(), sm.U()));
             if (!Double.isNaN(e[0]) && !Double.isNaN(e[2])) return e;
         }
-        TrackPiece f = app.coaster.pieces.get(followerIdx);
         return new double[]{ f.sYawDeg, f.sPitchDeg, f.sRollDeg };
     }
 
@@ -526,27 +604,46 @@ class GraphEditor extends Region {
             seamPopup.hide();
             seamPopup = null;
         }
+        // FIRST open vs later (v17.8, D145 — user spec): only the
+        // first open seeds Discontinuous toggles with the creation
+        // angle; later opens capture the CURRENT angle ("it stays
+        // where it is"). ↺ always returns to the creation angle.
+        boolean firstOpen = !f.sSeenSettings;
+        f.sSeenSettings = true;
+        // the state this open found — Cancel reverts to it (v17.8)
+        boolean[] openLocks = { f.sLockYaw, f.sLockPitch, f.sLockRoll };
+        double[] openDegs = { f.sYawDeg, f.sPitchDeg, f.sRollDeg };
         javafx.stage.Popup pop = new javafx.stage.Popup();
-        pop.setAutoHide(true);
+        pop.setAutoHide(false);   // Apply or Cancel only (v17.8, D145)
         seamPopup = pop;
         GridPane grid = new GridPane();
         grid.setHgap(8);
         grid.setVgap(6);
-        grid.setStyle("-fx-background-color: rgb(38,40,46);"
-            + " -fx-padding: 12; -fx-border-color: rgb(95,100,112);"
+        // WHITE like the context menus (v17.3, user spec — the dark
+        // pv-popup styling read as a foreign window here), title only
+        grid.setStyle("-fx-background-color: white;"
+            + " -fx-padding: 12; -fx-border-color: rgb(160,163,170);"
             + " -fx-border-radius: 6; -fx-background-radius: 6;");
-        Label head = new Label("Strict seam — Discontinuous axes hold "
-            + "their angle; others follow the track before the seam");
-        head.setStyle("-fx-text-fill: rgb(200,205,215);"
-            + " -fx-font-size: 11px;");
+        Label head = new Label("Strict seam");
+        head.setStyle("-fx-font-size: 12px; -fx-font-weight: bold;");
         grid.add(head, 0, 0, 4, 1);
+        // MOVABLE (v17.3, user spec — the pv popup's grab pattern):
+        // drag any non-control spot
+        double[] grab = new double[2];
+        grid.setOnMousePressed(e -> {
+            grab[0] = e.getScreenX() - pop.getX();
+            grab[1] = e.getScreenY() - pop.getY();
+        });
+        grid.setOnMouseDragged(e -> {
+            pop.setX(e.getScreenX() - grab[0]);
+            pop.setY(e.getScreenY() - grab[1]);
+        });
         String[] names = { "Yaw (heading °)", "Pitch (°)", "Roll (bank °)" };
         Runnable[] rowSyncs = new Runnable[3];
         for (int a = 0; a < 3; a++) {
             final int axis = a;
             Label lbl = new Label(names[a]);
-            lbl.setStyle("-fx-text-fill: rgb(200,205,215);"
-                + " -fx-font-size: 11px;");
+            lbl.setStyle("-fx-font-size: 11px;");
             javafx.scene.control.ToggleButton disc =
                 new javafx.scene.control.ToggleButton("Discontinuous");
             disc.setFocusTraversable(false);
@@ -587,8 +684,21 @@ class GraphEditor extends Region {
                 pushUndoSnapshot();
                 boolean on = disc.isSelected();
                 if (on) {
-                    // capture the CURRENT value — nothing jumps
-                    double cur = followerEuler(followerIdx)[axis];
+                    double cur;
+                    if (firstOpen) {
+                        // FIRST open (v17.3 rule): seed the ORIGINAL
+                        // creation angle, as if ↺ were pressed
+                        double[] orig = Coaster.eulerOf(
+                            f.entryPose().orient());
+                        cur = axis == 0
+                            ? (Double.isNaN(orig[0]) ? 0 : orig[0])
+                            : axis == 1 ? orig[1]
+                            : (Double.isNaN(orig[2]) ? 0 : orig[2]);
+                    } else {
+                        // later opens (v17.8, D145): hold the CURRENT
+                        // angle — nothing jumps
+                        cur = followerEuler(followerIdx)[axis];
+                    }
                     if (axis == 0) f.sYawDeg = cur;
                     else if (axis == 1) f.sPitchDeg = cur;
                     else f.sRollDeg = cur;
@@ -633,13 +743,43 @@ class GraphEditor extends Region {
             sync.run();
             grid.addRow(a + 1, lbl, disc, sp, rst);
         }
+        // (the v17.2 Smoothing spinner row moved onto the seam itself
+        // — the drag DIAMOND, v17.3 D140, the s/c pattern)
         Button apply = new Button("Apply");
         apply.setDefaultButton(true);
         apply.setOnAction(ev -> {
             pop.hide();
             seamPopup = null;
         });
-        HBox foot = new HBox(apply);
+        Button cancel = new Button("Cancel");
+        cancel.setCancelButton(true);
+        cancel.setOnAction(ev -> {
+            // back to the state this open found (v17.8, D145); the
+            // live edits pushed their own undo steps — the revert is
+            // one more
+            boolean changed = f.sLockYaw != openLocks[0]
+                || f.sLockPitch != openLocks[1]
+                || f.sLockRoll != openLocks[2]
+                || f.sYawDeg != openDegs[0]
+                || f.sPitchDeg != openDegs[1]
+                || f.sRollDeg != openDegs[2];
+            if (changed) {
+                pushUndoSnapshot();
+                f.sLockYaw = openLocks[0];
+                f.sLockPitch = openLocks[1];
+                f.sLockRoll = openLocks[2];
+                f.sYawDeg = openDegs[0];
+                f.sPitchDeg = openDegs[1];
+                f.sRollDeg = openDegs[2];
+                app.markDirty();
+                app.rebuildTrack();
+                app.syncPlacementSpinners();
+            }
+            pop.hide();
+            seamPopup = null;
+            redraw();
+        });
+        HBox foot = new HBox(8, apply, cancel);
         foot.setAlignment(Pos.CENTER_RIGHT);
         grid.add(foot, 0, 4, 4, 1);
         pop.getContent().add(grid);
@@ -1139,6 +1279,9 @@ class GraphEditor extends Region {
     /** The active mode's lane accent color (geo: teal/yellow/orange) —
      *  curves, nodes, buttons, guides and 3D markers all follow it. */
     Color laneColor(int lane) {
+        // an ABSOLUTE-bank lane wears the resulting bank's color
+        // (v17.9, D146 — user spec: real and resulting bank match)
+        if (lane == 2 && activeRollAbs()) return FvdDesigner.BANK_COLOR;
         return (activeGeo() ? FvdDesigner.GEO_LANE_COLORS
                             : FvdDesigner.LANE_COLORS)[lane];
     }
@@ -1148,16 +1291,17 @@ class GraphEditor extends Region {
 
     private double defMin(int lane) {
         // °/m lanes live at ~1/v the °/s numbers: their own default
-        // (minimum) scales — roll ±15, geo pitch/yaw ±10 (v16.7,
-        // user spec); an ABSOLUTE roll lane is degrees, default ±90.
-        // The DISPLAYED units govern (the cross-rate view rescales).
+        // (minimum) scales — ±5 °/m for every lane (v17.7, D144;
+        // was roll ±15 / pitch-yaw ±10); an ABSOLUTE roll lane is
+        // degrees, default ±90. The DISPLAYED units govern (the
+        // cross-rate view rescales).
         if (lane == 2 && activeRollAbs()) return -90;
-        if (laneShownPM(lane)) return lane == 2 ? -15 : -10;
+        if (laneShownPM(lane)) return -5;
         return modeDefMin(activeGeo())[lane];
     }
     private double defMax(int lane) {
         if (lane == 2 && activeRollAbs()) return 90;
-        if (laneShownPM(lane)) return lane == 2 ? 15 : 10;
+        if (laneShownPM(lane)) return 5;
         return modeDefMax(activeGeo())[lane];
     }
 
@@ -2483,33 +2627,34 @@ class GraphEditor extends Region {
             });
     }
 
-    /** Slider/field ranges per mode (widened D136, user spec):
-     *  spacing 0.01–2 s / 0.5–20 m, accuracy 0.001–10 % of the
-     *  lane's value range — all log-scaled. */
+    /** Slider/field ranges per mode: spacing 0.02–2 s / 0.2–20 m,
+     *  accuracy 0.01–10 % of the lane's value range — all
+     *  log-scaled (the D136 widening was walked back on user feel,
+     *  v17.3). */
     private void syncPvControls() {
         if (pvSlider == null) return;
         pvSyncing = true;
         if (pvAdaptive) {
             pvLabel.setText("Accuracy (% of range)");
-            pvSlider.setMin(Math.log10(0.001));
+            pvSlider.setMin(Math.log10(0.01));
             pvSlider.setMax(Math.log10(10));
             pvSlider.setValue(Math.log10(FvdDesigner.clamp(
-                pvTol * 100, 0.001, 10)));
-            pvField.setText(String.format(Locale.US, "%.3f", pvTol * 100));
+                pvTol * 100, 0.01, 10)));
+            pvField.setText(String.format(Locale.US, "%.2f", pvTol * 100));
         } else if (pvDist) {
             // DISTANCE target (v16.1): meters, the ×10-ish range
             pvLabel.setText("Node spacing (m)");
-            pvSlider.setMin(Math.log10(0.5));
+            pvSlider.setMin(Math.log10(0.2));
             pvSlider.setMax(Math.log10(20.0));
             pvSlider.setValue(Math.log10(FvdDesigner.clamp(
-                pvSpacingDist, 0.5, 20.0)));
+                pvSpacingDist, 0.2, 20.0)));
             pvField.setText(String.format(Locale.US, "%.2f", pvSpacingDist));
         } else {
             pvLabel.setText("Node spacing (s)");
-            pvSlider.setMin(Math.log10(0.01));
+            pvSlider.setMin(Math.log10(0.02));
             pvSlider.setMax(Math.log10(2.0));
             pvSlider.setValue(Math.log10(FvdDesigner.clamp(
-                pvSpacing, 0.01, 2.0)));
+                pvSpacing, 0.02, 2.0)));
             pvField.setText(String.format(Locale.US, "%.2f", pvSpacing));
         }
         pvSyncing = false;
@@ -2517,11 +2662,11 @@ class GraphEditor extends Region {
 
     private void setPvValue(double v) {
         if (pvAdaptive) {
-            pvTol = FvdDesigner.clamp(v, 0.001, 10) / 100.0;
+            pvTol = FvdDesigner.clamp(v, 0.01, 10) / 100.0;
         } else if (pvDist) {
-            pvSpacingDist = FvdDesigner.clamp(v, 0.5, 20.0);
+            pvSpacingDist = FvdDesigner.clamp(v, 0.2, 20.0);
         } else {
-            pvSpacing = FvdDesigner.clamp(v, 0.01, 2.0);
+            pvSpacing = FvdDesigner.clamp(v, 0.02, 2.0);
         }
         syncPvControls();
         pvRerun();
@@ -3195,7 +3340,17 @@ class GraphEditor extends Region {
         // resolution would move). Only a bridge DIRECTLY before the
         // section blocks everything (it re-blends to chase any
         // resolution — convert it first).
-        if (drifted && !(sec instanceof BridgeSection) && !sec.reversed()) {
+        if (drifted && !(sec instanceof BridgeSection) && !sec.reversed()
+                && k == 0 && followsPrev(activePiece)
+                && smoothingCausedDrift(activePiece)) {
+            // the conflict exists ONLY because of the seam smoothing
+            // (v17.4, D141): the fix is the window, not a resolve op
+            MenuItem why = new MenuItem("Resolve speed conflict by "
+                + "decreasing seam smoothing size");
+            why.setDisable(true);
+            cm.getItems().add(why);
+        } else if (drifted && !(sec instanceof BridgeSection)
+                && !sec.reversed()) {
             Menu resolve = new Menu("Resolve speed conflict");
             if (leftIsBridge(k)) {
                 MenuItem why = new MenuItem(
@@ -3708,16 +3863,16 @@ class GraphEditor extends Region {
         grid.addRow(row++, new Label("Domain"),
             new HBox(10, dTime, dDist), dRst);
 
-        ToggleGroup rg = new ToggleGroup();
-        RadioButton rLocal = new RadioButton("Local");
-        RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
-        rLocal.setToggleGroup(rg);
-        rGlobal.setToggleGroup(rg);
-        (curRollG ? rGlobal : rLocal).setSelected(true);
-        Button rRst = resetBtn(() -> (curRollG ? rGlobal : rLocal).setSelected(true));
-        wireOriginal(rg, curRollG ? rGlobal : rLocal, rRst);
-        grid.addRow(row++, new Label("Roll axis"),
-            new HBox(10, rLocal, rGlobal), rRst);
+        ToggleGroup ug = new ToggleGroup();
+        RadioButton uSec = new RadioButton("Per second (°/s)");
+        RadioButton uMet = new RadioButton("Per meter (°/m)");
+        uSec.setToggleGroup(ug);
+        uMet.setToggleGroup(ug);
+        (curRateM ? uMet : uSec).setSelected(true);
+        Button uRst = resetBtn(() -> (curRateM ? uMet : uSec).setSelected(true));
+        wireOriginal(ug, curRateM ? uMet : uSec, uRst);
+        grid.addRow(row++, new Label("Rate units"),
+            new HBox(10, uSec, uMet), uRst);
 
         ToggleGroup yg = new ToggleGroup();
         RadioButton yLocal = new RadioButton("Local");
@@ -3742,17 +3897,17 @@ class GraphEditor extends Region {
         mg.selectedToggleProperty().addListener((o, w, n2) -> syncYp.run());
         yg.selectedToggleProperty().addListener((o, w, n2) -> syncYp.run());
         syncYp.run();
+        ToggleGroup rg = new ToggleGroup();
+        RadioButton rLocal = new RadioButton("Local");
+        RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
+        rLocal.setToggleGroup(rg);
+        rGlobal.setToggleGroup(rg);
+        (curRollG ? rGlobal : rLocal).setSelected(true);
+        Button rRst = resetBtn(() -> (curRollG ? rGlobal : rLocal).setSelected(true));
+        wireOriginal(rg, curRollG ? rGlobal : rLocal, rRst);
+        grid.addRow(row++, new Label("Roll axis"),
+            new HBox(10, rLocal, rGlobal), rRst);
 
-        ToggleGroup ug = new ToggleGroup();
-        RadioButton uSec = new RadioButton("Per second (°/s)");
-        RadioButton uMet = new RadioButton("Per meter (°/m)");
-        uSec.setToggleGroup(ug);
-        uMet.setToggleGroup(ug);
-        (curRateM ? uMet : uSec).setSelected(true);
-        Button uRst = resetBtn(() -> (curRateM ? uMet : uSec).setSelected(true));
-        wireOriginal(ug, curRateM ? uMet : uSec, uRst);
-        grid.addRow(row++, new Label("Rate units"),
-            new HBox(10, uSec, uMet), uRst);
 
         // ROLL BEHAVIOR (v16.7, D118) — absolute needs GLOBAL roll
         boolean curAbs = ls != null && ls.rollAbsolute && ls.rollGlobal;
@@ -4051,16 +4206,6 @@ class GraphEditor extends Region {
             null);
         grid.addRow(row++, new Label("Domain"), new HBox(10, dTime, dDist));
 
-        ToggleGroup rg = new ToggleGroup();
-        RadioButton rLocal = new RadioButton("Local");
-        RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
-        rLocal.setToggleGroup(rg);
-        rGlobal.setToggleGroup(rg);
-        (prev != null && prev.rollGlobal ? rGlobal : rLocal).setSelected(true);
-        wireOriginal(rg, prev != null && prev.rollGlobal ? rGlobal : rLocal,
-            null);
-        grid.addRow(row++, new Label("Roll axis"), new HBox(10, rLocal, rGlobal));
-
         // RATE UNITS (v16.6, D115): °/s vs °/m for the rate lanes
         ToggleGroup ug = new ToggleGroup();
         RadioButton uSec = new RadioButton("Per second (°/s)");
@@ -4071,6 +4216,37 @@ class GraphEditor extends Region {
         wireOriginal(ug, prev != null && prev.ratePerMeter ? uMet : uSec,
             null);
         grid.addRow(row++, new Label("Rate units"), new HBox(10, uSec, uMet));
+
+        ToggleGroup yg = new ToggleGroup();
+        RadioButton yLocal = new RadioButton("Local");
+        RadioButton yGlobal = new RadioButton("Global (heading/elevation)");
+        yLocal.setToggleGroup(yg);
+        yGlobal.setToggleGroup(yg);
+        (prev != null && prev.yawPitchGlobal ? yGlobal : yLocal).setSelected(true);
+        wireOriginal(yg, prev != null && prev.yawPitchGlobal
+            ? yGlobal : yLocal, null);
+        Label ypLbl = new Label("Yaw/pitch axis");
+        String ypHow = "Yaw/pitch axes exist on geometric sections — "
+            + "set Type to Geometric to choose them.";
+        HBox ypRow = new HBox(10, grayHint(yLocal, ypHow),
+            grayHint(yGlobal, ypHow));
+        grid.addRow(row++, ypLbl, ypRow);
+        Runnable syncYp = () -> {
+            boolean geoOn = mGeo.isSelected();
+            yLocal.setDisable(!geoOn);
+            yGlobal.setDisable(!geoOn);
+        };
+        syncYp.run();
+        ToggleGroup rg = new ToggleGroup();
+        RadioButton rLocal = new RadioButton("Local");
+        RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
+        rLocal.setToggleGroup(rg);
+        rGlobal.setToggleGroup(rg);
+        (prev != null && prev.rollGlobal ? rGlobal : rLocal).setSelected(true);
+        wireOriginal(rg, prev != null && prev.rollGlobal ? rGlobal : rLocal,
+            null);
+        grid.addRow(row++, new Label("Roll axis"), new HBox(10, rLocal, rGlobal));
+
 
         // ROLL BEHAVIOR (v16.7, D118): rate vs ABSOLUTE bank angle —
         // absolute needs GLOBAL roll (the angle IS the projection
@@ -4093,27 +4269,6 @@ class GraphEditor extends Region {
         };
         rg.selectedToggleProperty().addListener((o, w, n2) -> syncAbs.run());
         syncAbs.run();
-
-        ToggleGroup yg = new ToggleGroup();
-        RadioButton yLocal = new RadioButton("Local");
-        RadioButton yGlobal = new RadioButton("Global (heading/elevation)");
-        yLocal.setToggleGroup(yg);
-        yGlobal.setToggleGroup(yg);
-        (prev != null && prev.yawPitchGlobal ? yGlobal : yLocal).setSelected(true);
-        wireOriginal(yg, prev != null && prev.yawPitchGlobal
-            ? yGlobal : yLocal, null);
-        Label ypLbl = new Label("Yaw/pitch axis");
-        String ypHow = "Yaw/pitch axes exist on geometric sections — "
-            + "set Type to Geometric to choose them.";
-        HBox ypRow = new HBox(10, grayHint(yLocal, ypHow),
-            grayHint(yGlobal, ypHow));
-        grid.addRow(row++, ypLbl, ypRow);
-        Runnable syncYp = () -> {
-            boolean geoOn = mGeo.isSelected();
-            yLocal.setDisable(!geoOn);
-            yGlobal.setDisable(!geoOn);
-        };
-        syncYp.run();
 
         ToggleGroup cg = new ToggleGroup();
         RadioButton cCont = new RadioButton("Continue speed conflict");
@@ -4218,7 +4373,23 @@ class GraphEditor extends Region {
             double b = FVDIntegrator.bankOfTU(end.T(), end.U());
             if (!Double.isNaN(b)) bankEnd = Math.toDegrees(b);
         }
-        double rollEnd = rollG ? 0   // global hold = keep the bank
+        // the end state's WORLD-angle rates (v17.6, D143 — user
+        // re-spec of D108's straight-continuation zeros: "the graphs
+        // should line up"): GLOBAL-axis holds take the incoming
+        // elevation'/heading'/bank' at the seam, so every combination
+        // of axis flags continues the resulting graphs — the old
+        // all-zero holds left a sudden transition whenever a global
+        // flag was on (worst with BOTH: every lane flat zero).
+        // Vertical seams (NaN world rates) fall back to the old zero.
+        double[] wrEnd = null;
+        if (end != null && endIdx >= 0 && app.resultRates != null
+                && endIdx < app.resultRates.length) {
+            double[][] br = tru ? app.trueRates : app.resultRates;
+            wrEnd = Coaster.worldRates(end,
+                br[endIdx][1], br[endIdx][2], br[endIdx][3]);
+        }
+        double rollEnd = rollG
+            ? (wrEnd != null && !Double.isNaN(wrEnd[2]) ? wrEnd[2] : 0)
             : !tru && prev != null && !prev.reversed && !prev.influenced()
                 && !prev.rollGlobal
                 // an authored copy only means the same thing in the
@@ -4229,22 +4400,27 @@ class GraphEditor extends Region {
                 && endIdx < app.resultRates.length
                 ? (tru ? app.trueRates : app.resultRates)[endIdx][3] : 0);
         // resultRates are °/s: a per-meter hold divides by the end
-        // speed (only when the value came from the compiled arrays)
-        boolean rollFromRates = !(rollG || (!tru && prev != null
+        // speed (only when the value came from the compiled arrays —
+        // a GLOBAL bank-rate hold is compiled-sourced too, v17.6)
+        boolean rollFromRates = !(!rollG && !tru && prev != null
             && !prev.reversed && !prev.influenced() && !prev.rollGlobal
-            && prev.ratePerMeter == rateM));
+            && prev.ratePerMeter == rateM);
         double v0h, v1h;
         boolean cleanSame = !tru && prev != null && !prev.reversed
             && !prev.influenced() && geo == prev instanceof GeoSection
             && prev.rollGlobal == rollG
             && prev.yawPitchGlobal == (geo && ypG)
             && prev.ratePerMeter == rateM;
-        if (geo && ypG) {
-            v0h = 0;   // straight continuation: zero heading/elevation
-            v1h = 0;   // rates — seamless position + tangent
-        } else if (cleanSame) {
+        if (cleanSame) {
+            // same mode + same flags: the exact authored copy wins
+            // (bitwise; before v17.6 the ypG zero-hold outranked it)
             v0h = prev.lanes.get(0).get(prev.lanes.get(0).size() - 1).val;
             v1h = prev.lanes.get(1).get(prev.lanes.get(1).size() - 1).val;
+        } else if (geo && ypG) {
+            // CONTINUOUS global hold (v17.6): the incoming elevation
+            // + heading rates — zero only on vertical fallback
+            v0h = wrEnd != null && !Double.isNaN(wrEnd[0]) ? wrEnd[0] : 0;
+            v1h = wrEnd != null && !Double.isNaN(wrEnd[1]) ? wrEnd[1] : 0;
         } else if (geo) {
             double[] er = app.resultRates != null && endIdx >= 0
                 && endIdx < app.resultRates.length
@@ -4383,6 +4559,9 @@ class GraphEditor extends Region {
                 // clickable — brighter + wider under the cursor, and
                 // it STAYS lit while its menu is open
                 boolean hot = i == hoverSeam || i == openSeam;
+                if (seamStrict(rl, i)) {
+                    drawSeamSmoothBand(gc, rl, i);   // under the line
+                }
                 gc.setGlobalAlpha(hot ? 0.95 : 0.55);
                 gc.setStroke(hot ? Color.rgb(225, 230, 245)
                                  : Color.rgb(150, 156, 175));
@@ -4394,6 +4573,8 @@ class GraphEditor extends Region {
                         bx - 1.5, MARGIN_TOP + plotHeight());
                     gc.strokeLine(bx + 1.5, MARGIN_TOP,
                         bx + 1.5, MARGIN_TOP + plotHeight());
+                    drawSeamCarets(gc, rl, i, bx);
+                    drawSeamDiamond(gc, rl, i, bx);
                 } else {
                     gc.strokeLine(bx, MARGIN_TOP,
                         bx, MARGIN_TOP + plotHeight());
@@ -4401,6 +4582,409 @@ class GraphEditor extends Region {
                 gc.setGlobalAlpha(1.0);
                 gc.setLineWidth(1);
             }
+        }
+    }
+
+    /** A seam-spike caret needs at least this much instant angle
+     *  (rad) in its component -- continuous track turns well under it
+     *  per sample, so smooth axes stay quiet. */
+    private static final double CARET_KINK_MIN = Math.toRadians(2);
+
+    /** Spike components of a strict seam's instant angular jump
+     *  (v17.3, D140 -- user re-spec of D138): dPhi = the axis-angle
+     *  rotation between the seam's two drawn frames, projected the
+     *  way Omega decomposes (PHYSICS 2) -- {-dPhi.R, dPhi.U, dPhi.T}.
+     *  Sign k is the way lane k's RATE GRAPH spikes AT the seam: an
+     *  instant pitch-up = +inf vertical force (component 0 positive =
+     *  up caret), an instant negative-direction roll step = -inf roll
+     *  rate (down). The same three signs serve felt AND rate lanes in
+     *  both views, and components 0/1 are the Resulting overlays'
+     *  too. Null = no usable frames. */
+    private double[] seamSpikes(List<RunSec> rl, int i) {
+        // CONTRACT frames since v17.6 (D143 — user rule: enabling or
+        // disabling smoothing must never move or hide a caret): the
+        // upstream span's exit pose and the follower's effective
+        // entry are the junction's SHARP states whatever the samples
+        // around the seam look like (a smoothed window blends them).
+        TrackCompiler.Span psp =
+            spanAt(rl.get(i).piece(), rl.get(i).section());
+        if (psp == null) return null;
+        Quat ql = psp.exit().orient();
+        Quat qr = seamEntryOrient(rl.get(i + 1).piece());
+        Vec3 dphi = TrackCompiler.axisAngle(qr.mul(ql.conjugate()));
+        Vec3 t = ql.T(), u = ql.U();
+        Vec3 r = u.cross(t);
+        return new double[]{ -dphi.dot(r), dphi.dot(u), dphi.dot(t) };
+    }
+
+    /** Per-lane SPIKE CARETS on a strict seam (v17.2 D138, re-spec'd
+     *  v17.3 D140): a chevron DIRECTLY on the seam line, per lane
+     *  whose rate graph would spike there, pointing the spike's sign
+     *  (seamSpikes), at the lane curve's own height. Enabled
+     *  Resulting overlays wear theirs on the overlay scale in the
+     *  overlay palette. A SMOOTHED seam draws none -- the blend
+     *  removed the instant change. */
+    private void drawSeamCarets(GraphicsContext gc, List<RunSec> rl,
+                                int i, double bx) {
+        if (!trueArraysReady()) return;
+        double[] spike = seamSpikes(rl, i);
+        if (spike == null) return;
+        // stacks at the LINE'S edges (v17.4, D141 — user spec: fixed
+        // positions signaling DIRECTION only, never riding the
+        // curves: up-spikes near the top edge, down-spikes near the
+        // bottom)
+        // every lane's caret ALWAYS draws (v17.5, D142 — user spec);
+        // components under the CARET_KINK_MIN threshold draw SMALLER
+        // and thinner (v17.7, D144 — was translucent). Carets dodge
+        // nodes rung by rung like the '+' button, but always stay as
+        // close to their OWN edge (top for up-spikes, bottom for
+        // down) as the clearance allows.
+        int[] upR = { 0 }, dnR = { 0 };
+        for (int L = 0; L < LANES; L++) {
+            boolean up = spike[L] > 0;
+            drawCaret(gc, bx, caretY(bx, up, upR, dnR), up,
+                laneColor(L),
+                Math.abs(spike[L]) < CARET_KINK_MIN);
+        }
+        // enabled Resulting overlays: their components, their palette
+        // (NOT the roll/bank overlay, v17.9 D146 — its spike is the
+        // roll lane's own caret already)
+        if (resAxisOn) {
+            for (int comp = 1; comp <= 2; comp++) {
+                if (!resCompOn(comp)) continue;
+                boolean up = spike[comp - 1] > 0;
+                drawCaret(gc, bx, caretY(bx, up, upR, dnR), up,
+                    overlayColor(comp),
+                    Math.abs(spike[comp - 1]) < CARET_KINK_MIN);
+            }
+        }
+    }
+
+    /** The next caret rung for a direction: from the line's own edge
+     *  inward, skipping rungs a node sits on (v17.7, D144 — the
+     *  '+'-button dodge, but edge-anchored so a caret stays as far
+     *  from the middle as possible the way it points). */
+    private double caretY(double bx, boolean up, int[] upR, int[] dnR) {
+        int[] r = up ? upR : dnR;
+        double top = MARGIN_TOP + 10, bot = MARGIN_TOP + plotHeight() - 10;
+        while (true) {
+            double y = up ? top + 12 * r[0] : bot - 12 * r[0];
+            r[0]++;
+            if (y < top || y > bot) return up ? bot : top;   // overran
+            if (nearestNodePx(bx, y) >= 14) return y;
+        }
+    }
+
+    private static void drawCaret(GraphicsContext gc, double cx,
+                                  double cy, boolean up, Color col,
+                                  boolean small) {
+        double w = small ? 3 : 4.5;
+        double h = (small ? 2.5 : 4) * (up ? 1 : -1);
+        gc.setGlobalAlpha(0.95);
+        gc.setLineWidth(small ? 1.2 : 2);
+        gc.setStroke(col);
+        gc.strokePolyline(
+            new double[]{ cx - w, cx, cx + w },
+            new double[]{ cy + h, cy - h, cy + h }, 3);
+        gc.setGlobalAlpha(1.0);
+        gc.setLineWidth(1);
+    }
+
+    // ---------- strict-seam SMOOTHING widget (v17.3, D140 -- the s/c
+    // diamond pattern: drag the diamond ON the seam to size the
+    // geometric blend; Ctrl snaps by the element-length step; under
+    // 0.5 m it snaps shut; the shaded band is the blend window) -----
+
+    /** The diamond's y on a seam line: the s/c diamonds' height,
+     *  walked down the '+'-button ladder off any node it overlaps
+     *  (v17.5, D142 — the same dodge rule; draw and hit share it). */
+    private double seamDiaYAt(double bx) {
+        double[] ladder = { MARGIN_TOP + 48,
+                            MARGIN_TOP + plotHeight() * 0.30,
+                            MARGIN_TOP + plotHeight() * 0.50,
+                            MARGIN_TOP + plotHeight() * 0.70,
+                            MARGIN_TOP + plotHeight() - 16 };
+        double best = ladder[0], bestD = -1;
+        for (double cand : ladder) {
+            double d = nearestNodePx(bx, cand);
+            if (d >= 22) return cand;
+            if (d > bestD) { bestD = d; best = cand; }
+        }
+        return best;
+    }
+    private int seamDragPiece = -1;    // follower piece being sized
+    private double seamDragAxisX;      // the seam's axis coordinate
+    private boolean seamDragRel;       // diamond = relative (v17.5)
+    private double seamDragBase;       // length at the press
+    private double seamDragPressS;     // arc at the press
+
+    /** Which strict seam's smoothing diamond is under (x, y); -1 =
+     *  none. */
+    private int hitSeamDiamond(double x, double y) {
+        List<RunSec> rl = runLayout();
+        for (int i = 0; i < rl.size() - 1; i++) {
+            if (!seamStrict(rl, i)) continue;
+            if (app.coaster.pieces.get(rl.get(i + 1).piece())
+                    .sSmoothLen <= 0.01) continue;   // enable via menu
+            double bx = tToX(rl.get(i).t0() + rl.get(i).dur());
+            if (Math.hypot(x - bx, y - seamDiaYAt(bx)) <= 7) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** A strict seam's blend-band EDGE within grab range (v17.4,
+     *  D141); −1 = none. Deliberately the LOWEST interactive rank —
+     *  nodes, knobs, menus, the seam line and the curve insert all
+     *  win first. */
+    private int seamEdgeHit(double x, double y) {
+        if (y < MARGIN_TOP || y > MARGIN_TOP + plotHeight()) return -1;
+        List<RunSec> rl = runLayout();
+        for (int i = 0; i < rl.size() - 1; i++) {
+            if (!seamStrict(rl, i)) continue;
+            int[] w = seamWindow(rl, i);
+            if (w == null) continue;
+            if (Math.abs(x - tToX(gAxis(w[0]))) <= 4
+                    || Math.abs(x - tToX(gAxis(w[1]))) <= 4) return i;
+        }
+        return -1;
+    }
+
+    /** Press on a blend-band edge: the same sizing drag the diamond
+     *  runs (either edge — the window is symmetric about the seam). */
+    private boolean seamEdgePressed(MouseEvent e) {
+        int i = seamEdgeHit(e.getX(), e.getY());
+        if (i < 0) return false;
+        List<RunSec> rl = runLayout();
+        beginGesture();
+        seamDragPiece = rl.get(i + 1).piece();
+        seamDragAxisX = rl.get(i).t0() + rl.get(i).dur();
+        seamDragRel = false;   // an edge drags the window absolutely
+        return true;
+    }
+
+    /** An s/c blend-band EDGE within grab range (v17.4): the element
+     *  whose entry blend it belongs to; −1 = none. */
+    private int scEdgeHit(double x, double y) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null || y < MARGIN_TOP
+                || y > MARGIN_TOP + plotHeight()) return -1;
+        double[] b = scBoundsS(sc);
+        ScIntegrator.Profile prof = new ScIntegrator.Profile(sc);
+        for (int j = 1; j < b.length - 1; j++) {
+            if (prof.half[j] <= 1e-9) continue;
+            if (Math.abs(x - tToX(scAxisAtS(sc, b[j] - prof.half[j]))) <= 4
+                    || Math.abs(x
+                        - tToX(scAxisAtS(sc, b[j] + prof.half[j]))) <= 4) {
+                return j;
+            }
+        }
+        return -1;
+    }
+
+    /** Press on a smoothing diamond: begin the sizing drag (one undo
+     *  step per gesture, the s/c contract). RELATIVE since v17.5
+     *  (D142): the drag ADJUSTS the current length from the press
+     *  point — rightward grows, leftward shrinks — instead of
+     *  restarting from zero at the seam. DOUBLE-CLICK opens the seam
+     *  settings (the 3D ball's rule). */
+    private boolean seamDiamondPressed(MouseEvent e) {
+        int i = hitSeamDiamond(e.getX(), e.getY());
+        if (i < 0) return false;
+        List<RunSec> rl = runLayout();
+        if (e.getClickCount() == 2) {
+            seamDragPiece = -1;
+            showStrictSeamSettings(rl.get(i + 1).piece());
+            return true;
+        }
+        beginGesture();
+        seamDragPiece = rl.get(i + 1).piece();
+        seamDragAxisX = rl.get(i).t0() + rl.get(i).dur();
+        seamDragRel = true;
+        seamDragBase = app.coaster.pieces.get(seamDragPiece).sSmoothLen;
+        seamDragPressS = arcAtAxis(xToT(e.getX()));
+        return true;
+    }
+
+    /** Arc length (m) at an axis coordinate, off the compiled
+     *  samples. NaN without a compile. */
+    private double arcAtAxis(double ax) {
+        if (app.lastSamples == null || app.lastSamples.isEmpty()) {
+            return Double.NaN;
+        }
+        int i = sampleIdxAtAxis(ax);
+        if (i < 0 || i >= app.lastSamples.size()) return Double.NaN;
+        return app.lastSamples.get(i).s();
+    }
+
+    /** The running smoothing drag: window length = twice the ARC
+     *  between the cursor and the seam (read off the compiled samples
+     *  so it works on time AND distance axes). */
+    private void seamDragTo(double x, boolean snap) {
+        if (seamDragPiece < 0
+                || seamDragPiece >= app.coaster.pieces.size()
+                || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return;
+        TrackPiece f = app.coaster.pieces.get(seamDragPiece);
+        int ic = sampleIdxAtAxis(xToT(x));
+        int is = sampleIdxAtAxis(seamDragAxisX);
+        int n = app.lastSamples.size();
+        if (ic < 0 || is < 0 || ic >= n || is >= n) return;
+        double len;
+        if (seamDragRel && !Double.isNaN(seamDragPressS)) {
+            // diamond (v17.5, D142): adjust the CURRENT length —
+            // dragging right grows, left shrinks
+            len = seamDragBase + 2 * (app.lastSamples.get(ic).s()
+                - seamDragPressS);
+        } else {
+            len = 2 * Math.abs(app.lastSamples.get(ic).s()
+                - app.lastSamples.get(is).s());
+        }
+        if (snap) {
+            double step = app.settings.snapLen();
+            len = Math.round(len / step) * step;
+        }
+        double next = len < 0.5 ? 0 : Math.min(len, 80);
+        if (Math.abs(next - f.sSmoothLen) < 1e-9) {
+            redraw();
+            return;
+        }
+        commitGestureSnapshot();
+        f.sSmoothLen = next;
+        app.markDirty();
+        app.rebuildTrack();
+        redraw();
+    }
+
+    /** The smoothing window's sample range for drawing -- the
+     *  compiler's clamps mirrored; null = no active window. */
+    private int[] seamWindow(List<RunSec> rl, int i) {
+        TrackPiece f = app.coaster.pieces.get(rl.get(i + 1).piece());
+        if (f.sSmoothLen <= 0.01 || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return null;
+        TrackCompiler.Span sa =
+            spanAt(rl.get(i).piece(), rl.get(i).section());
+        TrackCompiler.Span sb =
+            spanAt(rl.get(i + 1).piece(), rl.get(i + 1).section());
+        if (sa == null || sb == null) return null;
+        int n = app.lastSamples.size();
+        if (sa.i1() >= n || sb.i1() >= n) return null;
+        double sSeam = app.lastSamples.get(sa.i1()).s();
+        double hUp = Math.min(f.sSmoothLen / 2, sa.sLen() * 0.5);
+        double hDn = Math.min(f.sSmoothLen / 2, sb.sLen() * 0.5);
+        int iA = sa.i1();
+        while (iA > sa.i0() + 1
+                && sSeam - app.lastSamples.get(iA - 1).s() <= hUp) iA--;
+        int iB = sa.i1() + 1;
+        while (iB < sb.i1() - 1
+                && app.lastSamples.get(iB + 1).s() - sSeam <= hDn) iB++;
+        return new int[]{ iA, iB };
+    }
+
+    /** The shaded blend-zone band (the s/c look) — tinted RED when
+     *  the smoothing itself is what opened the follower's speed
+     *  conflict (v17.4, D141). */
+    private void drawSeamSmoothBand(GraphicsContext gc, List<RunSec> rl,
+                                    int i) {
+        int[] w = seamWindow(rl, i);
+        if (w == null) return;
+        double xa = tToX(gAxis(w[0])), xb = tToX(gAxis(w[1]));
+        gc.setFill(smoothingCausedDrift(rl.get(i + 1).piece())
+            ? Color.rgb(255, 70, 70, 0.12)
+            : Color.rgb(255, 255, 255, 0.07));
+        gc.fillRect(Math.min(xa, xb), MARGIN_TOP,
+            Math.abs(xb - xa), plotHeight());
+    }
+
+    // smoothing-caused-drift cache: one smoothing-suspended compile
+    // answers it, re-used until the next rebuild (keyed on the sample
+    // list identity + the window length)
+    private Object smcGen;
+    private int smcPiece = -1;
+    private double smcLen;
+    private boolean smcVal;
+
+    /** Is piece p's ≠v caused ONLY by its seam smoothing (v17.4,
+     *  D141)? True when the follower's first section drifts as
+     *  compiled but would NOT drift with the window at zero — the
+     *  badge menu then says to shrink the window instead of offering
+     *  the resolve ops, and the band tints red. */
+    private boolean smoothingCausedDrift(int p) {
+        if (p < 0 || p >= app.coaster.pieces.size()) return false;
+        TrackPiece f = app.coaster.pieces.get(p);
+        if (!followsPrev(p) || f.sSmoothLen <= 0.01
+                || !sectionDrifted(p, 0)) return false;
+        if (smcGen == app.lastSamples && smcPiece == p
+                && smcLen == f.sSmoothLen) return smcVal;
+        smcGen = app.lastSamples;
+        smcPiece = p;
+        smcLen = f.sSmoothLen;
+        double stash = f.sSmoothLen;
+        f.sSmoothLen = 0;
+        TrackCompiler.Result r;
+        try {
+            r = TrackCompiler.compile(app.coaster,
+                FvdDesigner.INTEGRATE_DT);
+        } finally {
+            f.sSmoothLen = stash;
+        }
+        int spanIdx = 0;
+        for (int q = 0; q < p; q++) {
+            spanIdx += app.coaster.pieces.get(q).sections.size();
+        }
+        double worst = 0;
+        if (spanIdx < r.spans().size()) {
+            TrackCompiler.Span sp = r.spans().get(spanIdx);
+            int i1 = Math.min(sp.i1(), r.samples().size() - 1);
+            for (int i = sp.i0(); i <= i1; i++) {
+                worst = Math.max(worst, Math.abs(
+                    r.trueV()[i] - r.samples().get(i).v()));
+            }
+        }
+        smcVal = worst <= DRIFT_EPS;
+        return smcVal;
+    }
+
+    /** The diamond itself (filled = smoothing on) + the live readout
+     *  while its drag runs. */
+    private void drawSeamDiamond(GraphicsContext gc, List<RunSec> rl,
+                                 int i, double bx) {
+        TrackPiece f = app.coaster.pieces.get(rl.get(i + 1).piece());
+        // the widget shows only while smoothing is ENABLED (v17.4,
+        // D141 — the seam menu's Enable smoothing toggles it; a drag
+        // that snapped shut keeps its readout until release)
+        if (f.sSmoothLen <= 0.01
+                && seamDragPiece != rl.get(i + 1).piece()) {
+            return;
+        }
+        double dy = seamDiaYAt(bx);
+        gc.setGlobalAlpha(0.85);
+        gc.beginPath();
+        gc.moveTo(bx, dy - 5);
+        gc.lineTo(bx + 5, dy);
+        gc.lineTo(bx, dy + 5);
+        gc.lineTo(bx - 5, dy);
+        gc.closePath();
+        if (f.sSmoothLen > 0.01) {
+            gc.setFill(Color.WHITE);
+            gc.fill();
+        }
+        gc.setStroke(Color.WHITE);
+        gc.setLineWidth(1);
+        gc.stroke();
+        gc.setGlobalAlpha(1.0);
+        if (seamDragPiece == rl.get(i + 1).piece()) {
+            String txt = f.sSmoothLen < 0.01 ? "smoothing off"
+                : String.format(Locale.US, "smoothing %.1f m",
+                    f.sSmoothLen);
+            gc.setFill(Color.WHITE);
+            gc.setFont(Font.font(11));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.TOP);
+            double tw = txt.length() * 6.5;
+            gc.fillText(txt, FvdDesigner.clamp(bx + 10, MARGIN_LEFT + 4,
+                canvas.getWidth() - marginRight() - tw - 4), dy + 10);
         }
     }
 
@@ -5258,6 +5842,20 @@ class GraphEditor extends Region {
             dragGrowTimer.start();
             return;
         }
+        // blend-band EDGES (v17.4) — under everything above, over
+        // the element select (which would otherwise eat every click)
+        if (seamEdgePressed(e)) return;
+        int je = scEdgeHit(e.getX(), e.getY());
+        if (je >= 1) {
+            beginGesture();
+            elDragSmooth = je;
+            lastDragX = e.getX();
+            lastDragY = e.getY();
+            lastDragSnap = e.isControlDown();
+            dragTimerLast = 0;
+            dragGrowTimer.start();
+            return;
+        }
         double gt = xToT(e.getX());
         if (gt >= tOff - 1e-9 && gt <= tOff + sectionEnd() + 1e-9
                 && e.getY() >= MARGIN_TOP && e.getY() <= MARGIN_TOP + plotHeight()) {
@@ -5268,6 +5866,7 @@ class GraphEditor extends Region {
             }
             return;
         }
+        if (seamDiamondPressed(e)) return;
         // seam lines outside the active s/c strip (v17.1) — the strip's
         // own boundaries were claimed by hitScBoundary above
         int seam = hitSeam(e.getX(), e.getY());
@@ -5825,6 +6424,7 @@ class GraphEditor extends Region {
                         dragGrowTimer.start();
                         return;
                     }
+                    if (seamDiamondPressed(e)) return;
                     // seam lines elsewhere in the run (v17.1; bridge-
                     // adjacent boundaries are excluded by the hit)
                     int bseam = hitSeam(e.getX(), e.getY());
@@ -5832,6 +6432,7 @@ class GraphEditor extends Region {
                         showSeamMenu(bseam, e.getScreenX(), e.getScreenY());
                         return;
                     }
+                    if (seamEdgePressed(e)) return;
                     RunSec rs = runSecAt(xToT(e.getX()));
                     if (rs != null && (rs.piece() != activePiece
                             || rs.section() != activeSection)) {
@@ -5906,6 +6507,7 @@ class GraphEditor extends Region {
                         showRunBadgeMenu(badge, e.getScreenX(), e.getScreenY());
                         return;
                     }
+                    if (seamDiamondPressed(e)) return;
                     // a SEAM line between strips (v17.1, D135) — after
                     // nodes/knobs/badges (edge nodes stay grabbable),
                     // before the curve insert (inserting exactly ON a
@@ -5950,6 +6552,10 @@ class GraphEditor extends Region {
                         }
                         return;
                     }
+                    // smoothing-band EDGES (v17.4, D141): the lowest
+                    // interactive rank — after nodes/knobs, '+',
+                    // badges, the seam line and the curve insert
+                    if (seamEdgePressed(e)) return;
                     // a press inside a GREYED section's strip ALWAYS
                     // activates that section — checked BEFORE the dimmed-
                     // lane test (v10.2): the active section's lanes hold
@@ -6064,11 +6670,15 @@ class GraphEditor extends Region {
                 hoverSeam = hs;
                 redraw();
             }
-            if (pcLine) {   // the split line drags in ANY mode (v14.0)
+            if (pcLine || hitSeamDiamond(e.getX(), e.getY()) >= 0
+                    || seamEdgeHit(e.getX(), e.getY()) >= 0) {
+                // the split line + the seam smoothing diamond/edges
+                // (v17.3/v17.4)
                 canvas.setCursor(Cursor.H_RESIZE);
             } else if (activeSc() != null) {   // grab cursor over drag targets
                 boolean grab = hitScBoundary(e.getX(), e.getY()) >= 1
-                    || hitScDiamond(e.getX(), e.getY()) >= 1;
+                    || hitScDiamond(e.getX(), e.getY()) >= 1
+                    || scEdgeHit(e.getX(), e.getY()) >= 1;
                 canvas.setCursor(grab ? Cursor.H_RESIZE
                     : hs >= 0 ? Cursor.HAND : Cursor.DEFAULT);
             } else if (activeBridge() != null) {   // the end line drags
@@ -6101,9 +6711,8 @@ class GraphEditor extends Region {
                 if (gt > rT0 + trim && gt < rT1 - trim
                         && !nearSeam(gt, sectionBoundaries(), trim)) {
                     double best = 8;
-                    for (int comp = 1; comp <= 2; comp++) {
-                        if (comp == 1 ? !app.settings.resPitch()
-                                      : !app.settings.resYaw()) continue;
+                    for (int comp = 1; comp <= 3; comp++) {
+                        if (!resCompOn(comp)) continue;
                         double v = resValueAt(i, comp);
                         double d = Math.abs(e.getY() - resToY(v));
                         if (d < best) { best = d; rc = comp; rt = gt; rv = v; }
@@ -6182,6 +6791,10 @@ class GraphEditor extends Region {
                 redraw();
                 return;
             }
+            if (seamDragPiece >= 0 && e.isPrimaryButtonDown()) {
+                seamDragTo(e.getX(), e.isControlDown());
+                return;
+            }
             if ((elDragBoundary >= 0 || elDragSmooth >= 1 || bridgeDragGap)
                     && e.isPrimaryButtonDown()) {
                 commitGestureSnapshot();
@@ -6245,6 +6858,7 @@ class GraphEditor extends Region {
                 return;
             }
             rClickElem = -1;
+            seamDragPiece = -1;
             elDragBoundary = -1;
             elDragSmooth = -1;
             bridgeDragGap = false;
@@ -8945,10 +9559,20 @@ class GraphEditor extends Region {
     private void updateResScale() {
         resAxisOn = app.resultRates != null && app.lastSamples != null
             && app.resultRates.length > 0
-            && (app.settings.resPitch() || app.settings.resYaw());
+            && (app.settings.resPitch() || app.settings.resYaw()
+                || resCompOn(3));
         if (!resAxisOn) return;
         boolean geo = activeGeo();
-        double lo = geo ? -1 : -60, hi = geo ? 4 : 60;
+        // defaults MATCH the normal lane scales (v17.7, D144): felt
+        // −1..4 like Gv, rates ±60 like geo lanes — ±5 in °/m — and
+        // an absolute-bank overlay starts at the bank lane's ±90
+        double lo = geo ? -1 : resRatePM() ? -5 : -60;
+        double hi = geo ? 4 : resRatePM() ? 5 : 60;
+        if (resCompOn(3) && app.settings.resRollAbs()
+                && app.settings.resRollG()) {
+            lo = Math.min(lo, -90);
+            hi = Math.max(hi, 90);
+        }
         double t0 = viewStart(), t1 = viewEnd();
         List<Double> seams = sectionBoundaries();
         double rT0 = runT0(), rT1 = rT0 + runDur();   // run clamp (D85)
@@ -8965,6 +9589,10 @@ class GraphEditor extends Region {
             if (app.settings.resYaw()) {
                 lo = Math.min(lo, resValueAt(i, 2));
                 hi = Math.max(hi, resValueAt(i, 2));
+            }
+            if (resCompOn(3)) {
+                lo = Math.min(lo, resValueAt(i, 3));
+                hi = Math.max(hi, resValueAt(i, 3));
             }
         }
         double pad = (hi - lo) * 0.05;
@@ -8999,13 +9627,32 @@ class GraphEditor extends Region {
      *  resulting graphs drop down should display the true values"). */
     private double resValueAt(int i, int comp) {
         boolean tru = activeInfl() != null && trueArraysReady();
-        if (activeGeo()) {
+        if (activeGeo() && comp <= 2) {
             if (tru) return app.trueFelt[i][comp - 1];
             return comp == 1 ? app.lastSamples.get(i).Gv() : app.lastSamples.get(i).Gl();
         }
-        double r = tru ? app.trueRates[i][comp] : app.resultRates[i][comp];
-        // a °/m force section shows its resulting rates in °/m too
-        // (v16.7 — both axes speak the section's rate units)
+        // rate channels (force view comps 1-3), presented per the
+        // RESULTING GRAPH SETTINGS (v17.6, D143): global axes read
+        // the analytic world rates, °/m divides by the speed, roll
+        // behavior = absolute shows the bank angle itself
+        double[] br = tru ? app.trueRates[i] : app.resultRates[i];
+        if (comp == 3 && app.settings.resRollAbs()
+                && app.settings.resRollG()) {
+            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+            double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
+            return Double.isNaN(b) ? 0 : Math.toDegrees(b);
+        }
+        double r;
+        boolean world = comp == 3 ? app.settings.resRollG()
+                                  : app.settings.resYpG();
+        if (world) {
+            double[] wr = Coaster.worldRates(app.lastSamples.get(i),
+                br[1], br[2], br[3]);
+            r = wr[comp - 1];
+            if (Double.isNaN(r)) r = 0;   // vertical hold-off
+        } else {
+            r = br[comp];
+        }
         if (resRatePM()) {
             r /= Math.max(0.5, tru ? app.trueV[i]
                 : app.lastSamples.get(i).v());
@@ -9013,12 +9660,136 @@ class GraphEditor extends Region {
         return r;
     }
 
-    /** Do the resulting overlays show rates in °/m (v16.7)? Only a
-     *  per-meter FORCE section's overlays are rates. */
+    /** Do the resulting rate overlays show °/m? The RESULTING GRAPH
+     *  SETTINGS govern since v17.6 (D143 — the pre-v17.6 automatic
+     *  follow of a °/m section's units is superseded). */
     private boolean resRatePM() {
-        return !activeGeo()
-            && sections().get(activeSection) instanceof LaneSection ls
-            && ls.ratePerMeter;
+        return app.settings.resRateM();
+    }
+
+    /** Is resulting overlay comp enabled (v17.6): 1/2 = the classic
+     *  pitch/yaw-or-felt checks; 3 = the roll/bank overlay — BOTH
+     *  views since v17.7 (D144), grayed only while it would
+     *  duplicate the active section's own roll graph exactly. */
+    private boolean resCompOn(int comp) {
+        if (comp == 1) return app.settings.resPitch();
+        if (comp == 2) return app.settings.resYaw();
+        return app.settings.resRoll() && !resRollRedundant();
+    }
+
+    /** Would the resulting roll overlay duplicate the active
+     *  section's own REAL roll graph exactly (v17.7, D144)? True
+     *  when the section's roll representation — rate units, roll
+     *  axis, roll behavior — matches the resulting settings; the
+     *  check grays then (its state persists across sections). */
+    boolean resRollRedundant() {
+        if (!(sections().get(activeSection) instanceof LaneSection ls)) {
+            return false;
+        }
+        boolean secAbs = ls.rollAbsolute && ls.rollGlobal;
+        boolean resAbs = app.settings.resRollAbs()
+            && app.settings.resRollG();
+        return ls.ratePerMeter == app.settings.resRateM()
+            && ls.rollGlobal == app.settings.resRollG()
+            && secAbs == resAbs;
+    }
+
+    /** The RESULTING GRAPH SETTINGS dialog (v17.6, D143 — user
+     *  spec): how the overlays present — rate units, roll axis,
+     *  yaw/pitch axis (geo-resulting only), roll behavior — in the
+     *  canonical row order. Display-only, applies live. */
+    void showResultingSettings() {
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Resulting graph settings");
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        int row = 0;
+        Runnable applyLive = () -> {
+            app.syncResChecks();
+            updateResScale();
+            redraw();
+        };
+
+        ToggleGroup ug = new ToggleGroup();
+        RadioButton uSec = new RadioButton("Per second (°/s)");
+        RadioButton uMet = new RadioButton("Per meter (°/m)");
+        uSec.setToggleGroup(ug);
+        uMet.setToggleGroup(ug);
+        (app.settings.resRateM() ? uMet : uSec).setSelected(true);
+        ug.selectedToggleProperty().addListener((o, w, n2) -> {
+            app.settings.setResRateM(uMet.isSelected());
+            applyLive.run();
+        });
+        grid.addRow(row++, new Label("Rate units"),
+            new HBox(10, uSec, uMet));
+
+        ToggleGroup yg = new ToggleGroup();
+        RadioButton yLocal = new RadioButton("Local");
+        RadioButton yGlobal = new RadioButton("Global (heading/elevation)");
+        yLocal.setToggleGroup(yg);
+        yGlobal.setToggleGroup(yg);
+        (app.settings.resYpG() ? yGlobal : yLocal).setSelected(true);
+        String ypHow = "Yaw/pitch axes apply when the RESULTING graphs "
+            + "are geometric rates — i.e. while a FORCE section is "
+            + "active (a geo section's resulting graphs are felt G).";
+        boolean resGeo = !activeGeo();
+        yLocal.setDisable(!resGeo);
+        yGlobal.setDisable(!resGeo);
+        yg.selectedToggleProperty().addListener((o, w, n2) -> {
+            app.settings.setResYpG(yGlobal.isSelected());
+            applyLive.run();
+        });
+        grid.addRow(row++, new Label("Yaw/pitch axis"),
+            new HBox(10, grayHint(yLocal, ypHow),
+                grayHint(yGlobal, ypHow)));
+        ToggleGroup rg = new ToggleGroup();
+        RadioButton rLocal = new RadioButton("Local");
+        RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
+        rLocal.setToggleGroup(rg);
+        rGlobal.setToggleGroup(rg);
+        (app.settings.resRollG() ? rGlobal : rLocal).setSelected(true);
+        grid.addRow(row++, new Label("Roll axis"),
+            new HBox(10, rLocal, rGlobal));
+
+
+        ToggleGroup ag = new ToggleGroup();
+        RadioButton aRate = new RadioButton("Roll rate");
+        RadioButton aAbs = new RadioButton("Absolute bank (°)");
+        aRate.setToggleGroup(ag);
+        aAbs.setToggleGroup(ag);
+        (app.settings.resRollAbs() && app.settings.resRollG()
+            ? aAbs : aRate).setSelected(true);
+        grid.addRow(row++, new Label("Roll behavior"),
+            new HBox(10, aRate, grayHint(aAbs, ABS_HOW)));
+        Runnable syncAbs = () -> {
+            boolean glob = rGlobal.isSelected();
+            aAbs.setDisable(!glob);
+            if (!glob && aAbs.isSelected()) aRate.setSelected(true);
+        };
+        rg.selectedToggleProperty().addListener((o, w, n2) -> {
+            app.settings.setResRollG(rGlobal.isSelected());
+            syncAbs.run();
+            applyLive.run();
+        });
+        ag.selectedToggleProperty().addListener((o, w, n2) -> {
+            app.settings.setResRollAbs(aAbs.isSelected());
+            applyLive.run();
+        });
+        syncAbs.run();
+
+        Button close = new Button("Close");
+        close.setDefaultButton(true);
+        close.setCancelButton(true);
+        close.setOnAction(ev -> dlg.close());
+        HBox foot = new HBox(close);
+        foot.setAlignment(Pos.CENTER_RIGHT);
+        grid.add(foot, 0, row, 2, 1);
+        dlg.setScene(new Scene(grid));
+        dlg.show();
     }
 
     private double resToY(double v) {
@@ -9028,6 +9799,10 @@ class GraphEditor extends Region {
     /** Overlay accent: rates wear the geo palette, forces the force one
      *  (a curve's color names its QUANTITY, not the active mode). */
     private Color overlayColor(int comp) {
+        if (comp == 3 && app.settings.resRollAbs()
+                && app.settings.resRollG()) {
+            return FvdDesigner.BANK_COLOR;
+        }
         return (activeGeo() ? FvdDesigner.LANE_COLORS
                             : FvdDesigner.GEO_LANE_COLORS)[comp - 1];
     }
@@ -9189,8 +9964,8 @@ class GraphEditor extends Region {
             gc.setLineWidth(1);
             gc.setLineDashes(4, 4);
             gc.setGlobalAlpha(0.7);
-            for (int comp = 1; comp <= 2; comp++) {
-                if (comp == 1 ? !app.settings.resPitch() : !app.settings.resYaw()) continue;
+            for (int comp = 1; comp <= 3; comp++) {
+                if (!resCompOn(comp)) continue;
                 gc.setStroke(overlayColor(comp));
                 gc.beginPath();
                 boolean started = false;
@@ -9227,10 +10002,16 @@ class GraphEditor extends Region {
             gc.setFont(Font.font(10));
             gc.setTextAlign(TextAlignment.LEFT);
             gc.setTextBaseline(VPos.BOTTOM);
+            boolean resAbs = app.settings.resRollAbs()
+                && app.settings.resRollG();
             String name = activeGeo()
                 ? (hoverResComp == 1 ? "Gv" : "Gl")
-                : (hoverResComp == 1 ? "pitch" : "yaw");
-            String unit = activeGeo() ? "g" : resRatePM() ? "°/m" : "°/s";
+                : (hoverResComp == 1 ? "pitch"
+                    : hoverResComp == 2 ? "yaw"
+                    : resAbs ? "bank" : "roll");
+            String unit = activeGeo() ? "g"
+                : hoverResComp == 3 && resAbs ? "°"
+                : resRatePM() ? "°/m" : "°/s";
             String txt;
             if (hoverSlope) {
                 int ic = sampleIdxAtAxis(hoverResT);

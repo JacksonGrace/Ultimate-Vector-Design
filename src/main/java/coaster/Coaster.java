@@ -555,6 +555,10 @@ public class Coaster {
         f.sLockPitch = false;
         f.sLockRoll = false;
         seedStrictValues(f, f.entryPose().orient());
+        // smoothing OFF by default when connecting pieces (v17.4;
+        // D141 — user spec; hand-made strict seams stay sharp)
+        // (v17.6, D143 — user walk-back: connects start SHARP;
+        // only bridge converts arrive smoothed)
         return to;
     }
 
@@ -1017,7 +1021,7 @@ public class Coaster {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
-        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        TrackCompiler.Result r = compileForFit(dt);
         // a STRICT-SEAM follower BAKES its follow rotation into the
         // stored placement (D136 — the D106 lesson: without it the
         // next compile applied the follow rotation a SECOND time on
@@ -1057,6 +1061,29 @@ public class Coaster {
         return true;
     }
 
+    /** Compile with every piece's strict-seam SMOOTHING suspended
+     *  (v17.2, D139) — the read for every lane-refit op. The smoothing
+     *  blend rewrites the samples around a followed seam, so a fit
+     *  that read them would re-author the BLENDED entry while its
+     *  section still integrates from the follow-contract frame — the
+     *  refit swung by the half-kink (gate 50h: 122 m of tail). Fits
+     *  read the sharp design geometry; the still-active smoothing
+     *  re-applies on top of the refit shape next compile, unchanged. */
+    private TrackCompiler.Result compileForFit(double dt) {
+        double[] stash = new double[pieces.size()];
+        for (int i = 0; i < pieces.size(); i++) {
+            stash[i] = pieces.get(i).sSmoothLen;
+            pieces.get(i).sSmoothLen = 0;
+        }
+        try {
+            return TrackCompiler.compile(this, dt);
+        } finally {
+            for (int i = 0; i < pieces.size(); i++) {
+                pieces.get(i).sSmoothLen = stash[i];
+            }
+        }
+    }
+
     /** A section's samples for CONVERT extraction, INCLUDING its
      *  entry state (v16.6, D113 — the user's "STILL a 0.3 m miss on
      *  an overbanked turn"): a continuation section's span starts one
@@ -1081,15 +1108,68 @@ public class Coaster {
             FVDIntegrator.Sample a = all.get(i0 - 1);
             FVDIntegrator.Sample b = all.get(i0);
             double step = 3 * Math.max(0.5, b.v()) * dt;
-            // frame-SMOOTH seams only (D136): a KINKED entry (legacy
-            // reversed seams, discontinuous strict seams) would hand
-            // the fit a cross-kink row and poison its edge extraction
-            if (b.pos().sub(a.pos()).length() < step
-                    && a.T().dot(b.T()) > Math.cos(Math.toRadians(2))) {
-                i0--;
+            if (b.pos().sub(a.pos()).length() < step) {
+                double cosKink = Math.cos(Math.toRadians(2));
+                FVDIntegrator.Sample c = all.get(i0 + 1);
+                // DISCONTINUOUS seam test (v17.2, D137 — the user's
+                // "the first node always lands between the previous
+                // section's end and this section's value"): the D136
+                // T-kink guard missed U-kinks (roll steps) and pure
+                // VALUE steps — a frozen-shape strict seam or a
+                // deliberate target jump keeps the frame continuous
+                // while felt/curvature step, and the boundary row
+                // (whose felt belongs to the PREVIOUS section) seeded
+                // the fit with the old value: node 0 pulled off the
+                // section's own value, area matching rippling the
+                // miss down the lane at ANY density. Steps are read
+                // against the section's own first interval so smooth
+                // seams stay bitwise.
+                boolean disc = a.T().dot(b.T()) < cosKink
+                    || a.U().dot(b.U()) < cosKink
+                    || jumpAt(a.Gv(), b.Gv(), c.Gv(), 0.02)
+                    || jumpAt(a.Gl(), b.Gl(), c.Gl(), 0.02)
+                    || jumpAt(a.v(), b.v(), c.v(), 0.05);
+                if (!disc) {
+                    i0--;   // smooth seam: the boundary sample IS the
+                            // entry state (D113) — historic path
+                } else {
+                    // SYNTHESIZED entry (D137): keep the exact seam
+                    // clock/arc/position (no D113 one-step-short
+                    // regression) but take the DYNAMICS from this
+                    // section's own side — frame back-rotated at the
+                    // b→c body rate, felt and design speed linearly
+                    // extrapolated. "What comes before shouldn't
+                    // matter": the entry row becomes the section's
+                    // own limit from the right.
+                    Quat qb = Quat.fromFrame(b.T(), b.U());
+                    Quat qc = Quat.fromFrame(c.T(), c.U());
+                    // world-side step qs = qc·qb⁻¹ maps frame b's
+                    // vectors onto frame c's; the entry frame is one
+                    // inverse step back: qi = qs⁻¹ = qb·qc⁻¹
+                    Quat qi = qb.mul(qc.conjugate());
+                    Vec3 T0 = qi.rotate(b.T());
+                    Vec3 U0 = qi.rotate(b.U());
+                    FVDIntegrator.Sample synth = new FVDIntegrator.Sample(
+                        a.t(), a.s(), a.pos(), T0, U0, U0.cross(T0),
+                        Math.max(0.5, 2 * b.v() - c.v()),
+                        2 * b.Gv() - c.Gv(), 2 * b.Gl() - c.Gl());
+                    List<FVDIntegrator.Sample> out =
+                        new ArrayList<>(sp.i1() - i0 + 2);
+                    out.add(synth);
+                    out.addAll(all.subList(i0, sp.i1() + 1));
+                    return out;
+                }
             }
         }
         return all.subList(i0, sp.i1() + 1);
+    }
+
+    /** Is a→b a value JUMP against the section's own b→c step? The
+     *  6× + floor band keeps every smooth seam (where the two steps
+     *  match to O(dt²)) on the historic path bitwise. */
+    private static boolean jumpAt(double a, double b, double c,
+                                  double floor) {
+        return Math.abs(a - b) > floor + 6 * Math.abs(b - c);
     }
 
     /** "RE-FREEZE DESIGN SPEED" (v14.5, D97): the OTHER split
@@ -1121,7 +1201,7 @@ public class Coaster {
         if (followerActive(pieceIdx)) {
             bakeFollow(pieceIdx, TrackCompiler.compile(this, dt));
         }
-        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        TrackCompiler.Result r = compileForFit(dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
             spanIdx += pieces.get(p).sections.size();
@@ -1221,7 +1301,7 @@ public class Coaster {
         Section sec = piece.sections.get(secIdx);
         if (!(sec instanceof LaneSection ls) || sec.reversed()) return false;
         boolean toDist = ls.domain() == Section.Domain.TIME;
-        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        TrackCompiler.Result r = compileForFit(dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
             spanIdx += pieces.get(p).sections.size();
@@ -1801,7 +1881,7 @@ public class Coaster {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (!(sec instanceof LaneSection ls) || sec.reversed()) return false;
-        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        TrackCompiler.Result r = compileForFit(dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
             spanIdx += pieces.get(p).sections.size();
@@ -2534,7 +2614,7 @@ public class Coaster {
         // the ORIGINAL ref's sub-arc once the deltas bent the entry
         // frame — bake or discard the influence first (the UI says so)
         if (sec instanceof LaneSection li && li.influenced()) return false;
-        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        TrackCompiler.Result r = compileForFit(dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
             spanIdx += pieces.get(p).sections.size();
@@ -2987,7 +3067,7 @@ public class Coaster {
                 strictSeam);
         }
         if (sec.reversed()) return false;
-        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        TrackCompiler.Result r = compileForFit(dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
             spanIdx += pieces.get(p).sections.size();
@@ -3068,6 +3148,10 @@ public class Coaster {
                 next.sLockPitch = bs.lockPitch;
                 next.sLockRoll = bs.lockRoll;
                 seedStrictValues(next, next.entryPose().orient());
+                // smoothing defaults ON at 10 m after a bridge convert
+                // (v17.4, D141 — user spec: the joint replaces a
+                // smooth bridge, so it should start smooth)
+                if (next.sSmoothLen <= 0.01) next.sSmoothLen = 10;
                 return true;
             }
             // classic stitch — PIN the first attached section's design

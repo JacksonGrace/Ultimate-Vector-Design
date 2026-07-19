@@ -354,10 +354,18 @@ TrackPiece.java     placement (origin + BASE ORIENTATION quat + yaw
                     track re-bent continuous, conflict kept),
                     detachStrictSeam (bake effective placement),
                     connectStrict (reorder + all-unlocked follow —
-                    the '+'-attach and zero-distance flows). A
+                    the '+'-attach and zero-distance flows; arrives
+                    SHARP; only bridge-converts arrive smoothed at
+                    10 m — D143 walked back D141's connect default). A
                     bridge's target never follows (the bridge IS
                     the connection); orphaned followers fall back
-                    to their stored placement.
+                    to their stored placement. Seam SMOOTHING
+                    sSmoothLen (v17.2, D139 — piece field 18,
+                    0 = off bitwise): the compiler geometrically
+                    blends the junction over ±len/2 m of arc (see
+                    TrackCompiler); the seam line's drag
+                    DIAMOND edits it (v17.3, D140 — the
+                    settings-row spinner is gone).
                     CORNER (D100): split/reverse of a TILTED piece
                     bakes the tilt into baseOrient — those re-solve.
 Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
@@ -403,7 +411,23 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     0.2-0.3 m of arc — THE user's standing "converges
                     slightly off" (sole-section gates never saw it);
                     partial FRACTION axes stay span-only (D89's exact
-                    cuts). FULL-FLAG converts since v16.6 D116: type ×
+                    cuts). DISCONTINUOUS seams SYNTHESIZE the entry
+                    row since v17.2 (D137 — the boundary row's felt
+                    belongs to the PREVIOUS section, and at any jump
+                    seam it dragged the fit's node 0 between the two
+                    sides' values with density-proof oscillation, the
+                    user's 2026-07-18 report; make-real's leftover
+                    "≠v still present" was the same row): T/U kinks
+                    and felt/design-v steps (read against the
+                    section's own first interval, 6×+floor — smooth
+                    seams stay bitwise) swap the row for the exact
+                    seam clock/arc/pos with the section's OWN
+                    back-extrapolated dynamics, so node 0 lands on
+                    the section's own value. Every lane-refit op
+                    compiles via compileForFit (v17.2, D139: strict-
+                    seam SMOOTHING suspended — fitting the blended
+                    samples from the follow-contract frame swung the
+                    refit by the half-kink, gated 122 m → 0.16 m). FULL-FLAG converts since v16.6 D116: type ×
                     domain × axes × rate units in ONE convertToLanes
                     call (convertWholeSection/Bridge, partialConvert*
                     take the set; gate 46e 0.0002 m — global-axis
@@ -476,7 +500,30 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     flag overload measures world-angle rates
                     (heading/elevation/bank per arc, unwrapped,
                     capped 3600 °/s).
-TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1): passG per
+TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1) + the
+                    STRICT-SEAM SMOOTHING pass (v17.2, D139:
+                    smoothStrictSeam runs right after a follower's
+                    first section lands — orientations SLERP from
+                    the upstream curve onto the follower's across a
+                    ±sSmoothLen/2 arc window, sides extrapolated at
+                    their measured rates, quintic weight; positions
+                    re-march at the ORIGINAL per-step arc; interior
+                    felt re-derives from the blended rotation PER
+                    ARC (κ — time-based Ω mixed the sides' design
+                    speeds at conflicted seams); the follower's
+                    remainder rigidly TRANSLATES (postShift, bridge
+                    captures included) — all but ZERO since the
+                    v17.3 POSITION CLOSURE (D140: sin² rotation
+                    humps close the ⊥-to-chord miss, a hump-
+                    weighted per-step ARC STRETCH the along-chord
+                    foreshortening; caps 0.2 rad / ±5%; gated
+                    0.011 → 3e-6 m). Window ends sit on the
+                    original frames — NOTHING outside reorients,
+                    upstream bitwise (gated 50e). The upstream span
+                    EXIT keeps the FOLLOW-CONTRACT pose, NOT the
+                    blended seam sample — strictEntry/bakeFollow
+                    read it; D80's exit==last-sample bends knowingly
+                    inside a smoothed window): passG per
                     section at vDesign (force = unchanged bake+RK4;
                     geo = GeoIntegrator; s/c = ScIntegrator — both
                     exit poses carry the integrated quaternion;
@@ -725,7 +772,9 @@ source tree — they won't compile against the current time-domain API.
   `piece x y z yaw [qw qx qy qz]` blocks (fields 5-8 = the base
   orientation, v12.1; missing = identity; %.10f so round-trips skip
   the loader's re-normalize; fields 11-14 = the STRICT-SEAM follow
-  flag + its three locks, v17.1 D135, missing = detached) holding `section force|geo|sc|bridge
+  flag + its three locks, v17.1 D135, missing = detached; fields
+  15-17 = the discontinuous axis angles, D136; field 18 = the seam
+  SMOOTHING length (m), v17.2 D139, missing = 0) holding `section force|geo|sc|bridge
   vDesign domain
   reversed` blocks (the domain field — written since Phase 1 — is
   HONORED for force/geo since v16.0 D103: "distance" = lane x in
@@ -853,7 +902,10 @@ end opens the add-section menu: ONE "Add force/geometric section…"
 item since v16.2 (D108) opening a DIALOG — type, domain (the new
 section HOLDS the ride's end state for 1 s / 10 m; same-mode
 same-axis holds copy the authored end values exactly, global-axis
-holds start at ZERO rates = the straight/held-bank continuation,
+holds take the incoming WORLD rates — elevation'/heading'/bank'
+at the seam, v17.6 D143 (was ZERO rates, the D108 straight
+continuation: with BOTH global flags every lane held flat zero,
+the user's both-global report; NaN-vertical falls back to 0),
 everything else holds the compiled/true end state), roll + yaw/pitch
 axes (defaults carried), the conflict fork (shown only after a
 drifted end; s/c keeps two menu forks), and the STARTING DESIGN
@@ -1052,7 +1104,31 @@ strip via runLayout (piece+section+t0); a lone piece is a run of one
 (the pre-v13.4 behavior exactly). STRICT SEAMS (v17.1, D135;
 feedback round D136 — "the
 track after the seam works as if the track before it were a
-bridge"): a strict junction draws a DOUBLE boundary line; seam
+bridge"): a strict junction draws a DOUBLE boundary line wearing
+per-lane SPIKE CARETS (v17.2 D138, re-spec'd v17.3 D140 — the
+caret points the way each lane's RATE GRAPH would spike AT the
+seam: the instant angular jump Δφ = axisAngle(qR·qL⁻¹) projected
+the way Ω decomposes, {−Δφ·R, Δφ·U, Δφ·T} — a pitch-up kink =
++∞ felt = up caret; chevrons STACK at the line's TOP/BOTTOM
+edges since v17.4 (D141 — up-spikes under the top, down-spikes
+above the bottom; fixed, DIRECTION-only, pan/zoom never moves
+them), lane colors, ALWAYS drawn since v17.5 (D142; sub-2°
+components draw SMALLER/thinner since v17.7 D144 — was
+translucent) and DODGING nodes rung-by-rung while staying
+edge-anchored (caretY, the '+'-ladder idea); enabled
+Resulting overlays wear theirs in the overlay palette; a
+SMOOTHED seam draws none) and — strict only, while smoothing is
+ENABLED — the SMOOTHING DIAMOND (v17.3, D140: the s/c pattern —
+dragging ADJUSTS sSmoothLen relatively since v17.5 (D142: base + 2·Δarc from the press — right grows; edges keep absolute-to-cursor), double-click = the settings pop-out, and the diamond DODGES nodes down the '+'-ladder (seamDiaYAt); pre-D142 it sized twice the cursor↔seam ARC read off
+the samples, live "smoothing X m" readout, Ctrl snaps by the
+element-length step, < 0.5 m snaps shut, cap 80 m, filled =
+active, shaded blend-zone band whose EDGES also drag (v17.4 —
+lowest press rank: nodes/menus/inserts win), one undo per
+gesture, H_RESIZE cursor, press rank above the seam menu; the
+band tints RED when the smoothing ITSELF opened the follower's
+≠v — smoothingCausedDrift, one cached smoothing-suspended
+compile — and the badge's resolve submenu is then a grayed
+"decrease seam smoothing size" hint, v17.4 D141); seam
 lines HIGHLIGHT on hover (hand cursor) and stay lit while their
 menu is open (D136). Clicking
 any non-bridge seam LINE (press rank after nodes/knobs/badges)
@@ -1060,17 +1136,35 @@ opens the SEAM MENU — on section boundaries "Connect sections
 (merge into one)" (= mergeSections, like sections only) + "Make
 seam strict (freeze downstream shape)…" (= the D71 rigid split +
 follow; the settings auto-open) + "Split track at seam"; on strict
-ones "Strict seam settings…" / "Un-strict seam (reorient
+ones "Strict seam settings…" / "Enable smoothing (10 m)"|"Disable
+smoothing" (v17.4, D141 — the diamond shows only while enabled;
+hand-made seams start OFF, bridge-converts and connects start ON
+at 1 m) / "Un-strict seam (reorient
 continuous, keep conflict)" / "Split track at seam". ("Split piece
 before this section" and "Connect with previous section" LEFT the
 badge menu in D136 — the seam + the first node's menu own them.)
-The SETTINGS are a POP-OUT (D136): per axis a DISCONTINUOUS toggle
+The SETTINGS are a POP-OUT (D136; reworked v17.3 D140: WHITE like
+the context menus, titled just "Strict seam", MOVABLE by its body
+— the pv-popup grab pattern): per axis a DISCONTINUOUS toggle
 (RED outline while on), a ±360° spinner (typed + arrows) and a ↺
 to the creation value — Discontinuous OFF = follows the seam
-(spinner grayed, live value), ON = holds the spinner's angle
+(spinner grayed, live value — read ANALYTICALLY off the follow
+contract since v17.2, followerEuler: the entry SAMPLE sits inside
+a smoothing window), ON = holds the spinner's angle
 (TrackPiece.sYawDeg/sPitchDeg/sRollDeg, piece fields 15-17;
-toggling ON captures the CURRENT value so nothing jumps), Apply
-closes. Defaults: yaw-continuous pitch/roll-discontinuous (the
+toggling ON SEEDS THE ORIGINAL creation angle on the FIRST open
+only since v17.8 (D145; TrackPiece.sSeenSettings, transient) —
+later opens hold the CURRENT angle; ↺ always returns to the
+creation angle), Apply keeps / CANCEL reverts to the open-time
+state (v17.8 — auto-hide on click-off is gone). Smoothing
+is edited on the seam itself (the diamond), and in 3D the SEAM
+GIZMO (v17.3, D140): the follower's reveal ball sits ON the
+junction (seamWorldPos — the D136 ghost was the STALE stored
+position); its rings (shown whenever gizmos are on, v17.7) cover
+the DISCONTINUOUS axes only, writing
+the held angles (gizmoSetSeamOrient; ring axes off the follow-
+contract frame seamEntryOrient; one undo per gesture);
+DOUBLE-CLICK = the settings pop-out (reveal state unchanged). Defaults: yaw-continuous pitch/roll-discontinuous (the
 bridge convention); connect flows all-continuous. The whole-bridge
 Convert dialog grows "Make following seam strict (freeze following
 track shape)" — CHECKED by default, locks carried from the bridge;
@@ -1398,7 +1492,10 @@ runs (detached pieces' frames no longer poison run-end rates).
 CONVERT (v13.7 D81 — v13.5's bridge-only
 "Unfreeze (edit as geo section)" renamed and UNIFIED; EXPANDED
 v14.0 D89/D90; ONE "Convert…" DIALOG since v16.6 D116: Whole/Part
-scope, Type, Domain, Roll axis, Yaw/pitch axis, Rate units — each
+scope, then Type, Domain, Rate units, Yaw/pitch axis, Roll axis,
+Roll behavior (the CANONICAL row order, v17.6 D143; axis rows
+swapped v17.9 D146 — the Add-section dialog and the Resulting
+settings share it) — each
 row pre-set to the section's current value with ↺ reset buttons,
 any combination to any other, Part carries the choices into the
 split-line mode, influenced sections gray Part, reversed refuse;
@@ -1493,7 +1590,8 @@ data within a tolerance × its value range; per-lane counts, flat
 lanes = bare endpoints; 1/3-frac C1 handles make the time cubic
 exactly linear). EVERY convert commits through the DENSITY
 PREVIEW popup (GraphEditor pv*): typed value + log slider
-(spacing 0.01–2 s / 0.5–20 m, accuracy 0.001–10 % — D136 widened),
+(spacing 0.02–2 s / 0.2–20 m, accuracy 0.01–10 % — D136's
+widening walked back on user feel, v17.3 D140),
 conversion re-applied
 LIVE per change against a restore of the pristine state
 (re-captured per restore — applyDocState ADOPTS snapshot
@@ -1834,13 +1932,14 @@ active-lane node, selection in white, signature-guarded rebuild on graph
 redraws; a clean CLICK on one selects that node in the graph and
 re-centers a manual zoom window onto it (v16.11 — marker pick beats
 the track-activate click, 14 px). PLACEMENT GIZMOS (v16.11 D123,
-reworked v16.12 D124): HIDDEN until revealed — a bigger sphere
-(0.34) at the active piece's ENTRY (its "first node") toggles them,
-and the reveal shows BOTH the entry gizmo and the trailing bridge's
-end gizmo (its own reveal sphere sits there too) whatever section
-is active; switching pieces re-hides (multi-Rig: per-anchor scale +
-re-aim hooks; a clean click on EMPTY space also hides them,
-v16.13). Arrows X green / Y blue / Z red (v16.13); rings wear
+reworked v16.12 D124; ALWAYS-ON since v17.7 D144): the reveal-click
+gating is GONE — gizmos show for the active piece whenever the View
+menu's "Show placement/seam gizmos" check is on (AppSettings.
+showGizmos, default true): the entry gizmo AND the trailing
+bridge's end gizmo together, whatever section is active (multi-Rig:
+per-anchor scale + re-aim hooks). The spheres remain as ANCHORS —
+the entry ball still selects node 0 on click, the seam ball's
+double-click still opens the seam settings. Arrows X green / Y blue / Z red (v16.13); rings wear
 GEO_LANE_COLORS (yaw yellow world-Y, pitch teal horizontal-right,
 roll orange heading) — yaw always, pitch/roll only while their
 padlocks are UNLOCKED; locked or machine-owned axes build NO part
@@ -1895,7 +1994,8 @@ the rails), Start speed spinner 1–100 m/s default 26, "Friction
 tooltips carry the model; both wireDocSpinner = document undo) — the PIECE rows
 (x/y/z ±500 m + yaw ±360°, the ACTIVE piece's placement, re-synced on
 piece switches; saved per `piece` line; y = height above the y=0
-ground, default 21) MOVED to the toolbar "Placement ▾" dropdown next
+ground, default 21) MOVED to the toolbar "Track Piece ▾" dropdown (renamed from
+"Placement ▾" + made a MOVABLE dark popup, v17.8 D145) next
 to the piece selector in v13.2 (D74), along with "Reverse piece" —
 the Coaster menu keeps only truly per-coaster knobs. Start speed is
 saved as the `v0` line and is ALSO editable in the first node's
@@ -1927,9 +2027,25 @@ frozen during drags — labeled on a RIGHT-EDGE axis (ticks + rotated
 title; marginRight() widens 14→48 px while shown; the roll lane no
 longer auto-fits overlays), and hovering an overlay shows a dot + its
 value in the curve's color (insert dot keeps priority; Shift swaps in
-the numeric slope, v10.4). Roll is
-deliberately NOT
-offered — the resulting roll rate is the authored roll lane),
+the numeric slope, v10.4). A third
+ROLL/BANK pick exists since v17.6 (D143 — FORCE view only: over
+geo the roll lane already IS the shared quantity), and the
+popup's "Resulting graph settings…" dialog picks how the
+overlays present — Rate units °/s|°/m, Roll axis local|global,
+Yaw/pitch axis (geo-resulting only), Roll behavior rate|absolute
+bank — persisted per-user (AppSettings resRateM/resRollG/resYpG/
+resRollAbs + resRoll; live-apply; supersedes v16.7's automatic
+°/m follow; resValueAt converts via worldRates/÷v/bankOfTU;
+check labels re-title via syncResChecks; the BANK overlay wears
+its own RED-ORANGE (BANK_COLOR rgb(235,70,45), v17.7 D144 —
+REAL absolute-bank lanes wear it too since v17.9 D146, and the
+roll/bank overlay draws NO seam caret since v17.9; the Resulting
+popup DRAGS like the Track Piece panel, drag = hover-dismiss
+stands down); the roll overlay
+works in BOTH views since v17.7 — grayed only while it would
+duplicate the active section's own roll representation,
+resRollRedundant; resulting default scales match the lane
+defaults incl. ±5 °/m and ±90 bank)),
 POV, Append (no shortcut hints on buttons — the stats bar hint is
 generated from live bindings); the Resulting overlays span the whole
 RUN since v13.11 (v10.8 made them ride-wide, but the global timeline
@@ -1990,6 +2106,20 @@ non-obvious behavior. Do not ship a feature without touching it.
   but differs from the unsplit original by a seam's worth (~2 cm on
   the violent gate fixture). Don't "fix" the loop epsilon: it
   re-times every compile ever made.
+- SMOOTHED STRICT SEAMS (v17.2, D139) bend three contracts
+  knowingly (third since v17.3 D140: the closure's arc STRETCH
+  means the drawn arc inside the window exceeds the s fields by up
+  to ±5% — ties/combs sit a hair wide there — in exchange for
+  the downstream not moving at all):
+  the upstream span's EXIT stays the FOLLOW-CONTRACT pose, not the
+  blended seam sample (D80's exit==last-drawn-sample rule bends
+  inside the window — re-stamping the blend would bake the
+  half-kink into resolve ops), and the design felt still STEPS at
+  a conflicted smoothed seam (the ≠v speaking — the TRUE felt is
+  what smooths). A hard kink in a short window is an honest big-g
+  excursion (κ·v²): widening the window is the fix, not a bug.
+  Fit ops read through the smoothing (compileForFit); reversal
+  deliberately captures the smoothed truth.
 - SPLITTING or REVERSING a TILTED piece (pitch/roll deltas ≠ 0)
   bakes the tilt into the new baseOrient — generation resumes FROM
   the tilted pose there, so those two ops re-solve force sections

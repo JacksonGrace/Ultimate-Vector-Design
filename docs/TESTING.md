@@ -1198,9 +1198,41 @@
     "launches off into the distance"): the strict bake precedes the
     ops — make-real keeps the on-screen shape to the fit residual
     (end dev 1.4 m on the violent 40°-dive + 60°/s-roll fixture,
-    arc preserved; ~190 m off before), and strict refreeze equals
+    arc preserved; ~190 m off before — 0.25 m since D137's clean
+    entry row), and strict refreeze equals
     the UN-STRICTED twin's refreeze to 0.22 m over a ~300 m
     reshape (the reshape happens from the REAL frame either way).
+
+50. **v17.2 gates (Phase3Gate extension; D137 entry-row synthesis +
+    D139 strict-seam smoothing).** All passed 2026-07-18: (50a/b)
+    converting a section whose targets JUMP at its entry seam
+    (fixture: Gv 1→2.2 + a 40 °/s roll-rate step) anchors node 0
+    on the SECTION'S OWN value — Gv 2.200 exactly, roll ~0 — with
+    ZERO ripple downstream, at 0.1 s AND 0.02 s spacing (pre-D137:
+    node 0 landed BETWEEN 1.0 and 2.2 with 20 oscillation
+    sign-flips at 0.1 s, and exactly ON the wrong value at fine
+    density); (50c/d) make-real on a strict-seam follower clears
+    the ≠v drift (11.9/20.0 → 0.008/0.040 m/s, DRIFT_EPS 0.2) and
+    lands node 0 on the true felt at the entry (±0.004 g) — locked
+    AND all-unlocked seams (the unlocked fixture's pre-fix node 0
+    read −0.409 against a true −0.706: the visible "conflict still
+    there"); (50e) smoothing is WINDOW-LOCAL — upstream of the
+    window bitwise, beyond it frames BIT-EXACT and positions offset
+    by one constant vector (variation 6e-14 m), the follower's
+    later sections carried identically — and since v17.3 (D140)
+    the POSITION CLOSURE bends + stretches the window so that
+    vector all but vanishes: |dp| 0.011 → 3e-6 m on the moderate
+    fixture (the violent 147°-kink probe: 0.689 → 0.000 m);
+    (50f) a 30 m window
+    collapses a ~9° seam kink: 9.09 → 0.23 °/sample frame step,
+    true rate spike 589 → 23 °/s, true-felt steps 0.062 g/sample
+    (smooth κ·v² excursion — narrower windows buy sharper g, real
+    physics); (50g) piece field 18 round-trips byte-identically,
+    17-field v17.1 lines load as smoothing 0; (50h) make-real on a
+    SMOOTHED follower still clears the drift and moves the ride end
+    only 0.16 m — fit ops read the UNSMOOTHED compile
+    (Coaster.compileForFit; fitting the blended samples from the
+    contract frame swung the tail 122 m before the fix).
 
 78. v16.7 feel round (untested by the user yet): (a) °/m sections:
     both vertical axes now say the units (left title + the right
@@ -1550,6 +1582,199 @@
     — no more launching into the distance. (f) The density
     preview reaches 0.001% accuracy and 0.01 s spacing (distance
     fits floor at 0.5 m).
+
+95. v17.2 (D137-D139) — seam-jump fixes + strict-seam carets &
+    smoothing: (a) CONVERT AT A JUMP: author two sections whose
+    Gv (or roll rate) steps at the seam, then Convert… the second
+    one — the refit's FIRST node sits exactly on the section's own
+    starting value with no wobble after it, at ANY density (it
+    used to land between the two sides' values and oscillate; the
+    previous section no longer matters). (b) MAKE-REAL AFTER A
+    STRICT SEAM: make a seam strict, edit upstream until ≠v shows,
+    resolve with "Make graphs real…" — the badge's ≠v CLEARS on
+    Apply and the design curve now starts ON the true stroke at
+    the seam (no leftover split at the entry). (c) SEAM CARETS
+    (semantics re-spec'd in D140 — see #96b): lane-colored
+    chevrons ON the double line flag each lane whose rate graph
+    would SPIKE at the seam. (d) SEAM SMOOTHING (control re-spec'd
+    in D140 — the diamond, see #96a): set ~10-30 m on a kinked
+    seam — the 3D junction rounds off, the true strokes ramp
+    through a smooth transition instead of stepping, the carets
+    disappear (the seam is smooth now), and NOTHING outside the
+    blend window moves. Too-small windows on hard kinks show
+    honest big-g excursions in the true strokes — widen the
+    window. Snap shut (or Ctrl+Z) restores the sharp joint
+    exactly; Save/Load round-trips it. (e) Resolve/convert ops on
+    a SMOOTHED follower behave as if the seam were sharp (the
+    blend re-applies on top of the result) — make-real keeps the
+    on-screen shape, no swing. (f) With smoothing 0 everywhere,
+    everything compiles exactly as v17.1 (bitwise — the old suite
+    pins it).
+
+96. v17.3 (D140) — the v17.2 feedback round: (a) THE SMOOTHING
+    DIAMOND (shown while smoothing is ENABLED — see #97a): drag it
+    sideways: the blend window grows and shrinks live with a
+    "smoothing X m" readout, Ctrl snaps whole meters (the
+    element-length step), dragging near the seam snaps shut
+    ("smoothing off"), the shaded band shows the window, the
+    diamond fills while active, one Ctrl+Z undoes a whole drag.
+    The settings pop-out has NO smoothing row anymore. (b) CARET
+    DIRECTIONS: build a seam with an instant pitch-up kink (e.g.
+    locked pitch, then dive the upstream) — the Gv caret points UP
+    (the felt graph would spike +∞ there); an instant roll step in
+    the negative direction points the roll caret DOWN. Carets sit
+    ON the line (top/bottom edges since v17.4 — #97c); enable
+    Resulting overlays — matching carets appear in the overlay
+    palette; smooth the seam — all carets vanish. (c) THE
+    SETTINGS pop-out is WHITE like the menus, titled just "Strict
+    seam", and DRAGS by its body; pressing Discontinuous now snaps
+    the axis to its ORIGINAL creation angle (the ↺ value) instead
+    of freezing the current one. (d) SEAM GIZMO: with a follower
+    piece active, a reveal ball sits ON the seam point in 3D —
+    click it: rings appear for the DISCONTINUOUS axes only (yaw
+    yellow / pitch teal / roll orange), dragging one re-aims the
+    downstream rigidly with the standard Ctrl 1° snap and one undo
+    per gesture; toggle an axis continuous in the settings and its
+    ring disappears live; DOUBLE-CLICK the ball — the settings
+    pop-out opens (reveal state unchanged). (e) DRIFT CLOSURE:
+    smooth a kinked seam on a LONG follower and watch its far end
+    in 3D while dragging the diamond — it stays put now (the
+    window bends/stretches to land back on the original exit; the
+    end used to creep noticeably). (f) Convert density ranges are
+    back to their pre-D136 spans (spacing 0.02–2 s / 0.2–20 m,
+    accuracy 0.01–10%).
+
+97. v17.4 (D141) — the v17.3 feedback round: (a) ENABLE/DISABLE:
+    a hand-made strict seam starts UNSMOOTHED with no diamond; its
+    seam menu says "Enable smoothing (10 m)" — click it: the
+    diamond + band appear at 10 m and the item reads "Disable
+    smoothing" (defaults were 1 m for one unshipped round — 10 m
+    since D142). Convert a whole bridge (strict box checked) or
+    connect two pieces: those seams arrive with smoothing ALREADY
+    ON at 10 m. Dragging the diamond shut disables it again (the
+    menu re-enables). (b) RED BAND: on a smoothed CLEAN seam
+    (no ≠v at zero smoothing), drag the window very wide over a
+    kinked junction until the follower's badge shows ≠v — the band
+    turns RED, and the badge menu's "Resolve speed conflict"
+    submenu is replaced by a grayed "Resolve speed conflict by
+    decreasing seam smoothing size"; shrink the window until the
+    ≠v clears — the band returns to white and the badge menu goes
+    quiet. A seam whose conflict exists at ZERO smoothing keeps
+    the normal resolve submenu and the white band. (c) CARET
+    STACKS: up-spikes sit just under the seam line's TOP edge,
+    down-spikes just above its BOTTOM edge — pan and zoom the
+    graphs: the carets stay put (direction only, no magnitude).
+    (d) EDGE GRABS: hover either EDGE of a smoothing band (seam or
+    s/c) — the cursor turns ↔; drag it: the window resizes exactly
+    like the diamond (Ctrl snaps, seam windows snap shut). Nodes,
+    badges, seam lines, '+' and curve inserts all still win the
+    click when they overlap an edge.
+
+98. v17.5 (D142) — the v17.4 feedback round: (a) CARETS ALWAYS
+    ON: at any sharp strict seam all three lane carets (and every
+    enabled overlay's) are visible — the ones whose graphs barely
+    jump are TRANSLUCENT rather than gone; kink an axis harder and
+    its caret goes solid. (b) 10 m DEFAULTS: "Enable smoothing
+    (10 m)" seeds ten meters; bridge converts and piece connects
+    arrive at 10 m. (c) RELATIVE DIAMOND: on a seam that already
+    has smoothing, grab the diamond and nudge right — the window
+    GROWS from its current size (left shrinks); it no longer
+    collapses to zero at the grab. Band edges still drag to the
+    cursor absolutely. (d) DOUBLE-CLICK the diamond: the seam
+    settings pop-out opens (no drag starts). (e) NODE DODGE: put
+    a node at a strict seam near the diamond's height — the
+    diamond hops down the '+'-button ladder to a clear spot and
+    remains grabbable there.
+
+51. **v17.6 gates (Phase3Gate extension; D143 — global-axis hold
+    continuity).** All passed 2026-07-19: (51a-c) appending a geo
+    section holding the v17.6 world-rate values after a curving
+    force section crosses the seam within 0.37-0.44 °/s of TRUE
+    rates for rollG-only, ypG-only AND both-global (the old zero
+    holds stepped 19-25 °/s; ypG-only's local roll lane excluded —
+    the documented D109 transport shift). Gate 49e re-pinned:
+    connect-directly arrives with smoothing OFF (D143) and the
+    coincident placement stays exact (5.3e-15 m).
+
+99. v17.6 (D143) — the both-global fix + resulting settings:
+    (a) BOTH-GLOBAL ADD: after any curving force section, ⊕ > Add
+    geometric section with Global roll AND Global yaw/pitch — the
+    new section's graphs now START on the incoming world rates
+    (no flat zero, no sudden transition); same for either flag
+    alone. If B/Shift+B ever still seems dead on such a seam, read
+    the stats bar — the matcher always says why it refused.
+    (b) RESULTING SETTINGS: Resulting ▾ > "Resulting graph
+    settings…" — flip Rate units to °/m: the overlay curves and
+    the right axis re-scale live and the dropdown's check labels
+    re-title; flip Roll axis to Global over a force section and
+    enable the new ROLL check: the resulting bank rate overlays in
+    the roll color; set Roll behavior to Absolute bank: the curve
+    becomes the bank angle itself ("bank … °" on hover). Yaw/pitch
+    axis rows gray over a geo section (the resulting graphs are
+    felt G there) with the hover explainer; the roll check grays
+    over geo sections too. Settings persist across restarts.
+    (c) DIALOG ORDER: the Convert dialog, the Add-section dialog
+    and the Resulting settings all list Type, Domain, Rate units,
+    Roll axis, Yaw/pitch axis, Roll behavior in that order.
+    (d) CARETS vs SMOOTHING: smooth a kinked strict seam and drag
+    the window wide — the carets stay exactly put (they read the
+    junction's sharp contract states); disable smoothing — still
+    identical.
+
+100. v17.7 (D144) — the v17.6 feedback round: (a) GIZMOS ALWAYS
+    ON: select any piece — its gizmos are just there (entry
+    arrows/rings, bridge-end, seam rings), no reveal click;
+    switching pieces moves them; View > "Show placement/seam
+    gizmos" hides them all (persists; menu-local Ctrl+Z works).
+    The entry sphere still selects node 0; double-clicking the
+    seam ball still opens the seam settings. (b) CARET SIZES: at
+    a strict seam, kink one axis hard and leave another nearly
+    continuous — the hard one wears a full-size caret, the quiet
+    one a smaller thinner one (both fully opaque). Drag a node
+    onto a caret's spot — the caret hops just far enough inward
+    to clear it and returns when the node leaves; up-carets hug
+    the top edge, down-carets the bottom. (c) RESULTING ROLL
+    EVERYWHERE: on a GEO section, enable the Resulting roll
+    check — with matching roll settings it's grayed (it would
+    duplicate the real roll graph); flip the resulting Roll axis
+    to the other setting and the check un-grays and overlays the
+    converted roll; switch to a section whose settings match —
+    grayed again but still checked, and it comes back elsewhere.
+    Absolute bank draws RED-ORANGE. (d) SCALES: a °/m lane's
+    empty default scale reads ±5 °/m (all lanes); resulting
+    overlays open at the same defaults as the lanes (−1..4 g
+    felt, ±60 °/s, ±5 °/m, ±90° bank).
+
+101. v17.8 (D145) — the v17.7 feedback round: (a) SEAM SETTINGS
+    MEMORY: make a seam strict (settings auto-open = the FIRST
+    open) — toggling Discontinuous snaps to the creation angle;
+    Apply, re-aim the seam, reopen the settings and toggle an
+    axis off/on — it now HOLDS the current angle (nothing jumps);
+    ↺ still returns the creation angle. (b) APPLY/CANCEL: click
+    off the settings window — it stays; change locks/angles then
+    CANCEL — everything reverts to how the window found it (one
+    Ctrl+Z step); Apply keeps. (c) TINTED CHECKS: in Resulting ▾,
+    checked boxes fill with their curve's color (bank = the
+    near-red); unchecking clears the fill; colors follow the
+    active mode. (d) TRACK PIECE: the toolbar button reads
+    "Track Piece ▾" (still "Bridge properties ▾" over a live
+    bridge); its panel DRAGS by its dark background, spinners
+    still edit live, click-off closes, menu-local Ctrl+Z works,
+    and "Reverse piece…" is a button inside it.
+
+102. v17.9 (D146) — the v17.8 feedback round: (a) BANK COLOR: an
+    absolute-bank section's lane 2 draws in the same red-orange as
+    the resulting bank overlay (nodes/fills/markers included).
+    (b) CARETS: enable the resulting roll/bank overlay at a
+    strict seam — no extra caret appears for it (the lane's own
+    roll caret covers the spike); pitch/yaw overlay carets still
+    show. (c) ROW ORDER: Convert, Add-section and Resulting
+    settings all list Type, Domain, Rate units, Yaw/pitch axis,
+    Roll axis, Roll behavior. (d) MOVABLE RESULTING: drag the
+    Resulting dropdown by its dark background — it stays open
+    while moved (hover-away no longer closes it after a drag);
+    click elsewhere to close; reopening re-docks it at the
+    button. Track Piece panel labels are white.
 
 
 

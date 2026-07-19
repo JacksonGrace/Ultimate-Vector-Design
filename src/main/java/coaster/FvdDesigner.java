@@ -244,10 +244,12 @@ public class FvdDesigner extends Application {
                       // rebuilding TrackPiece defaulted them shut, so
                       // every undo slammed the locks)
                       boolean lockPitch, boolean lockRoll,
-                      // strict seam (v17.1, D135; values D136)
+                      // strict seam (v17.1, D135; values D136;
+                      // smoothing v17.2, D139)
                       boolean followPrev, boolean sLockYaw,
                       boolean sLockPitch, boolean sLockRoll,
-                      double sYaw, double sPitch, double sRoll) {}
+                      double sYaw, double sPitch, double sRoll,
+                      double sSmooth) {}
 
     record DocState(List<PieceState> pieces, int activePiece, int active,
                     double heart, double gauge, double v0,
@@ -293,7 +295,8 @@ public class FvdDesigner extends Application {
                 piece.baseOrient, piece.uiLockPitch, piece.uiLockRoll,
                 piece.followPrev, piece.sLockYaw,
                 piece.sLockPitch, piece.sLockRoll,
-                piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg));
+                piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg,
+                piece.sSmoothLen));
         }
         return new DocState(ps,
             editor != null ? editor.activePiece() : 0,
@@ -323,6 +326,7 @@ public class FvdDesigner extends Application {
             piece.sYawDeg = pst.sYaw();
             piece.sPitchDeg = pst.sPitch();
             piece.sRollDeg = pst.sRoll();
+            piece.sSmoothLen = pst.sSmooth();
             for (SecState st : pst.sections()) {
                 Section sec = switch (st.mode()) {
                     case 3  -> st.bridge();   // deep copy, adopted
@@ -488,7 +492,7 @@ public class FvdDesigner extends Application {
         boolean bridge = editor.activeBridgeWithTarget();
         if (placementBtn != null) {
             placementBtn.setText(bridge
-                ? "Bridge properties ▾" : "Placement ▾");
+                ? "Bridge properties ▾" : "Track Piece ▾");
         }
         if (!bridge) return;
         boolean was = docApplying;
@@ -700,17 +704,72 @@ public class FvdDesigner extends Application {
                 (int) (cols[i].getBlue() * 255)));
         }
         if (resPitchCheck != null) {
-            String tru = delta ? "True " : "";
-            resPitchCheck.setText(tru
-                + (geo ? "Vertical G (g)" : "Pitch rate (°/s)"));
-            resYawCheck.setText(tru
-                + (geo ? "Lateral G (g)" : "Yaw rate (°/s)"));
+            resLastGeo = geo;
+            resLastDelta = delta;
+            syncResChecks();
         }
     }
+    // the Resulting checks' last-applied mode (v17.6 — the settings
+    // dialog re-titles them live through syncResChecks)
+    private boolean resLastGeo, resLastDelta;
+
+    /** Re-title the Resulting overlay checks per the active mode AND
+     *  the resulting-graph settings (v17.6, D143): unit suffixes
+     *  follow the rate-units setting, the roll check reads "Bank (°)"
+     *  under absolute behavior, and it grays over geo sections (the
+     *  roll overlay is force-view only). */
+    void syncResChecks() {
+        if (resPitchCheck == null) return;
+        String tru = resLastDelta ? "True " : "";
+        String ru = settings.resRateM() ? "°/m" : "°/s";
+        resPitchCheck.setText(tru
+            + (resLastGeo ? "Vertical G (g)" : "Pitch rate (" + ru + ")"));
+        resYawCheck.setText(tru
+            + (resLastGeo ? "Lateral G (g)" : "Yaw rate (" + ru + ")"));
+        resRollCheck.setText(tru
+            + (settings.resRollAbs() && settings.resRollG()
+                ? "Bank (°)" : "Roll rate (" + ru + ")"));
+        // grayed only while it would DUPLICATE the active section's
+        // own roll graph (v17.7, D144 — both views otherwise; the
+        // check's state persists across sections)
+        resRollCheck.setDisable(editor != null
+            && editor.resRollRedundant());
+        tintResChecks();
+    }
+
+    /** Fill a checked Resulting box with its curve's color (v17.8,
+     *  D145 — user spec). The .box sub-node exists only after the
+     *  skin applies (lazy lookup, the color-picker precedent). */
+    private void tintResCheck(CheckBox cb, Color col) {
+        javafx.scene.Node box = cb.lookup(".box");
+        if (box == null) return;
+        box.setStyle(cb.isSelected()
+            ? String.format(
+                "-fx-background-color: rgb(%d,%d,%d);"
+                + " -fx-mark-color: white;",
+                (int) (col.getRed() * 255),
+                (int) (col.getGreen() * 255),
+                (int) (col.getBlue() * 255))
+            : "");
+    }
+
+    void tintResChecks() {
+        if (resPitchCheck == null) return;
+        Color[] pal = resLastGeo ? LANE_COLORS : GEO_LANE_COLORS;
+        tintResCheck(resPitchCheck, pal[0]);
+        tintResCheck(resYawCheck, pal[1]);
+        tintResCheck(resRollCheck,
+            settings.resRollAbs() && settings.resRollG()
+                ? BANK_COLOR : pal[2]);
+    }
+
     // TIME is light purple throughout the graph UI (v10.2, was yellow —
     // freed for the geo yaw lane): the "Time (s)" axis label, the
     // horizontal (time-changing) guide line, the POV position marker
     static final Color TIME_COLOR = Color.rgb(200, 165, 255);
+    // BANK color — the resulting bank overlay AND real absolute-bank
+    // lanes (v17.9, D146): red-orange (D145's near-red walked back)
+    static final Color BANK_COLOR = Color.rgb(235, 70, 45);
 
 
     Stage stage;
@@ -759,7 +818,8 @@ public class FvdDesigner extends Application {
         bridgeRollRow, bridgePosRow;
     private RadioButton bridgeModePY, bridgeModeP, bridgeModeN;
     private CheckBox bridgeOptLenCheck;   // v13.8: auto length (D82)
-    private Button placementBtn;   // "Placement ▾" / "Bridge properties ▾"
+    private Button placementBtn;   // "Track Piece ▾" / "Bridge properties ▾"
+    private Popup placementPopup;  // the movable piece panel (v17.8)
     private ToggleButton bridgeLockYawBtn, bridgeLockPitchBtn,
         bridgeLockRollBtn;         // v13.13: orientation locks (D87)
     private Spinner<Double> bridgeYawSpinner, bridgePitchSpinner,
@@ -855,7 +915,7 @@ public class FvdDesigner extends Application {
     // rail-mode radios, VIEW-menu residents since v16.14 (Dialogs
     // builds and assigns them; setRailMode/loads re-sync as ever)
     RadioButton gradientModeItem, solidModeItem;
-    private CheckBox resPitchCheck, resYawCheck;   // retitled per mode
+    private CheckBox resPitchCheck, resYawCheck, resRollCheck;   // retitled per mode
 
     // app-wide settings persisted across runs (shortcuts, FOV)
     final AppSettings settings = new AppSettings();
@@ -945,6 +1005,7 @@ public class FvdDesigner extends Application {
         resPitchCheck.setStyle("-fx-text-fill: rgb(210,215,225);");
         resPitchCheck.setOnAction(e -> {
             settings.setResPitch(resPitchCheck.isSelected());
+            tintResChecks();
             editor.refresh();
         });
         resYawCheck = new CheckBox("Yaw rate (°/s)");
@@ -952,9 +1013,25 @@ public class FvdDesigner extends Application {
         resYawCheck.setStyle("-fx-text-fill: rgb(210,215,225);");
         resYawCheck.setOnAction(e -> {
             settings.setResYaw(resYawCheck.isSelected());
+            tintResChecks();
             editor.refresh();
         });
-        VBox resBox = new VBox(8, resPitchCheck, resYawCheck);
+        // ROLL/BANK overlay (v17.6, D143): force view only — over a
+        // geo section the roll lane already IS the shared quantity
+        resRollCheck = new CheckBox("Roll rate (°/s)");
+        resRollCheck.setSelected(settings.resRoll());
+        resRollCheck.setStyle("-fx-text-fill: rgb(210,215,225);");
+        resRollCheck.setOnAction(e -> {
+            settings.setResRoll(resRollCheck.isSelected());
+            tintResChecks();
+            editor.refresh();
+        });
+        Button resSet = new Button("Resulting graph settings…");
+        resSet.setFocusTraversable(false);
+        resSet.setStyle("-fx-font-size: 11px;");
+        resSet.setOnAction(e -> editor.showResultingSettings());
+        VBox resBox = new VBox(8, resPitchCheck, resYawCheck,
+            resRollCheck, resSet);
         resBox.setPadding(new Insets(10, 16, 10, 12));
         resBox.setStyle("-fx-background-color: rgb(38,42,53);"
             + " -fx-background-radius: 6;"
@@ -970,9 +1047,23 @@ public class FvdDesigner extends Application {
         // actual pointer via Robot and re-arms instead of hiding while
         // it sits over the popup or the button.
         Robot resRobot = new Robot();
+        // MOVABLE (v17.9, D146 — the Track Piece pattern): grab any
+        // non-control spot; once dragged, the hover dismiss stands
+        // down for that showing (click-off still closes it)
+        boolean[] resDragged = { false };
+        double[] resGrab = new double[2];
+        resBox.setOnMousePressed(e -> {
+            resGrab[0] = e.getScreenX() - resPopup.getX();
+            resGrab[1] = e.getScreenY() - resPopup.getY();
+        });
+        resBox.setOnMouseDragged(e -> {
+            resDragged[0] = true;
+            resPopup.setX(e.getScreenX() - resGrab[0]);
+            resPopup.setY(e.getScreenY() - resGrab[1]);
+        });
         PauseTransition resHide = new PauseTransition(Duration.millis(250));
         resHide.setOnFinished(e -> {
-            if (!resPopup.isShowing()) return;
+            if (!resPopup.isShowing() || resDragged[0]) return;
             Point2D m = resRobot.getMousePosition();
             if (screenContains(resBox, m) || screenContains(resBtn, m)) {
                 resHide.playFromStart();   // still hovered: poll again
@@ -987,7 +1078,9 @@ public class FvdDesigner extends Application {
                 // flush against the button — a visible gap was a dead
                 // zone the cursor-check called "outside" (v10.5)
                 Bounds b = resBtn.localToScreen(resBtn.getBoundsInLocal());
+                resDragged[0] = false;   // fresh showing (v17.9)
                 resPopup.show(resBtn, b.getMinX(), b.getMaxY() - 1);
+                tintResChecks();   // skins exist once shown (v17.8)
                 resHide.playFromStart();   // self-arm: hover state unknown yet
             }
         });
@@ -1037,40 +1130,67 @@ public class FvdDesigner extends Application {
         // live bridge the SAME button is "Bridge properties ▾" (v13.10,
         // D84 — user: it's really a different menu): mode + length +
         // per-bridge optimizer preferences + next-piece placement.
-        placementBtn = new Button("Placement ▾");
+        placementBtn = new Button("Track Piece ▾");
         placementBtn.setFocusTraversable(false);
         placementBtn.setStyle(btnStyle);
         placementBtn.setOnAction(e -> {
-            ContextMenu cm = new ContextMenu();
-            javafx.scene.Node sceneRow;
+            // a MOVABLE dark popup since v17.8 (D145, user spec — a
+            // ContextMenu can't be dragged): same rows, grab any
+            // non-control spot to move it; click-off still closes
+            if (placementPopup != null && placementPopup.isShowing()) {
+                placementPopup.hide();
+                placementPopup = null;
+                return;
+            }
+            Popup pop = new Popup();
+            pop.setAutoHide(true);
+            placementPopup = pop;
+            VBox box = new VBox(6);
+            box.setPadding(new Insets(10, 14, 10, 12));
+            box.setStyle("-fx-background-color: rgb(38,42,53);"
+                + " -fx-background-radius: 6;"
+                + " -fx-border-color: rgb(95,102,120);"
+                + " -fx-border-radius: 6;");
             if (editor.activeBridgeWithTarget()) {
-                // a live bridge is active: place the NEXT piece through
-                // it (v13.5 — mode + the controls that mode leaves free)
                 updateBridgeControls();
-                cm.getItems().addAll(
-                    new CustomMenuItem(bridgeModeRow, false),
-                    new CustomMenuItem(bridgeLenRow, false),
-                    new CustomMenuItem(bridgeYawRow, false),
-                    new CustomMenuItem(bridgePitchRow, false),
-                    new CustomMenuItem(bridgeRollRow, false),
-                    new CustomMenuItem(bridgePosRow, false));
-                sceneRow = bridgeModeRow;
+                box.getChildren().addAll(bridgeModeRow, bridgeLenRow,
+                    bridgeYawRow, bridgePitchRow, bridgeRollRow,
+                    bridgePosRow);
             } else {
                 syncPlacementSpinners();   // lock states follow the piece
-                cm.getItems().addAll(
-                    new CustomMenuItem(placementRow, false),
-                    new CustomMenuItem(yawPlacementRow, false),
-                    new CustomMenuItem(tiltPlacementRow, false),
-                    reverseItem);
-                sceneRow = placementRow;
+                Button rev = new Button(
+                    "Reverse piece (rebuild backward)…");
+                rev.setFocusTraversable(false);
+                rev.setStyle("-fx-font-size: 11px;");
+                rev.setOnAction(ev2 -> {
+                    pop.hide();
+                    placementPopup = null;
+                    editor.reverseActivePiece();
+                });
+                box.getChildren().addAll(placementRow, yawPlacementRow,
+                    tiltPlacementRow, rev);
             }
-            final javafx.scene.Node row = sceneRow;
-            cm.setOnShown(ev -> {
-                beginMenuSession();
-                installMenuUndoKeys(row.getScene());
+            double[] grab = new double[2];
+            box.setOnMousePressed(ev2 -> {
+                grab[0] = ev2.getScreenX() - pop.getX();
+                grab[1] = ev2.getScreenY() - pop.getY();
             });
-            cm.setOnHidden(ev -> endMenuSession());
-            cm.show(placementBtn, javafx.geometry.Side.BOTTOM, 0, 0);
+            box.setOnMouseDragged(ev2 -> {
+                pop.setX(ev2.getScreenX() - grab[0]);
+                pop.setY(ev2.getScreenY() - grab[1]);
+            });
+            pop.getContent().add(box);
+            pop.setOnShown(ev2 -> {
+                beginMenuSession();
+                installMenuUndoKeys(box.getScene());
+            });
+            pop.setOnHidden(ev2 -> {
+                endMenuSession();
+                if (placementPopup == pop) placementPopup = null;
+            });
+            Bounds pb = placementBtn.localToScreen(
+                placementBtn.getBoundsInLocal());
+            pop.show(placementBtn, pb.getMinX(), pb.getMaxY() - 1);
         });
         Tooltip.install(placementBtn, new Tooltip(
             "The ACTIVE piece's placement: x/y/z, yaw (a delta on its\n"
@@ -1578,9 +1698,9 @@ public class FvdDesigner extends Application {
         // since v13.2 (user: piece settings belong by the graph); they
         // are built here with the other spinners and stored as fields
         Label startLbl = new Label("Piece x/y/z (m)");
-        startLbl.setTextFill(Color.BLACK);
+        startLbl.setTextFill(Color.WHITE);   // dark popup (v17.9)
         Label yawLbl = new Label("Piece yaw (°)");
-        yawLbl.setTextFill(Color.BLACK);
+        yawLbl.setTextFill(Color.WHITE);
         Label speedLbl = new Label("Start speed (m/s)");
         speedLbl.setTextFill(Color.BLACK);
         HBox heartRow = new HBox(8, heartLbl, heartSpinner);
@@ -1610,7 +1730,7 @@ public class FvdDesigner extends Application {
         // for a bridged-in piece the padlocks ARE the bridge's — one
         // shared state, whichever panel flips them
         Label tiltLbl = new Label("Piece pitch/roll (°)");
-        tiltLbl.setTextFill(Color.BLACK);
+        tiltLbl.setTextFill(Color.WHITE);   // dark popup (v17.9)
         piecePitchSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-85, 85,
                 piece0.pitchDeg, 1));

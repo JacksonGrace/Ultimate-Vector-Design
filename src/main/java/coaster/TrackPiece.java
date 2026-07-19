@@ -69,6 +69,21 @@ public final class TrackPiece {
     public double sPitchDeg;
     public double sRollDeg;
 
+    /** STRICT-SEAM geometric SMOOTHING length (m of track, half each
+     *  side of the seam; v17.2, D139 — the s/c entry-smoothing idea
+     *  applied to the frozen junction): the compiler blends the two
+     *  sides' orientations across the window and re-marches the
+     *  positions, so the seam's instant orientation/curvature change
+     *  spreads over the window instead of one sample. 0 = off
+     *  (bitwise-historic). Persisted as `piece` field 18. */
+    public double sSmoothLen;
+
+    /** Has this seam's SETTINGS pop-out been opened before (v17.8,
+     *  D145)? First open: Discontinuous toggles seed the creation
+     *  angle; later opens capture the current one. Interaction
+     *  history — deliberately NOT persisted and NOT in undo. */
+    public boolean sSeenSettings;
+
     public final List<Section> sections = new ArrayList<>();
 
     public TrackPiece(double x, double y, double z, double yawDeg) {
