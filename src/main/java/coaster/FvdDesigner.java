@@ -567,7 +567,9 @@ public class FvdDesigner extends Application {
             gizmoAxesBtn.setSelected(loc);
             gizmoAxesBtn.setText(loc ? "Axes: local" : "Axes: global");
         }
-        if (viewGizmoCheck != null) viewGizmoCheck.setSelected(loc);
+        if (viewGizmoLocal != null) {
+            (loc ? viewGizmoLocal : viewGizmoGlobal).setSelected(true);
+        }
         viewport.refreshGizmo(true);
     }
 
@@ -616,7 +618,6 @@ public class FvdDesigner extends Application {
      *  check and the captured-ride A/D keys share it. */
     void setPovReversed(boolean rev) {
         settings.setPovReversed(rev);
-        if (viewPovRevCheck != null) viewPovRevCheck.setSelected(rev);
         viewport.applyPovNow();   // instant flip, even parked
         viewport.syncPovLabel();  // the bottom-left indicator (v16.16)
     }
@@ -910,8 +911,17 @@ public class FvdDesigner extends Application {
     private SplitPane mainSplit;           // 3D view over graph panel
     private double lastDividerPos = 0.6;   // restore point for the collapse toggle
     private ToggleButton gizmoAxesBtn;     // gizmo local/global axes (v16.11)
-    CheckBox viewGizmoCheck;               // the View menu's twin (v16.13)
-    CheckBox viewPovRevCheck;              // POV reverse check (v16.15)
+    RadioButton viewGizmoLocal, viewGizmoGlobal;   // the View menu's
+                                           // axis dots (v17.10 — were
+                                           // one CheckBox twin, v16.13)
+    // (viewPovRevCheck is GONE, v17.11 — the View menu row was
+    // removed on user spec; A/D in captured POV + the bottom-left
+    // "Backwards POV (A)" tag are the whole surface)
+
+    // COASTER STATISTICS (v17.11, user spec — the Coaster menu's
+    // submenu rows read these; Viewport3D.rebuildTrack stashes them)
+    double statRideTime, statTrackLen, statMinY, statMaxY,
+           statTopV, statMinGv, statMaxGv;
     // rail-mode radios, VIEW-menu residents since v16.14 (Dialogs
     // builds and assigns them; setRailMode/loads re-sync as ever)
     RadioButton gradientModeItem, solidModeItem;
@@ -1760,7 +1770,7 @@ public class FvdDesigner extends Application {
         // active, the Placement dropdown edits the NEXT piece through
         // it — a mode choice plus the controls each mode leaves free
         Label bridgeModeLbl = new Label("Next piece placement");
-        bridgeModeLbl.setTextFill(Color.BLACK);
+        bridgeModeLbl.setTextFill(Color.WHITE);   // dark popup (v17.10)
         ToggleGroup modeGroup = new ToggleGroup();
         bridgeModePY = new RadioButton("Optimize position and orientation");
         bridgeModeP = new RadioButton("Optimize position");
@@ -1775,6 +1785,8 @@ public class FvdDesigner extends Application {
         for (int m = 0; m < 3; m++) {
             final int mode = m;
             modeBtns[m].setToggleGroup(modeGroup);
+            modeBtns[m].setStyle("-fx-text-fill: white;");   // dark popup
+
             modeBtns[m].setOnAction(e -> {
                 if (docApplying) return;
                 editor.setBridgeOptMode(mode);
@@ -1783,14 +1795,17 @@ public class FvdDesigner extends Application {
         }
         bridgeModeRow = new VBox(4, bridgeModeLbl,
             bridgeModePY, bridgeModeP, bridgeModeN);
-        bridgeGapLbl.setStyle("");   // popup is light; the toolbar
-        bridgeGapLbl.setTextFill(Color.BLACK);   // styling was for dark
+        bridgeGapLbl.setStyle("");
+        bridgeGapLbl.setTextFill(Color.WHITE);   // dark popup since
+        // v17.8 — the panel text is white to contrast (v17.10, user
+        // report: it briefly went black when the popup was a light
+        // ContextMenu)
         // "Optimize length" (v13.8, D82): the length becomes the knee
         // of the smoothness curve — the shortest length at which the
         // transition stops improving; the spinner disables while on.
         // Switching INTO an optimize mode turns it on (user spec).
         bridgeOptLenCheck = new CheckBox("Optimize length");
-        bridgeOptLenCheck.setTextFill(Color.BLACK);
+        bridgeOptLenCheck.setTextFill(Color.WHITE);   // dark popup
         bridgeOptLenCheck.setFocusTraversable(false);
         bridgeOptLenCheck.setOnAction(e -> {
             if (docApplying) return;
@@ -1810,7 +1825,7 @@ public class FvdDesigner extends Application {
         // found them confusing and unpredictable; the optimizer's
         // constants are internal again)
         Label bYawLbl = new Label("Next piece yaw (°)");
-        bYawLbl.setTextFill(Color.BLACK);
+        bYawLbl.setTextFill(Color.WHITE);   // dark popup
         bridgeYawSpinner = new Spinner<>(   // arrows step 1° (v16.12,
             // user spec — pitch/roll already did; the gizmo rings'
             // Ctrl-snap is 1° to match)
@@ -1833,7 +1848,7 @@ public class FvdDesigner extends Application {
             bridgeLockYawBtn);
         bridgeYawRow.setAlignment(Pos.CENTER_LEFT);
         Label bPitchLbl = new Label("Next piece pitch (°)");
-        bPitchLbl.setTextFill(Color.BLACK);
+        bPitchLbl.setTextFill(Color.WHITE);   // dark popup
         bridgePitchSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-85, 85, 0, 1));
         bridgePitchSpinner.setPrefWidth(90);
@@ -1846,7 +1861,7 @@ public class FvdDesigner extends Application {
             bridgeLockPitchBtn);
         bridgePitchRow.setAlignment(Pos.CENTER_LEFT);
         Label bRollLbl = new Label("Next piece roll (°)");
-        bRollLbl.setTextFill(Color.BLACK);
+        bRollLbl.setTextFill(Color.WHITE);   // dark popup
         bridgeRollSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, 0, 1));
         bridgeRollSpinner.setPrefWidth(90);
@@ -1859,7 +1874,7 @@ public class FvdDesigner extends Application {
             bridgeLockRollBtn);
         bridgeRollRow.setAlignment(Pos.CENTER_LEFT);
         Label bPosLbl = new Label("Next piece x/y/z (m)");
-        bPosLbl.setTextFill(Color.BLACK);
+        bPosLbl.setTextFill(Color.WHITE);   // dark popup
         bridgeXSpinner = bridgePosSpinner(0);
         bridgeYSpinner = bridgePosSpinner(1);
         bridgeZSpinner = bridgePosSpinner(2);
@@ -1888,9 +1903,10 @@ public class FvdDesigner extends Application {
             + "to ~2 is typical). Fast track sheds much more than\n"
             + "slow track."));
 
-        // (the rail-color radios + "Rail colors…" dialog item moved to
-        // the VIEW menu in v16.14 — Dialogs.buildViewMenu assigns the
-        // gradientModeItem/solidModeItem RadioButtons there)
+        // (the rail-color radios live in THIS menu's "Rail Color"
+        // section since v17.10 — Dialogs.railColorItems assigns the
+        // gradientModeItem/solidModeItem RadioButtons; they spent
+        // v16.14-v17.9 in the View menu)
 
         // reversal is a PIECE operation (v12.1, D71), REWORKED as a
         // CONVERT in v17.0 (D134, user re-spec): the compiled geometry
@@ -1908,11 +1924,31 @@ public class FvdDesigner extends Application {
             new CustomMenuItem(speedRow, false),
             new CustomMenuItem(fricRollRow, false),
             new CustomMenuItem(fricAirRow, false));
+        // "Rail Color" section (v17.10, user spec — moved here from
+        // the View menu): Solid (inline swatch) | Normal Force, with
+        // "G-Force Colors…" below while Normal Force is selected
+        coasterMenu.getItems().addAll(dialogs.railColorItems());
+        // COASTER STATISTICS submenu (v17.11, user spec — the five
+        // numbers that lived on the stats bar; refreshed per open)
+        Label[] statRows = new Label[5];
+        Menu statsMenu = new Menu("Coaster Statistics");
+        for (int i = 0; i < 5; i++) {
+            statRows[i] = new Label();
+            statRows[i].setTextFill(Color.BLACK);
+            statsMenu.getItems().add(new CustomMenuItem(statRows[i], false));
+        }
+        coasterMenu.getItems().addAll(new SeparatorMenuItem(), statsMenu);
         // menu-local undo/redo lives exactly as long as the menu is open;
         // the popup has its own Scene, so the Ctrl+Z filter goes there
         coasterMenu.setOnShown(e -> {
             beginMenuSession();
             installMenuUndoKeys(heartRow.getScene());
+            dialogs.railMenuSync.run();   // Load/New re-sync (v16.16)
+            statRows[0].setText(String.format("Ride time: %.1f s", statRideTime));
+            statRows[1].setText(String.format("Track length: %.0f m", statTrackLen));
+            statRows[2].setText(String.format("Height: %.1f to %.1f m", statMinY, statMaxY));
+            statRows[3].setText(String.format("Top speed: %.0f km/h", statTopV * 3.6));
+            statRows[4].setText(String.format("Vertical G: %.1f to %.1f", statMinGv, statMaxGv));
         });
         coasterMenu.setOnHidden(e -> endMenuSession());
 
@@ -1934,14 +1970,9 @@ public class FvdDesigner extends Application {
     // POV/fly cameras, meshes, grid: Viewport3D.java (D54).
 
 
-    /** Built from the live bindings so it stays correct after rebinding. */
-    String shortcutHint() {
-        return String.format(
-            "[%s/%s/%s lane · %s smooth · S=slide Ctrl=snap · %s append · %s POV · %s/%s save/load · %s undo]",
-            settings.shortcut("lane1"), settings.shortcut("lane2"), settings.shortcut("lane3"),
-            settings.shortcut("smooth"), settings.shortcut("append"), settings.shortcut("pov"),
-            settings.shortcut("save"), settings.shortcut("load"), settings.shortcut("undo"));
-    }
+    // (the stats-bar shortcut hint is GONE, v17.11 — user spec: the
+    // bottom line is the live POV position now; shortcuts live in
+    // Edit > Shortcuts and the Help dialog)
 
 
     // =====================================================================

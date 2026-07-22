@@ -281,6 +281,21 @@ public class AppSettings {
         save();
     }
 
+    /** "Visualize Track Selection" (v17.10, user spec): ON = the
+     *  historic look — unselected pieces desaturate and the active
+     *  section's ties render white. OFF = every piece renders in its
+     *  full active coloring and every tie stays the plain dark color,
+     *  as if nothing were selected. Pure view choice. */
+    public boolean visualizeSelection() {
+        return Boolean.parseBoolean(
+            props.getProperty("visualizeSelection", "true"));
+    }
+
+    public void setVisualizeSelection(boolean on) {
+        props.setProperty("visualizeSelection", String.valueOf(on));
+        save();
+    }
+
     /** Gizmo translation arrows follow the piece's entry frame (local)
      *  instead of world X/Y/Z (v16.11) — a pure view choice, toggled
      *  by the viewport's overlay button; switching never moves track. */

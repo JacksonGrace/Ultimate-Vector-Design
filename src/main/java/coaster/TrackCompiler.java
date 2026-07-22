@@ -718,9 +718,13 @@ public final class TrackCompiler {
                                         double dt,
                                         FVDIntegrator.Friction fric) {
         boolean dist = fs.domain() == Section.Domain.DISTANCE;
-        // 0.05 = the bake grid in the lane's own axis units (s or m) —
-        // the same density relative to the axis either way
-        List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(fs.lanes, 0.05);
+        // bake grid in the lane's own axis units: TIME lanes at 0.01 s
+        // since v17.11 (D151 — knots on every RK4 step boundary; the
+        // 0.05 grid's phase was the last visible split-vs-unsplit
+        // term), DISTANCE lanes keep 0.05 m (~26× denser per meter of
+        // track already; 0.01 m would balloon long sections' tables)
+        List<FVDIntegrator.Keyframe> kfs =
+            BezierBaker.bake(fs.lanes, dist ? 0.05 : 0.01);
         FVDIntegrator.Options opts = new FVDIntegrator.Options();
         opts.dt = dt;
         opts.v0 = fs.vDesign;
@@ -757,7 +761,8 @@ public final class TrackCompiler {
     private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt,
                                       FVDIntegrator.Friction fric) {
         boolean dist = gs.domain() == Section.Domain.DISTANCE;
-        List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(gs.lanes, 0.05);
+        List<FVDIntegrator.Keyframe> kfs =
+            BezierBaker.bake(gs.lanes, dist ? 0.05 : 0.01);   // D151
         boolean gAbs = gs.rollAbsolute && gs.rollGlobal;   // v16.7
         if (gAbs) kfs = exactRoll(kfs, gs.lanes.get(2));
         if (gs.reversed) {
@@ -854,7 +859,8 @@ public final class TrackCompiler {
         // the operating-speed re-expression is the identity there —
         // and pass 2 integrates under the perMeter flag.
         boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
-        List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(ls.lanes, 0.05);
+        List<FVDIntegrator.Keyframe> kfs =
+            BezierBaker.bake(ls.lanes, distAxis ? 0.05 : 0.01);   // D151
         if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored) {
             Centerline line = isGeo ? geoLane((GeoSection) ls, entry, dt, fric)
                                     : forceLane((ForceSection) ls, entry, dt, fric);

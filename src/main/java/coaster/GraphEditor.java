@@ -1825,11 +1825,46 @@ class GraphEditor extends Region {
      *  ratio: every length round trip drifted the sweep a little and
      *  the shape got rougher — the user's "different each time". */
     private void applyBridgeGap(BridgeSection bs, double dist) {
+        boolean povOn = povInsideActiveBridge();
         app.coaster.optimizeBridge(bs, activePiece + 1, dist,
             bs.optMode == BridgeSection.OPT_POS_YAW);
         app.rebuildTrack();
+        if (povOn) clampPovIntoActiveBridge();
         refreshOffset();
         redraw();
+    }
+
+    /** Is the POV position currently inside the ACTIVE bridge's span? */
+    private boolean povInsideActiveBridge() {
+        if (activeBridge() == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return false;
+        TrackCompiler.Span sp = spanOf(activeSection);
+        if (sp == null) return false;
+        int i1 = Math.min(sp.i1(), app.lastSamples.size() - 1);
+        double t = app.viewport.povTime;
+        return t >= app.lastSamples.get(sp.i0()).t() - 1e-9
+            && t <= app.lastSamples.get(i1).t() + 1e-9;
+    }
+
+    /** Keep the POV position ON the active bridge while its settings
+     *  are being edited (v17.11, user spec): shrinking the length
+     *  used to drop the parked POV into the NEXT piece, whose ride
+     *  follow then activated it and closed the Bridge-properties
+     *  panel mid-edit. Runs synchronously inside the edit event, so
+     *  the POV timer never sees the position off the bridge. */
+    private void clampPovIntoActiveBridge() {
+        if (activeBridge() == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return;
+        TrackCompiler.Span sp = spanOf(activeSection);
+        if (sp == null) return;
+        int i1 = Math.min(sp.i1(), app.lastSamples.size() - 1);
+        double t0 = app.lastSamples.get(sp.i0()).t();
+        double t1 = app.lastSamples.get(i1).t();
+        double t = app.viewport.povTime;
+        if (t < t0 || t > t1) {
+            app.viewport.povTime = Math.max(t0, Math.min(t1 - 1e-6, t));
+            app.viewport.updatePovStats();
+        }
     }
 
     boolean bridgeOptLen() {
@@ -1894,10 +1929,13 @@ class GraphEditor extends Region {
     private void attachThroughBridge() {
         List<Section> secs = sections();
         int k = secs.size() - 1;
-        if (!(secs.get(k) instanceof BridgeSection)
+        if (!(secs.get(k) instanceof BridgeSection bs2)
                 || activePiece + 1 >= app.coaster.pieces.size()) return;
         secs.remove(k);
-        int np = app.coaster.connectStrict(activePiece, activePiece + 1);
+        // seam Discontinuous defaults = the BRIDGE's locks (v17.12,
+        // D153, user spec: the axes the bridge held stay held)
+        int np = app.coaster.connectStrict(activePiece, activePiece + 1,
+            bs2.lockYaw, bs2.lockPitch, bs2.lockRoll);
         activeSection = Math.min(k, sections().size() - 1);
         app.lanes = lanesFor(sections().get(activeSection));
         selIdx = -1;
@@ -2129,8 +2167,10 @@ class GraphEditor extends Region {
     /** Manual-mode target moved by the gizmo (the fields are already
      *  written — one rebuild + panel re-sync). */
     void gizmoBridgeMoved() {
+        boolean povOn = povInsideActiveBridge();
         app.markDirty();
         app.rebuildTrack();
+        if (povOn) clampPovIntoActiveBridge();   // v17.11
         refreshOffset();
         redraw();
         app.updateBridgeControls();
@@ -2960,7 +3000,13 @@ class GraphEditor extends Region {
      *  One undo step. */
     private void attachFloating(int p) {
         pushUndoSnapshot();
-        int np = app.coaster.connectStrict(activePiece, p);
+        // seam Discontinuous defaults = the floating piece's placement
+        // PADLOCKS (v17.12, D153, user spec: locked pitch/roll stay
+        // held at the piece's own angles; yaw has no padlock =
+        // continuous)
+        TrackPiece fp = app.coaster.pieces.get(p);
+        int np = app.coaster.connectStrict(activePiece, p,
+            false, fp.uiLockPitch, fp.uiLockRoll);
         if (p < activePiece) activePiece--;   // list shifted under us
         app.rebuildTrack();
         app.updatePieceButton();
@@ -5239,6 +5285,36 @@ class GraphEditor extends Region {
         }
         TrackCompiler.Span inflSpan = inflDesign != null
             ? spanOf(activeSection) : null;
+        // SMOOTHED STRICT SEAMS (v17.10, user spec): inside a
+        // smoothing window the ACTIVE strip's drawn curve is the
+        // authored lanes while the compiled ride is the compiler's
+        // geometric blend — the same authored-reference rule as
+        // influence/tilt above, so the thin true stroke draws the
+        // REAL (blended) curve on BOTH sides of the seam, whether or
+        // not that side is speed-conflicted (the upstream side never
+        // is — it used to show nothing while its geometry bent).
+        List<int[]> smWins = null;
+        TrackCompiler.Span actSpan = null;
+        LaneSection actLs = null;
+        if (inflDesign == null && activeInfl() == null
+                && sections().get(activeSection) instanceof LaneSection lsA
+                && !lsA.reversed() && !lsA.influenced()) {
+            TrackCompiler.Span sp = spanOf(activeSection);
+            if (sp != null) {
+                List<RunSec> rl = runLayout();
+                for (int j = 0; j + 1 < rl.size(); j++) {
+                    if (!seamStrict(rl, j)) continue;
+                    int[] w = seamWindow(rl, j);
+                    if (w == null) continue;
+                    int lo = Math.max(w[0], sp.i0());
+                    int hi2 = Math.min(w[1], sp.i1());
+                    if (lo > hi2) continue;
+                    if (smWins == null) smWins = new ArrayList<>();
+                    smWins.add(new int[]{ lo, hi2 });
+                }
+                if (smWins != null) { actSpan = sp; actLs = lsA; }
+            }
+        }
         gc.setLineWidth(1);
         // the ACTIVE lane's true stroke draws at full strength; the
         // other lanes' fade like their design curves do (v16.2, user
@@ -5275,6 +5351,19 @@ class GraphEditor extends Region {
                             ? app.lastSamples.get(i).s() - inflSpan.s0()
                             : t - inflSpan.t0())
                     : derivedDisp(i, L);
+                if (smWins != null && i >= actSpan.i0()
+                        && i <= actSpan.i1()) {
+                    for (int[] w : smWins) {
+                        if (i >= w[0] && i <= w[1]) {
+                            ref = BezierBaker.evalAt(actLs.lanes.get(L),
+                                actLs.domain() == Section.Domain.DISTANCE
+                                    ? app.lastSamples.get(i).s()
+                                        - actSpan.s0()
+                                    : t - actSpan.t0());
+                            break;
+                        }
+                    }
+                }
                 double dy = valToY(L, ref);
                 double ty = valToY(L, trueDisp(i, L));
                 if (Math.abs(ty - dy) <= TRUE_SPLIT_PX) {
@@ -7676,8 +7765,22 @@ class GraphEditor extends Region {
         double realScale = 1;   // sample-axis slope → per-true-time
         double rReal = 1;       // true rate → OUR design rate
         if (trueArraysReady()) {
+            // STRICT SEAMS join the real-split test (v17.13, D154 —
+            // user report: B/Shift+B across a conflicted strict seam
+            // lined up the DESIGN graphs): the seam span and the
+            // neighbor's design speed resolve CROSS-PIECE through
+            // the follow link — spanOf's flattened index reaches the
+            // adjacent piece, and the neighbor Section comes off the
+            // follower/followed piece directly. Bridge boundaries
+            // stay out (a bridge blends its own speed, D78).
+            boolean followIn = !atStart && activeSection == 0
+                && app.coaster.followerActive(activePiece);
+            boolean followOut = atStart
+                && activeSection == secs.size() - 1
+                && app.coaster.followerActive(activePiece + 1);
             TrackCompiler.Span seamSp0 = atStart ? spanOf(activeSection)
-                : activeSection > 0 ? spanOf(activeSection - 1) : null;
+                : activeSection > 0 || followIn
+                    ? spanOf(activeSection - 1) : null;
             if (seamSp0 != null) {
                 int ip = Math.min(seamSp0.i1(), app.lastSamples.size() - 1);
                 if (ip < app.trueV.length) {
@@ -7695,6 +7798,11 @@ class GraphEditor extends Region {
                         vOurs = vDesSeam;   // our design END
                         Section nx = activeSection + 1 < secs.size()
                             ? secs.get(activeSection + 1) : null;
+                        if (nx == null && followOut) {
+                            List<Section> ns = app.coaster.pieces
+                                .get(activePiece + 1).sections;
+                            nx = ns.isEmpty() ? null : ns.get(0);
+                        }
                         vTheirs = nx != null
                             ? Math.max(0.5, nx.vDesign()) : vDesSeam;
                     } else {
@@ -10278,8 +10386,10 @@ class GraphEditor extends Region {
             gc.setGlobalAlpha(1.0);
         }
 
-        // POV camera position on the track (toggle in Edit > Options)
-        if (app.viewport.povActive) {   // marker always on (v16.14)
+        // POV position on the track — drawn ALWAYS since v17.11
+        // (user spec: the POV position persists outside POV view and
+        // the bottom stats line tracks it; the line is its marker)
+        {
             double px2 = tToX(axisOfTime(app.viewport.povTime));
             if (px2 >= MARGIN_LEFT - 1 && px2 <= w - marginRight() + 1) {
                 gc.setGlobalAlpha(0.4);

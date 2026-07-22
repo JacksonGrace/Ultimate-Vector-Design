@@ -38,9 +38,16 @@ Vec3.java           immutable 3D vector record (add/sub/scale/dot/cross/
 
 BezierBaker.java    EDITOR MODEL + CURVE MATH. Pure Java, no JavaFX.
                     Three independent lanes of Node{t, val, handles, smooth}.
-                    bake(lanes, 0.05) samples the per-lane cubic Beziers onto
+                    bake(lanes, grid) samples the per-lane cubic Beziers onto
                     a uniform grid of linear Keyframes (grid units =
-                    the lane's axis: seconds or meters). segGaps/
+                    the lane's axis; 0.01 s TIME / 0.05 m DISTANCE
+                    since v17.11 D151). EXACT values since v17.11
+                    (exactAt: bisection straight on the owning
+                    segment's cubic — the physics path no longer
+                    reads bakeLane's ~0.1-unit parameter-space
+                    polyline, whose knots moved under inserts/
+                    splits; the editor keeps the polyline for
+                    drawing/hit tests). segGaps/
                     rescaleDvToGaps (v16.1, D105): node moves keep
                     handle SLOPES — dv rescales with the squished
                     segment run (supersedes D63's "kinks accepted").
@@ -49,7 +56,14 @@ FVDIntegrator.java  PHYSICS. Pure Java, no JavaFX. Takes keyframes
                     (t, Gv, Gl, rollRateDeg), RK4 at dt=0.01s, produces
                     Samples (t, s, pos, T/U/R frame, v, Gv, Gl); also
                     bodyRates(samples) — resulting pitch/yaw/roll °/s
-                    for the read-only graph overlay. DISTANCE mode
+                    for the read-only graph overlay. END LANDING
+                    (v17.10, D147; GeoIntegrator's time loop too):
+                    the closing step is sized (0, 1.5·dt] so the last
+                    sample lands EXACTLY on the authored end — the
+                    old loop refused it on float overshoot and every
+                    seam ate up to one dt (split-at-node moved the
+                    track end, the user's report; interior steps stay
+                    bitwise). DISTANCE mode
                     (v16.0, D103): integrateTrackDist — keyframe
                     t-slots hold ARC LENGTH, s joins the RK4 state
                     (s' = v, the ScIntegrator pattern), lookups by
@@ -267,16 +281,44 @@ BridgeSection.java  Phase 2 (v13.0 D72; live-follow v13.1 D73; seam
                     the strip's END LINE re-optimize placement per
                     tick/event. OPTIMIZED bridges ARE the march
                     since v13.12 (D86): when the placement LANDS on
-                    the target (miss test 2 cm/0.3°; lastOptDist =
+                    the target (miss test 2 cm/0.3°; a v17.10 draft
+                    tightened it and was REVERTED same round, D150;
+                    lastOptDist =
                     blen's 5th field, missing = 0 = old files keep
                     their septic shapes), integrate() takes the
                     MARCH SPINE itself — Coaster.marchSpine rows,
                     curvature = the jerk-matched Hermite blend +
-                    mid-span humps, NO polynomial end-concentration
+                    mid-span humps (30u²(1−u)² since v17.12 D153 —
+                    zero end value AND slope, so the seam graphs
+                    keep the neighbors' slopes; the user asked for
+                    the slope line-up once D150's value fix was
+                    in), NO polynomial
+                    end-concentration
                     (a septic can't bend uniformly for long: the
                     user's "sharper turns near the start and end"
-                    on big-turn bridges) — with a residual-only
-                    smoothstep-quintic twist closing the bank
+                    on big-turn bridges). The RESIDUAL TWIST rides
+                    the march since v17.11 (D150 — his split-and-
+                    rebridge file: with roll LOCKED over rolling
+                    seams the blended roll ran the bank ~2°/m off
+                    the target and the render's after-the-fact
+                    twist left the spine's CURVATURE in the
+                    untwisted frame — a ~1 g instant far-seam
+                    Gv/Gl jump at EVERY length; the bank gap now
+                    joins the march as a roll rate (the shared
+                    zero-end-slope weight since v17.12 D153 — seam
+                    roll rates AND slopes stay the neighbors'), κ —
+                    rebuilt in the current frame per step — arrives
+                    in the target's directions; measured YAW-
+                    INVARIANTLY as a bank-vs-horizon difference so
+                    the render reproduces its own placement, and
+                    the D97 refinement is a BOUNDED FIXED-POINT
+                    (≤6 wrap-safe passes — one pass left degrees
+                    under a 48° twist; clean marches exit on the
+                    first measure, bitwise) — far-seam felt jump
+                    1.2 g → 0.008 g, gated 53c) — with a
+                    residual-only
+                    smoothstep-quintic twist closing the (now tiny)
+                    leftover bank
                     (march U already carries the blended roll,
                     seams' roll value+slope untouched) and the
                     shared speed-blend/resample tail. The SEPTIC
@@ -353,10 +395,18 @@ TrackPiece.java     placement (origin + BASE ORIENTATION quat + yaw
                     unstrictSeam (attach + PIN — graphs bit-kept,
                     track re-bent continuous, conflict kept),
                     detachStrictSeam (bake effective placement),
-                    connectStrict (reorder + all-unlocked follow —
-                    the '+'-attach and zero-distance flows; arrives
+                    connectStrict (reorder + follow — the
+                    '+'-attach and zero-distance flows; arrives
                     SHARP; only bridge-converts arrive smoothed at
-                    10 m — D143 walked back D141's connect default). A
+                    10 m — D143 walked back D141's connect default.
+                    LOCK-CARRYING overload since v17.12, D153: a
+                    direct attach seeds the seam's Discontinuous
+                    axes from the floating piece's placement
+                    PADLOCKS — yaw has none = continuous — and the
+                    zero-distance YES from the BRIDGE's locks;
+                    held angles seed from the piece's current
+                    orientation, so nothing moves at creation; the
+                    2-arg form stays all-unlocked). A
                     bridge's target never follows (the bridge IS
                     the connection); orphaned followers fall back
                     to their stored placement. Seam SMOOTHING
@@ -604,7 +654,10 @@ Viewport3D.java     JavaFX 3D VIEW (split out v9.4, D54): orbit/fly/POV
                     linear mouse distance, world delta = NEGATED
                     scene delta under the Y-mirror), the middle-drag
                     ORBIT (left = selection only), white
-                    ACTIVE-SECTION ties (TiePiece re-tint, self-lit)
+                    ACTIVE-SECTION ties (TiePiece re-tint, self-lit;
+                    the white ties AND the inactive-piece
+                    desaturation both gate on the View menu's
+                    "Visualize track selection" since v17.10 D149)
                     and clickable node markers + double-click insert.
                     v16.13 (D125) adds the track COMBS (vertical/
                     lateral felt G + true speed, hover readout via
@@ -701,7 +754,8 @@ source tree — they won't compile against the current time-domain API.
   what FVD++ uses and what the user asked for. Consequence: editing early in
   the ride shifts where later nodes land in space.
 - **Bake-then-integrate.** The Bezier editor never touches the integrator.
-  Curves are "baked" to dense linear keyframes (0.05 s grid). Keeps the
+  Curves are "baked" to dense linear keyframes (0.01 s / 0.05 m grid,
+  values exact on the cubic since v17.11 D151). Keeps the
   physics core simple and lets extreme/folded handle shapes be sanitized in
   one place (monotonic-t guard in `bakeLane`).
 - **Pure-Java core, JavaFX only in FvdDesigner.** Non-negotiable. It is what
@@ -1164,8 +1218,12 @@ position); its rings (shown whenever gizmos are on, v17.7) cover
 the DISCONTINUOUS axes only, writing
 the held angles (gizmoSetSeamOrient; ring axes off the follow-
 contract frame seamEntryOrient; one undo per gesture);
-DOUBLE-CLICK = the settings pop-out (reveal state unchanged). Defaults: yaw-continuous pitch/roll-discontinuous (the
-bridge convention); connect flows all-continuous. The whole-bridge
+DOUBLE-CLICK = the settings pop-out (reveal state unchanged). Defaults: hand-made seams yaw-continuous pitch/roll-discontinuous
+(the bridge convention); since v17.12 (D153) a direct ATTACH seeds
+Discontinuous from the floating piece's placement padlocks (locked
+pitch/roll = discontinuous at the piece's own angles; yaw
+continuous) and the zero-distance-bridge YES from the bridge's
+yaw/pitch/roll locks. The whole-bridge
 Convert dialog grows "Make following seam strict (freeze following
 track shape)" — CHECKED by default, locks carried from the bridge;
 convert+strict then un-strict == the classic attach+pin stitch
@@ -1181,7 +1239,14 @@ its entry gizmo doesn't build, and it gets NO entry reveal marker
 (D136 — the stored-position marker floated off-track as a ghost
 node); B/Shift+B
 across a strict seam take the sampled cross-piece path and never
-auto-close its speed independence. Clicking any strip/badge in the
+auto-close its speed independence — and they match the REAL
+graphs there since v17.13 (D154: the real-split test resolves the
+seam span + neighbor design speed CROSS-PIECE through the follow
+link via followerActive; it only saw same-piece indices before,
+so conflicted strict seams lined up DESIGN curves — the user's
+report; unconflicted strict seams keep the historic path bitwise;
+with seam smoothing on, targets read blended samples — a press or
+two converges, user-accepted). Clicking any strip/badge in the
 run activates that piece+section WITHOUT resetting the zoom
 (activateRunSec; the toolbar selector still resets); the '+' sits at
 the RUN's end and appends to its last piece (activating it first);
@@ -1272,9 +1337,16 @@ kinked the far seam in orientation mode, the user's "instant jump
 in values at the end"; the 1e-4 deadband keeps clean marches on
 the historic two-march sequence bit-identically — NOT D95's
 reverted bank iteration: no wrap-ambiguous measure, one pass
-max), the target's head placed
+max — the refinement is a BOUNDED FIXED-POINT of ≤6 passes since
+v17.11, D150: under a large residual twist one pass left degrees;
+all measures wrap-safe, clean marches exit on the first measure
+bitwise), the target's head placed
 at the march's end and yawed to its heading, plus the smallest
-parabolic vertical-rate hump for the pitch gap yaw can't fix — a
+vertical-rate hump (30u²(1−u)², zero end value + slope since
+v17.12 D153 — briefly shipped in v17.10, reverted in D150 while
+the value bug still dominated, and re-landed on the user's
+"make the slopes line up") for the
+pitch gap yaw can't fix — a
 SPLIT CONSTANT TURN re-joins as the SAME turn (gated ≤ 0.11 °/s
 rate ripple, ≤ 7 mm off the circle through 103°) and longer bridges
 just carry it further around; straight seams reduce to dead-ahead
@@ -1327,7 +1399,12 @@ whole run (GraphEditor.drawTrueStrokes; TRUE_SPLIT_PX 1.5 px on the
 lane's scale is the show threshold, TRUE_STROKE_ALPHA 0.85; felt
 strokes run straight through seams, rate-sourced ones — roll, and
 all lanes in geo view — trim SEAM_TRIM like every bodyRates
-consumer; nothing draws when nothing drifted). Drifted sections'
+consumer; nothing draws when nothing drifted — EXCEPT inside a
+smoothed strict seam's window since v17.10 (D149): there the
+ACTIVE strip's split reference is the AUTHORED lane value (the
+influence/tilt rule), so the real blended curve shows on BOTH
+sides of the seam even though the upstream side never
+speed-conflicts). Drifted sections'
 badges wear "≠v" (DRIFT_EPS 0.2 m/s on the span's first-sample
 speeds) and their badge-menu info line gains "· entered X m/s";
 lane + derived hover readouts append " (true …)" — value and
@@ -1426,7 +1503,9 @@ walkthrough #68. PLACEMENT MODES (v13.5 D78,
 BridgeSection.optMode, blen's 3rd field, missing = 0): the toolbar
 button RELABELS "Bridge properties ▾" over a live bridge (v13.10
 D84 — same button, the bridge's own panel; updateBridgeControls
-owns the label, syncLaneButtons fires it per activation) — mode radios
+owns the label, syncLaneButtons fires it per activation; the
+panel's text is WHITE on the dark popup since v17.10 — black
+holdovers from the light-ContextMenu era) — mode radios
 "Optimize position and ORIENTATION" (v13.13 D87 — was "and yaw";
 same optMode 0: the march aligns every UNLOCKED axis of the next
 piece — yaw heading delta, pitch/roll as direct Euler additions
@@ -1714,7 +1793,8 @@ W/S keep their track direction, one applier with the View-menu check
 (v16.15); right-click releases; while captured, Space flips
 between fly (WASD) and POV (W/S) without releasing (`povCaptured`);
 scroll = fast burst either way, translucent graph line marks the camera
-(Options toggle, default on). POV↔selection sync (v13.11 D85, user
+(drawn ALWAYS since v17.11 — the POV position persists outside POV
+and the bottom stats line tracks it). POV↔selection sync (v13.11 D85, user
 spec): riding across a PIECE boundary activates that piece in the
 editor (activateAt, piece transitions only — povFollowPiece;
 SUSPENDED while the convert UI owns the graph, v15.4 D102 — a
@@ -1852,15 +1932,24 @@ REMOVED in v13.10, D84 — internal constants again) and snap axis
 references; the POV graph marker is ALWAYS ON since v16.14), VIEW
 menu (v16.13, D125 — the v7.5
 "no View menu" verdict reversed on user spec, between Edit and
-Coaster: gizmo axes local/global (one applier syncs it with the
-overlay button), "Show heartline (neon)" check — hairline
+Coaster: "SHOW GIZMOS" as the TOP row with the axis choice inline
+as two radio dots Local|Global since v17.10 (D149 — grayed while
+the gizmos are hidden; renamed from "Show placement/seam gizmos";
+one applier syncs the dots with the overlay button —
+FvdDesigner.viewGizmoLocal/Global), "Show heartline" check
+("(neon)" dropped v17.10) — hairline
 self-illuminated yellow tube on the integrated path, ONE STRAND PER
 PIECE since v16.13 (a single ride-wide strand visually joined
 close-parked pieces), app-wide default off, setVisible(false) while
-POV rides (the camera sits ON it) — node markers, RAIL COLOR since
-v16.14 (gradient|solid radios + the solid ColorPicker inline,
-visible only while solid, ↺ to the default red — the old "Rail
-colors…" dialog is GONE; showRailColorDialog's owner-crash lesson
+POV rides (the camera sits ON it) — "NODE MARKERS" (renamed from
+"Node markers on the 3D track", v17.11), "VISUALIZE SELECTION"
+check (v17.10, D149, renamed from "Visualize track selection"
+v17.11; AppSettings.visualizeSelection,
+default on: OFF = no piece desaturation — every tube full active
+color — and no white active-section ties; pure view setting;
+RAIL COLOR lived here v16.14-v17.9 and is the COASTER menu's
+"Rail Color" section since v17.10 — see the Coaster paragraph;
+showRailColorDialog's owner-crash lesson
 lives on as a comment: watch "Custom Color" from a menu row), the
 COMB three-way (v16.14: No | G-Force = vertical + lateral together
 | Speed — AppSettings.combMode) + "Comb size (%)" slider (applies
@@ -1869,9 +1958,9 @@ LIVE gradient hottest-first, rebuilt per menu show, v16.15; the
 SIX vertical stops shared with the rail gradient — purple −1.5 /
 blue −1 / cyan −0.5 / green 1 / yellow 3 / red 5 — + the lateral
 comb's THREE |Gl| stops, every color with a ↺ grayed at default),
-"Reverse POV view direction" (v16.15 — one applier shared with
-the captured-ride A/D keys; a "Backwards POV (A)" tag sits at the
-viewport's bottom-left while reversed, povLabel, v16.16), the TWO
+(the "Reverse POV view direction" row was REMOVED in v17.11, D152
+— the captured-ride A/D keys + the bottom-left "Backwards POV (A)"
+tag are the whole surface now), the TWO
 FOV sliders 30–110° and mouse sensitivity — every slider wears a
 ↺ reset since v16.16 — all CustomMenuItem rows
 that keep the menu open, with the Options dialogs' menu-local undo
@@ -1934,8 +2023,9 @@ re-centers a manual zoom window onto it (v16.11 — marker pick beats
 the track-activate click, 14 px). PLACEMENT GIZMOS (v16.11 D123,
 reworked v16.12 D124; ALWAYS-ON since v17.7 D144): the reveal-click
 gating is GONE — gizmos show for the active piece whenever the View
-menu's "Show placement/seam gizmos" check is on (AppSettings.
-showGizmos, default true): the entry gizmo AND the trailing
+menu's "Show Gizmos" check is on (AppSettings.
+showGizmos, default true; renamed + top row + inline Local/Global
+axis dots v17.10 D149): the entry gizmo AND the trailing
 bridge's end gizmo together, whatever section is active (multi-Rig:
 per-anchor scale + re-aim hooks). The spheres remain as ANCHORS —
 the entry ball still selects node 0 on click, the seam ball's
@@ -2001,11 +2091,21 @@ the Coaster menu keeps only truly per-coaster knobs. Start speed is
 saved as the `v0` line and is ALSO editable in the first node's
 double-click
 dialog — the dialog writes through the spinner. Rail color lives in
-the VIEW menu since v16.14 (gradient|solid radios + inline solid
-picker; the gradient's FIVE stops — each a COLOR and a G VALUE
-spinner, defaults purple −1.5 / blue −0.7 / green 1 / yellow 3 /
-red 5, flat outside the ends and lerped between, saved as
-`gradcolors` + `gradstops` lines — edit in "G-force & comb
+the COASTER menu's "Rail Color" section since v17.10 (D149 — was
+the View menu v16.14-v17.9): "Solid" (its SQUARE 22×22 swatch —
+all pickers shrank square in v17.10 — shows inline while selected;
+the reset ↺ is gone per user) | "Normal Force" (the former
+"G-force gradient" wording; the gradient colors by the TRUE felt
+vertical G since v17.12, D153 — like the comb, identical until a
+design speed drifts; a "G-Force Colors…" item appears
+right below it while selected, v17.11 — same dialog as the View
+menu's; and the Coaster menu ends with the COASTER STATISTICS
+submenu, v17.11 D152; Dialogs.railColorItems, the v16.16
+Load/New railMenuSync guard rides the Coaster onShown; the
+gradient's stops — each a COLOR and a G VALUE
+spinner, defaults purple −1.5 / blue −1 / cyan −0.5 / green 1 /
+yellow 3 / red 5, flat outside the ends and lerped between, saved
+as `gradcolors` + `gradstops` lines — edit in "G-force & comb
 colors…"; the pre-v7.5 lesson that a menu-embedded picker's
 "Custom Color" crashed on the auto-hiding popup owner is the WATCH
 ITEM on this move). Toolbar: lane toggles, Ripple time/value
@@ -2046,13 +2146,27 @@ works in BOTH views since v17.7 — grayed only while it would
 duplicate the active section's own roll representation,
 resRollRedundant; resulting default scales match the lane
 defaults incl. ±5 °/m and ±90 bank)),
-POV, Append (no shortcut hints on buttons — the stats bar hint is
-generated from live bindings); the Resulting overlays span the whole
+POV, Append (no shortcut hints on buttons; the stats-bar shortcut
+hint died with the POV line, v17.11); the Resulting overlays span the whole
 RUN since v13.11 (v10.8 made them ride-wide, but the global timeline
 continues into DETACHED pieces, whose curves bled in at the window's
 right edge — overlays, true strokes, their hover and the scale fit
-all clamp to [runT0, runT0+runDur] now, D85). Stats bar shows ride time, track length,
-height range, top speed, Gv range. Window sizes itself to
+all clamp to [runT0, runT0+runDur] now, D85). The BOTTOM STATS LINE
+is the LIVE POV POSITION since v17.11 (D152): X/Y/Z, speed,
+vertical + lateral G — TRUE values, three decimals
+(Viewport3D.updatePovStats, refreshed per rebuild/ride frame/POV
+scroll; povTime persists across POV exits so the line stays live
+while editing, and the purple POV marker line on the graph draws
+ALWAYS now). The five coaster stats (ride time, track length,
+height range, top speed, Gv range) moved to the Coaster menu's
+COASTER STATISTICS submenu (refreshed per open); the shortcut hint
+is gone entirely. While BRIDGE SETTINGS are edited, the POV
+position CLAMPS onto the active bridge
+(GraphEditor.clampPovIntoActiveBridge in applyBridgeGap /
+gizmoBridgeMoved — shrinking the length used to drop the POV into
+the next piece, whose ride-follow activation closed the
+Bridge-properties panel mid-edit; clamped only when the POV was ON
+the bridge before the edit). Window sizes itself to
 `Screen.getVisualBounds()` (capped 1400×880) — do not hardcode window sizes;
 that broke on the user's 1080p screen once already.
 
@@ -2096,16 +2210,22 @@ non-obvious behavior. Do not ship a feature without touching it.
   constant sub-sample phase. POV/marker code indexes time as t/dt
   (nearest sample) — the lag is < 10 ms of ride and invisible, but
   don't add code that assumes sample i sits exactly at i·dt.
-- EVERY TIME-domain section truncates its authored end to the sample
-  grid (understood mechanically in D130): integrateTrack's
-  `while (t <= totalTime)` accumulates t, whose float sum overshoots
-  round ends (300 × 0.01 = 3.0000000000000027 > 3.0), so the last
-  step is refused and every seam absorbs up to one dt of authored
-  profile. Universal + historic — the bitwise gates pin it. This is
-  why a node SPLIT equals authoring-two-sections (exact, gated 0 m)
-  but differs from the unsplit original by a seam's worth (~2 cm on
-  the violent gate fixture). Don't "fix" the loop epsilon: it
-  re-times every compile ever made.
+- TIME-domain sections LAND their authored end exactly since v17.10
+  (D147, superseding D130's "never fix the loop epsilon" — the user
+  asked): the closing integrator step is sized (0, 1.5·dt], so the
+  last sample sits ON the authored end instead of the old loop
+  refusing it on float overshoot (every seam used to absorb up to
+  one dt of profile; a split moved the track end ~0.24 m on the
+  probe ramp, the user's report). With v17.11's EXACT bake + the
+  0.01 s time grid (D151 — knots on every RK4 step boundary, so
+  split halves' grids land on the parent's own points), a split at
+  any 0.01-multiple is exact to MACHINE precision (1.2e-12 m on
+  the curved hill fixture) and off-grid cuts sit at the few-µm RK4
+  step-phase floor — gates 52a-c. Old saves re-time slightly under
+  both changes (pure accuracy gains); all suites re-baselined
+  green (default layout 406.878 → 406.931 m). Don't add code
+  assuming the last sample interval is exactly dt (it is the
+  landing remainder).
 - SMOOTHED STRICT SEAMS (v17.2, D139) bend three contracts
   knowingly (third since v17.3 D140: the closure's arc STRETCH
   means the drawn arc inside the window exceeds the s fields by up
@@ -2236,8 +2356,8 @@ fly-visible; walkthrough #83) →
 Coaster.splitSectionAt — both halves via the splitLanes de
 Casteljau identity, right half's vDesign = speed at the cut, flags
 + pins carry; == authoring two sections there EXACTLY (gated
-0.0 m; vs the unsplit original only the standard seam
-grid-truncation — see Known quirks); "Split track piece" chains
+0.0 m; vs the unsplit original only bake-grid phase since the
+v17.10 END LANDING, D147 — see Known quirks); "Split track piece" chains
 the D71 rigid boundary split (gated 0.0 m); both live in the new
 node right-click menu; Phase2Gate 258. PHASE 2 IS COMPLETE) →
 influence

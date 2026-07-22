@@ -325,35 +325,50 @@ public class FVDIntegrator {
         double loss = 0;   // friction deficit (v² units), rides RK4
 
         double t = 0;
-        while (t <= totalTime) {
+        while (true) {
             Keyframe kf = interpAt(keyframes, t);
             samples.add(new Sample(t, s, pos, T, U, R, v, kf.Gv(), kf.Gl()));
 
+            // END LANDING (v17.10, D147): the closing step is sized to
+            // land the last sample EXACTLY on the authored end. The
+            // historic `while (t <= totalTime)` refused the final step
+            // whenever the accumulated float t overshot a round end
+            // (300 x 0.01 = 3.0000000000000027), so every time-section
+            // seam absorbed up to one dt of authored profile — the
+            // D130 split-vs-unsplit gap. Interior steps stay h == dt,
+            // bitwise; the closing step is a single stretched/shrunk
+            // step in (0, 1.5*dt] (the D84 no-runt rule: never a full
+            // step plus a sliver — near-duplicate samples poison rate
+            // differencing).
+            double rem = totalTime - t;
+            if (rem <= dt * 1e-9) break;
+            double h = (rem <= dt * 1.5) ? rem : dt;
+
             State y = new State(pos, T, U, loss);
             Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
-            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
-            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
-            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+            Deriv k2 = deriv(advance(y, k1, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+            Deriv k3 = deriv(advance(y, k2, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+            Deriv k4 = deriv(advance(y, k3, h), t + h, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
-                    .scale(dt / 6));
+                    .scale(h / 6));
             T = T.add(
                 k1.dT().add(k2.dT().scale(2)).add(k3.dT().scale(2)).add(k4.dT())
-                    .scale(dt / 6)).normalize();
+                    .scale(h / 6)).normalize();
             U = U.add(
                 k1.dU().add(k2.dU().scale(2)).add(k3.dU().scale(2)).add(k4.dU())
-                    .scale(dt / 6));
+                    .scale(h / 6));
             U = U.sub(T.scale(U.dot(T))).normalize();   // re-orthonormalize
             loss += (k1.dLoss() + 2 * k2.dLoss() + 2 * k3.dLoss()
-                + k4.dLoss()) * dt / 6;
+                + k4.dLoss()) * h / 6;
             if (rG && opts.rollAbsolute) {
                 // ABSOLUTE roll (D118): the target IS the lane value
                 // at the just-reached time - no integral, no entry-
                 // bank reference (C1 read since v16.9 D121: the raw
                 // polyline made the rate a per-cell staircase)
                 U = projectBank(T, U, Math.toRadians(
-                    bankAt(keyframes, t + dt)));
+                    bankAt(keyframes, t + h)));
             } else if (rG) {
                 if (opts.rollPerMeter) {
                     // bank target integrates the lane over ARC (D115):
@@ -361,11 +376,11 @@ public class FVDIntegrator {
                     double v1 = speedAt(newPos, opts.v0, y0, loss);
                     cumRoll += Math.toRadians(
                         kf.rollRateDeg() * v
-                        + interpAt(keyframes, t + dt).rollRateDeg() * v1)
-                        / 2 * dt;
+                        + interpAt(keyframes, t + h).rollRateDeg() * v1)
+                        / 2 * h;
                 } else {
                     cumRoll += Math.toRadians(kf.rollRateDeg()
-                        + interpAt(keyframes, t + dt).rollRateDeg()) / 2 * dt;
+                        + interpAt(keyframes, t + h).rollRateDeg()) / 2 * h;
                 }
                 if (Double.isNaN(bank0)) {
                     double b = bankOfTU(T, U);
@@ -386,7 +401,7 @@ public class FVDIntegrator {
             // old inert per-second bleed factor is gone)
             v = Math.max(0.1, speedAt(pos, opts.v0, y0, loss));
 
-            t += dt;
+            t = (h == dt) ? t + dt : totalTime;
         }
 
         return samples;

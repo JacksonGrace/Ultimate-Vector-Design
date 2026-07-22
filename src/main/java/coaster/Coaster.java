@@ -546,14 +546,27 @@ public class Coaster {
      *  rigid. Its stored placement stays untouched (the frozen
      *  original, for later relocks). Returns the follower's index. */
     public int connectStrict(int targetIdx, int floatingIdx) {
+        return connectStrict(targetIdx, floatingIdx, false, false, false);
+    }
+
+    /** Lock-carrying variant (v17.12, D153 — user spec): the UI's
+     *  attach flows seed the seam's DISCONTINUOUS axes from the
+     *  surface the user was just editing — a direct attach from the
+     *  floating piece's placement padlocks (yaw has none =
+     *  continuous), the zero-distance-bridge YES from the bridge's
+     *  yaw/pitch/roll locks. Locked axes hold the creation angles
+     *  (seeded below), so nothing moves at creation either way. */
+    public int connectStrict(int targetIdx, int floatingIdx,
+                             boolean lockYaw, boolean lockPitch,
+                             boolean lockRoll) {
         if (targetIdx == floatingIdx) return -1;
         int to = floatingIdx < targetIdx ? targetIdx : targetIdx + 1;
         movePiece(floatingIdx, to);
         TrackPiece f = pieces.get(to);
         f.followPrev = true;
-        f.sLockYaw = false;
-        f.sLockPitch = false;
-        f.sLockRoll = false;
+        f.sLockYaw = lockYaw;
+        f.sLockPitch = lockPitch;
+        f.sLockRoll = lockRoll;
         seedStrictValues(f, f.entryPose().orient());
         // smoothing OFF by default when connecting pieces (v17.4;
         // D141 — user spec; hand-made strict seams stay sharp)
@@ -647,7 +660,7 @@ public class Coaster {
         // unsmooth shapes that jumped around with small length
         // changes; now the march itself turns to meet the fixed
         // heading, so the placement is reachable by a smooth path.
-        Vec3[] st = march(pA, tA, uA, d, sa, sb, 0, 0, null, null);
+        Vec3[] st = march(pA, tA, uA, d, sa, sb, 0, 0, 0, null, null);
         // humps close only the LOCKED axes (v13.13): an aligned axis
         // needs no correction — the PIECE rotates to meet the march
         double resPitch = align[1] ? 0
@@ -663,11 +676,20 @@ public class Coaster {
             while (resYaw > Math.PI) resYaw -= 2 * Math.PI;
             while (resYaw < -Math.PI) resYaw += 2 * Math.PI;
         }
+        // RESIDUAL TWIST (v17.11, D150): roll not aligned = the bank
+        // gap to the target joins the march (see contDeriv) instead
+        // of being painted on by the render's quintic afterwards —
+        // which left the spine's curvature in the untwisted frame
+        // (the user's ~1 g far-seam Gv/Gl jump on rolling seams).
+        double resTw = align[2] ? 0 : bankGap(st[1], st[2], tB, uB);
         if (Math.abs(resPitch) > 1e-9 || Math.abs(resYaw) > 1e-9
+                || Math.abs(resTw) > 1e-9
                 || path != null || spine != null) {
+            resPitch = Math.abs(resPitch) > 1e-9 ? resPitch : 0;
+            resYaw = Math.abs(resYaw) > 1e-9 ? resYaw : 0;
+            resTw = Math.abs(resTw) > 1e-9 ? resTw : 0;
             st = march(pA, tA, uA, d, sa, sb,
-                Math.abs(resPitch) > 1e-9 ? resPitch : 0,
-                Math.abs(resYaw) > 1e-9 ? resYaw : 0, path, spine);
+                resPitch, resYaw, resTw, path, spine);
             // ONE bounded refinement (v14.5, D97): each hump's
             // integral is exact for the rotation it ADDS, but adding
             // it re-mixes the blend's own pitch/heading along the new
@@ -693,13 +715,44 @@ public class Coaster {
                 while (dY > Math.PI) dY -= 2 * Math.PI;
                 while (dY < -Math.PI) dY += 2 * Math.PI;
             }
-            if (Math.abs(dP) > 1e-4 || Math.abs(dY) > 1e-4) {
+            // the twist's own second-order re-mix (v17.11): rolling
+            // the frame mid-march re-aims the blend's κ, moving the
+            // end bank a little — re-measure like pitch/heading
+            double dTw = align[2] ? 0 : bankGap(st[1], st[2], tB, uB);
+            // BOUNDED FIXED-POINT (v17.11, D150 — was one pass): with
+            // a LARGE residual twist (his split-and-rebridge file:
+            // ~48° of locked-roll bank over 24 m) the twist re-aims
+            // the blend enough that the pitch hump's response gain is
+            // well off 1 — a single correction left DEGREES of far-
+            // seam tangent error and the spine could never land on
+            // its own placement. All three measures are wrap-safe
+            // (asin / wrapped atan2 — NOT the reverted D95 bank
+            // iteration's ambiguous measure), so iterating is sound;
+            // clean marches still exit on the first measure, keeping
+            // the historic two-march sequence bit-identically.
+            for (int it = 0; it < 6; it++) {
+                if (Math.abs(dP) <= 1e-4 && Math.abs(dY) <= 1e-4
+                        && Math.abs(dTw) <= 1e-4) break;
                 resPitch += dP;
                 resYaw += dY;
+                resTw += dTw;
                 if (path != null) path.clear();
                 if (spine != null) spine.clear();
                 st = march(pA, tA, uA, d, sa, sb, resPitch, resYaw,
-                    path, spine);
+                    resTw, path, spine);
+                dP = align[1] ? 0
+                    : Math.asin(Math.max(-1, Math.min(1, tB.y())))
+                    - Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+                dY = 0;
+                Vec3 eT2 = st[1];
+                double ea3 = eT2.x() * eT2.x() + eT2.z() * eT2.z();
+                if (!align[0] && ea3 > 1e-12 && hb2 > 1e-12) {
+                    dY = Math.atan2(-tB.z(), tB.x())
+                       - Math.atan2(-eT2.z(), eT2.x());
+                    while (dY > Math.PI) dY -= 2 * Math.PI;
+                    while (dY < -Math.PI) dY += 2 * Math.PI;
+                }
+                dTw = align[2] ? 0 : bankGap(st[1], st[2], tB, uB);
             }
         }
         return st;
@@ -726,6 +779,10 @@ public class Coaster {
         double miss = st[0].sub(bs.solvedTarget.pos()).length();
         double tAng = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1,
             st[1].dot(bs.solvedTarget.T())))));
+        // (a v17.10 draft briefly tightened this to 5 mm / 0.02° —
+        // REVERTED same round on user verdict, D150: it flipped old
+        // files' optimized bridges to the septic and didn't capture
+        // his actual bug; 2 cm / 0.3° is the shipped gate again)
         return miss > 0.02 || tAng > 0.3 ? null : spine;
     }
 
@@ -1441,7 +1498,8 @@ public class Coaster {
      *  sa/sb per seamState. Returns the end state. */
     private static Vec3[] march(Vec3 pos, Vec3 T, Vec3 U, double d,
                                 double[] sa, double[] sb, double resPitch,
-                                double resYaw, List<Vec3> path,
+                                double resYaw, double resTwist,
+                                List<Vec3> path,
                                 List<double[]> spine) {
         int n = (int) Math.min(40_000, Math.max(8, Math.ceil(d / 0.05)));
         double h = d / n;
@@ -1450,19 +1508,19 @@ public class Coaster {
         if (path != null) path.add(st[0]);
         if (spine != null) {
             spine.add(spineRow(0, st,
-                contDeriv(st, 0, sa, sb, resPitch, resYaw, d)[1]));
+                contDeriv(st, 0, sa, sb, resPitch, resYaw, resTwist, d)[1]));
         }
         for (int i = 0; i < n; i++) {
             double u0 = (double) i / n;
             double uh = (i + 0.5) / n;
             double u1 = (double) (i + 1) / n;
-            Vec3[] k1 = contDeriv(st, u0, sa, sb, resPitch, resYaw, d);
+            Vec3[] k1 = contDeriv(st, u0, sa, sb, resPitch, resYaw, resTwist, d);
             Vec3[] s2 = stepped(st, k1, h / 2);
-            Vec3[] k2 = contDeriv(s2, uh, sa, sb, resPitch, resYaw, d);
+            Vec3[] k2 = contDeriv(s2, uh, sa, sb, resPitch, resYaw, resTwist, d);
             Vec3[] s3 = stepped(st, k2, h / 2);
-            Vec3[] k3 = contDeriv(s3, uh, sa, sb, resPitch, resYaw, d);
+            Vec3[] k3 = contDeriv(s3, uh, sa, sb, resPitch, resYaw, resTwist, d);
             Vec3[] s4 = stepped(st, k3, h);
-            Vec3[] k4 = contDeriv(s4, u1, sa, sb, resPitch, resYaw, d);
+            Vec3[] k4 = contDeriv(s4, u1, sa, sb, resPitch, resYaw, resTwist, d);
             for (int j = 0; j < 3; j++) {
                 st[j] = st[j].add(k1[j]
                     .add(k2[j].scale(2)).add(k3[j].scale(2)).add(k4[j])
@@ -1473,10 +1531,30 @@ public class Coaster {
             if (path != null) path.add(st[0]);
             if (spine != null) {
                 spine.add(spineRow((i + 1) * h, st,
-                    contDeriv(st, u1, sa, sb, resPitch, resYaw, d)[1]));
+                    contDeriv(st, u1, sa, sb, resPitch, resYaw, resTwist,
+                        d)[1]));
             }
         }
         return st;
+    }
+
+    /** The march's residual-twist measure (v17.11, D150): the
+     *  TARGET's bank-vs-horizon minus the march end's (rad, wrapped)
+     *  — each about its OWN heading, so the measure is INVARIANT
+     *  under the yaw rotation the placement applies after the march.
+     *  (A direct U→uB angle was not: the placement's yaw rotated uB,
+     *  the re-measured twist re-aimed the blend mid-span, and the
+     *  render march missed its own placement by ~1° — permanent
+     *  septic fallback.) Near-vertical either side = 0; the render's
+     *  residual quintic still closes whatever bank remains. */
+    private static double bankGap(Vec3 tM, Vec3 uM, Vec3 tB, Vec3 uB) {
+        double bM = FVDIntegrator.bankOfTU(tM, uM);
+        double bB = FVDIntegrator.bankOfTU(tB, uB);
+        if (Double.isNaN(bM) || Double.isNaN(bB)) return 0;
+        double d2 = bB - bM;
+        while (d2 > Math.PI) d2 -= 2 * Math.PI;
+        while (d2 < -Math.PI) d2 += 2 * Math.PI;
+        return d2;
     }
 
     /** One march-spine row: {s, pos, T, U, κ} (13 doubles). */
@@ -1777,16 +1855,11 @@ public class Coaster {
             // dt-grid quantum to round onto
             dur = Math.max(0.1, xG[n - 1]);
         } else {
-            // lane sections integrate on WHOLE dt steps (while t <=
-            // end — the D50 cadence), silently dropping a fractional
-            // tail: up to 10 ms ≈ a quarter meter of track at speed,
-            // which was the entire end error of the first fit. Land
-            // the duration ON the grid (nearest, so ≤ 5 ms of shape
-            // is cut or held — the unavoidable quantum every lane
-            // section shares), nudged up a hair so the accumulated
-            // t <= end comparison keeps the final step.
-            dur = Math.max(dt,
-                Math.round(Math.max(0.1, tG[n - 1]) / dt) * dt) * (1 + 1e-9);
+            // EXACT duration since v17.11 (D151): the integrator's
+            // closing step lands on ANY authored end now (D147), so
+            // the old round-onto-the-dt-grid workaround — which cut
+            // or held up to 5 ms of shape per fit — is retired.
+            dur = Math.max(0.1, tG[n - 1]);
         }
         List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
         for (int c = 0; c < 3; c++) {
@@ -1813,7 +1886,8 @@ public class Coaster {
             // pointwise fidelity is the whole story, area matching
             // would chase a meaningless integral (v16.7, D118)
             if (!(toRollAbs && c == 2)) {
-                matchSegmentAreas(lane, xG, val, c, vGs, wPow);
+                matchSegmentAreas(lane, xG, val, c, vGs, wPow,
+                    outDom == Section.Domain.DISTANCE ? 0.05 : 0.01);
             }
             lanes.add(lane);
         }
@@ -1998,7 +2072,8 @@ public class Coaster {
      *  (407 m torture layout) that no lane-local metric can rank —
      *  fine UNIFORM spacing is the max-fidelity setting there. */
     private static void matchSegmentAreas(List<BezierBaker.Node> lane,
-            double[] tG, double[][] val, int c, double[] vG, int wPow) {
+            double[] tG, double[][] val, int c, double[] vG, int wPow,
+            double bakeGrid) {
         int nn = lane.size();
         if (nn < 2) return;
         // SUB-GRID carpets skip the pass: nodes packed finer than the
@@ -2014,7 +2089,7 @@ public class Coaster {
             gaps[k] = lane.get(k + 1).t - lane.get(k).t;
         }
         java.util.Arrays.sort(gaps);
-        if (gaps[gaps.length / 2] < 0.6 * 0.05) return;
+        if (gaps[gaps.length / 2] < 0.6 * bakeGrid) return;
         int ns = nn - 1;
         double[] eA = new double[ns];
         double[] c0A = new double[ns];
@@ -2028,12 +2103,13 @@ public class Coaster {
         double prevWorst = Double.MAX_VALUE;
         // 9th pass measures the 8th application; nothing unmeasured
         for (int pass = 0; pass < 9; pass++) {
-            // bake THIS lane exactly as the compiler will (0.05 grid
-            // in axis units; every convert lane ends at dur, so the
+            // bake THIS lane exactly as the compiler will (the
+            // domain's own grid — 0.01 time / 0.05 distance since
+            // v17.11 D151; every convert lane ends at dur, so the
             // grid matches the final 3-lane bake)
             List<List<BezierBaker.Node>> tmp = new ArrayList<>(3);
             for (int i = 0; i < 3; i++) tmp.add(lane);
-            List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(tmp, 0.05);
+            List<FVDIntegrator.Keyframe> kfs = BezierBaker.bake(tmp, bakeGrid);
             double worst = 0;
             double cum = 0, maxCum = 0;
             for (int k = 0; k < ns; k++) {
@@ -3241,7 +3317,7 @@ public class Coaster {
     private static Vec3[] contDeriv(Vec3[] st, double u,
                                     double[] sa, double[] sb,
                                     double resPitch, double resYaw,
-                                    double d) {
+                                    double resTwist, double d) {
         Vec3 T = st[1].normalize();
         Vec3 U = st[2].sub(T.scale(st[2].dot(T))).normalize();
         Vec3 R = U.cross(T);
@@ -3263,26 +3339,55 @@ public class Coaster {
                   + d * (h10 * sa[3] + h11 * sb[3]);
         double rm = h00 * sa[4] + h01 * sb[4]
                   + d * (h10 * sa[5] + h11 * sb[5]);
+        // CORRECTION WEIGHT (v17.12, D153 — user: "make the slopes
+        // line up" at the bridge seams, asked AFTER the D150 value
+        // fix landed): all three correction channels — the pitch and
+        // heading humps and the D150 residual-twist rate — share
+        // 30u²(1−u)², unit integral like the old 6u(1−u) parabola
+        // but with ZERO VALUE AND ZERO SLOPE at both ends, so the
+        // blend leaves each seam exactly on the measured jerks and
+        // roll accelerations. (The same weight shipped briefly in
+        // v17.10/D148 and was reverted — at that point the VALUE
+        // jumps still dominated and it read as not-the-bug; with
+        // D150 in, the end slopes are what remains.) Mid-span peak
+        // 1.875× vs the parabola's 1.5×.
+        double hump = 30 * u * u * (1 - u) * (1 - u);
+        // RESIDUAL TWIST IN THE MARCH (v17.11, D150 — the user's
+        // split-and-rebridge file): with roll LOCKED (or position
+        // mode) over rolling seam states, the blend's rm carries the
+        // neighbors' roll on but the TARGET's bank stays put — the
+        // march used to end tens of degrees off in bank and the
+        // render's residual quintic twisted U afterwards, while κ
+        // below was built in the UNTWISTED frame: the far seam's
+        // curvature vector arrived rotated by the whole residual
+        // (~48° on the user's file = a ~1 g instant normal/lateral
+        // jump). The residual joins the march as a roll RATE (zero
+        // at the ends so the seam roll rates stay the neighbors'),
+        // so the frame rolls toward the target DURING the march and
+        // κ — rebuilt in the CURRENT frame each step — arrives in
+        // the target's directions.
+        if (resTwist != 0) {
+            rm += resTwist * hump / d;
+        }
         Vec3 kap = U.scale(ku).add(R.scale(kr));
         if (resPitch != 0) {
             // world-vertical direction ⊥ T: rotating T toward it raises
-            // pitch; 6u(1−u)/d integrates to exactly `resPitch`
+            // pitch; hump/d integrates to exactly `resPitch`
             Vec3 vup = new Vec3(0, 1, 0).sub(T.scale(T.y()));
             double len = vup.length();
             if (len > 1e-9) {
-                kap = kap.add(vup.scale(
-                    resPitch * 6 * u * (1 - u) / d / len));
+                kap = kap.add(vup.scale(resPitch * hump / d / len));
             }
         }
         if (resYaw != 0) {
             // rotation about WORLD Y: dT/ds = c·(Ŷ×T) changes the
             // HEADING at exactly c rad/m regardless of pitch (the
-            // horiz² factors cancel), so the parabolic hump
-            // integrates to exactly `resYaw` — the position-only
-            // mode's fixed target heading is met BY THE MARCH, not
-            // dumped on the septic (v13.10, D84)
+            // horiz² factors cancel), so the hump integrates to
+            // exactly `resYaw` — the position-only mode's fixed
+            // target heading is met BY THE MARCH, not dumped on the
+            // septic (v13.10, D84)
             kap = kap.add(new Vec3(T.z(), 0, -T.x()).scale(
-                resYaw * 6 * u * (1 - u) / d));
+                resYaw * hump / d));
         }
         return new Vec3[]{ T, kap,
             T.scale(-kap.dot(U)).sub(R.scale(rm)) };

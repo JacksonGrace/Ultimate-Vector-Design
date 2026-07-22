@@ -339,6 +339,7 @@ class Viewport3D {
                 if (rideTime <= 0) return;
                 povTime = ((povTime + wheel * 0.02) % rideTime + rideTime) % rideTime;
                 app.editor.refresh();   // POV marker always on (v16.14)
+                updatePovStats();       // live POV line (v17.11)
             } else if (orthoView) {
                 // ortho zoom is multiplicative (the camera sits ~72x out;
                 // the additive step and its -1500 clamp would wreck it)
@@ -384,6 +385,7 @@ class Viewport3D {
                 int idx = (int) FvdDesigner.clamp(povTime / FvdDesigner.INTEGRATE_DT, 0, app.lastSamples.size() - 1);
                 applyPovCamera(app.lastSamples.get(idx));
                 updateGridLOD(app.lastSamples.get(idx).pos().x(), app.lastSamples.get(idx).pos().z());
+                updatePovStats();   // live POV line (v17.11)
                 // the editor FOLLOWS the ride across pieces (v13.11,
                 // user spec: the piece you're on is the one you're
                 // editing) — piece transitions only, so hands-off
@@ -946,9 +948,12 @@ class Viewport3D {
             base += nSec;
             if (i1 - i0 < 1) continue;
             List<FVDIntegrator.Sample> sub = samples.subList(i0, i1 + 1);
-            boolean act = p >= runS && p <= runE;
-            parts.add(buildRailMesh(sub, -app.railGauge / 2, act));
-            parts.add(buildRailMesh(sub, app.railGauge / 2, act));
+            // "Visualize Track Selection" OFF (v17.10): every piece
+            // renders in its full active coloring — no desaturation
+            boolean act = !app.settings.visualizeSelection()
+                || (p >= runS && p <= runE);
+            parts.add(buildRailMesh(sub, i0, -app.railGauge / 2, act));
+            parts.add(buildRailMesh(sub, i0, app.railGauge / 2, act));
             // ties build through the highlight refresh below (the
             // active section's ties render white, v16.11)
             TiePiece tp = new TiePiece(sub, i0, act, new Group());
@@ -1010,15 +1015,46 @@ class Viewport3D {
             maxV = Math.max(maxV, app.trueV[i]);
         }
         FVDIntegrator.Sample last = samples.get(samples.size() - 1);
+        // COASTER STATISTICS moved to the Coaster menu (v17.11, user
+        // spec) — stash them for its rows; the bottom line is the live
+        // POV POSITION now (true values, updates outside POV too)
+        app.statRideTime = last.t();
+        app.statTrackLen = last.s();
+        app.statMinY = minY;
+        app.statMaxY = maxY;
+        app.statTopV = maxV;
+        app.statMinGv = minGv;
+        app.statMaxGv = maxGv;
+        updatePovStats();
+    }
+
+    /** The bottom stats line = the CURRENT POV position (v17.11, user
+     *  spec — replaces the coaster stats + shortcut hint): X/Y/Z,
+     *  speed and vertical/lateral G at povTime, TRUE values, three
+     *  decimals. povTime persists across POV exits, so the line stays
+     *  live while editing; every rebuild and every ride frame
+     *  refreshes it. */
+    void updatePovStats() {
+        if (app.lastSamples == null || app.lastSamples.isEmpty()
+                || app.trueV == null || app.trueFelt == null) return;
+        int idx = (int) FvdDesigner.clamp(
+            povTime / FvdDesigner.INTEGRATE_DT, 0,
+            Math.min(app.lastSamples.size(),
+                Math.min(app.trueV.length, app.trueFelt.length)) - 1);
+        FVDIntegrator.Sample sm = app.lastSamples.get(idx);
         app.statsLabel.setText(String.format(
-            "Ride: %.1f s   |   Track: %.0f m   |   Height: %.1f to %.1f m   |   Top speed: %.0f km/h   |   Gv: %.1f to %.1f      %s",
-            last.t(), last.s(), minY, maxY, maxV * 3.6, minGv, maxGv, app.shortcutHint()));
+            "POV   X: %.3f   Y: %.3f   Z: %.3f   |   Speed: %.3f m/s   |   Vertical G: %.3f   |   Lateral G: %.3f",
+            sm.pos().x(), sm.pos().y(), sm.pos().z(),
+            app.trueV[idx], app.trueFelt[idx][0], app.trueFelt[idx][1]));
     }
 
     /** A single rail tube: heartline offset down by heartOffset along U,
-     *  sideways by `lateral` along R, radius 70 mm, colored by vertical G. */
-    MeshView buildRailMesh(List<FVDIntegrator.Sample> samples, double lateral,
-                           boolean active) {
+     *  sideways by `lateral` along R, radius 70 mm, colored by vertical G
+     *  — the TRUE felt G since v17.12 (D153, user spec: the gradient
+     *  reads like the G-force comb; base = the sublist's global sample
+     *  offset into the true arrays). */
+    MeshView buildRailMesh(List<FVDIntegrator.Sample> samples, int base,
+                           double lateral, boolean active) {
         TriangleMesh mesh = new TriangleMesh();
         int nRings = 0;
         List<Vec3> ringPos = new ArrayList<>();
@@ -1034,7 +1070,10 @@ class Viewport3D {
                 Vec3 p = center.add(offset);
                 mesh.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
             }
-            float u = (float) FvdDesigner.clamp((sm.Gv() - FvdDesigner.G_MIN) / (FvdDesigner.G_MAX - FvdDesigner.G_MIN), 0.001, 0.999);
+            double gv = app.trueFelt != null
+                    && base + i < app.trueFelt.length
+                ? app.trueFelt[base + i][0] : sm.Gv();
+            float u = (float) FvdDesigner.clamp((gv - FvdDesigner.G_MIN) / (FvdDesigner.G_MAX - FvdDesigner.G_MIN), 0.001, 0.999);
             mesh.getTexCoords().addAll(u, 0.5f);
             ringPos.add(sm.pos());
             nRings++;
@@ -1155,7 +1194,10 @@ class Viewport3D {
      *  refreshTrackMarkers, and once per rebuildTrack). The ACTIVE
      *  section's ties render WHITE (v16.11, user spec). */
     void refreshTieHighlight(boolean force) {
-        int[] hi = app.editor != null ? app.editor.activeSpanRange() : null;
+        // "Visualize Track Selection" OFF (v17.10): no white ties —
+        // every tie renders the plain dark color
+        int[] hi = app.settings.visualizeSelection() && app.editor != null
+            ? app.editor.activeSpanRange() : null;
         String sig = hi == null ? "-" : hi[0] + ":" + hi[1];
         if (!force && sig.equals(tieSig)) return;
         tieSig = sig;

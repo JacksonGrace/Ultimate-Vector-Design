@@ -162,18 +162,29 @@ public class BezierBaker {
     public static List<FVDIntegrator.Keyframe> bake(List<List<Node>> lanes, double gridStep) {
         double end = rideEnd(lanes);
 
-        List<List<double[]>> polys = new ArrayList<>();
-        for (int lane = 0; lane < LANES; lane++) polys.add(bakeLane(lanes.get(lane)));
-
+        // EXACT keyframe values (v17.11, D151): each grid point reads
+        // the owning segment's cubic directly. The old path went
+        // through bakeLane's ~0.1-unit PARAMETER-space polyline, whose
+        // knots move under node inserts and section splits even when
+        // the curve itself is identical — the dominant term of the
+        // D147 split-vs-unsplit residual (~2 cm per 100 m on curved
+        // lanes; the knot-invariant exact read leaves only the grid's
+        // own phase, ~mm). The editor keeps the polyline for drawing/
+        // hit tests; only the physics path changed.
         List<FVDIntegrator.Keyframe> out = new ArrayList<>();
         for (double t = 0; t < end; t += gridStep) {
             out.add(new FVDIntegrator.Keyframe(
-                t, evalPolyline(polys.get(0), t), evalPolyline(polys.get(1), t), evalPolyline(polys.get(2), t)));
+                t, exactAt(lanes.get(0), t), exactAt(lanes.get(1), t),
+                exactAt(lanes.get(2), t)));
         }
         out.add(new FVDIntegrator.Keyframe(
-            end, evalPolyline(polys.get(0), end), evalPolyline(polys.get(1), end), evalPolyline(polys.get(2), end)));
+            end, exactAt(lanes.get(0), end), exactAt(lanes.get(1), end),
+            exactAt(lanes.get(2), end)));
         return out;
     }
+
+    // (bake's exact reads go through the v16.9 exactAt below — D151
+    // widened its use from the abs-roll channel to EVERY keyframe)
 
     /** Value of a single lane's curve at time t (used by the editor). */
     public static double evalAt(List<Node> lane, double t) {

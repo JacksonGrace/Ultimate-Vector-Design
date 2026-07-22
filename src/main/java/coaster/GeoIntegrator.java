@@ -214,7 +214,7 @@ public final class GeoIntegrator {
 
         double t = 0;
         Quat qEnd = q;
-        while (t <= totalTime) {   // same sampling cadence as the force path
+        while (true) {   // same sampling cadence as the force path
             Vec3 T = q.T();
             Vec3 U = q.U();
             Vec3 R = U.cross(T);
@@ -242,25 +242,33 @@ public final class GeoIntegrator {
             qEnd = q;   // the exit contract: the LAST SAMPLE's orientation
                         // (the loop's own q ends one step PAST it, D80)
 
+            // END LANDING (v17.10, D147): same closing-step rule as
+            // integrateTrack — the last sample lands EXACTLY on the
+            // authored end (the old loop refused the final step on
+            // float overshoot; every seam lost up to one dt).
+            double rem = totalTime - t;
+            if (rem <= dt * 1e-9) break;
+            double h = (rem <= dt * 1.5) ? rem : dt;
+
             State y = new State(pos, q, loss);
             Deriv k1 = deriv(y, t, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-            Deriv k2 = deriv(advance(y, k1, dt / 2), t + dt / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-            Deriv k3 = deriv(advance(y, k2, dt / 2), t + dt / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-            Deriv k4 = deriv(advance(y, k3, dt), t + dt, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
+            Deriv k2 = deriv(advance(y, k1, h / 2), t + h / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
+            Deriv k3 = deriv(advance(y, k2, h / 2), t + h / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
+            Deriv k4 = deriv(advance(y, k3, h), t + h, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
-                    .scale(dt / 6));
+                    .scale(h / 6));
             q = q.add(
                 k1.dQ().add(k2.dQ().scale(2)).add(k3.dQ().scale(2)).add(k4.dQ())
-                    .scale(dt / 6)).normalize();
+                    .scale(h / 6)).normalize();
             loss += (k1.dLoss() + 2 * k2.dLoss() + 2 * k3.dLoss()
-                + k4.dLoss()) * dt / 6;
+                + k4.dLoss()) * h / 6;
             if (rollGlobal && rollAbs) {
                 // ABSOLUTE roll (D118): target = the lane value at
                 // the just-reached time (C1 read, v16.9 D121)
                 double tb = Math.toRadians(FVDIntegrator
-                    .bankAt(keyframes, t + dt));
+                    .bankAt(keyframes, t + h));
                 double b = FVDIntegrator.bankOfTU(q.T(), q.U());
                 if (!Double.isNaN(b) && Math.abs(tb - b) >= 1e-12) {
                     q = Quat.aboutAxis(q.T(), tb - b).mul(q).normalize();
@@ -270,12 +278,12 @@ public final class GeoIntegrator {
                     // bank target = the lane's ARC integral (D115)
                     double v1 = FVDIntegrator.speedAt(newPos, vDesign, y0, loss);
                     cumRoll += Math.toRadians(kf.rollRateDeg() * v
-                        + FVDIntegrator.interpAt(keyframes, t + dt)
-                            .rollRateDeg() * v1) / 2 * dt;
+                        + FVDIntegrator.interpAt(keyframes, t + h)
+                            .rollRateDeg() * v1) / 2 * h;
                 } else {
                     cumRoll += Math.toRadians(kf.rollRateDeg()
-                        + FVDIntegrator.interpAt(keyframes, t + dt).rollRateDeg())
-                        / 2 * dt;
+                        + FVDIntegrator.interpAt(keyframes, t + h).rollRateDeg())
+                        / 2 * h;
                 }
                 if (Double.isNaN(bank0)) {
                     double b = FVDIntegrator.bankOfTU(q.T(), q.U());
@@ -294,7 +302,7 @@ public final class GeoIntegrator {
 
             s += newPos.sub(pos).length();
             pos = newPos;
-            t += dt;
+            t = (h == dt) ? t + dt : totalTime;
         }
 
         return new Result(samples, qEnd);

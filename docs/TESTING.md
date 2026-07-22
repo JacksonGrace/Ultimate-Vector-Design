@@ -1696,6 +1696,25 @@
     connect-directly arrives with smoothing OFF (D143) and the
     coincident placement stays exact (5.3e-15 m).
 
+52. **v17.10 gates (Phase3Gate extension; D147 end landing + D148
+    bridge seams).** All passed 2026-07-21, Phase3Gate at 69:
+    (52a) a time section's LAST sample lands exactly on the
+    authored end (== 5.0, float-exact); (52b) split-at-node vs
+    unsplit end gap 0.0093 m on the curved hill fixture — bake-
+    grid phase only (0.245 m pre-fix on the ramp; MACHINE-precision
+    1.2e-12 m since the v17.11 exact bake + 0.01 s time grid,
+    D151); (52c) split on
+    an ANGLED (linear) stretch is exact, 1.6e-5 m. (53a-b,
+    REWRITTEN v17.11 after the D148 drafts were user-reverted,
+    D150) roll-free march bridges re-pinned at the shipped
+    parabola-hump seam levels; (53c) ROLLING seams with locked
+    roll — the user's split-and-rebridge file's class — march
+    renders at every length with the far-seam felt CONTINUOUS
+    (worst 0.0015 g; pre-D150 ~0.5-1.2 g instant Gv/Gl jumps or a
+    permanent septic fallback). The WHOLE old suite (Phase2Gate
+    265 + DomainGate) re-ran green over the D147/D151 re-times
+    (default-layout baselines re-pinned 406.931 m / 0.2131°).
+
 99. v17.6 (D143) — the both-global fix + resulting settings:
     (a) BOTH-GLOBAL ADD: after any curving force section, ⊕ > Add
     geometric section with Global roll AND Global yaw/pitch — the
@@ -1775,6 +1794,86 @@
     while moved (hover-away no longer closes it after a drag);
     click elsewhere to close; reopening re-docks it at the
     button. Track Piece panel labels are white.
+
+103. v17.10 (D147-D149) — end landing, bridge seams, View/Coaster
+    round: (a) SPLIT IS EXACT: insert a node on an angled stretch,
+    right-click > Split section here — the END of the track does
+    not move (was up to ~25 cm); Ctrl+Z, repeat with Split track
+    piece — same. (b) [SUPERSEDED by #104 — the v17.10 hump/gate
+    drafts were REVERTED, D150.] (c) VIEW MENU: "Show Gizmos" is the TOP row
+    with Local|Global dots inline (grayed while unchecked, same
+    state as the viewport's Axes button); "Show heartline" (no
+    "(neon)"); "Visualize track selection" OFF = full-color tubes
+    on every piece + plain dark ties everywhere (no white active
+    ties), ON = the old look. (d) COASTER MENU: a "Rail Color"
+    section — Solid (square 22 px swatch appears while selected,
+    NO reset arrow) | Normal Force; picking a color re-tints live,
+    Load/New re-sync the swatch without dirtying. (e) All color
+    swatches (rail + every stop in G-Force Colors…) are small
+    squares. (f) BRIDGE PROPERTIES panel: every label/radio/check
+    reads WHITE on the dark popup (spinner box text stays dark).
+    (g) SMOOTHED SEAM TRUE STROKES: on a smoothed strict seam
+    with NO speed conflict, the thin true stroke now draws inside
+    the window on the LEFT (upstream) side too — the real blended
+    curve vs the authored graph; it still vanishes outside the
+    window.
+
+104. v17.11 (D150-D152) — his round-2 report: (a) BRIDGE (his
+    "Bridge length continuity bug.fvd"): load it, sweep the Length
+    spinner anywhere (including 24.1 m and below) — the far seam's
+    normal/lateral graphs stay CONTINUOUS at every length (they
+    jumped ~1 g below 24.1 before; above 24.1 was the septic
+    materializing, not a fix). The two v17.10 bridge drafts are
+    reverted — old optimized bridges render exactly as before.
+    (b) SPLIT: insert a node where all three graphs have slope AND
+    curvature, split the section (or piece) — the end of the track
+    does not move at all now (machine precision on 0.01-multiple
+    cuts, µm otherwise; was ~2 cm per 100 m on curvature-heavy
+    cuts). (c) POV STATS LINE: the bottom line reads POV X/Y/Z,
+    Speed, Vertical G, Lateral G (3 decimals, TRUE values); leave
+    POV view — it keeps updating as you edit; the purple graph
+    line marks the position at all times. Coaster > Coaster
+    Statistics holds the old five numbers; the shortcut hint is
+    gone. (d) MENUS: "G-Force Colors…" appears under Coaster >
+    Rail Color > Normal Force only while selected; View lost
+    "Reverse POV view direction" (A/D still work captured);
+    "Visualize Selection" and "Node Markers" renamed. (e) POV ON
+    BRIDGE: park the POV on a bridge, open Bridge properties,
+    shrink the length hard — the POV stays on the bridge and the
+    panel stays open (it used to select the next piece and close).
+
+105. v17.12 (D153) — his round-3 report: (a) SEAM SLOPES: on the
+    bridge file, sweep the length — at BOTH bridge seams the
+    G/rate graphs now continue on the neighbors' SLOPES as well as
+    their values (the graphs used to leave the seams at a slightly
+    wrong angle, worst on short bridges). (b) ATTACH DEFAULTS:
+    attach a floating piece whose pitch/roll padlocks are locked
+    (the default) — the seam settings open with Pitch and Roll
+    DISCONTINUOUS (red) holding the piece's angles, Yaw continuous;
+    unlock a padlock first and that axis arrives continuous
+    instead. Answer YES to the zero-distance-bridge prompt — the
+    seam's Discontinuous axes match the bridge's padlocks (default
+    pitch+roll locked = discontinuous, yaw unlocked = continuous).
+    (c) TRUE-FORCE RAILS: on a track with a ≠v section, the Normal
+    Force gradient colors match the G-force comb (the real ride),
+    not the design graphs; without conflicts nothing changes.
+
+106. v17.13 (D154) — B across strict seams matches REAL graphs:
+    make a strict seam, open a speed conflict across it (edit
+    upstream so the follower wears ≠v), then B / Shift+B on the
+    edge nodes from EITHER side: the thin TRUE strokes line up at
+    the seam (value + slope, converging over a re-press or two) —
+    the design curves deliberately keep their ≠v step. Also works
+    unconflicted-vs-conflicted. With seam SMOOTHING enabled the
+    targets read the blended samples — expect a couple of
+    iterations, or match with smoothing off and re-enable. After
+    matching, a smoothed conflicted seam's TRUE strokes run
+    smoothly through the window; the DESIGN felt/rate step at the
+    seam is the honest ≠v display and stays whatever the window
+    size (D139).
+
+
+
 
 
 

@@ -5678,3 +5678,307 @@ clean. Hand-test: walkthrough #101.
 Gates: Phase3Gate 63 + Phase2Gate + DomainGate green; launch smoke
 clean. Hand-test: walkthrough #102. COMMITTED with the whole
 v17.2-v17.9 stack on user request.
+
+## D147. v17.10: integrator END LANDING -- the closing step lands on
+##        the authored end (user bug: split-at-node moved the track end)
+
+- THE BUG (user 2026-07-21): insert a node on an angled stretch of a
+  lane, split the section there -- the END of the track moved, "when
+  in theory there should be absolutely no difference at all". Root
+  cause = the D130 truncation: integrateTrack's `while (t <=
+  totalTime)` refused the final step whenever the accumulated float
+  t overshot the end (300 x 0.01 = 3.0000000000000027), so EVERY
+  time-domain section end absorbed up to one dt of authored profile
+  -- and a split ADDS a seam, i.e. one fresh truncation the unsplit
+  compile didn't have (0.245 m end shift on the probe ramp).
+- THE FIX: both time-domain loops (FVDIntegrator.integrateTrack,
+  GeoIntegrator.integrate) size the CLOSING step to land the last
+  sample EXACTLY on the authored end -- a single stretched/shrunk
+  step in (0, 1.5*dt] (the D84 no-runt rule: never a full step plus
+  a sliver; near-duplicate samples poison rate differencing).
+  Interior steps stay h == dt bit-identically. Distance mode always
+  Newton-landed; s/c and bridge geometry were never affected.
+- D130's "never fix the loop epsilon" is SUPERSEDED knowingly: the
+  fix re-times every time-section end by up to one dt of profile,
+  so old saves compile marginally more complete (sub-cm shifts per
+  seam). All three suites re-ran green -- the bitwise gates compare
+  two in-build paths and survive a uniform re-time; no absolute
+  baseline broke.
+- The residual split-vs-unsplit difference is BAKE-GRID PHASE only
+  (each half re-anchors its 0.05 s keyframe grid and per-segment
+  polyline knots): ~9 mm over the 120 m curved hill fixture, and
+  1.6e-5 m on an angled LINEAR stretch -- the user's exact case --
+  where the bake is exact. Gates 52a-c pin all three.
+
+## D148. v17.10: bridge seams smooth at EVERY length (user bug:
+##        rough transitions in length ranges, "magic" smooth lengths)
+
+- SYMPTOM (user): sweeping an optimize-mode bridge's length,
+  certain ranges showed an instant jump and/or instant slope change
+  in G/rate at the bridge's ends; at some custom distances the
+  graphs "snapped" back to matching value + slope.
+- ROOT CAUSE 1 -- the correction humps: the march closed its pitch/
+  heading residuals with PARABOLIC curvature humps 6u(1-u)/d --
+  zero end VALUE but end SLOPE +/-6*res/d^2: an instant kink in the
+  rate-graph slope at BOTH seams, proportional to the residual gap,
+  which varies with length and crosses ZERO at isolated lengths --
+  the user's magic smooth distances. Probe: seam slope gaps up to
+  ~1800 deg/s^2 at d = 8 m; OPT_POS ~5x worse than OPT_POS_YAW
+  (both humps fire there).
+- FIX 1: hump weight = 30u^2(1-u)^2 -- same unit integral (the
+  residual still closes exactly), zero end value AND slope; mid-
+  span peak 1.875x vs 1.5x (25% higher, accepted). This is NOT the
+  reverted D83 quintic -- that changed the BLEND basis the user
+  feel-rejected; the humps' end slopes were never load-bearing.
+- ROOT CAUSE 2 -- the landing gate: marchSpine accepted misses up
+  to 2 cm / 0.3 deg and rendered the spine as-is -- an instant
+  position/orientation STEP at the far seam (0.3 deg at 30 m/s is
+  a ~30 deg/s rate spike). Genuine optimize flows land at ~1e-12 m
+  / <=1e-4 rad, so the slack only ever admitted STALE placements
+  (hand-nudged targets inside 2 cm kept rendering a stepped spine).
+- FIX 2: gate tightened to 5 mm / 0.02 deg. Anything visibly off
+  falls to the SEPTIC, which is value+slope continuous into both
+  seams BY CONSTRUCTION -- so every render path is now seam-smooth,
+  exactly like the situations the user called "magically smooth".
+- Post-fix probe (rotation-per-meter, local two-sample measure):
+  curvature value kinks 0.000 at every length, slope breaks at or
+  below the septic's own floor (0.08 vs 0.50 deg/m^2 reference).
+  Gates 53a-c.
+- COMPAT: pre-v17.10 saves with OPTIMIZED bridges were placed under
+  the parabola humps -- on load the new march ends elsewhere, the
+  tight gate rejects it, and those bridges render SEPTIC (seam-
+  smooth, same seam poses, slightly different mid-span) until the
+  first upstream edit or explicit re-optimize re-places them. Loads
+  still never move pieces (the optSig == null record-only rule).
+
+## D149. v17.10: View/Coaster menu + visual round (user list,
+##        2026-07-21)
+
+- "SHOW GIZMOS" (renamed from "Show placement/seam gizmos") is the
+  TOP View row, with the axis choice inline as two radio dots
+  "Local" | "Global" -- grayed while the gizmos are hidden; they
+  share app.setGizmoAxesLocal with the viewport's overlay button
+  (the separate "Gizmo axes: local" check is gone;
+  FvdDesigner.viewGizmoLocal/Global are the new twins).
+- "Show heartline" dropped its "(neon)".
+- RAIL COLOR moved to the COASTER menu as a "Rail Color" section
+  (Dialogs.railColorItems): "Solid" -- its swatch shows inline
+  while selected, and the reset arrow is GONE (user spec) -- and
+  "NORMAL FORCE" (the former "G-force gradient" wording). The
+  v16.16 Load/New re-sync guard moved along (railMenuSync, run by
+  the Coaster menu's onShown).
+- "VISUALIZE TRACK SELECTION" (View check, default ON =
+  AppSettings.visualizeSelection): OFF disables selection tinting
+  wholesale -- no desaturated pieces (every tube renders in its
+  full active coloring) and no white active-section ties (all ties
+  the plain dark color). Pure per-user view setting.
+- COLOR SWATCHES are SQUARE and small (22x22, were 52x22) -- every
+  picker button: rail solid, gradient stops, lateral stops.
+- BRIDGE PROPERTIES panel text is WHITE (mode radios, length row,
+  Optimize length, yaw/pitch/roll/xyz labels) -- black holdovers
+  from the pre-v17.8 light ContextMenu eras on the dark popup.
+- TRUE STROKES AT SMOOTHED STRICT SEAMS (user spec): inside a
+  smoothing window the ACTIVE strip draws its AUTHORED lanes while
+  the ride is the compiler's blend, so drawTrueStrokes now takes
+  the authored value as its split reference there (the influence/
+  tilt rule) -- the thin real curve shows on BOTH sides of the
+  seam, including the upstream side, which is never speed-
+  conflicted and used to show nothing while its geometry bent.
+
+Gates: Phase3Gate 69 (52a-c end landing + 53a-c bridge seams new) +
+Phase2Gate 265 + DomainGate green; launch smoke clean. Hand-test:
+walkthrough #103.
+
+## D150. v17.11: bridge far-seam jumps ROOT-CAUSED — the residual
+##        twist joins the march (v17.10's two bridge drafts REVERTED)
+
+- THE REVERT (user 2026-07-21): D148's zero-end-slope humps and the
+  5 mm / 0.02 deg landing gate "didn't quite capture the specific
+  bug" -- both restored (6u(1-u) parabola, 2 cm / 0.3 deg). His
+  attached split-and-rebridge file showed rough far-seam Gv/Gl at
+  lengths <= 24.1 m and smooth above; the 24.1 threshold was MY
+  tight gate flipping the render to the septic mid-range (the
+  march's landing residual crossed 0.02 deg there) -- the
+  underlying roughness existed at EVERY march length.
+- THE REAL BUG (probe on his file: ~0.6-1.2 g instant Gv/Gl jumps
+  at the far seam, growing with length): his seams carry a -52 deg/s
+  roll rate with roll LOCKED, so the march's blended roll runs the
+  bank ~2 deg/m away from the target's and the render's residual
+  quintic twisted U back afterwards (~48 deg at 24 m) -- while the
+  spine's CURVATURE was built in the UNTWISTED frame. The track
+  genuinely bent in directions rotated by the whole residual at the
+  far seam: bank closed, curvature vector didn't. (The v17.10-era
+  probes never saw it -- their fixtures had zero roll.)
+- THE FIX, three parts (Coaster.marchEnd/march/contDeriv):
+  1. RESIDUAL TWIST IN THE MARCH: the bank gap to the target joins
+     the march as a roll RATE (parabolic weight like the humps, zero
+     at the ends so seam roll rates stay the neighbors'); kappa --
+     rebuilt in the CURRENT frame each step -- then arrives at the
+     far seam in the TARGET's directions.
+  2. YAW-INVARIANT MEASURE (bankGap): the residual is the
+     difference of the two frames' BANK-VS-HORIZON angles, each
+     about its own heading -- invariant under the yaw alignment the
+     placement applies after the march. A direct U-to-target-U
+     angle re-measured differently after placement, re-aimed the
+     blend, and the render missed its own placement by ~1 deg
+     (permanent septic).
+  3. BOUNDED FIXED-POINT refinement (<= 6 passes, exit at 1e-4
+     rad): with ~48 deg of twist re-aiming the blend, the pitch
+     hump's response gain is far from 1 and D97's single pass left
+     DEGREES of far-seam tangent error. All three measures are
+     wrap-safe (asin / wrapped atan2 -- NOT the reverted D95 bank
+     iteration's ambiguous measure); clean marches exit on the
+     first measure, keeping the historic two-march sequence
+     bit-identically.
+- RESULT on his file: march renders at every length, landing
+  0.000 m / <= 0.005 deg, far-seam felt jump 1.2 g -> 0.008 g (the
+  per-sample noise floor). Roll-free fixtures unchanged. Gates
+  53a-c rewritten: 53a/b re-pin the shipped parabola-hump levels,
+  53c pins the rolling-seam fix (worst 0.0015 g).
+
+## D151. v17.11: EXACT bake + 0.01 s time grid — the split residual
+##        drops to the integration floor (user round 2 on D147)
+
+- HIS REPORT: split accuracy "much better" but a curvature-heavy
+  cut still moved the end ~0.02 m per 100 m -- the D147 bake-grid
+  residual, "likely would exponentially increase with longer
+  coasters".
+- CAUSE, two discretization layers: bakeLane's ~0.1-unit PARAMETER-
+  space polyline (whose knots move under node inserts/splits even
+  when the curve is identical) and the 0.05 keyframe grid re-
+  anchoring at each split half's own zero.
+- FIX 1 -- EXACT KEYFRAMES (BezierBaker.exactAt): bake() reads each
+  grid point straight off the owning segment's cubic (bisection on
+  x, the splitSegment pattern; folds behave at the documented-quirk
+  level). The physics path no longer sees the polyline at all; the
+  editor keeps it for drawing/hit tests. Hill-fixture split
+  residual 9.3 mm -> 0.13 mm.
+- FIX 2 -- TIME GRID 0.01 s (= dt; knots on every RK4 step
+  boundary): split halves' grids land on the parent's own grid
+  points, so a cut at any 0.01-multiple is exact to MACHINE
+  precision (1.2e-12 m on the hill fixture); off-grid cuts sit at
+  the few-um RK4 step-phase floor. DISTANCE lanes keep 0.05 m
+  (already ~26x denser per meter of track; 0.01 m would balloon
+  long sections' tables). matchSegmentAreas bakes on the same
+  per-domain grid (threaded parameter).
+- FIX 3 -- the convert fit's round-duration workaround RETIRED: it
+  existed only because the old loop dropped fractional tails
+  (D147 landed that); fits keep the exact data duration now.
+- RE-BASELINED (the exact values shift every compile slightly, a
+  pure accuracy gain): default layout 406.878 -> 406.931 m, end
+  pitch 0.2284 -> 0.2131 deg (sample count unchanged, 1347); the
+  bit-for-bit gate's direct call bakes 0.01 like the compiler;
+  conv (a) re-pinned 0.6 deg/s (Pass A's +/-2-sample differencing
+  smears the now-sharper rate corners -- comparison artifact, both
+  sides were equally low-passed before); 48f re-pinned 0.02 m/s
+  (near-stall v amplifies mm/s of profile change; badges fire at
+  0.2). Compile cost: ~5x more keyframes on time sections --
+  sub-ms; interpAt is a binary search.
+
+## D152. v17.11: POV stats line + menu polish (user list, 2026-07-21)
+
+- The FIVE coaster stats (ride time, track length, height range,
+  top speed, Gv range) moved to a COASTER STATISTICS submenu of the
+  Coaster menu (refreshed per open); the shortcut hint is GONE
+  entirely (Edit > Shortcuts and Help own that).
+- The bottom line is the LIVE POV POSITION now: X/Y/Z, speed,
+  vertical + lateral G -- TRUE values, three decimals
+  (Viewport3D.updatePovStats; refreshed per rebuild, per ride
+  frame and per POV scroll). povTime persists across POV exits, so
+  the line stays live while editing -- and the purple POV marker
+  line on the graph draws ALWAYS now, not just in POV view.
+- POV STAYS ON THE BRIDGE while bridge settings are edited
+  (GraphEditor.clampPovIntoActiveBridge, inside applyBridgeGap +
+  gizmoBridgeMoved): shrinking the length used to drop the parked
+  POV into the next piece, whose ride-follow activated it and
+  closed the Bridge-properties panel mid-edit. The clamp runs
+  synchronously in the edit event (the POV timer never sees the
+  position off the bridge) and only when the POV was ON the bridge
+  before the edit.
+- Coaster menu: "G-Force Colors..." (the tinted-letters item)
+  appears under "Normal Force" while it is selected.
+- View menu: "Reverse POV view direction" REMOVED (A/D in captured
+  POV + the bottom-left tag are the surface); "Visualize track
+  selection" -> "VISUALIZE SELECTION"; "Node markers on the 3D
+  track" -> "NODE MARKERS".
+
+Gates: Phase3Gate 69 (53a-c rewritten) + Phase2Gate 265 (re-
+baselined) + DomainGate green; launch smoke clean. Hand-test:
+walkthrough #104 (supersedes #103's bridge item).
+
+## D153. v17.12: bridge seam SLOPES + attach lock defaults + true-force
+##        rails (user round 3, 2026-07-21)
+
+- SEAM SLOPES (user: "the slopes of the graphs aren't lining up at
+  the seams at either side of the bridge [just the values]"): with
+  the D150 value fix in, what remained at march-bridge seams was
+  the correction channels' 6u(1-u) parabola END SLOPES (+/-6*res/d²
+  each) -- the pitch hump, the heading hump AND the D150 residual-
+  twist rate. All three now share the 30u²(1-u)² weight: unit
+  integral (residuals still close exactly), zero end value AND
+  slope, so the blend leaves each seam exactly on the measured
+  jerks / roll accelerations. This is the SAME weight D148 shipped
+  briefly and D150 reverted -- at that point the value jumps still
+  dominated and it read as not-the-bug; now it lands as the asked-
+  for fix, applied to the twist channel too. Probe on his file:
+  seam slope breaks ~0.50 -> 0.02-0.08 deg/m² (the septic's own
+  floor), value kinks stay 0. Mid-span hump peak 1.875x vs 1.5x.
+- ATTACH LOCK DEFAULTS (user spec): connectStrict grew a lock-
+  carrying overload -- a DIRECT ATTACH seeds the seam's
+  Discontinuous axes from the floating piece's placement PADLOCKS
+  (locked pitch/roll => discontinuous holding the piece's own
+  angles; yaw has no padlock => continuous); the ZERO-DISTANCE-
+  BRIDGE "Yes" seeds them from the BRIDGE's yaw/pitch/roll locks.
+  Held angles seed from the piece's current orientation (the
+  existing seedStrictValues), so nothing moves at creation either
+  way. The 2-arg connectStrict stays all-unlocked (model-level +
+  gates unchanged).
+- TRUE-FORCE RAILS (user spec: "just like the g force comb"): the
+  Normal Force gradient's per-ring color index reads trueFelt[i][0]
+  now instead of the design Gv (buildRailMesh carries the sublist's
+  global base index; falls back to design felt if the true arrays
+  are absent). Identical until a design speed drifts -- then the
+  rails show what the ride actually feels, matching the comb.
+
+Gates: Phase3Gate 69 + Phase2Gate 265 + DomainGate green (53a/b
+message text now reflects the bump levels); launch smoke clean.
+Hand-test: walkthrough #105.
+
+## D154. v17.13: B/Shift+B match REAL graphs across STRICT seams
+##        (user round 4, 2026-07-21)
+
+- THE BUG: boundaryStatePerSec's real-split test resolved only
+  SAME-PIECE indices — at a strict seam the neighbor lives in the
+  adjacent piece, so `real` stayed false on both sides: from the
+  follower's first node the `activeSection > 0` guard nulled the
+  seam span outright, and from the upstream side's end node
+  vTheirs fell back to OUR OWN design speed (missing the
+  follower's). B/Shift+B therefore lined up the DESIGN graphs
+  across conflicted strict seams — including the unconflicted-vs-
+  conflicted case the user hit.
+- THE FIX: the detection resolves CROSS-PIECE through the follow
+  link only (Coaster.followerActive gates it; bridge boundaries
+  stay out — a bridge blends its own speed, D78): the seam span
+  via spanOf's flattened index, the neighbor Section straight off
+  the follower/followed piece. With `real` correctly true, the
+  EXISTING v16.2/16.3 machinery does the rest — targets from the
+  TRUE arrays, converted by the kappa identity (rReal/realScale),
+  through the sampled cross-piece path that already handles
+  flattened spans. refreezeSeamSpeed still skips cross-piece
+  seams, so B never auto-closes a strict seam's speed
+  independence (the D135 contract).
+- Unconflicted strict seams keep the historic sampled design path
+  bitwise (real stays false there).
+- KNOWN LIMIT (user-accepted: "won't be perfect, maybe need
+  iteration"): with seam SMOOTHING enabled, the sampled targets
+  near the seam read the BLENDED samples, so a press converges
+  iteratively; matching with the seam sharp (or smoothing
+  temporarily off) reads the exact contract state. And his
+  "smoothing didn't smooth a conflicted seam" observation: the
+  TRUE ride/strokes smooth through the window — what steps AT the
+  seam are the DESIGN felt/rates, deliberately (D139: the honest
+  not-equal-v display; no window width removes it). With this fix
+  + a B press the real transition has ~nothing left to absorb.
+
+JavaFX-side (not headlessly gateable); suites re-run green
+untouched. Hand-test: walkthrough #106.
