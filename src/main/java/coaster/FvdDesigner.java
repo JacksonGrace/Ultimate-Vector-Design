@@ -480,6 +480,69 @@ public class FvdDesigner extends Application {
         return coaster.pieces.get(Math.min(p, coaster.pieces.size() - 1));
     }
 
+    /** The "Track Piece ▾" / "Bridge properties ▾" panel — a MOVABLE
+     *  dark popup since v17.8 (D145; a ContextMenu can't be dragged):
+     *  grab any non-control spot to move it, click-off closes.
+     *  Openable from the toolbar button AND — over a bridge — from
+     *  the bridge badge menu (v17.14, D155, user request: two spots,
+     *  one panel). Anchors at the toolbar button either way. */
+    void showPlacementPopup() {
+        if (placementPopup != null && placementPopup.isShowing()) {
+            placementPopup.hide();
+            placementPopup = null;
+            return;
+        }
+        Popup pop = new Popup();
+        pop.setAutoHide(true);
+        placementPopup = pop;
+        VBox box = new VBox(6);
+        box.setPadding(new Insets(10, 14, 10, 12));
+        box.setStyle("-fx-background-color: rgb(38,42,53);"
+            + " -fx-background-radius: 6;"
+            + " -fx-border-color: rgb(95,102,120);"
+            + " -fx-border-radius: 6;");
+        if (editor.activeBridgeWithTarget()) {
+            updateBridgeControls();
+            box.getChildren().addAll(bridgeModeRow, bridgeLenRow,
+                bridgeYawRow, bridgePitchRow, bridgeRollRow,
+                bridgePosRow);
+        } else {
+            syncPlacementSpinners();   // lock states follow the piece
+            Button rev = new Button(
+                "Reverse piece (rebuild backward)…");
+            rev.setFocusTraversable(false);
+            rev.setStyle("-fx-font-size: 11px;");
+            rev.setOnAction(ev2 -> {
+                pop.hide();
+                placementPopup = null;
+                editor.reverseActivePiece();
+            });
+            box.getChildren().addAll(placementRow, yawPlacementRow,
+                tiltPlacementRow, rev);
+        }
+        double[] grab = new double[2];
+        box.setOnMousePressed(ev2 -> {
+            grab[0] = ev2.getScreenX() - pop.getX();
+            grab[1] = ev2.getScreenY() - pop.getY();
+        });
+        box.setOnMouseDragged(ev2 -> {
+            pop.setX(ev2.getScreenX() - grab[0]);
+            pop.setY(ev2.getScreenY() - grab[1]);
+        });
+        pop.getContent().add(box);
+        pop.setOnShown(ev2 -> {
+            beginMenuSession();
+            installMenuUndoKeys(box.getScene());
+        });
+        pop.setOnHidden(ev2 -> {
+            endMenuSession();
+            if (placementPopup == pop) placementPopup = null;
+        });
+        Bounds pb = placementBtn.localToScreen(
+            placementBtn.getBoundsInLocal());
+        pop.show(placementBtn, pb.getMinX(), pb.getMaxY() - 1);
+    }
+
     /** Show/sync the bridge GAP spinner: visible while the active
      *  section is a bridge with a live target (v13.2). The value
      *  tracks the actual gap; docApplying suppresses the listener so
@@ -1143,65 +1206,7 @@ public class FvdDesigner extends Application {
         placementBtn = new Button("Track Piece ▾");
         placementBtn.setFocusTraversable(false);
         placementBtn.setStyle(btnStyle);
-        placementBtn.setOnAction(e -> {
-            // a MOVABLE dark popup since v17.8 (D145, user spec — a
-            // ContextMenu can't be dragged): same rows, grab any
-            // non-control spot to move it; click-off still closes
-            if (placementPopup != null && placementPopup.isShowing()) {
-                placementPopup.hide();
-                placementPopup = null;
-                return;
-            }
-            Popup pop = new Popup();
-            pop.setAutoHide(true);
-            placementPopup = pop;
-            VBox box = new VBox(6);
-            box.setPadding(new Insets(10, 14, 10, 12));
-            box.setStyle("-fx-background-color: rgb(38,42,53);"
-                + " -fx-background-radius: 6;"
-                + " -fx-border-color: rgb(95,102,120);"
-                + " -fx-border-radius: 6;");
-            if (editor.activeBridgeWithTarget()) {
-                updateBridgeControls();
-                box.getChildren().addAll(bridgeModeRow, bridgeLenRow,
-                    bridgeYawRow, bridgePitchRow, bridgeRollRow,
-                    bridgePosRow);
-            } else {
-                syncPlacementSpinners();   // lock states follow the piece
-                Button rev = new Button(
-                    "Reverse piece (rebuild backward)…");
-                rev.setFocusTraversable(false);
-                rev.setStyle("-fx-font-size: 11px;");
-                rev.setOnAction(ev2 -> {
-                    pop.hide();
-                    placementPopup = null;
-                    editor.reverseActivePiece();
-                });
-                box.getChildren().addAll(placementRow, yawPlacementRow,
-                    tiltPlacementRow, rev);
-            }
-            double[] grab = new double[2];
-            box.setOnMousePressed(ev2 -> {
-                grab[0] = ev2.getScreenX() - pop.getX();
-                grab[1] = ev2.getScreenY() - pop.getY();
-            });
-            box.setOnMouseDragged(ev2 -> {
-                pop.setX(ev2.getScreenX() - grab[0]);
-                pop.setY(ev2.getScreenY() - grab[1]);
-            });
-            pop.getContent().add(box);
-            pop.setOnShown(ev2 -> {
-                beginMenuSession();
-                installMenuUndoKeys(box.getScene());
-            });
-            pop.setOnHidden(ev2 -> {
-                endMenuSession();
-                if (placementPopup == pop) placementPopup = null;
-            });
-            Bounds pb = placementBtn.localToScreen(
-                placementBtn.getBoundsInLocal());
-            pop.show(placementBtn, pb.getMinX(), pb.getMaxY() - 1);
-        });
+        placementBtn.setOnAction(e -> showPlacementPopup());
         Tooltip.install(placementBtn, new Tooltip(
             "The ACTIVE piece's placement: x/y/z, yaw (a delta on its\n"
             + "natural orientation — 0 reverts), and Reverse piece\n"
@@ -1209,6 +1214,9 @@ public class FvdDesigner extends Application {
             + "With a BRIDGE active it places the NEXT piece instead:\n"
             + "optimize position+yaw (default), position only (you\n"
             + "set the yaw), or fully manual."));
+
+        // (the panel body lives in showPlacementPopup — the bridge
+        // badge menu opens the same panel since v17.14, user request)
 
         // bridge LENGTH spinner (v13.2, length semantics v13.4): shown
         // while a bridge with a live target is active; every change

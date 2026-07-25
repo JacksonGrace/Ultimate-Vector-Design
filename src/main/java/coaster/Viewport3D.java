@@ -963,13 +963,30 @@ class Viewport3D {
             // never read as one strand however close they park
             if (heart != null) heart.getChildren().add(buildHeartlineMesh(sub));
             // track COMBS (v16.13; three-way mode since v16.14 — the
-            // G-force comb is vertical + lateral as one unit)
+            // G-force comb is vertical + lateral as one unit; FIVE
+            // modes since v17.16 D157: + GEOMETRIC (curvature, three
+            // sub-modes) and TIME (0.1 s ticks, whole seconds white))
             if (combs != null) {
-                if (app.settings.combMode() == AppSettings.COMB_GFORCE) {
+                int cmode = app.settings.combMode();
+                if (cmode == AppSettings.COMB_GFORCE) {
                     combs.getChildren().add(buildCombMesh(sub, i0, 0));
                     combs.getChildren().add(buildCombMesh(sub, i0, 1));
-                } else {
+                } else if (cmode == AppSettings.COMB_SPEED) {
                     combs.getChildren().add(buildCombMesh(sub, i0, 2));
+                } else if (cmode == AppSettings.COMB_GEO) {
+                    int gm = app.settings.combGeoMode();
+                    if (gm == AppSettings.COMB_GEO_LOCAL) {
+                        combs.getChildren().add(buildCombMesh(sub, i0, 3));
+                        combs.getChildren().add(buildCombMesh(sub, i0, 4));
+                    } else if (gm == AppSettings.COMB_GEO_GLOBAL) {
+                        combs.getChildren().add(buildCombMesh(sub, i0, 5));
+                        combs.getChildren().add(buildCombMesh(sub, i0, 6));
+                    } else {
+                        combs.getChildren().add(buildCombMesh(sub, i0, 7));
+                    }
+                } else {
+                    combs.getChildren().add(buildCombMesh(sub, i0, 8));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 9));
                 }
             }
         }
@@ -1185,6 +1202,24 @@ class Viewport3D {
         return new ArcHit(j, u, pos, T, U, U.cross(T));
     }
 
+    /** arcHit's twin over RIDE TIME (v17.16, D157 — the time comb's
+     *  ticks lerp by t between bracketing samples, so the s/c
+     *  sub-sample phase never quantizes them). */
+    private static ArcHit timeHit(List<FVDIntegrator.Sample> samples,
+                                  int loHint, double t) {
+        int j = Math.max(0, loHint);
+        while (j + 1 < samples.size() - 1 && samples.get(j + 1).t() < t) j++;
+        FVDIntegrator.Sample a = samples.get(j);
+        FVDIntegrator.Sample b = samples.get(Math.min(j + 1, samples.size() - 1));
+        double span = b.t() - a.t();
+        double u = span < 1e-12 ? 0
+            : FvdDesigner.clamp((t - a.t()) / span, 0, 1);
+        Vec3 pos = vLerp(a.pos(), b.pos(), u);
+        Vec3 T = vLerp(a.T(), b.T(), u).normalize();
+        Vec3 U = vLerp(a.U(), b.U(), u).normalize();
+        return new ArcHit(j, u, pos, T, U, U.cross(T));
+    }
+
     private static Vec3 vLerp(Vec3 a, Vec3 b, double u) {
         return a.add(b.sub(a).scale(u));
     }
@@ -1290,22 +1325,37 @@ class Viewport3D {
     }
 
     // ==================== TRACK COMBS (v16.13 D125; reworked v16.14 D126) ====================
-    // Perpendicular teeth along the track, FVD++-style: the G-FORCE
-    // comb = VERTICAL felt G (outward along −U, colored by the
-    // g-force gradient) + LATERAL felt G (rider-LEFT for +Gl since
-    // v16.14, its own mirrored-absolute gradient) as one unit, or the
-    // SPEED comb (upward along U, length only) — a three-way mode,
-    // never both. Teeth originate at the HEARTLINE, sit at EXACT arc
-    // positions (arcHit), scale by the View menu's percent setting,
-    // hide in POV, and are mouse-transparent (they block nothing —
-    // hover works in screen space). Values from the TRUE arrays.
+    // Perpendicular teeth along the track, FVD++-style — FIVE
+    // exclusive modes (v17.16, D157): the G-FORCE comb = VERTICAL
+    // felt G (outward along −U, colored by the g-force gradient) +
+    // LATERAL felt G (rider-LEFT for +Gl since v16.14, its own
+    // mirrored-absolute gradient) as one unit; the SPEED comb
+    // (upward along U, GREEN); the GEOMETRIC comb (solid orange
+    // curvature °/m pointing OUTWARD from the curve — sub-modes
+    // Local = body pitch+yaw, Global = elevation+heading rates,
+    // Combined = one tooth along the curve normal); the TIME comb
+    // (0.1 s ticks in the old speed blue, whole seconds WHITE).
+    // Teeth originate at the HEARTLINE, sit at EXACT arc/time
+    // positions (arcHit/timeHit), scale by the View menu's percent
+    // setting, hide in POV, and are mouse-transparent (they block
+    // nothing — hover works in screen space). Force/speed values
+    // from the TRUE arrays; curvature straight off the frames.
     // Hovering anywhere on a tooth shows its value bottom-left.
 
     static final double COMB_SPACING = 0.5;    // m of track per tooth
     static final double COMB_VG_SCALE = 0.5;   // m per g (vertical)
     static final double COMB_LG_SCALE = 0.8;   // m per g (lateral)
     static final double COMB_V_SCALE = 0.05;   // m per m/s (speed)
+    static final double COMB_K_SCALE = 0.5;    // m per °/m (geometric)
+    static final double COMB_TIME_STEP = 0.1;  // s of ride per time tooth
+    static final double COMB_TIME_LEN = 0.5;   // m — time tooth height
     static final double COMB_MAX = 3.5;        // length cap (m, at 100%)
+
+    // tooth KINDS: 0 vert G, 1 lat G, 2 speed (GREEN since v17.16),
+    // 3 geo local pitch, 4 geo local yaw, 5 geo global elevation,
+    // 6 geo global heading, 7 geo combined curvature (all SOLID
+    // ORANGE, values °/m, teeth pointing OUTWARD from the curve),
+    // 8 time ticks (the old speed blue), 9 whole-second ticks (WHITE)
 
     private record CombPt(Vec3 base, Vec3 tip, double value, int kind) { }
     private final List<CombPt> combPoints = new ArrayList<>();
@@ -1338,17 +1388,37 @@ class Viewport3D {
      *  global start index — the TRUE arrays are ride-global). */
     private MeshView buildCombMesh(List<FVDIntegrator.Sample> samples,
                                    int base, int kind) {
-        final double HW = 0.03;    // tooth half-thickness (⊥ tooth)
-        final double HW_T = 0.06;  // half-width ALONG the track —
-                                   // doubled in v16.15 (user spec)
         TriangleMesh mesh = new TriangleMesh();
         int v = 0, tc = 0;
         double scale = FvdDesigner.clamp(
             app.settings.combScale(), 10, 500) / 100.0;
         if (samples.size() < 2) return new MeshView(mesh);
+        int lo = 0;
+        if (kind >= 8) {
+            // TIME comb (v17.16, D157): one tick per COMB_TIME_STEP of
+            // RIDE TIME — a ruler, constant height up along U, lerped
+            // by t (timeHit) so the s/c sub-sample phase never
+            // quantizes it. kind 8 = off-second ticks, kind 9 = WHOLE
+            // seconds (white). Integer tick indices: accumulating
+            // 0.1 s floats drifts off the whole-second test.
+            double t0 = samples.get(0).t();
+            double tEnd = samples.get(samples.size() - 1).t();
+            for (long k = (long) Math.ceil(t0 / COMB_TIME_STEP - 1e-9);
+                    k * COMB_TIME_STEP <= tEnd + 1e-9; k++) {
+                if ((k % 10 == 0) != (kind == 9)) continue;
+                double t = k * COMB_TIME_STEP;
+                ArcHit h = timeHit(samples, lo, t);
+                lo = h.lo();
+                Vec3 root = h.pos();
+                Vec3 tip = root.add(h.U().scale(COMB_TIME_LEN * scale));
+                combPoints.add(new CombPt(root, tip, t, kind));
+                mesh.getTexCoords().addAll(0.5f, 0.5f);
+                v = addToothBox(mesh, root, tip, h.T(), h.U(), h.U(),
+                    v, tc++);
+            }
+        } else {
         double s0 = samples.get(0).s();
         double sEnd = samples.get(samples.size() - 1).s();
-        int lo = 0;
         for (double S = s0; S <= sEnd + 1e-9; S += COMB_SPACING) {
             ArcHit h = arcHit(samples, lo, S);
             lo = h.lo();
@@ -1367,11 +1437,69 @@ class Viewport3D {
                     + (app.trueFelt[gj][1] - app.trueFelt[gi][1]) * h.frac();
                 dir = h.R().scale(-1);   // rider-LEFT for +Gl (v16.14)
                 len = val * COMB_LG_SCALE;
-            } else {
+            } else if (kind == 2) {
                 val = app.trueV[gi]
                     + (app.trueV[gj] - app.trueV[gi]) * h.frac();
                 dir = h.U();
                 len = val * COMB_V_SCALE;
+            } else {
+                // GEOMETRIC comb (v17.16, D157): curvature per METER
+                // straight off the bracketing frames (dT/ds ⊥ T),
+                // teeth pointing OUTWARD from the curve — away from
+                // its center, the −U-for-positive-G convention the
+                // G comb set. Values °/m; roll deliberately excluded
+                // (the user's spec: pitch and yaw).
+                int ja = h.lo();
+                int jb = Math.min(ja + 1, samples.size() - 1);
+                while (jb + 1 < samples.size()
+                        && samples.get(jb).s() - samples.get(ja).s()
+                           < 1e-4) {
+                    jb++;   // D147 landing runts: widen past them
+                }
+                double ds = samples.get(jb).s() - samples.get(ja).s();
+                if (ds < 1e-9) continue;
+                Vec3 Ta = samples.get(ja).T(), Tb = samples.get(jb).T();
+                Vec3 kv = Tb.sub(Ta).scale(1 / ds);
+                kv = kv.sub(h.T().scale(kv.dot(h.T())));
+                if (kind == 3) {          // LOCAL pitch (κ·U, about R)
+                    val = Math.toDegrees(kv.dot(h.U()));
+                    dir = h.U().scale(-1);
+                } else if (kind == 4) {   // LOCAL yaw (κ·R, about U)
+                    val = Math.toDegrees(kv.dot(h.R()));
+                    dir = h.R().scale(-1);
+                } else if (kind == 5) {   // GLOBAL elevation rate
+                    Vec3 vup = new Vec3(-h.T().x() * h.T().y(),
+                        1 - h.T().y() * h.T().y(),
+                        -h.T().z() * h.T().y());
+                    double vl = vup.length();
+                    if (vl < 1e-6) continue;   // vertical: undefined
+                    val = Math.toDegrees(
+                        Math.asin(FvdDesigner.clamp(Tb.y(), -1, 1))
+                        - Math.asin(FvdDesigner.clamp(Ta.y(), -1, 1)))
+                        / ds;
+                    dir = vup.scale(-1 / vl);
+                } else if (kind == 6) {   // GLOBAL heading rate
+                    double ha = Ta.x() * Ta.x() + Ta.z() * Ta.z();
+                    double hb = Tb.x() * Tb.x() + Tb.z() * Tb.z();
+                    if (ha < 1e-12 || hb < 1e-12) continue;
+                    double dpsi = Math.atan2(-Tb.z(), Tb.x())
+                                - Math.atan2(-Ta.z(), Ta.x());
+                    while (dpsi > Math.PI) dpsi -= 2 * Math.PI;
+                    while (dpsi < -Math.PI) dpsi += 2 * Math.PI;
+                    val = Math.toDegrees(dpsi) / ds;
+                    // horizontal right of travel = outward for a
+                    // LEFT (+ψ') turn
+                    Vec3 hr = new Vec3(-h.T().z(), 0, h.T().x());
+                    double hl = hr.length();
+                    if (hl < 1e-6) continue;
+                    dir = hr.scale(1 / hl);
+                } else {                  // COMBINED |κ|, outward
+                    double km = kv.length();
+                    if (km < 1e-7) continue;
+                    val = Math.toDegrees(km);
+                    dir = kv.scale(-1 / km);
+                }
+                len = val * COMB_K_SCALE;
             }
             len = FvdDesigner.clamp(len * scale,
                 -COMB_MAX * scale, COMB_MAX * scale);
@@ -1380,7 +1508,7 @@ class Viewport3D {
             Vec3 root = h.pos();
             Vec3 tip = root.add(dir.scale(len));
             combPoints.add(new CombPt(root, tip, val, kind));
-            // gradient u for this tooth (kind 2 is solid: u unused)
+            // gradient u for this tooth (kinds ≥ 2 are solid: unused)
             float u = 0.5f;
             if (kind == 0) {
                 u = (float) FvdDesigner.clamp((val - FvdDesigner.G_MIN)
@@ -1392,28 +1520,8 @@ class Viewport3D {
                     / Math.max(1e-6, hi), 0.001, 0.999);
             }
             mesh.getTexCoords().addAll(u, 0.5f);
-            // thin box from root to tip: cross-section T × (dir×T)
-            Vec3 a = root, b = tip;
-            Vec3 tw = h.T().scale(HW_T);
-            Vec3 n = dir.cross(h.T());
-            double nl = n.length();
-            Vec3 uh = nl > 1e-9 ? n.scale(HW / nl) : h.U().scale(HW);
-            Vec3[] c = {
-                a.sub(tw).sub(uh), a.add(tw).sub(uh), a.add(tw).add(uh), a.sub(tw).add(uh),
-                b.sub(tw).sub(uh), b.add(tw).sub(uh), b.add(tw).add(uh), b.sub(tw).add(uh),
-            };
-            for (Vec3 p : c) mesh.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
-            int[][] quads = {
-                {0,1,2,3}, {4,5,6,7},
-                {0,1,5,4}, {2,3,7,6},
-                {1,2,6,5}, {0,3,7,4},
-            };
-            for (int[] q : quads) {
-                mesh.getFaces().addAll(v + q[0], tc, v + q[1], tc, v + q[2], tc);
-                mesh.getFaces().addAll(v + q[0], tc, v + q[2], tc, v + q[3], tc);
-            }
-            v += 8;
-            tc++;
+            v = addToothBox(mesh, root, tip, h.T(), dir, h.U(), v, tc++);
+        }
         }
         MeshView mv = new MeshView(mesh);
         PhongMaterial mat = new PhongMaterial();
@@ -1421,8 +1529,23 @@ class Viewport3D {
             mat.setDiffuseMap(buildGForceGradient(false));
         } else if (kind == 1) {
             mat.setDiffuseMap(buildLatGradient());
-        } else {
+        } else if (kind == 2) {
+            // GREEN since v17.16 (user spec — the old light blue
+            // moved to the time comb)
+            mat.setDiffuseColor(Color.rgb(100, 220, 110));
+        } else if (kind == 4 || kind == 6) {
+            // YAW-family teeth (local yaw + global heading) = RED
+            // (v17.17 re-spec; pitch/elevation keep the orange)
+            mat.setDiffuseColor(Color.rgb(235, 60, 45));
+        } else if (kind <= 7) {
+            // pitch/elevation solid orange (the geo palette's roll);
+            // COMBINED = the RED-ORANGE midpoint of the two
+            mat.setDiffuseColor(kind == 7 ? Color.rgb(245, 115, 65)
+                : FvdDesigner.GEO_LANE_COLORS[2]);
+        } else if (kind == 8) {
             mat.setDiffuseColor(Color.rgb(150, 210, 255));
+        } else {
+            mat.setDiffuseColor(Color.WHITE);
         }
         mat.setSpecularColor(Color.rgb(90, 90, 95));
         mv.setMaterial(mat);
@@ -1431,6 +1554,36 @@ class Viewport3D {
         // through to the track; the hover readout is screen-space
         mv.setMouseTransparent(true);
         return mv;
+    }
+
+    /** One tooth's thin box (8 verts, 12 faces): cross-section spans
+     *  HW_T along the track and HW along dir×T. Returns the new
+     *  vertex count. (Extracted v17.16 — the time loop shares it.) */
+    private static int addToothBox(TriangleMesh mesh, Vec3 a, Vec3 b,
+                                   Vec3 T, Vec3 dir, Vec3 U,
+                                   int v, int tc) {
+        final double HW = 0.03;    // tooth half-thickness (⊥ tooth)
+        final double HW_T = 0.06;  // half-width ALONG the track —
+                                   // doubled in v16.15 (user spec)
+        Vec3 tw = T.scale(HW_T);
+        Vec3 n = dir.cross(T);
+        double nl = n.length();
+        Vec3 uh = nl > 1e-9 ? n.scale(HW / nl) : U.scale(HW);
+        Vec3[] c = {
+            a.sub(tw).sub(uh), a.add(tw).sub(uh), a.add(tw).add(uh), a.sub(tw).add(uh),
+            b.sub(tw).sub(uh), b.add(tw).sub(uh), b.add(tw).add(uh), b.sub(tw).add(uh),
+        };
+        for (Vec3 p : c) mesh.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
+        int[][] quads = {
+            {0,1,2,3}, {4,5,6,7},
+            {0,1,5,4}, {2,3,7,6},
+            {1,2,6,5}, {0,3,7,4},
+        };
+        for (int[] q : quads) {
+            mesh.getFaces().addAll(v + q[0], tc, v + q[1], tc, v + q[2], tc);
+            mesh.getFaces().addAll(v + q[0], tc, v + q[2], tc, v + q[3], tc);
+        }
+        return v + 8;
     }
 
     /** The LATERAL comb's gradient strip (v16.14, user spec: ABSOLUTE
@@ -1498,10 +1651,29 @@ class Viewport3D {
         combLabel.setText(switch (hit.kind()) {
             case 0 -> String.format("%.2f g vert", hit.value());
             case 1 -> String.format("%.2f g lat", hit.value());
-            default -> String.format("%.1f m/s  (%.0f km/h)",
+            case 2 -> String.format("%.1f m/s  (%.0f km/h)",
                 hit.value(), hit.value() * 3.6);
+            case 3 -> String.format("pitch %.2f °/m  %s",
+                hit.value(), radiusTxt(hit.value()));
+            case 4 -> String.format("yaw %.2f °/m  %s",
+                hit.value(), radiusTxt(hit.value()));
+            case 5 -> String.format("elev %.2f °/m  %s",
+                hit.value(), radiusTxt(hit.value()));
+            case 6 -> String.format("heading %.2f °/m  %s",
+                hit.value(), radiusTxt(hit.value()));
+            case 7 -> String.format("curv %.2f °/m  %s",
+                hit.value(), radiusTxt(hit.value()));
+            default -> String.format("t = %.1f s", hit.value());
         });
         combLabel.setVisible(true);
+    }
+
+    /** The curvature-tooth hover's radius parenthetical (v17.18, user
+     *  spec — EVERY geometric tooth reads its radius now): a zero
+     *  component — straight track in that plane — reads (r=∞). */
+    private static String radiusTxt(double degPerM) {
+        return Math.abs(degPerM) < 1e-6 ? "(r=∞)"
+            : String.format("(r≈%.0f m)", 57.29578 / Math.abs(degPerM));
     }
 
     /** Recenter the floor grid under the camera, quantized to 10 m steps so

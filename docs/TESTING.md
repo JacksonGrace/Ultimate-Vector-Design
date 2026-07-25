@@ -1715,6 +1715,43 @@
     265 + DomainGate) re-ran green over the D147/D151 re-times
     (default-layout baselines re-pinned 406.931 m / 0.2131°).
 
+53. **v17.14 gates (Phase3Gate 73; D155 crest bridges).** All
+    passed 2026-07-24: (54a) the CREST fixture — entry pulling up
+    at +3.6 g / +23° while the target's entry sits at −5° ALSO
+    pulling up, the "Odd bridge behavior" seam pair — marches at
+    EVERY length {15..80} with ZERO pole crossings; (54b) min U.y
+    > 0.5 everywhere and target roll delta 0.0000° (pre-fix the
+    branch-blind measures walked the residual twist into a 360°
+    barrel roll — minUy −0.99 at every mid length); (54c)
+    placement deterministic — yaw spread 0.00° across the whole
+    sweep — with the far seam felt-continuous (0.000 g); (54d) the
+    knee lands at 64 m on the ~46 m gap (was 88 m while looped
+    branches scored as smooth). The manual-mode tangent rescale
+    probed on his file 3: unmoved compiles bitwise (lenA
+    bit-equal), a +10 z target drag scales lenA 11 → 11.73 at
+    exactly the stored proportion, dragging back restores
+    11.000000. Old suites bitwise green (crossing-free marches
+    take the historic expressions verbatim).
+
+54. **v17.15 gates (Phase3Gate 76; D156 banked crests).** All
+    passed 2026-07-24: (54e) the SAME crest with the seam pieces
+    rolled +19°/−22° (his file-4 pair) — marches at every length
+    {15..64} with the end bank CLOSED (< 2°); pre-fix the coupled
+    fixed point cliffed at ~45-51 m (clean at 44, unconverged
+    march + ballooned septic at 46); (54f) min U.y > 0.2 across
+    every rendered span and the far seam felt-continuous (0.000 g)
+    — the twist-0 rescue draft once CONVERGED onto a mid-span-
+    inverted corkscrew whose exact ends passed the angle-only
+    render gate; (54g) at 80/100 m anything that renders as a
+    march has its bank closed (the new 1° bank render gate — the
+    rest falls to the sane 1.5×-chord septic). Probe sweeps on his
+    file 4: scenario B (both banks) marches clean 20→90 m, A (one
+    bank) through 80, knees 120/112 → 60; files 1-3 re-probed
+    unchanged-or-better (file 1: march at 5..120, file 2: to
+    100 m). Old suites green — the damping takes full steps on
+    contracting sequences, so every previously-converging march
+    (all of 53a-c and 54a-d) reproduces verbatim.
+
 99. v17.6 (D143) — the both-global fix + resulting settings:
     (a) BOTH-GLOBAL ADD: after any curving force section, ⊕ > Add
     geometric section with Global roll AND Global yaw/pitch — the
@@ -1871,6 +1908,79 @@
     smoothly through the window; the DESIGN felt/rate step at the
     seam is the honest ≠v display and stays whatever the window
     size (D139).
+
+107. v17.14 (D155) — crest bridges (his "Odd bridge behavior"
+    files): (a) file 1 (OPT_POS_YAW, yaw-only unlocked): sweep the
+    Length spinner 5..120 — the bridge stays UPRIGHT at every
+    length (no corkscrew roll, no inverted loop, no S-whip), the
+    target piece re-aims by the SAME ~8° yaw whatever the length,
+    and the graphs blend seam to seam without a far-seam spike.
+    Check "Optimize length": ~60 m (was 88 m and rolled). The
+    crest still rises then dips past the target pitch a little —
+    that S is forced by the seams (both ends curve UP), and
+    shorter lengths flatten it. (b) file 2 (the force lane plunges
+    4 g right at the cut): lengths through ~100 m march cleanly —
+    the dive deepens smoothly with length instead of spiraling;
+    120 m over the 34 m gap falls back to the septic honestly (the
+    solution wants a near-vertical dive). (c) file 3 (manual
+    mode): NUDGE the target piece — the septic's end spikes
+    collapse as the tangents rescale to the gap, and further drags
+    track proportionally (the saved stale shape only heals on the
+    first move — loads never change geometry). (d) any live
+    bridge's badge menu: top item "Bridge properties…" opens the
+    same movable panel as the toolbar button (orphaned bridge:
+    grayed "(no following piece)"). (e) valleys: behavior
+    unchanged (crossing-free marches are bitwise-historic).
+
+108. v17.15 (D156) — BANKED crest bridges (his file 4 / report
+    #4): (a) load "Odd bridge behavior 4" (entry piece rolled
+    +19°, target −22°, roll locked): sweep the Length spinner
+    20..90 — the twisting crest stays the SAME shape family at
+    every length (no sudden shoot-around past ~45 m: that cliff
+    was the coupled pitch/twist iteration diverging), growing
+    smoothly with length; "Optimize length" lands ~60, inside the
+    clean zone. (b) zero the target's roll (one-sided bank): same
+    sweep, clean through ~80. (c) extreme lengths (~2× the gap and
+    beyond) may drop to the septic — it now sweeps with full-gap-
+    family tangents (no ballooned loop), and NOTHING that renders
+    as a march is ever mid-span inverted (the bank render gate).
+    (d) unbanked files 1-3 and ordinary valleys: identical to
+    #107 (converging marches are bit-reproduced through the new
+    damping).
+
+109. v17.16 (D157) — new combs + Help rewrite: (a) View menu: the
+    comb radios now read No / G-force / Speed / Geometric / Time —
+    the Geometric row carries inline Local·Global·Combined dots
+    (grayed unless it's selected, like the gizmo dots). GEOMETRIC:
+    teeth pointing OUTWARD from every curve — pitch/elevation
+    orange, yaw/heading RED, the combined tooth red-orange, every
+    hover ending in the radius, (r=∞) on zero components (v17.18) — (a
+    pull-up's teeth point down/outside, a right turn's point
+    left); Combined (default) = one tooth per spot whose hover
+    reads "curv X °/m (r≈Y m)"; Local = pitch + yaw tooth pairs;
+    Global = elevation + heading rates, absent on near-vertical
+    track. (b) TIME comb: a tick every 0.1 s along the track in
+    the speed comb's old light blue, WHOLE seconds white — hover
+    reads "t = X s"; the SPEED comb is now GREEN. Both scale with
+    Comb size, hide in POV, and never block clicks. (c) HELP: one
+    read-through — every section should be current (no removed
+    controls mentioned), organized by workflow, and short enough
+    to scan; the new combs appear under 3D viewport > Combs.
+
+110. v17.17 (D158) — the pre-speed-control quick round: (a) an
+    influenced section's badge menu has NO view radios — the
+    delta lanes always edit around zero with the resulting
+    curves dotted behind (check a saved influenced section loads
+    and edits normally). (b) CLICK a smoothed strict seam's ◇
+    once: the seam settings open; DRAG it: the window resizes
+    with the live readout and the settings never appear (wiggle
+    under ~3 px still counts as a click). (c) enable the
+    resulting ROLL overlay over a geo section (or while
+    influence-editing a force section) and hover it: the readout
+    says "roll … °/s" (or °/m / bank …° per the Resulting
+    settings) — it used to read "Gl … g". (d) every bridge's exit
+    boundary draws the strict-seam DOUBLE line, with no carets or
+    diamond on it; ordinary section boundaries stay single.
 
 
 

@@ -308,16 +308,21 @@ public class AppSettings {
         save();
     }
 
-    /** Track COMB mode (v16.13; three-way since v16.14, user spec —
-     *  G-force and speed combs never show together): 0 = none,
-     *  1 = G-FORCE (vertical + lateral teeth as one unit), 2 = SPEED.
-     *  Per-user view preference; the View menu radios drive it.
+    /** Track COMB mode (v16.13; three-way since v16.14, FIVE-way
+     *  since v17.16 D157 — modes stay exclusive, user's original
+     *  spec): 0 = none, 1 = G-FORCE (vertical + lateral teeth as one
+     *  unit), 2 = SPEED (green since v17.16), 3 = GEOMETRIC (orange
+     *  curvature teeth, sub-mode below), 4 = TIME (a tooth every
+     *  0.1 s, whole seconds white). Per-user view preference; the
+     *  View menu radios drive it.
      *  (The v16.13 combVert/combLat/combSpeed keys are ignored.) */
-    public static final int COMB_NONE = 0, COMB_GFORCE = 1, COMB_SPEED = 2;
+    public static final int COMB_NONE = 0, COMB_GFORCE = 1, COMB_SPEED = 2,
+        COMB_GEO = 3, COMB_TIME = 4;
 
     public int combMode() {
         try {
-            return Integer.parseInt(props.getProperty("combMode", "0"));
+            int m = Integer.parseInt(props.getProperty("combMode", "0"));
+            return m < 0 || m > COMB_TIME ? COMB_NONE : m;
         } catch (NumberFormatException e) {
             return COMB_NONE;
         }
@@ -325,6 +330,28 @@ public class AppSettings {
 
     public void setCombMode(int mode) {
         props.setProperty("combMode", String.valueOf(mode));
+        save();
+    }
+
+    /** GEOMETRIC comb sub-mode (v17.16, D157 — the inline dots next
+     *  to the Geometric radio): 0 = LOCAL (body pitch + yaw °/m as
+     *  two tooth sets), 1 = GLOBAL (elevation + heading rates °/m),
+     *  2 = COMBINED (one tooth along the outward curve normal — the
+     *  default: "the curvature of the track"). */
+    public static final int COMB_GEO_LOCAL = 0, COMB_GEO_GLOBAL = 1,
+        COMB_GEO_COMBINED = 2;
+
+    public int combGeoMode() {
+        try {
+            int m = Integer.parseInt(props.getProperty("combGeoMode", "2"));
+            return m < 0 || m > 2 ? COMB_GEO_COMBINED : m;
+        } catch (NumberFormatException e) {
+            return COMB_GEO_COMBINED;
+        }
+    }
+
+    public void setCombGeoMode(int mode) {
+        props.setProperty("combGeoMode", String.valueOf(mode));
         save();
     }
 

@@ -141,6 +141,11 @@ public final class TrackCompiler {
                     // (tilted) seam (v15.2).
                     TrackPose worldPose = tilt == Quat.IDENTITY ? pose
                         : tiltPose(pose, tilt, anchor);
+                    // the LAST capture's gap, before this compile
+                    // overwrites the poses (v17.14, D155 — see the
+                    // manual-mode tangent rescale below)
+                    double preGap = bs.solvedTarget.pos()
+                        .sub(bs.solvedEntry.pos()).length();
                     // a smoothed strict seam upstream in THIS piece
                     // translated the chain (v17.2): the bridge starts
                     // where the track really ends
@@ -199,6 +204,30 @@ public final class TrackCompiler {
                                 bs.jerkB = kj[1];
                                 bs.rollB = seamRollRate(head, 0, 1);
                                 bs.rollAccB = seamRollAcc(head, 0, 1);
+                            }
+                        }
+                        // MANUAL-mode tangent rescale (v17.14, D155):
+                        // in "No optimization" the Length spinner is
+                        // disabled and the septic's lenA/lenB have no
+                        // user surface, so hand-dragging the target
+                        // left them STALE — 11 m tangents over a 27 m
+                        // gap on the user's file, the exact D75
+                        // short-tangent disease (peak rates 331/12/179
+                        // °/s by thirds). Scale both with the gap so a
+                        // moved target keeps the sweep's PROPORTION
+                        // (D75's full-gap default heals as soon as the
+                        // gap changes; partial-convert cut shares keep
+                        // their ratio). The 1e-6 band keeps unmoved
+                        // captures and text-round-trip noise bitwise
+                        // (the canonical save→load→save gate).
+                        if (bs.optMode == BridgeSection.OPT_NONE
+                                && preGap > 1e-9) {
+                            double ratio = bs.solvedTarget.pos()
+                                .sub(bs.solvedEntry.pos()).length()
+                                / preGap;
+                            if (Math.abs(ratio - 1) > 1e-6) {
+                                bs.lenA *= ratio;
+                                bs.lenB *= ratio;
                             }
                         }
                     }

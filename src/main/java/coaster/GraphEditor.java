@@ -894,10 +894,6 @@ class GraphEditor extends Region {
     // resulting graphs dotted behind) and "Resulting view" (nodes RIDE
     // base+delta — purely visual, drags still write the delta).
 
-    /** Session view toggle: false = Influence view (default), true =
-     *  Resulting view. Badge-menu radios switch it. */
-    private boolean resultingView = false;
-
     /** The active LaneSection while its INFLUENCE surface is being
      *  edited, else null. */
     private LaneSection activeInfl() {
@@ -1109,13 +1105,15 @@ class GraphEditor extends Region {
         return timeAtSpanS(sp, FvdDesigner.clamp(sTrav, 0, tot));
     }
 
-    /** DISPLAY offset for lane values at local time t: in the
-     *  influence RESULTING VIEW every node/knob/curve point plots at
-     *  base(t) + value; drags subtract it back out. 0 elsewhere. */
+    /** DISPLAY offset for lane values at local time t — 0 always
+     *  since v17.17 (D158): the influence RESULTING VIEW (nodes
+     *  riding base + delta) was REMOVED on user verdict — its edge
+     *  cases (opposite orientations, inverted stretches) read as
+     *  buggy/unintuitive, and the single remaining view edits deltas
+     *  around zero. The choke point stays threaded through draw/hit/
+     *  drag so a future display warp has its seam. */
     private double dispOff(int lane, double localT) {
-        LaneSection infl = activeInfl();
-        return infl != null && resultingView
-            ? infl.baseValAt(lane, localT) : 0;
+        return 0;
     }
 
     /** NATIVE value → DISPLAYED value at section-local x (v16.7
@@ -1198,10 +1196,9 @@ class GraphEditor extends Region {
     }
 
     private String laneName(int lane) {
-        // the influence surface labels its deltas honestly: Δ in
-        // Influence view; Resulting view places the sum, plain name
+        // the influence surface labels its deltas honestly with Δ
         String base = activeGeo() ? GEO_LANE_NAMES[lane] : LANE_NAMES[lane];
-        return activeInfl() != null && !resultingView ? "Δ " + base : base;
+        return activeInfl() != null ? "Δ " + base : base;
     }
 
     private String laneUnit(int lane) {
@@ -3324,6 +3321,20 @@ class GraphEditor extends Region {
         // plot shows the other domain's, warped). s/c is inherently
         // DISTANCE (radios read-only); bridges have neither. The
         // global/local axis options land here when they arrive.
+        if (sec instanceof BridgeSection bsp) {
+            // BRIDGE PROPERTIES from the badge too (v17.14, D155,
+            // user request): the same panel the toolbar's "Bridge
+            // properties ▾" button opens — mode radios, length,
+            // next-piece rows. Badges are two-click, so the section
+            // is active by the time this menu shows; an orphaned
+            // bridge has nothing to place (grayed, the badge-menu
+            // discoverability rule, D132).
+            MenuItem props = new MenuItem("Bridge properties…"
+                + (bridgeOrphan(bsp) ? " (no following piece)" : ""));
+            props.setDisable(bridgeOrphan(bsp));
+            props.setOnAction(ev -> app.showPlacementPopup());
+            cm.getItems().add(props);
+        }
         if (!(sec instanceof BridgeSection)) {
             boolean isSc = sec instanceof StraightCurveSection;
             boolean infl = sec instanceof LaneSection li0 && li0.influenced();
@@ -3478,24 +3489,19 @@ class GraphEditor extends Region {
                 editInf.setDisable(lsec.reversed);
                 editInf.setOnAction(ev ->
                     setEditInfluence(k, !lsec.editInfluence));
-                RadioMenuItem vInf = new RadioMenuItem("Influence view");
-                RadioMenuItem vRes = new RadioMenuItem("Resulting view");
-                ToggleGroup vg = new ToggleGroup();
-                vInf.setToggleGroup(vg);
-                vRes.setToggleGroup(vg);
-                (resultingView ? vRes : vInf).setSelected(true);
-                boolean viewsLive = lsec.editInfluence && !lsec.reversed;
-                vInf.setDisable(!viewsLive);
-                vRes.setDisable(!viewsLive);
-                vInf.setOnAction(ev -> { resultingView = false; redraw(); });
-                vRes.setOnAction(ev -> { resultingView = true; redraw(); });
+                // (the Influence/Resulting VIEW radios were REMOVED in
+                // v17.17, D158 — user verdict: the resulting view's
+                // edge cases (opposite orientations, inverted
+                // stretches) read buggy/unintuitive; ONE view now —
+                // deltas edit around zero with the resulting curves
+                // dotted behind)
                 MenuItem bake = new MenuItem(
                     "Bake influence into design graphs…");
                 bake.setDisable(lsec.reversed);
                 bake.setOnAction(ev -> convertSection(k, geoSec));
                 MenuItem disc = new MenuItem("Discard influence");
                 disc.setOnAction(ev -> discardInfluenceUi(k));
-                cm.getItems().addAll(editInf, vInf, vRes, bake, disc);
+                cm.getItems().addAll(editInf, bake, disc);
             }
         }
         // CONVERT (v13.7 D81; whole + partial for EVERY convertible
@@ -3542,7 +3548,6 @@ class GraphEditor extends Region {
             ls.domain() == Section.Domain.DISTANCE
                 ? BezierBaker.rideEnd(ls.lanes)
                 : durOf(activePiece, k));
-        resultingView = false;   // the spec'd default: Influence view
         if (activeLane == 2) setActiveLane(0);   // roll has no deltas
         app.lanes = lanesFor(ls);
         selIdx = -1;
@@ -4621,6 +4626,18 @@ class GraphEditor extends Region {
                         bx + 1.5, MARGIN_TOP + plotHeight());
                     drawSeamCarets(gc, rl, i, bx);
                     drawSeamDiamond(gc, rl, i, bx);
+                } else if (rs.sec() instanceof BridgeSection) {
+                    // a bridge's EXIT seam (v17.17, D158, user spec):
+                    // the target piece rides the bridge exactly like a
+                    // follower rides a strict seam, so it wears the
+                    // same frozen-downstream DOUBLE line — visual
+                    // only: no carets (a live bridge is value- and
+                    // slope-continuous by construction) and no
+                    // smoothing diamond (nothing to size)
+                    gc.strokeLine(bx - 1.5, MARGIN_TOP,
+                        bx - 1.5, MARGIN_TOP + plotHeight());
+                    gc.strokeLine(bx + 1.5, MARGIN_TOP,
+                        bx + 1.5, MARGIN_TOP + plotHeight());
                 } else {
                     gc.strokeLine(bx, MARGIN_TOP,
                         bx, MARGIN_TOP + plotHeight());
@@ -4763,6 +4780,8 @@ class GraphEditor extends Region {
     private boolean seamDragRel;       // diamond = relative (v17.5)
     private double seamDragBase;       // length at the press
     private double seamDragPressS;     // arc at the press
+    private double seamPressX, seamPressY;   // screen press (v17.17:
+                                       // clean click = open settings)
 
     /** Which strict seam's smoothing diamond is under (x, y); -1 =
      *  none. */
@@ -4833,23 +4852,23 @@ class GraphEditor extends Region {
      *  step per gesture, the s/c contract). RELATIVE since v17.5
      *  (D142): the drag ADJUSTS the current length from the press
      *  point — rightward grows, leftward shrinks — instead of
-     *  restarting from zero at the seam. DOUBLE-CLICK opens the seam
-     *  settings (the 3D ball's rule). */
+     *  restarting from zero at the seam. A clean CLICK (≤ 3 px press
+     *  to release) opens the seam settings instead — SINGLE-click
+     *  since v17.17, D158 (was double); the drag deadband in the
+     *  mouse-dragged handler keeps a click from committing a
+     *  micro-resize first. */
     private boolean seamDiamondPressed(MouseEvent e) {
         int i = hitSeamDiamond(e.getX(), e.getY());
         if (i < 0) return false;
         List<RunSec> rl = runLayout();
-        if (e.getClickCount() == 2) {
-            seamDragPiece = -1;
-            showStrictSeamSettings(rl.get(i + 1).piece());
-            return true;
-        }
         beginGesture();
         seamDragPiece = rl.get(i + 1).piece();
         seamDragAxisX = rl.get(i).t0() + rl.get(i).dur();
         seamDragRel = true;
         seamDragBase = app.coaster.pieces.get(seamDragPiece).sSmoothLen;
         seamDragPressS = arcAtAxis(xToT(e.getX()));
+        seamPressX = e.getX();
+        seamPressY = e.getY();
         return true;
     }
 
@@ -6816,8 +6835,7 @@ class GraphEditor extends Region {
             int dl = -1;
             double dlt = 0, dlv = 0;
             if ((activeSc() != null || activeBridge() != null
-                    || (activeInfl() != null && !resultingView
-                        && Double.isNaN(t)))
+                    || (activeInfl() != null && Double.isNaN(t)))
                     && canvas.getCursor() != Cursor.H_RESIZE
                     && app.resultRates != null && app.lastSamples != null
                     && app.resultRates.length > 0
@@ -6881,6 +6899,14 @@ class GraphEditor extends Region {
                 return;
             }
             if (seamDragPiece >= 0 && e.isPrimaryButtonDown()) {
+                // 3 px deadband on the DIAMOND (v17.17, D158): a
+                // clean click opens the settings on release and must
+                // not commit a micro-resize on the way; band edges
+                // (seamDragRel false) keep dragging immediately
+                if (seamDragRel && Math.hypot(e.getX() - seamPressX,
+                        e.getY() - seamPressY) <= 3) {
+                    return;
+                }
                 seamDragTo(e.getX(), e.isControlDown());
                 return;
             }
@@ -6947,6 +6973,18 @@ class GraphEditor extends Region {
                 return;
             }
             rClickElem = -1;
+            // SINGLE-CLICK on a smoothing diamond = the seam settings
+            // (v17.17, D158 — was double-click); an actual drag
+            // resized instead and never opens the window
+            if (seamDragPiece >= 0 && seamDragRel
+                    && e.getButton() == MouseButton.PRIMARY
+                    && Math.hypot(e.getX() - seamPressX,
+                        e.getY() - seamPressY) <= 3) {
+                int fp = seamDragPiece;
+                seamDragPiece = -1;
+                showStrictSeamSettings(fp);
+                return;
+            }
             seamDragPiece = -1;
             elDragBoundary = -1;
             elDragSmooth = -1;
@@ -10018,10 +10056,8 @@ class GraphEditor extends Region {
         gc.setLineWidth(1);
         gc.strokeLine(MARGIN_LEFT, zy, w - marginRight(), zy);
         // 1 g reference: force mode only — and not while editing
-        // DELTAS around zero (Influence view), where 1 g means nothing;
-        // the Resulting view shows real felt sums and keeps it
-        if (activeLane == 0 && !activeGeo()
-                && !(activeInfl() != null && !resultingView)) {
+        // DELTAS around zero (influence), where 1 g means nothing
+        if (activeLane == 0 && !activeGeo() && activeInfl() == null) {
             double oy = valToY(0, 1);
             gc.setStroke(Color.rgb(60, 90, 65));
             gc.strokeLine(MARGIN_LEFT, oy, w - marginRight(), oy);
@@ -10112,13 +10148,17 @@ class GraphEditor extends Region {
             gc.setTextBaseline(VPos.BOTTOM);
             boolean resAbs = app.settings.resRollAbs()
                 && app.settings.resRollG();
-            String name = activeGeo()
+            // the ROLL/BANK overlay (comp 3) is a rate/bank in BOTH
+            // views — v17.17 (D158) bug fix: the geo-view branch
+            // labeled it by component index as "Gl … g" (the user's
+            // "resulting roll reads in gs of laterals")
+            String name = hoverResComp == 3 ? (resAbs ? "bank" : "roll")
+                : activeGeo()
                 ? (hoverResComp == 1 ? "Gv" : "Gl")
-                : (hoverResComp == 1 ? "pitch"
-                    : hoverResComp == 2 ? "yaw"
-                    : resAbs ? "bank" : "roll");
-            String unit = activeGeo() ? "g"
-                : hoverResComp == 3 && resAbs ? "°"
+                : (hoverResComp == 1 ? "pitch" : "yaw");
+            String unit = hoverResComp == 3
+                ? (resAbs ? "°" : resRatePM() ? "°/m" : "°/s")
+                : activeGeo() ? "g"
                 : resRatePM() ? "°/m" : "°/s";
             String txt;
             if (hoverSlope) {
@@ -10535,10 +10575,6 @@ class GraphEditor extends Region {
             gc.setLineWidth(2);
             return;
         }
-        if (infl != null && resultingView) {
-            strokeResultingLane(gc, infl, laneIdx);
-            return;
-        }
         if (infl != null) {
             List<double[]> sum = influenceSum(infl, laneIdx);
             gc.setStroke(laneColor(laneIdx));
@@ -10701,62 +10737,6 @@ class GraphEditor extends Region {
             if (i == 0) gc.moveTo(p[0], p[1]); else gc.lineTo(p[0], p[1]);
         }
         gc.stroke();
-    }
-
-    /** RESULTING VIEW (v15.0, D98): one curve per lane — base+delta
-     *  drawn as a sampled polyline the nodes ride; the BASE draws as
-     *  a faint dashed guide underneath and the fill spans guide →
-     *  curve, tinting exactly what the delta adds or removes. Solid
-     *  through the authored delta range, dotted (implied hold) past
-     *  the last delta node — the lane conventions, transplanted. */
-    private void strokeResultingLane(GraphicsContext gc, LaneSection infl,
-                                     int laneIdx) {
-        List<BezierBaker.Node> lane = app.lanes.get(laneIdx);
-        List<double[]> sum = influenceSum(infl, laneIdx);
-        List<double[]> pts = toPixels(sum, laneIdx, false);
-        // base guide series (same t grid, base only)
-        List<double[]> guide = new ArrayList<>(sum.size());
-        for (double[] p : sum) {
-            guide.add(new double[]{ ltToX(p[0]),
-                valToY(laneIdx, infl.baseValAt(laneIdx, p[0])) });
-        }
-        // fill between curve and guide
-        if (pts.size() >= 2) {
-            gc.setFill(laneColor(laneIdx).deriveColor(0, 1, 1, LANE_FILL_ALPHA));
-            gc.beginPath();
-            gc.moveTo(pts.get(0)[0], pts.get(0)[1]);
-            for (int i = 1; i < pts.size(); i++) gc.lineTo(pts.get(i)[0], pts.get(i)[1]);
-            for (int i = guide.size() - 1; i >= 0; i--) {
-                gc.lineTo(guide.get(i)[0], guide.get(i)[1]);
-            }
-            gc.closePath();
-            gc.fill();
-        }
-        // the guide itself, faint + dashed
-        double keepAlpha = gc.getGlobalAlpha();
-        gc.setGlobalAlpha(keepAlpha * 0.5);
-        gc.setStroke(laneColor(laneIdx));
-        gc.setLineWidth(1);
-        gc.setLineDashes(3, 5);
-        strokeSeries(gc, guide);
-        gc.setLineDashes((double[]) null);
-        gc.setGlobalAlpha(keepAlpha);
-        // the resulting curve: solid to the last delta node, dotted after
-        double lastT = lane.get(lane.size() - 1).t;
-        gc.setStroke(laneColor(laneIdx));
-        gc.setLineWidth(2);
-        List<double[]> solid = new ArrayList<>();
-        List<double[]> held = new ArrayList<>();
-        for (int i = 0; i < sum.size(); i++) {
-            if (sum.get(i)[0] <= lastT + 1e-9) solid.add(pts.get(i));
-            if (sum.get(i)[0] >= lastT - 1e-9) held.add(pts.get(i));
-        }
-        strokeSeries(gc, solid);
-        if (held.size() >= 2) {
-            gc.setLineDashes(3, 7);
-            strokeSeries(gc, held);
-            gc.setLineDashes((double[]) null);
-        }
     }
 
     private void drawHandles(GraphicsContext gc, int idx) {

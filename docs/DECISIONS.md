@@ -5982,3 +5982,273 @@ Hand-test: walkthrough #105.
 
 JavaFX-side (not headlessly gateable); suites re-run green
 untouched. Hand-test: walkthrough #106.
+
+## D155. v17.14: CREST BRIDGES — branch-correct march measures
+##        (user report "Odd bridge behavior 1-3", 2026-07-24)
+
+- THE REPORT: bridging the TOP of a hill (slight curve, yaw-only
+  unlocked, OPT_POS_YAW) rolled the track "unless the distance was
+  super small", made S-bends / inverted loops / far-seam graph
+  spikes at many lengths, and the initial optimized length was way
+  too big; VALLEYS behaved as expected. Three .fvd repros.
+- ROOT CAUSE (probed on his files): at a crest BOTH seam curvature
+  vectors point UP (the entry still pulling up, and the target's
+  own entry curvature is a pull-up too) while the NET pitch change
+  points DOWN — the march's pure Hermite blend therefore turns the
+  WRONG way and, at useful lengths, overshoots past VERTICAL.
+  Every residual measure was branch-blind there: resPitch's asin
+  difference reflects past ±90°, the heading atan2 and the D150
+  bank-vs-horizon measure both flip ~180° across a pole. The hump
+  fixed point then converged onto REVERSED-HEADING or FULL-LOOP
+  branches: the twist walked 180+180 into a 360° BARREL ROLL with
+  clean ends (his roll — probe: minUy −0.99 across L=30..64, dYaw
+  jumping per length), L=64 on file 2 landed a genuine inverted
+  loop AS the rendered march, other lengths burned the 6-pass cap
+  and fell to the septic with tangents = the requested length
+  (120 m tangents over a 45 m gap = the balloon loops). And the
+  LENGTH optimizer scored wrong-branch marches as SMOOTH (a
+  near-loop is near-constant curvature), so the knee ran to 88 m —
+  his "way too big". Valleys never overshoot (blend integral and
+  net angle share a sign) — exactly his crest/valley asymmetry.
+- THE FIX, three march-side parts (the SEPTIC is untouched — old
+  files' shapes are a contract):
+  (1) march() tracks the UNWRAPPED pitch — pole crossings counted
+  when the horizontal heading reverses while T is near vertical,
+  with parity-aware direction memory (past an odd number of
+  crossings the measured asin runs mirrored). marchEnd measures
+  resPitch against it, so a wrong branch reads a ±360k defect and
+  the fixed point can never settle there; yaw/bank are measured
+  only on POLE-FREE passes (their pass-1 flip was the barrel-roll
+  seed), and accumulated resYaw/resTw wrap to ±180° (a pose gap's
+  short way around is always the correction). Crossing-free
+  marches take the OLD expressions verbatim — bit-identical, the
+  whole old suite is the off-gate.
+  (2) deadbandSlopes now also CAPS |jerk|·d at MARCH_SLOPE_CAP=4 ×
+  the seam curvature scale: file 2's honestly-measured plunge jerk
+  (−0.025/m² — the force lane drops 4.2 g in 0.13 s right at the
+  cut) extrapolated across a third of a 46 m bridge (κ → −0.2/m ≈
+  −10 g mid-span). The seam still LEAVES on the measured slope;
+  its d-scaled reach is bounded. Every existing fixture sits far
+  below the cap (bitwise).
+  (3) optimalBridgeLength's knee tolerance gains a SEAM-RATE FLOOR
+  (KNEE_SEAM_FLOOR = 1.2 × the seams' own |Ω| in °/s): a crest's
+  cost decays ~1/L indefinitely — the end curvatures keep pumping
+  pitch the mid-span must undo — so the relative-only knee ran
+  away; a candidate no rougher than its own boundary conditions is
+  long enough. Matched seams keep the 1 m zero-distance collapse
+  (their costs sit at the floor from candidate 1); valley knees
+  stay governed by the slope term, which towers over the floor at
+  short lengths.
+- POST-FIX on his files: file 1 marches at EVERY length 5..120 —
+  zero crossings, dYaw 8.1° CONSTANT across the sweep, roll 0,
+  far-seam felt step ≤ 0.002 g, knee 88 → 60 m. File 2 marches to
+  100 m (the capped jerk turns the −10 g spiral into a
+  proportionate dive); only 120 m over its 34 m gap still falls to
+  the honest septic — the solution there wants a near-vertical
+  dive, the world-pitch hump's singular zone. KNOWN RESIDUAL: a
+  crest bridge still S-curves BY CONSTRUCTION — C1 seam continuity
+  with two upward end curvatures forces pitch to overshoot
+  ~±10-20° around the net drop; shorter bridges are flatter.
+- MANUAL-MODE STALE TANGENTS (his file 3: lenA/lenB = 11 m from an
+  earlier optimize, target then hand-dragged to a 27 m gap → the
+  D75 spiky-ends disease, peak rates 331/12/179 °/s by thirds):
+  the compiler re-capture now SCALES lenA/lenB with the gap ratio
+  in OPT_NONE whenever either endpoint moves (relative change >
+  1e-6 — unmoved compiles and text round-trip noise stay bitwise;
+  the canonical-save gate rides on that). Proportions preserved
+  (partial-convert shares survive); a file SAVED with stale
+  proportions keeps its shape until the target is nudged or
+  re-optimized (loads never move pieces — the D148 precedent).
+- UI (user request): the bridge badge menu's top gains "Bridge
+  properties…" — the SAME movable panel as the toolbar button
+  (FvdDesigner.showPlacementPopup extracted from the button
+  handler; grayed "(no following piece)" on orphans per the D132
+  badge-menu discoverability rule).
+- Gates 54a-d (Phase3Gate 73): the crest fixture marches at every
+  length pole-free, stays upright (min U.y > 0.5, roll delta 0),
+  places deterministically (yaw spread 0.00°), far seam continuous,
+  knee in [4, 64]. Phase2Gate 265 + DomainGate green untouched;
+  launch smoke clean. Hand-test: walkthrough #107.
+
+## D156. v17.15: BANKED CRESTS — damped/staged march corrections
+##        (user report #4, "Odd bridge behavior 4", 2026-07-24)
+
+- THE REPORT: after D155 he banked the entry piece (+19 deg roll
+  delta; then the target too, -22 — an s-hill) and re-optimized:
+  the intended shape held BELOW ~51 m (one bank) / ~45 m (both),
+  and lengths immediately beyond "suddenly shoot the track around"
+  into odd, extreme shapes. He asked for the root cause and for
+  the clean behavior to extend to larger lengths.
+- ROOT CAUSE (probe CrestProbe2 + RampTrace on his file): the
+  PITCH-HUMP <-> TWIST COUPLING. The twist rate rolls the frame
+  mid-march, re-aiming the blend's body-frame kappa_u; the pitch
+  hump re-mixes the bank along the changed path. The coupled
+  response gain grows with resPitch x twist (~kappa*d*twist), and
+  right around his lengths it crosses 1: the D150 fixed point —
+  SIX passes, FULL steps — diverged, its first full steps flinging
+  the iterate out of the convergent basin (pole-crossed marches,
+  branch-flipped bank reads) before any damping could act. The
+  unconverged march missed the 0.3 deg render gate, and the septic
+  fallback rendered with lenA/lenB = the REQUESTED length (120 m
+  tangents over a 42 m chord = the balloon loops). A cliff, not a
+  slope: converged-clean at 44, garbage at 46.
+- FIX 1 — DAMPED FIXED POINT: cap 6 -> 14 passes; a pass whose
+  worst defect GROWS halves the step (floor 1/8). Contracting
+  sequences take full steps throughout, so every previously-
+  converging case (and every gate baseline) is reproduced verbatim.
+- FIX 2 — SEEDED STAGED RESCUE when the direct loop still fails
+  (never entered otherwise): restart with the TWIST SEEDED AT THE
+  SEAM-TO-SEAM BANK GAP (a pose property; 0 for unbanked seams)
+  and the PITCH at the analytic blend defect (target minus entry
+  minus the planar Hermite kappa_u integral), converge the pitch/
+  heading humps alone (their fixed point is robust at any length),
+  then RAMP the twist toward the measured bank gap in coupling-
+  bounded increments (<= 0.8/(kappa*d) rad), re-converging pitch
+  after each; a pole-crossed increment REVERTS and halves the
+  step, and a walk straying > 90 deg from the seed stops (wrong
+  family). LESSON THAT COST THE ROUND: a twist-0 stage 1 put the
+  march in the WRONG PATH FAMILY on banked crests — the zero-twist
+  blend sweeps an inclined arc whose end bank reads ~180 deg off,
+  and the wrapped bank homotopy then walked the short-way-per-the-
+  measure into a corkscrew that CONVERGED self-consistently (end
+  bank exact, mid-span inverted, minUy -0.99) or wrap-flipped the
+  accumulator mid-walk (the +81 deg stuck bank). Seeds are
+  load-bearing; measures near the +-180 wrap are not directions.
+- FIX 3 — BANK RENDER GATE: marchSpine now also refuses a march
+  whose end bank misses the target by > 1 deg (converged marches
+  close to 1e-4 rad = 0.006 deg — 170x margin; near-vertical NaN
+  banks skip, matching bankGap's hold-off). Without it the
+  corkscrew family PASSED the position+tangent gates (their ends
+  are exact — the garbage is mid-span). Compat-safe: marchSpine
+  always re-marches fresh, so old saves that converge keep
+  rendering; only genuine garbage falls to the septic.
+- FIX 4 — FALLBACK TANGENTS CAPPED at 1.5x the placed chord, in
+  optimizeBridge AND the knee ladder's probes (lengthCost): a
+  landing march never reads them (and any sane march's arc is
+  under 1.5x its chord), so only the failure shapes change — from
+  the ballooned "inverted vertical loop" septic to the honest D75
+  full-gap-family sweep. The knee ladder now also RANKS failed
+  candidates as that sane septic.
+- POST-FIX on his file 4: scenario B (both banks) marches clean
+  20 -> 90 m (2.1x the gap; was <= 44), scenario A (one bank)
+  through 80; knees 120/112 -> 60, inside the clean zone; the
+  deep extremes (~2.2x+ the gap) fall to the sane septic with the
+  bank gate guaranteeing no rendered corkscrew ever. Files 1-3
+  re-probed unchanged-or-better (file 1 marches 5..120 with knee
+  72; file 2 to 100).
+- KNOWN RESIDUAL: at ~2x+ the gap on banked crests an isolated
+  length can still fail to converge (honest septic; neighbors
+  march) — the family genuinely thins out near the world-pitch
+  hump's singular zone. Practical lengths are covered.
+- Gates 54e-g (Phase3Gate 76): banked-crest fixture (+19/-22)
+  marches with the bank CLOSED and the track upright through
+  64 m, far seam continuous; at 80/100 anything that renders has
+  its bank closed. Phase2Gate + DomainGate green untouched; launch
+  smoke clean. Hand-test: walkthrough #108.
+
+## D157. v17.16: GEOMETRIC + TIME combs; concise Help rewrite
+##        (user request "for fun", 2026-07-24)
+
+- COMB MODES grew to five, still exclusive (his original v16.14
+  rule): No | G-Force | Speed | GEOMETRIC | Time
+  (AppSettings.combMode 0-4; combGeoMode 0-2 for the Geometric
+  sub-mode, persisted per-user).
+- GEOMETRIC COMB: curvature per METER in solid orange (the geo
+  palette's roll color), teeth pointing OUTWARD from the curve —
+  away from its center, the same convention as the G comb's -U for
+  positive G. Computed straight off the bracketing sample frames
+  (dT/ds perp T; runt landing steps widened past), 0.5 m per deg/m
+  (COMB_K_SCALE). Sub-modes on inline dots next to the radio (the
+  D149 gizmo-dots pattern, grayed unless Geometric is selected):
+  LOCAL = body pitch + yaw tooth pairs (about -U / -R), GLOBAL =
+  elevation + heading rates (skipping near-vertical track, the
+  usual hold-off), COMBINED (default — "shows the curvature of the
+  track") = one tooth along the negated curve normal, hover adds
+  the radius. NOTE: his spec sentence "Combined shows the ." was
+  cut off mid-thought; Combined-as-resultant-curvature was the
+  interpretation, flagged in the summary.
+- TIME COMB: a constant-height tick every 0.1 s of ride time —
+  a ruler, not a magnitude — lerped by t (new timeHit, arcHit's
+  twin) so the s/c sub-sample phase never quantizes it; integer
+  tick indices so whole seconds test exactly: k%10==0 draws WHITE,
+  the rest wear the old speed-comb light blue (his spec); hover
+  reads the ride time. The SPEED comb turned GREEN (rgb 100,220,
+  110) to free the blue.
+- Tooth-box emission extracted to addToothBox (the time loop
+  shares it); hover labels grew the deg/m / radius / time cases.
+- HELP REWRITE (his ask: "extremely long" -> clean, organized,
+  concise, current): the body shrank 67.6k -> 25.8k chars.
+  Structure now: Getting started / Graph editor / Nodes / Handles
+  / Sections / Straight-curve / Speed & conflicts / Pieces &
+  strict seams / Bridges / 3D viewport / Menus & settings — terse
+  helpKey rows, no version archaeology (that is DECISIONS.md's
+  job), one idea per row. STALE text found and killed in the
+  pass: the View-menu row still listed "Reverse POV view
+  direction" (removed v17.11) and rail color (moved to Coaster
+  v17.10), a "bridges will close those gaps later in Phase 2"
+  line, and the literal heading "Menus & app.settings" (an old
+  find-replace scar). The new combs documented in their section.
+  MAINTENANCE RULE updated in CLAUDE.md: keep entries at this
+  density — new features join their section in 3-4 lines.
+- JavaFX-side, not headlessly gateable: hand-test walkthrough
+  #109. All suites re-ran green (no core-side changes); clean
+  rebuild + BOM scan + launch smoke clean.
+
+## D158. v17.17: influence single-view; diamond click; hover units;
+##        bridge exit double line (user quick list, 2026-07-24)
+
+- RESULTING VIEW REMOVED (his call: "likely some bad edge cases
+  that would either be buggy or unintuitive — upside down with
+  opposite orientations, etc."): the influence surface has ONE
+  view again — deltas edit around zero with the resulting curves
+  dotted behind. Both badge radios are gone (Influence view was
+  only a name once its sibling died). dispOff() stays as a
+  0-returning choke point (a future display warp has its seam);
+  strokeResultingLane + the ride-the-sum drawing (v15.0 D98,
+  refined D102) are deleted; the "Δ " lane-name prefix now applies
+  whenever influencing.
+- SEAM DIAMOND: a clean SINGLE-CLICK (<= 3 px press-to-release)
+  opens the strict-seam settings — was double-click; dragging
+  still resizes the window and never opens it, guarded by a
+  matching 3 px drag deadband so a click cannot commit a
+  micro-resize on the way (band-edge drags keep responding
+  immediately; the 3D seam ball keeps its double-click).
+- HOVER UNITS BUG (his report: "hovering the resulting roll per
+  second is giving the values in gs of laterals"): the resulting-
+  overlay hover labeled comp 3 (the roll/bank overlay) through the
+  geo-view branch's component-indexed names — "Gl … g". The
+  roll/bank overlay is a rate/bank in BOTH views now: name
+  roll|bank, unit °/s|°/m|° per the Resulting settings. Values
+  were always right — labeling only. Audit of the siblings:
+  laneUnit() already handles °/m display and absolute bank; the
+  derived-strip hover reads laneUnit; the shared right-edge axis
+  title still says "G (g)" in geo view with the roll overlay
+  enabled — a shared-axis compromise (one title, two unit
+  systems), left as is.
+- BRIDGE EXIT SEAM draws the strict seam's DOUBLE line (his spec:
+  "it essentially functions as one" — the target piece rides the
+  bridge exactly like a follower rides a strict seam). Visual
+  only: no carets (a live bridge is value- and slope-continuous by
+  construction), no smoothing diamond (nothing to size), and the
+  seam menu stays off bridge-adjacent boundaries as before.
+- Help updated in place (Influence row one-view, Strict seams row
+  click-the-diamond, Bridges intro double-line). JavaFX-side —
+  hand-test walkthrough #110; all suites green, launch smoke
+  clean.
+
+## D159. v17.18: geometric-comb component colors + radius hovers
+##        (user request, 2026-07-24 — the pre-commit tweak)
+
+- The geometric comb's YAW-family teeth (local yaw + global
+  heading) turned RED (235,60,45) and the COMBINED tooth the
+  red-orange midpoint (245,115,65) of its two components;
+  pitch/elevation keep the geo-roll orange. (The color half
+  landed at the tail of the v17.17 round and is documented here
+  with its formal request.)
+- EVERY curvature tooth's hover now appends the radius:
+  radiusTxt — "(r≈X m)" from 57.3/|val|, and a ZERO component
+  (straight track in that plane) reads "(r=∞)". Note drawn teeth
+  are never exactly zero (sub-2 cm teeth skip), so ∞ appears via
+  near-zero components on large-scale settings — the honest cap.
+- Help + CLAUDE.md comb wording updated. JavaFX-side; suites
+  green untouched; committed with the v17.14-v17.18 stack.

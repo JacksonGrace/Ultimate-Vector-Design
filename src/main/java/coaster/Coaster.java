@@ -587,8 +587,10 @@ public class Coaster {
      *  bridge just slides the piece further around it; zero-curvature
      *  seams reduce to dead-ahead exactly. The target's head PITCH is
      *  a hard constraint yaw cannot fix, so a second pass adds the
-     *  smallest smooth vertical-rate hump (parabolic, zero at the
-     *  seams) that turns the leftover pitch gap — a straight dive
+     *  smallest smooth vertical-rate hump (30u²(1−u)², zero value and
+     *  slope at the seams) that turns the leftover pitch gap — a
+     *  gap measured BRANCH-CORRECTLY against the march's unwrapped
+     *  pitch since v17.14 (D155) — a straight dive
      *  into a level head lands on a symmetric arc instead of forcing
      *  a dip-and-recover downstream. Yaw then aligns the target's
      *  ACTUAL head heading (solvedTarget — the live capture) to the
@@ -660,17 +662,29 @@ public class Coaster {
         // unsmooth shapes that jumped around with small length
         // changes; now the march itself turns to meet the fixed
         // heading, so the placement is reachable by a smooth path.
-        Vec3[] st = march(pA, tA, uA, d, sa, sb, 0, 0, 0, null, null);
+        double[] meta = new double[2];
+        Vec3[] st = march(pA, tA, uA, d, sa, sb, 0, 0, 0, null, null, meta);
         // humps close only the LOCKED axes (v13.13): an aligned axis
-        // needs no correction — the PIECE rotates to meet the march
+        // needs no correction — the PIECE rotates to meet the march.
+        // BRANCH-CORRECT since v17.14 (D155): the end pitch is the
+        // march's UNWRAPPED vertical-plane angle — a crest's pure
+        // blend (both seam curvatures point UP while the net pitch
+        // change points DOWN) routinely overshoots past vertical,
+        // where asin alone reflects and the fixed point converged
+        // onto reversed-heading / full-loop branches (the user's
+        // crest-bridge corkscrew rolls and inverted loops). Yaw and
+        // bank are measured only on POLE-FREE passes: across a pole
+        // both flip ~180°, and that seed walked the twist into a
+        // full barrel roll (minUy −0.99 at every mid length).
+        boolean crossed = meta[1] != 0;
         double resPitch = align[1] ? 0
             : Math.asin(Math.max(-1, Math.min(1, tB.y())))
-            - Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+            - unwrappedEndPitch(st[1], meta);
         double resYaw = 0;
         Vec3 endT = st[1];
         double ha2 = endT.x() * endT.x() + endT.z() * endT.z();
         double hb2 = tB.x() * tB.x() + tB.z() * tB.z();
-        if (!align[0] && ha2 > 1e-12 && hb2 > 1e-12) {
+        if (!align[0] && !crossed && ha2 > 1e-12 && hb2 > 1e-12) {
             resYaw = Math.atan2(-tB.z(), tB.x())
                    - Math.atan2(-endT.z(), endT.x());
             while (resYaw > Math.PI) resYaw -= 2 * Math.PI;
@@ -681,7 +695,8 @@ public class Coaster {
         // of being painted on by the render's quintic afterwards —
         // which left the spine's curvature in the untwisted frame
         // (the user's ~1 g far-seam Gv/Gl jump on rolling seams).
-        double resTw = align[2] ? 0 : bankGap(st[1], st[2], tB, uB);
+        double resTw = align[2] || crossed ? 0
+            : bankGap(st[1], st[2], tB, uB);
         if (Math.abs(resPitch) > 1e-9 || Math.abs(resYaw) > 1e-9
                 || Math.abs(resTw) > 1e-9
                 || path != null || spine != null) {
@@ -689,7 +704,7 @@ public class Coaster {
             resYaw = Math.abs(resYaw) > 1e-9 ? resYaw : 0;
             resTw = Math.abs(resTw) > 1e-9 ? resTw : 0;
             st = march(pA, tA, uA, d, sa, sb,
-                resPitch, resYaw, resTw, path, spine);
+                resPitch, resYaw, resTw, path, spine, meta);
             // ONE bounded refinement (v14.5, D97): each hump's
             // integral is exact for the rotation it ADDS, but adding
             // it re-mixes the blend's own pitch/heading along the new
@@ -705,11 +720,11 @@ public class Coaster {
             // no wrap-ambiguous measure, hard one-pass bound.)
             double dP = align[1] ? 0
                 : Math.asin(Math.max(-1, Math.min(1, tB.y())))
-                - Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+                - unwrappedEndPitch(st[1], meta);
             double dY = 0;
             Vec3 eT = st[1];
             double ea2 = eT.x() * eT.x() + eT.z() * eT.z();
-            if (!align[0] && ea2 > 1e-12 && hb2 > 1e-12) {
+            if (!align[0] && meta[1] == 0 && ea2 > 1e-12 && hb2 > 1e-12) {
                 dY = Math.atan2(-tB.z(), tB.x())
                    - Math.atan2(-eT.z(), eT.x());
                 while (dY > Math.PI) dY -= 2 * Math.PI;
@@ -718,7 +733,8 @@ public class Coaster {
             // the twist's own second-order re-mix (v17.11): rolling
             // the frame mid-march re-aims the blend's κ, moving the
             // end bank a little — re-measure like pitch/heading
-            double dTw = align[2] ? 0 : bankGap(st[1], st[2], tB, uB);
+            double dTw = align[2] || meta[1] != 0 ? 0
+                : bankGap(st[1], st[2], tB, uB);
             // BOUNDED FIXED-POINT (v17.11, D150 — was one pass): with
             // a LARGE residual twist (his split-and-rebridge file:
             // ~48° of locked-roll bank over 24 m) the twist re-aims
@@ -730,30 +746,189 @@ public class Coaster {
             // iteration's ambiguous measure), so iterating is sound;
             // clean marches still exit on the first measure, keeping
             // the historic two-march sequence bit-identically.
-            for (int it = 0; it < 6; it++) {
-                if (Math.abs(dP) <= 1e-4 && Math.abs(dY) <= 1e-4
+            // DAMPED since v17.15 (D156 — the user's banked-crest
+            // cliff at ~45-51 m): the pitch↔twist coupling gain grows
+            // with resPitch × twist (the twist re-aims the blend's
+            // body κ, the hump re-mixes the bank along the new path),
+            // and past unit gain the full-step iteration DIVERGED —
+            // clean below the threshold, an unconverged march + the
+            // septic fallback immediately above it ("suddenly shoot
+            // the track around"). A pass whose worst defect GROWS
+            // halves the step (floor 1/8); contracting passes keep
+            // the full step, so every previously-converging sequence
+            // — and every gate baseline — is reproduced verbatim.
+            double lam = 1;
+            double prevMax = Math.max(Math.abs(dP),
+                Math.max(Math.abs(dY), Math.abs(dTw)));
+            for (int it = 0; it < 14; it++) {
+                // a pole-crossed pass can never declare convergence:
+                // its yaw/twist went unmeasured, and the unwrapped
+                // pitch defect on a wrong branch is ±360k — never
+                // small — so the loop always pushes off it (v17.14)
+                if (meta[1] == 0 && Math.abs(dP) <= 1e-4
+                        && Math.abs(dY) <= 1e-4
                         && Math.abs(dTw) <= 1e-4) break;
-                resPitch += dP;
-                resYaw += dY;
-                resTw += dTw;
+                resPitch += lam * dP;
+                // yaw/twist accumulate MOD 2π (v17.14): a heading or
+                // bank gap is a pose property — the short way around
+                // is always the correction; summed wrapped deltas
+                // once walked the twist to a 360° barrel roll
+                resYaw = wrapPi(resYaw + lam * dY);
+                resTw = wrapPi(resTw + lam * dTw);
                 if (path != null) path.clear();
                 if (spine != null) spine.clear();
                 st = march(pA, tA, uA, d, sa, sb, resPitch, resYaw,
-                    resTw, path, spine);
+                    resTw, path, spine, meta);
                 dP = align[1] ? 0
                     : Math.asin(Math.max(-1, Math.min(1, tB.y())))
-                    - Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+                    - unwrappedEndPitch(st[1], meta);
                 dY = 0;
                 Vec3 eT2 = st[1];
                 double ea3 = eT2.x() * eT2.x() + eT2.z() * eT2.z();
-                if (!align[0] && ea3 > 1e-12 && hb2 > 1e-12) {
+                if (!align[0] && meta[1] == 0 && ea3 > 1e-12
+                        && hb2 > 1e-12) {
                     dY = Math.atan2(-tB.z(), tB.x())
                        - Math.atan2(-eT2.z(), eT2.x());
                     while (dY > Math.PI) dY -= 2 * Math.PI;
                     while (dY < -Math.PI) dY += 2 * Math.PI;
                 }
-                dTw = align[2] ? 0 : bankGap(st[1], st[2], tB, uB);
+                dTw = align[2] || meta[1] != 0 ? 0
+                    : bankGap(st[1], st[2], tB, uB);
+                double m = Math.max(Math.abs(dP),
+                    Math.max(Math.abs(dY), Math.abs(dTw)));
+                if (m > prevMax + 1e-12) lam = Math.max(0.125, lam * 0.5);
+                prevMax = m;
             }
+            // STAGED HOMOTOPY RESCUE (v17.15, D156 — the user's
+            // banked-crest report #4): when the coupled loop still
+            // failed — banked crests past ~45-51 m, where the
+            // pitch↔twist gain κ·d·twist crosses 1 and the FIRST full
+            // steps throw the iterate out of the sane basin before
+            // any damping can engage — restart from zero and walk in:
+            // converge the pitch/heading humps ALONE (their fixed
+            // point is robust at any length — the twist is what
+            // couples), then ramp the twist toward the bank gap in
+            // coupling-bounded increments (≤ 0.8/(κ·d) rad), re-
+            // converging pitch after each. Every iterate stays in the
+            // convergent basin by construction, extending the clean
+            // behavior to arbitrary practical lengths. Never entered
+            // by a case the direct loop converges — those (and every
+            // gate baseline) stay bit-identical.
+            if (meta[1] != 0 || Math.abs(dP) > 1e-4
+                    || Math.abs(dY) > 1e-4 || Math.abs(dTw) > 1e-4) {
+                // the twist SEEDS at the seam-to-seam bank gap — a
+                // pose property, zero for unbanked seams. Starting
+                // the rescue at twist 0 put its first march in the
+                // WRONG PATH FAMILY on banked crests (the blend
+                // sweeping an inclined arc whose end bank reads
+                // ~180° off), and the bank homotopy then walked the
+                // wrapped short way into a full-inversion corkscrew
+                // that self-consistently CONVERGED (end bank exact,
+                // mid-span upside down). Seeded, the first march is
+                // already the twisted crest and the ramp only walks
+                // the small path-transport drift.
+                // pitch seeds at the ANALYTIC defect — target pitch
+                // minus entry pitch plus the blend's planar κ_u
+                // integral (Hermite value + slope terms). Starting at
+                // 0 sent stage 1's first iterates over the poles at
+                // long lengths (the raw blend climbs κ_u·d ≈ 150°+
+                // before any hump exists) and the 8-pass budget burned
+                // out recovering; seeded, the first march is already
+                // in the crest basin and the family extends smoothly.
+                double blendP = d * ((sa[0] + sb[0]) / 2
+                    + d * (sa[2] - sb[2]) / 12);
+                double pSeed = align[1] ? 0
+                    : Math.asin(Math.max(-1, Math.min(1, tB.y())))
+                    - Math.asin(Math.max(-1, Math.min(1, tA.y())))
+                    - blendP;
+                double[] io = { pSeed, 0,
+                    align[2] ? 0 : bankGap(tA, uA, tB, uB) };
+                double seed = io[2];
+                st = pitchConverge(pA, tA, uA, d, sa, sb, io, align,
+                    tB, hb2, 8, meta);
+                if (!align[2]) {
+                    double kScale = Math.max(
+                        Math.max(Math.abs(sa[0]), Math.abs(sb[0])),
+                        Math.max(Math.abs(sa[1]), Math.abs(sb[1])));
+                    double maxStep = 0.8 / Math.max(1, kScale * d);
+                    double lastGood = seed;
+                    for (int gs = 0; gs < 16; gs++) {
+                        if (meta[1] != 0) {
+                            // this twist increment threw the march
+                            // over a pole — revert it and retry at
+                            // half the step (never break here: a
+                            // crossed iterate reads NO bank, and
+                            // breaking once left ~80° of twist
+                            // unapplied on a march that then passed
+                            // the angle-only render gate)
+                            io[2] = lastGood;
+                            maxStep *= 0.5;
+                            st = pitchConverge(pA, tA, uA, d, sa, sb,
+                                io, align, tB, hb2, 8, meta);
+                            continue;
+                        }
+                        double rem = bankGap(st[1], st[2], tB, uB);
+                        if (Math.abs(rem) <= 1e-4) break;
+                        // wrong-family guardrail: the transport drift
+                        // past the seeded twist is small on any real
+                        // bridge — a walk straying beyond 90° of it
+                        // is chasing an inverted family; stop and let
+                        // the render gates hand the septic the job
+                        if (Math.abs(wrapPi(io[2] - seed))
+                                > Math.PI / 2) break;
+                        lastGood = io[2];
+                        io[2] = wrapPi(io[2] + Math.max(-maxStep,
+                            Math.min(maxStep, rem)));
+                        st = pitchConverge(pA, tA, uA, d, sa, sb, io,
+                            align, tB, hb2, 8, meta);
+                    }
+                }
+                resPitch = io[0];
+                resYaw = io[1];
+                resTw = io[2];
+                if (path != null || spine != null) {
+                    if (path != null) path.clear();
+                    if (spine != null) spine.clear();
+                    st = march(pA, tA, uA, d, sa, sb, resPitch, resYaw,
+                        resTw, path, spine, meta);
+                }
+            }
+        }
+        return st;
+    }
+
+    /** Damped fixed point for the PITCH (and, position mode, HEADING)
+     *  humps at a FROZEN twist — the v17.15 rescue's building block.
+     *  io = {resPitch, resYaw, resTw}; io[0]/io[1] are updated in
+     *  place, io[2] is read only. Returns the final march end state;
+     *  meta carries its pole-crossing info. */
+    private static Vec3[] pitchConverge(Vec3 pA, Vec3 tA, Vec3 uA,
+            double d, double[] sa, double[] sb, double[] io,
+            boolean[] align, Vec3 tB, double hb2, int iters,
+            double[] meta) {
+        Vec3[] st = march(pA, tA, uA, d, sa, sb, io[0], io[1], io[2],
+            null, null, meta);
+        double lam = 1, prevMax = Double.MAX_VALUE;
+        for (int it = 0; it < iters; it++) {
+            double dP = align[1] ? 0
+                : Math.asin(Math.max(-1, Math.min(1, tB.y())))
+                - unwrappedEndPitch(st[1], meta);
+            double dY = 0;
+            double ea2 = st[1].x() * st[1].x() + st[1].z() * st[1].z();
+            if (!align[0] && meta[1] == 0 && ea2 > 1e-12
+                    && hb2 > 1e-12) {
+                dY = wrapPi(Math.atan2(-tB.z(), tB.x())
+                   - Math.atan2(-st[1].z(), st[1].x()));
+            }
+            if (meta[1] == 0 && Math.abs(dP) <= 1e-4
+                    && Math.abs(dY) <= 1e-4) break;
+            double m = Math.max(Math.abs(dP), Math.abs(dY));
+            if (m > prevMax + 1e-12) lam = Math.max(0.125, lam * 0.5);
+            prevMax = m;
+            io[0] += lam * dP;
+            io[1] = wrapPi(io[1] + lam * dY);
+            st = march(pA, tA, uA, d, sa, sb, io[0], io[1], io[2],
+                null, null, meta);
         }
         return st;
     }
@@ -783,7 +958,18 @@ public class Coaster {
         // REVERTED same round on user verdict, D150: it flipped old
         // files' optimized bridges to the septic and didn't capture
         // his actual bug; 2 cm / 0.3° is the shipped gate again)
-        return miss > 0.02 || tAng > 0.3 ? null : spine;
+        // BANK gate (v17.15, D156): an unconverged rescue can land
+        // position AND tangent while the twist never closed — a
+        // corkscrewed march with its end bank ~80° off the target
+        // slipped through the angle-only test and rendered. Converged
+        // marches close bank to 1e-4 rad (0.006°), so 1° is 170×
+        // margin — only genuine garbage falls to the septic, which
+        // absorbs it honestly (near-vertical NaN banks skip the test,
+        // matching bankGap's own hold-off).
+        double bMiss = Math.abs(bankGap(st[1], st[2],
+            bs.solvedTarget.T(), bs.solvedTarget.U()));
+        return miss > 0.02 || tAng > 0.3 || bMiss > Math.toRadians(1)
+            ? null : spine;
     }
 
     /** orient = false (the "optimize position" mode): the target
@@ -935,7 +1121,31 @@ public class Coaster {
         double rlim = 0.02 * rRef / Math.max(1, 0.15 * d);
         if (Math.abs(sa[5]) < rlim) sa[5] = 0;
         if (Math.abs(sb[5]) < rlim) sb[5] = 0;
+        // CAP the big end too (v17.14, D155): contDeriv scales the
+        // Hermite slope terms by d, so a violently-authored seam (a
+        // force lane plunging 4 g right at the cut measures ~0.025/m²
+        // of real jerk) EXTRAPOLATES across a third of a long bridge —
+        // κ hit −0.2/m (−10 g) mid-span at 46 m on the user's crest
+        // file. Jerk continuity is a seam-LOCAL property: keep the
+        // seam slope exact in direction but bound its d-scaled reach
+        // to MARCH_SLOPE_CAP × the seam curvature scale (the h10
+        // basis peaks at 0.148, so the mid-span contribution stays
+        // ≤ ~0.6× the curvature values). Small/clean seams pass
+        // through UNTOUCHED — every existing gate fixture is far
+        // below the cap.
+        double cap = MARCH_SLOPE_CAP * kRef / Math.max(1, d);
+        if (Math.abs(sa[2]) > cap) sa[2] = Math.copySign(cap, sa[2]);
+        if (Math.abs(sa[3]) > cap) sa[3] = Math.copySign(cap, sa[3]);
+        if (Math.abs(sb[2]) > cap) sb[2] = Math.copySign(cap, sb[2]);
+        if (Math.abs(sb[3]) > cap) sb[3] = Math.copySign(cap, sb[3]);
+        double rcap = MARCH_SLOPE_CAP * rRef / Math.max(1, d);
+        if (Math.abs(sa[5]) > rcap) sa[5] = Math.copySign(rcap, sa[5]);
+        if (Math.abs(sb[5]) > rcap) sb[5] = Math.copySign(rcap, sb[5]);
     }
+
+    /** Ceiling on a seam slope's d-scaled march contribution, in
+     *  units of the seam curvature scale (v17.14, D155). */
+    private static final double MARCH_SLOPE_CAP = 4.0;
 
     /** ABSOLUTE ascending length candidates (m) for
      *  optimalBridgeLength (v13.8 second round, D82): anchoring the
@@ -959,6 +1169,10 @@ public class Coaster {
      *  confusing and their effects unpredictable; the tuned defaults
      *  ARE the behavior.) */
     private static final double KNEE_SLOPE_WEIGHT = 0.1;
+
+    /** Knee tolerance floor as a multiple of the seams' own rotation
+     *  rate (v17.14, D155 — see optimalBridgeLength). */
+    private static final double KNEE_SEAM_FLOOR = 1.2;
 
     private static double rateCost(BridgeSection probe) {
         List<FVDIntegrator.Sample> s = probe.integrate(0.02).samples();
@@ -995,9 +1209,22 @@ public class Coaster {
                                  // at this length (v13.10, D84), and
                                  // the march spine reproduces from it
                                  // (v13.12, D86)
-        bs.lenA = dist;
-        bs.lenB = dist;
         alignPieceForBridge(bs, targetIdx, dist, alignYaw);
+        // SEPTIC-FALLBACK tangents (v17.15, D156): the fallback lens
+        // used to be the raw requested length — when the march missed
+        // its own placement (an unconverged extreme), 120 m tangents
+        // over a 45 m chord ballooned the septic into the user's
+        // "inverted vertical loop". Cap them at 1.5× the PLACED chord:
+        // any march that lands keeps lens == dist (arc never exceeds
+        // 1.5× chord on a sane path, and a landing march never reads
+        // them anyway), so only the failure shapes change — to the
+        // honest D75 full-gap-family sweep.
+        TrackPiece tgt = pieces.get(targetIdx);
+        double chord = new Vec3(tgt.x, tgt.y, tgt.z)
+            .sub(bs.solvedEntry.pos()).length();
+        double fb = Math.min(dist, Math.max(1, 1.5 * chord));
+        bs.lenA = fb;
+        bs.lenB = fb;
         // stamp the signature (v13.12, D86): explicit applies must
         // not re-trigger the auto-reoptimize pass
         bs.optSig = bs.optSignature();
@@ -1444,7 +1671,14 @@ public class Coaster {
      *  states in the optimize modes. */
     private double lengthCost(BridgeSection bs, double d, boolean alignYaw) {
         VirtTarget virt = virtualTargetAt(bs, d, alignYaw, null);
-        BridgeSection probe = virtProbe(bs, virt, d, d);
+        // fallback tangents capped like optimizeBridge (v17.15, D156):
+        // a candidate whose march fails the render gate is scored as
+        // the sane full-gap-family septic, not a ballooned one — the
+        // ladder must rank the geometry the apply would produce
+        double chord = virt.pose().pos().sub(bs.solvedEntry.pos())
+            .length();
+        double fb = Math.min(d, Math.max(1, 1.5 * chord));
+        BridgeSection probe = virtProbe(bs, virt, fb, fb);
         probe.lastOptDist = d;
         return rateCost(probe);
     }
@@ -1470,7 +1704,23 @@ public class Coaster {
             cost[i] = lengthCost(bs, LEN_LADDER[i], alignYaw);
             cmin = Math.min(cmin, cost[i]);
         }
-        double tol = cmin * 1.10 + 0.5;
+        // SEAM-RATE FLOOR (v17.14, D155): a candidate no rougher than
+        // KNEE_SEAM_FLOOR × the seams' own frame-rotation rate is
+        // long enough. A CREST's cost decays ~1/L indefinitely — both
+        // end curvatures keep pumping pitch the mid-span hump must
+        // undo, so the mid rate asymptotes near the seam rate and the
+        // relative-only knee ran away (88 m over a 45 m crest gap,
+        // the user's "massive hill"). Matched/straight seams keep
+        // their 1 m collapse (their costs sit at/below the floor from
+        // the first candidate), and valley knees stay governed by the
+        // slope term, which towers over the floor at short lengths.
+        double vsA = Math.max(0.5, bs.vDesign);
+        double vsB = Math.max(0.5, bs.vB > 0 ? bs.vB : bs.vDesign);
+        double rateA = Math.hypot(bs.accA.length() * vsA, bs.rollA);
+        double rateB = Math.hypot(bs.accB.length() * vsB,
+            bs.vB > 0 ? bs.rollB : 0);
+        double tol = Math.max(cmin * 1.10 + 0.5, KNEE_SEAM_FLOOR
+            * Math.toDegrees(Math.max(rateA, rateB)));
         int knee = LEN_LADDER.length - 1;
         for (int i = 0; i < LEN_LADDER.length; i++) {
             if (cost[i] <= tol) {
@@ -1493,18 +1743,36 @@ public class Coaster {
      *  {pos, T, U}, body curvature (κ_u, κ_r) and roll-per-meter
      *  blended A→B as cubic HERMITES whose end slopes are the
      *  measured seam jerks (v13.8, D82 — zero jerks reduce to the
-     *  old blend), plus a parabolic WORLD-vertical curvature hump
-     *  integrating to `residual` radians of pitch (0 = pure blend).
-     *  sa/sb per seamState. Returns the end state. */
+     *  old blend), plus a WORLD-vertical curvature hump (30u²(1−u)²
+     *  since D153) integrating to `resPitch` radians of pitch (0 =
+     *  pure blend). sa/sb per seamState. meta (nullable) returns
+     *  {unwrapped end pitch rad, pole crossings} — v17.14, D155.
+     *  Returns the end state. */
     private static Vec3[] march(Vec3 pos, Vec3 T, Vec3 U, double d,
                                 double[] sa, double[] sb, double resPitch,
                                 double resYaw, double resTwist,
                                 List<Vec3> path,
-                                List<double[]> spine) {
+                                List<double[]> spine, double[] meta) {
         int n = (int) Math.min(40_000, Math.max(8, Math.ceil(d / 0.05)));
         double h = d / n;
         Vec3[] st = { pos, T.normalize(),
             U.sub(T.scale(U.dot(T))).normalize() };
+        // UNWRAPPED-PITCH TRACKING (v17.14, D155): accumulate the
+        // vertical-plane angle continuously, counting POLE crossings
+        // (the horizontal heading reverses in one step only while T
+        // is near vertical — per-step rotations are far too small
+        // anywhere else). Past an ODD number of crossings the
+        // measured asin runs MIRRORED (θ_true = ±π − asin), so both
+        // the per-step deltas and the crossing direction flip with
+        // the parity; dLast remembers the raw measured delta as the
+        // travel-direction memory through the pole. meta = {unwrapped
+        // end pitch rad, crossings} for marchEnd's branch-correct
+        // residual measures.
+        double aPrev = Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+        double pAcc = aPrev;
+        double lgx = st[1].x(), lgz = st[1].z();
+        double dLast = 0;
+        int cross = 0;
         if (path != null) path.add(st[0]);
         if (spine != null) {
             spine.add(spineRow(0, st,
@@ -1528,6 +1796,29 @@ public class Coaster {
             }
             st[1] = st[1].normalize();
             st[2] = st[2].sub(st[1].scale(st[2].dot(st[1]))).normalize();
+            double aNew = Math.asin(Math.max(-1, Math.min(1, st[1].y())));
+            double h2t = st[1].x() * st[1].x() + st[1].z() * st[1].z();
+            double parity = (cross & 1) == 0 ? 1 : -1;
+            if (h2t > 1e-18 && Math.abs(aPrev) > 1.0
+                    && lgx * st[1].x() + lgz * st[1].z() < 0) {
+                // heading flipped while T was near vertical: the true
+                // angle passed the pole and asin reflected. Magnitude
+                // is the pole-relative sum; direction continues the
+                // last true travel direction (parity-corrected raw
+                // delta; entering deeper toward the near pole when
+                // there is no memory yet).
+                double mag = Math.PI - Math.abs(aNew) - Math.abs(aPrev);
+                double dir = dLast != 0 ? parity * Math.signum(dLast)
+                    : Math.signum(aPrev) * parity;
+                pAcc += (dir >= 0 ? mag : -mag);
+                cross++;
+                dLast = 0;
+            } else {
+                pAcc += parity * (aNew - aPrev);
+                if (aNew != aPrev) dLast = aNew - aPrev;
+            }
+            if (h2t > 1e-18) { lgx = st[1].x(); lgz = st[1].z(); }
+            aPrev = aNew;
             if (path != null) path.add(st[0]);
             if (spine != null) {
                 spine.add(spineRow((i + 1) * h, st,
@@ -1535,7 +1826,31 @@ public class Coaster {
                         d)[1]));
             }
         }
+        if (meta != null) {
+            meta[0] = pAcc;
+            meta[1] = cross;
+        }
         return st;
+    }
+
+    /** The march's end pitch on the RIGHT BRANCH (v17.14, D155): with
+     *  no pole crossings this is Math.asin(endT.y) VERBATIM — every
+     *  clean march keeps its historic bit-identical measure. With
+     *  crossings, asin's reflection parity is (−1)^c and the missing
+     *  π-grid offset is snapped from the march's tracked angle sum
+     *  (accurate to integration noise, far below π/2 — the exact
+     *  end-frame asin stays the precision anchor). */
+    private static double unwrappedEndPitch(Vec3 endT, double[] meta) {
+        double aEnd = Math.asin(Math.max(-1, Math.min(1, endT.y())));
+        if (meta[1] == 0) return aEnd;
+        double refl = ((int) meta[1] & 1) == 0 ? aEnd : -aEnd;
+        return refl + Math.rint((meta[0] - refl) / Math.PI) * Math.PI;
+    }
+
+    private static double wrapPi(double a) {
+        while (a > Math.PI) a -= 2 * Math.PI;
+        while (a < -Math.PI) a += 2 * Math.PI;
+        return a;
     }
 
     /** The march's residual-twist measure (v17.11, D150): the

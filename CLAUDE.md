@@ -277,12 +277,21 @@ BridgeSection.java  Phase 2 (v13.0 D72; live-follow v13.1 D73; seam
                     GAP (v13.3 D75 — gap/2 packed the turning into the
                     seam regions: end rates 12-55× the interior,
                     "spiky ends flat middles"; NOT a continuity-order
-                    problem) + the toolbar Length spinner AND dragging
+                    problem; OPT_NONE re-captures SCALE lenA/lenB
+                    with the gap ratio since v17.14 D155 — manual
+                    mode lost its length surface in D87, so
+                    hand-dragged targets left STALE short tangents,
+                    the user's 331°/s end spikes; unmoved/loaded
+                    compiles stay bitwise via a 1e-6 band) + the toolbar Length spinner AND dragging
                     the strip's END LINE re-optimize placement per
                     tick/event. OPTIMIZED bridges ARE the march
                     since v13.12 (D86): when the placement LANDS on
                     the target (miss test 2 cm/0.3°; a v17.10 draft
                     tightened it and was REVERTED same round, D150;
+                    + BANK ≤ 1° since v17.15 D156 — the corkscrew
+                    family's ends are exact, only mid-span is
+                    garbage, so position+tangent alone let it
+                    render; converged marches close bank to 0.006°;
                     lastOptDist =
                     blen's 5th field, missing = 0 = old files keep
                     their septic shapes), integrate() takes the
@@ -312,10 +321,47 @@ BridgeSection.java  Phase 2 (v13.0 D72; live-follow v13.1 D73; seam
                     INVARIANTLY as a bank-vs-horizon difference so
                     the render reproduces its own placement, and
                     the D97 refinement is a BOUNDED FIXED-POINT
-                    (≤6 wrap-safe passes — one pass left degrees
-                    under a 48° twist; clean marches exit on the
-                    first measure, bitwise) — far-seam felt jump
-                    1.2 g → 0.008 g, gated 53c) — with a
+                    (wrap-safe passes — one full-step pass left
+                    degrees under a 48° twist; clean marches exit
+                    on the first measure, bitwise; BRANCH-CORRECT
+                    since v17.14 D155: march() tracks the UNWRAPPED
+                    pitch with pole-crossing parity, so a wrong
+                    branch reads a ±360k defect and can never
+                    converge — yaw/bank measure only on POLE-FREE
+                    passes and accumulated resYaw/resTw wrap
+                    ±180°, ending the CREST family: both seam
+                    curvatures UP + net pitch DOWN overshoot the
+                    blend past vertical, and the old wrapped
+                    measures walked the twist into 360° corkscrews
+                    and full loops; jerk×d capped at 4×kRef in
+                    deadbandSlopes — a violent seam's measured
+                    jerk extrapolated to −10 g mid-span at 46 m;
+                    gates 54a-d. DAMPED ≤14 passes + SEEDED STAGED
+                    RESCUE since v17.15 D156 — BANKED crests
+                    cliffed at ~45-51 m: the pitch↔twist coupling
+                    gain (~κ·d·twist) crosses 1 there and the six
+                    FULL steps flung the iterate out of the basin
+                    before any damping could act (clean at 44,
+                    "shoot the track around" at 46). A growing
+                    defect now halves the step (contracting
+                    sequences bitwise), and a still-failing case
+                    RESTARTS seeded — twist := the seam-to-seam
+                    bank gap, pitch := the analytic blend defect —
+                    converging pitch alone, then ramping the twist
+                    ≤ 0.8/(κ·d) rad per step with pitch
+                    re-converged between, pole-crossed increments
+                    reverted at half step, walks > 90° off the
+                    seed abandoned (a twist-0 stage 1 sat in the
+                    WRONG PATH FAMILY: the zero-twist blend's end
+                    bank reads ~180° off and the wrapped homotopy
+                    walked into a self-consistently-CONVERGED
+                    mid-span-inverted corkscrew — seeds are
+                    load-bearing); fallback/probe tangents cap at
+                    1.5× the placed chord so a miss renders the
+                    honest D75 sweep, not a 120 m-tangent balloon
+                    loop; file 4 marches clean to ~2× its gap,
+                    knee 120 → 60, gates 54e-g) — far-seam felt
+                    jump 1.2 g → 0.008 g, gated 53c) — with a
                     residual-only
                     smoothstep-quintic twist closing the (now tiny)
                     leftover bank
@@ -345,7 +391,13 @@ BridgeSection.java  Phase 2 (v13.0 D72; live-follow v13.1 D73; seam
                     Coaster.optimalBridgeLength's knee — shortest
                     length within 10%+0.5 of the best rate+slope
                     cost over an ABSOLUTE ladder {1..128 m},
-                    bisection-refined. A pure function of the SEAM
+                    bisection-refined; tolerance FLOORED at 1.2×
+                    the seams' own rotation rate since v17.14
+                    (D155 — crest costs decay ~1/L forever and the
+                    knee ran to 88 m: as smooth as the seams
+                    demand is long enough; matched seams keep the
+                    1 m collapse, valley knees stay slope-term-
+                    governed). A pure function of the SEAM
                     STATES (chord-anchored candidates wandered
                     under mode ping-pong — the piece moved, the
                     ladder moved): one answer wherever the piece
@@ -1158,7 +1210,10 @@ strip via runLayout (piece+section+t0); a lone piece is a run of one
 (the pre-v13.4 behavior exactly). STRICT SEAMS (v17.1, D135;
 feedback round D136 — "the
 track after the seam works as if the track before it were a
-bridge"): a strict junction draws a DOUBLE boundary line wearing
+bridge"): a strict junction draws a DOUBLE boundary line (a
+BRIDGE's exit seam draws the same double line since v17.17, D158 —
+the target rides the bridge like a follower; visual only, no
+carets/diamond there) wearing
 per-lane SPIKE CARETS (v17.2 D138, re-spec'd v17.3 D140 — the
 caret points the way each lane's RATE GRAPH would spike AT the
 seam: the instant angular jump Δφ = axisAngle(qR·qL⁻¹) projected
@@ -1173,7 +1228,7 @@ edge-anchored (caretY, the '+'-ladder idea); enabled
 Resulting overlays wear theirs in the overlay palette; a
 SMOOTHED seam draws none) and — strict only, while smoothing is
 ENABLED — the SMOOTHING DIAMOND (v17.3, D140: the s/c pattern —
-dragging ADJUSTS sSmoothLen relatively since v17.5 (D142: base + 2·Δarc from the press — right grows; edges keep absolute-to-cursor), double-click = the settings pop-out, and the diamond DODGES nodes down the '+'-ladder (seamDiaYAt); pre-D142 it sized twice the cursor↔seam ARC read off
+dragging ADJUSTS sSmoothLen relatively since v17.5 (D142: base + 2·Δarc from the press — right grows; edges keep absolute-to-cursor), a clean SINGLE-CLICK = the settings pop-out since v17.17 (D158, was double-click; ≤3 px press-to-release, with a matching 3 px drag deadband so a click never commits a micro-resize — the 3D seam ball keeps its double-click), and the diamond DODGES nodes down the '+'-ladder (seamDiaYAt); pre-D142 it sized twice the cursor↔seam ARC read off
 the samples, live "smoothing X m" readout, Ctrl snaps by the
 element-length step, < 0.5 m snaps shut, cap 80 m, filled =
 active, shaded blend-zone band whose EDGES also drag (v17.4 —
@@ -1315,7 +1370,11 @@ compiler aims solvedTarget at the target's ACTUAL first-sample frame
 used to kink hard at its entrance. (The badge's "Bridge tangents…"
 dialog and explicit "Optimize placement of piece N" action were
 REMOVED in v13.13, D87 — grandfathered from the pre-mode era; the
-mode radios/controls + auto re-optimize are the whole surface now.)
+mode radios/controls + auto re-optimize are the whole surface now.
+Since v17.14, D155, the bridge badge menu's TOP item is "Bridge
+properties…" — the SAME movable panel as the toolbar button, grayed
+"(no following piece)" on orphans: the user's two-spots request,
+via FvdDesigner.showPlacementPopup.)
 The optimize modes run the CONTINUATION MARCH (v13.4 D77 — the acceptance
 principle is "the graphs change as little as possible"): the seams'
 body-frame curvature + roll-per-meter, blended entry → target as
@@ -1337,10 +1396,12 @@ kinked the far seam in orientation mode, the user's "instant jump
 in values at the end"; the 1e-4 deadband keeps clean marches on
 the historic two-march sequence bit-identically — NOT D95's
 reverted bank iteration: no wrap-ambiguous measure, one pass
-max — the refinement is a BOUNDED FIXED-POINT of ≤6 passes since
-v17.11, D150: under a large residual twist one pass left degrees;
-all measures wrap-safe, clean marches exit on the first measure
-bitwise), the target's head placed
+max — the refinement is a BOUNDED FIXED-POINT since v17.11, D150:
+under a large residual twist one pass left degrees; all measures
+wrap-safe, clean marches exit on the first measure bitwise; DAMPED
+≤14 passes + the seeded staged rescue since v17.15, D156 — banked
+crests' pitch↔twist coupling diverged the full-step loop at
+~45-51 m), the target's head placed
 at the march's end and yawed to its heading, plus the smallest
 vertical-rate hump (30u²(1−u)², zero end value + slope since
 v17.12 D153 — briefly shipped in v17.10, reverted in D150 while
@@ -1467,16 +1528,15 @@ to the other mode's
 palette/units/snap (activeGeo() flips; lane buttons wear Δ, badge
 wears "fx", info line shows both speeds), app.lanes binds to the
 DELTA lanes (every gesture/lock/dialog/undo path works verbatim),
-and TWO VIEWS toggle by badge radios: "Influence view" (default)
-edits deltas around zero with the RESULTING graphs dotted behind
-(hoverable, derived-hover pathway); "Resulting view" is purely
-visual — nodes RIDE base+delta via ONE dispOff() choke point
-threaded through draw/hit/drag/box-select/handles (drags write the
-delta back out; Ctrl value-snap lands the RESULTING value on grid;
-readout "value (Δ delta)"; faint dashed base guide + guide→curve
-fill; knobs offset by the base at the NODE's time — D102: the
-node+handle assembly translates rigidly, handle ANGLES match the
-Influence view exactly). The delta wall is ABSOLUTE (sectionEnd = the compiled t*
+and ONE VIEW since v17.17 (D158 — the "Resulting view" AND its
+"Influence view" radio were REMOVED on user verdict: bad edge
+cases — opposite orientations, inverted stretches — read buggy/
+unintuitive): deltas edit around zero with the RESULTING graphs
+dotted behind (hoverable, derived-hover pathway); dispOff() — the
+old resulting-view display offset threaded through draw/hit/drag —
+survives returning 0 as the seam for any future display warp
+(strokeResultingLane and the v15.0/D102 ride-the-sum machinery
+are deleted). The delta wall is ABSOLUTE (sectionEnd = the compiled t*
 duration, durOf reads the span like s/c; A clamps, hold-insert
 refuses, no started-at-end exemption). "Edit influence" unchecks
 back to the DESIGN lanes — influence stays live and drawTrueStrokes
@@ -1951,9 +2011,12 @@ RAIL COLOR lived here v16.14-v17.9 and is the COASTER menu's
 "Rail Color" section since v17.10 — see the Coaster paragraph;
 showRailColorDialog's owner-crash lesson
 lives on as a comment: watch "Custom Color" from a menu row), the
-COMB three-way (v16.14: No | G-Force = vertical + lateral together
-| Speed — AppSettings.combMode) + "Comb size (%)" slider (applies
-on release), "G-FORCE COLORS…" (its label's letters tinted by the
+COMB radios — FIVE-way since v17.16 D157 (No | G-Force = vertical
++ lateral together | Speed | GEOMETRIC with inline Local|Global|
+Combined dots on its row (the gizmo-dots pattern; grayed unless
+selected; AppSettings.combGeoMode, default Combined) | Time —
+AppSettings.combMode, modes exclusive) + "Comb size (%)" slider
+(applies on release), "G-FORCE COLORS…" (its label's letters tinted by the
 LIVE gradient hottest-first, rebuilt per menu show, v16.15; the
 SIX vertical stops shared with the rail gradient — purple −1.5 /
 blue −1 / cyan −0.5 / green 1 / yellow 3 / red 5 — + the lateral
@@ -1987,8 +2050,28 @@ HEARTLINE — G-FORCE mode = VERTICAL felt G outward along −U
 (0.5 m/g, the rail gradient's colors) + LATERAL felt G along −R
 (rider-left for +Gl; 0.8 m/g, ABSOLUTE-value colors mirrored about
 zero on latColors/latStops — per-coaster, saved); SPEED mode =
-TRUE speed up along U (0.05 m per m/s, solid); modes exclusive,
-values from the TRUE arrays, cap 3.5 m × the size setting, teeth
+TRUE speed up along U (0.05 m per m/s, solid GREEN since v17.16 —
+its old light blue moved to the time comb); GEOMETRIC mode
+(v17.16, D157) = curvature per METER, teeth pointing OUTWARD
+from the curve (away from its center — the −U-for-positive-G
+convention), 0.5 m
+per °/m (COMB_K_SCALE), computed straight off the bracketing
+frames (dT/ds ⊥ T, runt steps widened past): sub-modes LOCAL =
+body pitch (−U) + yaw (−R) tooth pairs, GLOBAL = elevation rate
+(−vup) + heading rate (horizontal-right for a left turn),
+skipping near-vertical track, COMBINED (default) = ONE tooth
+along −κ̂ with |κ|; COLORS per component since v17.18 (D159):
+pitch/elevation ORANGE (GEO_LANE_COLORS roll), yaw/heading RED
+(235,60,45), the combined tooth their RED-ORANGE midpoint
+(245,115,65); EVERY curvature hover appends the radius —
+radiusTxt, r≈57.3/val, zero components read (r=∞); TIME mode
+(v17.16) =
+a constant-height tick every 0.1 s of RIDE TIME (timeHit — lerped
+by t so the s/c sub-sample phase never quantizes; integer tick
+indices, k%10==0 = WHOLE seconds drawn WHITE, the rest the old
+speed blue; hover = "t = X s"); modes exclusive,
+force/speed values from the TRUE arrays, cap 3.5 m × the size
+setting, teeth
 under 2 cm skip, whole combGroup hidden in POV and
 mouse-transparent (clicks pass through). Hovering ANYWHERE on a
 tooth (root→tip segment, 10 px) shows the value in the
@@ -2171,9 +2254,17 @@ the bridge before the edit). Window sizes itself to
 that broke on the user's 1080p screen once already.
 
 **Help dialog is a USER REQUIREMENT to keep current:** Help > Controls &
-Features (`showHelpDialog` in FvdDesigner) must be updated with EVERY
+Features (`showHelpDialog` in Dialogs) must be updated with EVERY
 user-facing feature or control change, in its matching section, prioritizing
 non-obvious behavior. Do not ship a feature without touching it.
+REWRITTEN CONCISE in v17.16 (D157, user spec — it had grown into
+400-word wall-of-text rows): guidance for an fvd-literate user, terse
+helpKey rows grouped Getting started / Graph editor / Nodes / Handles /
+Sections / Straight-curve / Speed & conflicts / Pieces & strict seams /
+Bridges / 3D viewport / Menus & settings — NO version-number
+archaeology, no rationale narration; keep entries at ~3-4 lines and
+put new features in their section at that density (the changelog
+lives in DECISIONS.md, not Help).
 
 ## Known quirks / accepted debts
 
@@ -2201,6 +2292,23 @@ non-obvious behavior. Do not ship a feature without touching it.
   (frame-continuous sections smooth it — the far side rotates by
   the kink angle); reverse-twice is a fit-of-a-fit, not an exact
   involution (Ctrl+Z restores exactly).
+- CREST BRIDGES S-curve BY CONSTRUCTION (v17.14, D155): both seam
+  curvatures pull UP while the net pitch drops, so C1 seam
+  continuity forces pitch to overshoot ~±10-20° around the drop —
+  shorter bridges are flatter; this is the honest minimum, not a
+  bug (the pre-v17.14 corkscrews/loops WERE the bug). Pre-v17.14
+  saves whose optimized march was a wrong-branch shape render
+  SEPTIC until re-optimized (the D148 compat precedent), and a
+  manual-mode save with stale short tangents keeps its spiky
+  septic until the target is nudged — loads never move pieces.
+  Extreme length requests whose ideal path dives near-vertical
+  (the world-pitch hump's singular zone) still fall back to the
+  septic honestly — with sane 1.5×-chord tangents since v17.15
+  (D156), and never as a rendered corkscrew (the bank gate). On
+  BANKED crests past ~2× the gap an isolated length can still
+  fail to converge while its neighbors march (the family thins
+  near the singular zone) — honest septic, practical lengths all
+  covered.
 - Undo/redo exclude tie spacing and rail colors (cosmetics; menu-local
   Ctrl+Z only — but they do mark the file dirty).
 - Friction is hardcoded (0), not in the UI. (v0 became the per-coaster
