@@ -85,11 +85,32 @@ FVDIntegrator.java  PHYSICS. Pure Java, no JavaFX. Takes keyframes
                     0.0 = bitwise-historic (the old inert per-second
                     bleed field is gone). Geo/Sc/Bridge and every
                     profile re-computation march the same deficit.
+                    SPEED CONTROLS (v18.0, D160): Options.ctl (+ ctl
+                    overloads on Geo/Sc integrate) — per-step drives
+                    replace friction, post-step snaps write the loss;
+                    both domains; null = every historic path bitwise.
 
 AppSettings.java    APP-WIDE PERSISTENT SETTINGS. Pure Java, no JavaFX.
                     Shortcut bindings + FOV in ~/.fvd-designer.properties
                     (combos are strings like "Ctrl+Z"; UI parses them).
                     Per-coaster settings do NOT go here — they go in .fvd.
+
+SpeedControl.java   SPEED CONTROLS (Phase 3, v18.0 D160). Pure Java.
+                    One lift/brake/launch interval on a section's OWN
+                    authoring axis [x0, x0+len]: type SPEED (target
+                    m/s, INSTANT snap) | ACCEL (felt longitudinal G
+                    magnitude toward a target — loss' = ∓2gA, friction
+                    absorbed by the drive, crossing lands ON the
+                    target), either COMPLEX (Bezier graph replaces the
+                    constant; exactAt reads), min/max flags = ceiling/
+                    floor semantics (≥ 1 always on). The Ctl evaluator
+                    drives (per step) + snaps (post-step) the LOSS
+                    deficit in all three integrators — null = bitwise;
+                    rowFor/driveRow/snapRow are passD's per-sample
+                    twins (design and real move EQUALLY, which is how
+                    a control closes a ≠v conflict); portion/
+                    marksPortion clip controls exactly for splits/
+                    converts (complex lanes de Casteljau at the cut).
 
 Nl2CsvExporter.java NL2 EXPORT. Pure Java, no JavaFX. Resamples samples
                     onto NoLimits 2's external-track CSV (tab-separated
@@ -473,9 +494,13 @@ TrackPiece.java     placement (origin + BASE ORIENTATION quat + yaw
 Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     coefficients (v17.0, D133: fricRoll dimensionless
                     decel μ·g, fricAir 1/m decel k·v²; fric() bundles
-                    them; `friction` line, Coaster-menu rows, document
-                    undo), pieces, SpeedRegion
-                    slots (Phase 3). Section-0 lanes are shared BY
+                    them; `friction` line, Coaster-menu rows in m/m +
+                    m⁻¹ since v18.0 D161 — NEW docs default 0.03 /
+                    1.0e-4 ≈ NL2, class defaults stay 0 so old files
+                    load loss-free; document
+                    undo), pieces (speed controls live PER SECTION
+                    since v18.0 D160 — the Phase-1 SpeedRegion stub is
+                    retired). Section-0 lanes are shared BY
                     REFERENCE with the editor. Cosmetics stay UI-side
                     until milestone B (travel via DesignIO.Cosmetics).
                     In-document converts route through the INSTANCE
@@ -717,6 +742,14 @@ Viewport3D.java     JavaFX 3D VIEW (split out v9.4, D54): orbit/fly/POV
                     v16.14 (D126) makes tie/comb placement arc-EXACT
                     (arcHit) and the combs a three-way heartline-
                     rooted, POV-hidden, mouse-transparent unit.
+                    v18.1 (D167): the POV camera INTERPOLATES the
+                    heartline frame at the exact povTime (povPoseAt
+                    — it snapped to the 0.01 s grid, juddering at
+                    Ctrl ×0.25) and rail tubes tessellate by TURN
+                    ANGLE (railRings — ~2°/ring, 1.2 m cap on
+                    straights, arc floor on twists; a Mesh-quality
+                    slider existed for one unshipped round — v18.2
+                    removed it, the tuned budget IS the behavior).
 
 Dialogs.java        JavaFX DIALOGS (split out v9.4, D54): Help,
                     Shortcuts, Rail colors, Options + option-row
@@ -865,7 +898,8 @@ source tree — they won't compile against the current time-domain API.
   compatibility, extra fields on known lines ignored (the straight-lock
   8th and level-lock 9th `n` fields ride on this). Global lines (v0,
   `friction mu kair` — the Phase 3 coefficients, v17.0 D133, missing =
-  0 0 = loss-free,
+  0 0 = loss-free; NEW documents write 0.03 / 1.0e-4 ≈ NL2 since
+  v18.0 D161,
   heart, gauge,
   tiespace, railmode/railcolor/gradcolors/gradstops — SIX
   gradient stops since v16.15 (18+6 values; DesignIO.gradSlot maps
@@ -895,7 +929,10 @@ source tree — they won't compile against the current time-domain API.
   readers pair the lanes with the speed they were designed at — plus
   `dlane k`/`dn …` delta-lane lines in the exact `n` grammar;
   missing = uninfluenced, empty dlane blocks heal to a single (0,0)
-  node), `elem
+  node; SPEED CONTROLS (v18.0, D160) append `sctl type complex x0 len
+  speed accel min max` + `cn` node lines (shared grammar) + `smark x`
+  per plain diamond — missing = none, old readers ignore all three,
+  degenerate complex lanes heal to a flat two-node graph), `elem
   straight len smooth [rollmode rollval]` / `elem curve radius angle
   dir smooth [rollmode rollval]` lines (straight/curve, v11.0; roll
   fields v11.1 — missing = rate 0, the v11.0 geometry), or `bpose`
@@ -1559,7 +1596,91 @@ routes through the compiled end state; reversed sections refuse
 ENTRY, piece reversal carries influence fine (editing locked).
 Node-0 dialog on the influence surface drops the start-speed row
 and labels the value "Delta". Gated TESTING #37 (24 checks),
-walkthrough #68. PLACEMENT MODES (v13.5 D78,
+walkthrough #68. SPEED CONTROL STRIP (v18.0, D160-D164 — Phase 3's
+speed control): the "+V" box at the graph's bottom-left toggles a
+lane ABOVE the x-axis sharing the plot's x mapping (domain views/
+warps included; speedStripTall/Size persist per-user — the OPEN
+state is SESSION-ONLY since v18.4 D173: every launch starts with
+the strip closed).
+The thin strip is the SPEED CONTROL LINE — click adds a diamond,
+click-DRAG on a free stretch CREATES a speed control press→release
+(v18.4 D173: live preview, Ctrl snaps, min 2× the domain gap,
+swallowed marks consumed, arrives selected),
+double/right-click a diamond (or the line after one) promotes the
+stretch to the next boundary into a CONTROL (consuming its marks)
+and opens the SPEED CONTROL options (movable dark popup: Constant
+Speed | Constant Acceleration radios, Complex check, speed box +
+Max/Min checks — at least one always on — accel box, Start/Length
+spinners in native units, read-only "End speed" showing true when
+split, Edit Speed/Accel button that expands the strip and nudges
+the popup clear); the same clicks REOPEN it. Left-click selects
+(Delete removes — strip focus rules; spFocus), start-diamond drag
+MOVES, end-diamond drag RESIZES (complex graphs stretch along,
+fraction semantics), ripple-time shifts later diamonds, Ctrl snaps
+by the axis step, everything clamps inside the section and against
+neighbor controls. The ▲ arrow (or the top-edge divider) expands
+the TALL view: resulting TRUE speed green dotted + hoverable
+("v = … m/s"; HIDDEN inside COMPLEX speed controls since v18.4
+D173/D174 — their graph IS the speed; plain constant segments
+keep it), complex
+const-SPEED controls show their resulting LONGITUDINAL G inside
+their span (accel-BLUE dotted, (d(v²/2)/ds + g·T.y)/g off the
+true arrays, 4-sample edge trim — the boundary snap is instant;
+hover value, Shift slope; joins the accel scale FIT so it always
+stays in view, D174), locked strip segments wear MINI
+twin-line Shift+F/H visuals, a graph ending early holds its
+value to the control's end DOTTED, the control is a HARD BOX
+under ripples (time-ripple pins its LAST node, D174), and
+complex graphs edit through the
+REAL editor
+(v18.3, D172 — the user's "recycle the exact code" verdict ended
+the v18.1/2 parallel mini-editor): surfStrip retargets the main
+pipeline's choke points (active/warpFwd/warpInv/valToY/snaps/
+gaps/end-wall/laneColor…) at the selected control's lane via
+withSurf, so nodes, handles, S/Z/X, Ctrl snaps + ease presets,
+H/F + both locks (enforceLocks walks control lanes), box select,
+nudges, hover/drag readouts + Shift twins, off-screen handle
+stubs, the TYPED NODE DIALOG (surface captured at open) and the
+Ripple checks are the SAME code on a second surface — the
+strip-sized nodes/lines (nodeR/knobR, editL/R/T/B) are the one
+sanctioned difference; selIdx/hoverT/gesture ownership rides
+spFocus/spHoverSurf/surfGesture; value snaps 1 m/s / 0.1 g.
+redraw() ALWAYS renders from the MAIN surface (v18.4 D173 — a
+strip-gesture rebuild used to re-enter it with surfStrip set and
+paint the plot through the strip's chokes: the "main graphs
+flash out while editing the strip" bug; spDraw re-enters the
+strip surface itself). Segments/diamonds wear the type color (speed GREEN = the
+speed comb's, accel BLUE); the baseline dashes over sections that
+take no controls (bridge/influenced/legacy-reversed, stats hint
+explains). 3D: type-colored PLATES down the tie centers over every
+controlled stretch. STALLED track (true march at the 0.1 floor)
+renders TRANSPARENT to its run's end and the POV skips it both
+ways (D163). Badge menu "Set initial design speed…" (D162) types
+a section's starting speed directly — ride entry writes the
+Start-speed spinner, elsewhere pins as a deliberate conflict; its
+"Set Design Speed to Real" button == the resolve op, which is
+RENAMED to match ("Set Design Speed to Real (keep graphs,
+reshape)"); the Add dialog's fork row reads "Initial design speed"
+with "Set to Real"; the horizontal Ripple check relabels
+time/distance with the axis. TIME comb fillers space evenly
+between the whole-second ticks at roughly the other combs' 0.5 m
+density (D164; v18.1 D168 recolors: seconds DEEP BLUE at 1.5×,
+every 5th second RED since v18.2, fillers light blue). v18.1
+FEEDBACK ROUND
+(D165-D166): the popup's End speed sits under the speed row, its
+entries are numeric-only, and it hides on app focus loss +
+returns on refocus (the pv pattern); complex graphs gained
+main-lane parity — S/Z/X constraints (spAxisLock, routed by
+spFocus), H flatten, F straighten-ahead + Shift+F/Shift+H locks
+on the segment LEAVING the selected node (flags enforced per
+redraw, spEnforceLocks), Shift-hover slope, zero-line fill +
+grey hover ring — and B/Shift+B on a const-speed graph's END
+nodes snap value+slope onto the REAL speed outside the control
+(spMatchRealEnd); controls can NEVER leave their section
+(spClampControls every redraw — shortened sections pull them
+back in, complex graphs rescale, lists stay x-sorted so stacked
+diamonds select the FIRST), min length = 2× the domain min gap.
+PLACEMENT MODES (v13.5 D78,
 BridgeSection.optMode, blen's 3rd field, missing = 0): the toolbar
 button RELABELS "Bridge properties ▾" over a live bridge (v13.10
 D84 — same button, the bridge's own panel; updateBridgeControls
@@ -2311,8 +2432,34 @@ lives in DECISIONS.md, not Help).
   covered.
 - Undo/redo exclude tie spacing and rail colors (cosmetics; menu-local
   Ctrl+Z only — but they do mark the file dirty).
-- Friction is hardcoded (0), not in the UI. (v0 became the per-coaster
-  Start speed setting in v7.9; like heart/gauge it is NOT in undo.)
+- Friction defaults 0.03 m/m + 1.0e-4 m⁻¹ for NEW documents only
+  (v18.0, D161): files without a `friction` line still load loss-free,
+  and the headless gates build zero-friction Coasters (class default).
+- SPEED CONTROL corners (v18.0, D160; parity round v18.1 D165): piece
+  REVERSAL refuses while any section carries controls (a lift on the
+  mirrored flow is ill-defined — remove them first); INFLUENCE entry
+  grays the same way (the two-pass would drop them = silent reshape);
+  the strip's complex graphs edit through the SHARED pipeline since
+  v18.3 D172 (one editor, two surfaces — value-ripple AND the typed
+  node dialog included; a double-click prefers the node dialog and
+  is the promote gesture only off the nodes; smaller nodes/lines
+  are the one difference). ZERO sits ON the control line in
+  the tall view (speed above, negative accel below) and the strip's
+  top edge is a draggable height DIVIDER (speedStripSize 44-420 px;
+  < 40 collapses; the arrow stays the quick toggle). Stall
+  transparency reads Pass D's 0.1 m/s floor and the POV treats the
+  stall like the END OF THE TRACK — wraps to the next piece or the
+  ride start (D171, his clarification of D168's stop) — real
+  stall/rollback physics is still future work (the creep-through
+  model remains; the ghost track is the honest display). ROLL-ONLY
+  converts keep lanes 0/1 BIT-EXACT (D169 — only the roll lane
+  refits; the preview auto-selects it; gate 55j 3 mm).
+- ALL TOOL WINDOWS ARE MODELESS since v18.1 (D166 — viewport controls
+  work with any window open; installViewKeys forwards ride keys from
+  every secondary Scene; every numeric entry is digits+period only).
+  Accepted corners: a node/element dialog left open across edits
+  applies to the object it captured (deleted node = harmless no-op),
+  and the same dialog can be opened twice.
 - A straight/curve section's duration is rarely a whole number of dt
   steps, so samples DOWNSTREAM of one sit off the 0.01 s grid by a
   constant sub-sample phase. POV/marker code indexes time as t/dt
@@ -2517,8 +2664,14 @@ geometry and re-fits it as forward sections at one energy flow from
 the recorded end speed (padlocked row, custom on unlock), same
 structure, NO speed conflict, friction included; bridge pieces
 refuse; the reversed flag = legacy files only. Gated TESTING #48 +
-walkthrough #92) → speed-controlled sections (constant-v /
-constant-longitudinal-G / curve) + real stall/rollback handling.
+walkthrough #92) → ~~SPEED CONTROLS~~ DONE v18.0 (D160-D164: per-
+section lift/brake/launch intervals on the "+V" strip — constant-v +
+constant-felt-G + complex graphs with min/max semantics, applied to
+design AND real speed equally (a clamp closes ≠v conflicts), tie
+plates, stall-transparent track + POV skip, NL2 friction units and
+defaults, time-comb density; gated TESTING #55 + walkthrough #111) →
+real stall/rollback handling (the 0.1 m/s creep floor is still the
+model — the transparent ghost track is its honest display).
 
 **Phase 4 — interop & full interactivity:** NL2 CSV import (external-
 geometry sections), viewport editing part 2 (drag values/times/handles in

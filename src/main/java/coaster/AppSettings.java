@@ -271,6 +271,47 @@ public class AppSettings {
         save();
     }
 
+    /** SPEED-CONTROL STRIP (v18.0, D160): the "+V" box toggles the
+     *  strip above the x-axis; the arrow expands it to the tall view
+     *  (resulting speed + complex graphs). SESSION-ONLY since v18.4
+     *  (D173, user spec): the strip always starts CLOSED on program
+     *  open — only the tall/height prefs persist. */
+    private boolean showSpeedStrip = false;
+
+    public boolean showSpeedStrip() {
+        return showSpeedStrip;
+    }
+
+    public void setShowSpeedStrip(boolean on) {
+        showSpeedStrip = on;
+    }
+
+    public boolean speedStripTall() {
+        return Boolean.parseBoolean(
+            props.getProperty("speedStripTall", "false"));
+    }
+
+    public void setSpeedStripTall(boolean on) {
+        props.setProperty("speedStripTall", String.valueOf(on));
+        save();
+    }
+
+    /** The tall strip's HEIGHT in px (v18.2 — the grabbable divider
+     *  resizes it; below the threshold it collapses to the line). */
+    public double speedStripSize() {
+        try {
+            return Double.parseDouble(
+                props.getProperty("speedStripSize", "118"));
+        } catch (NumberFormatException e) {
+            return 118;
+        }
+    }
+
+    public void setSpeedStripSize(double h) {
+        props.setProperty("speedStripSize", String.valueOf(h));
+        save();
+    }
+
     /** Show the active lane's nodes as small spheres on the track. */
     public boolean trackMarkers() {
         return Boolean.parseBoolean(props.getProperty("trackMarkers", "true"));
@@ -359,6 +400,9 @@ public class AppSettings {
     public static final double COMB_SCALE_DEFAULT = 100;
     public double combScale() { return getD("combScale", COMB_SCALE_DEFAULT); }
     public void setCombScale(double v) { setD("combScale", v); }
+
+    // (a meshQuality setting existed for one unshipped round — v18.2
+    // removed it with its View row; stale property keys are ignored)
 
     /** The color dialog's LAST TEN picked colors (v16.16, user spec),
      *  hex strings, most recent first — shown as a "Recent" swatch

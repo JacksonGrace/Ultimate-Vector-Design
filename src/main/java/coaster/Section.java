@@ -59,4 +59,22 @@ public sealed interface Section
     default boolean vPinned() { return false; }
 
     default void vPinned(boolean p) { }
+
+    /** SPEED CONTROLS (Phase 3, v18.0 D160): lift/brake/launch
+     *  intervals on the section's own authoring axis, applied to the
+     *  design AND real speed alike. Bridges have none (pure geometry)
+     *  — the default is an immutable empty list; lane and s/c
+     *  sections override with their live lists. */
+    default java.util.List<SpeedControl> speedControls() {
+        return java.util.List.of();
+    }
+
+    /** Plain speed-line diamonds (potential control boundaries) on
+     *  the section's authoring axis — visual markers only. */
+    default java.util.List<Double> speedMarks() {
+        return java.util.List.of();
+    }
+
+    /** Can this section carry speed controls at all? */
+    default boolean speedControllable() { return false; }
 }

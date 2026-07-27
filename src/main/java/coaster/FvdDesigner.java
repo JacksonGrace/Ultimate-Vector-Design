@@ -190,12 +190,46 @@ public class FvdDesigner extends Application {
     // clearance above the y=0 ground plane (D41). Cosmetics below stay
     // UI-side until the milestone-B split and travel via
     // DesignIO.Cosmetics at save/load.
-    final Coaster coaster = Coaster.singleForce(lanes, 26, 0, 21, 0);
+    final Coaster coaster = withDefaultFriction(
+        Coaster.singleForce(lanes, 26, 0, 21, 0));
+
+    /** The startup document counts as a NEW document: it gets the
+     *  NL2-like friction defaults (v18.0, D161 — Coaster's own field
+     *  defaults stay 0 so headless gates and loaded files see the
+     *  loss-free model unless a `friction` line says otherwise). */
+    private static Coaster withDefaultFriction(Coaster c) {
+        c.fricRoll = FRIC_ROLL_DEFAULT;
+        c.fricAir = FRIC_AIR_DEFAULT;
+        return c;
+    }
 
     // ---------- track appearance settings (per-coaster, saved in .fvd) ----------
     double heartOffset = 1.0;  // m from heartline down to track (negative = inverted)
     double railGauge = 1.0;    // m between rail centers
     double tieSpacing = 1.0;   // m of track between cross ties
+
+    // NL2-like friction defaults for NEW documents (v18.0, D161).
+    // Loaded files keep their own `friction` line (missing = 0 0).
+    static final double FRIC_ROLL_DEFAULT = 0.03;    // m/m
+    static final double FRIC_AIR_DEFAULT = 1.0e-4;   // 1/m
+
+    /** Fixed-decimal spinner converter (the air-resistance spinner
+     *  needs 5 places — the default converter rounds 1e-4 away). */
+    private static javafx.util.StringConverter<Double> fixedDecimalConverter(int places) {
+        return new javafx.util.StringConverter<>() {
+            @Override public String toString(Double v) {
+                return v == null ? ""
+                    : String.format(java.util.Locale.US, "%." + places + "f", v);
+            }
+            @Override public Double fromString(String s) {
+                try {
+                    return Double.parseDouble(s.trim());
+                } catch (NumberFormatException ex) {
+                    return 0.0;
+                }
+            }
+        };
+    }
 
     // ---------- document-level undo state (Phase 1 milestone B, D51) ----------
     // one snapshot = everything that shapes the RIDDEN TRACK: the lanes plus
@@ -217,7 +251,10 @@ public class FvdDesigner extends Application {
                     boolean dist, boolean viewOther,
                     boolean rollG, boolean ypG,
                     boolean inflRollG, boolean inflYpG,
-                    boolean rateM, boolean rollAbs) {}
+                    boolean rateM, boolean rollAbs,
+                    // speed controls + speed-line diamonds (v18.0,
+                    // D160 — path data, deep-copied like lanes)
+                    List<SpeedControl> sctls, List<Double> smarks) {}
 
     /** Deep copy of a 3-lane node-list set (null-safe). */
     private static List<List<BezierBaker.Node>> copyLanes(
@@ -267,7 +304,8 @@ public class FvdDesigner extends Application {
                     secs.add(new SecState(null, null, bs.vDesign, 3,
                         bs.reversed, false, bs.copy(),
                         null, Double.NaN, false, false, false,
-                        false, false, false, false, false, false));
+                        false, false, false, false, false, false,
+                        null, null));
                     continue;
                 }
                 if (s instanceof StraightCurveSection sc) {
@@ -277,7 +315,9 @@ public class FvdDesigner extends Application {
                     secs.add(new SecState(null, els, sc.vDesign, 2, sc.reversed,
                         sc.vPinned, null, null, Double.NaN, false,
                         true, sc.viewOtherDomain, false, false,
-                        false, false, false, false));
+                        false, false, false, false,
+                        SpeedControl.copyList(sc.speedCtls),
+                        new ArrayList<>(sc.speedMarks)));
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
@@ -288,7 +328,9 @@ public class FvdDesigner extends Application {
                     fs.domain == Section.Domain.DISTANCE, fs.viewOtherDomain,
                     fs.rollGlobal, fs.yawPitchGlobal,
                     fs.inflRollGlobal, fs.inflYawPitchGlobal,
-                    fs.ratePerMeter, fs.rollAbsolute));
+                    fs.ratePerMeter, fs.rollAbsolute,
+                    SpeedControl.copyList(fs.speedCtls),
+                    new ArrayList<>(fs.speedMarks)));
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
@@ -356,6 +398,12 @@ public class FvdDesigner extends Application {
                 } else if (sec instanceof StraightCurveSection scv) {
                     scv.viewOtherDomain = st.viewOther();
                 }
+                // speed controls ride the snapshot (v18.0 — adopt the
+                // deep copies, the applyDocState pattern)
+                if (st.sctls() != null && !(sec instanceof BridgeSection)) {
+                    sec.speedControls().addAll(st.sctls());
+                    sec.speedMarks().addAll(st.smarks());
+                }
                 piece.sections.add(sec);
             }
             coaster.pieces.add(piece);
@@ -370,7 +418,7 @@ public class FvdDesigner extends Application {
         gaugeSpinner.getValueFactory().setValue(s.gauge());
         startSpeedSpinner.getValueFactory().setValue(s.v0());
         fricRollSpinner.getValueFactory().setValue(s.fricRoll());
-        fricAirSpinner.getValueFactory().setValue(s.fricAir() * 1000);
+        fricAirSpinner.getValueFactory().setValue(s.fricAir());
         docApplying = false;
         syncPlacementSpinners();
         updatePieceButton();
@@ -379,9 +427,24 @@ public class FvdDesigner extends Application {
     /** Numeric-only editor filter allowing a leading minus (v13.5 —
      *  same rationale as the length spinner's: focused editors still
      *  receive ride keys' KEY_TYPED characters). */
-    private static javafx.scene.control.TextFormatter<String> signedNumFormatter() {
+    static javafx.scene.control.TextFormatter<String> signedNumFormatter() {
         return new javafx.scene.control.TextFormatter<>(ch ->
             ch.getControlNewText().matches("-?\\d*\\.?\\d*") ? ch : null);
+    }
+
+    /** Digits + one period only (v18.1, D166 — the systematic
+     *  numeric-entry rule: no spaces, no letters, ever). */
+    static javafx.scene.control.TextFormatter<String> numFormatter() {
+        return new javafx.scene.control.TextFormatter<>(ch ->
+            ch.getControlNewText().matches("\\d*\\.?\\d*") ? ch : null);
+    }
+
+    /** Install the numeric-only rule on a spinner's editor — signed
+     *  for values that can go negative. Every numeric spinner in the
+     *  app routes through here (v18.1 sweep). */
+    static void numericEditor(Spinner<?> sp, boolean signed) {
+        sp.getEditor().setTextFormatter(
+            signed ? signedNumFormatter() : numFormatter());
     }
 
     /** One axis of the bridge target's manual x/y/z (mode: none). */
@@ -541,6 +604,7 @@ public class FvdDesigner extends Application {
         Bounds pb = placementBtn.localToScreen(
             placementBtn.getBoundsInLocal());
         pop.show(placementBtn, pb.getMinX(), pb.getMaxY() - 1);
+        installViewKeys(pop.getScene());   // v18.1: keep riding
     }
 
     /** Show/sync the bridge GAP spinner: visible while the active
@@ -655,6 +719,29 @@ public class FvdDesigner extends Application {
      *  them to the viewport so the camera keeps moving. The popup's
      *  field is numeric-only, so consuming letters costs nothing. */
     void forwardViewKey(KeyEvent e, boolean pressed) {
+        // the VIEW-MODE toggles work from any window too (v18.2, user
+        // report: right-click into fly with the Speed Control panel
+        // open, then Space did nothing) — POV and the ortho views are
+        // exactly the keys the convert-UI lockout also keeps live.
+        // Numeric-only entry boxes make the letters harmless; Space
+        // never types into them either.
+        if (pressed) {
+            if (matches("pov", e)) {
+                togglePov();
+                e.consume();
+                return;
+            }
+            if (matches("viewTop", e)) {
+                viewport.toggleOrthoView(true);
+                e.consume();
+                return;
+            }
+            if (matches("viewSide", e)) {
+                viewport.toggleOrthoView(false);
+                e.consume();
+                return;
+            }
+        }
         if (!(viewport.flyActive
                 || (viewport.povActive && viewport.povCaptured))) return;
         KeyCode c = e.getCode();
@@ -762,10 +849,14 @@ public class FvdDesigner extends Application {
             // surface offers Gv/Gl or pitch/yaw only
             laneButtons[i].setText((delta && i < 2 ? "Δ " : "") + names[i]);
             laneButtons[i].setDisable(mode == 2 || (delta && i == 2));
+            // an ABSOLUTE-BANK section's lane-2 button wears the bank
+            // red like its curve (v18.2, user spec)
+            Color bc = i == 2 && mode != 2 && editor != null
+                && editor.activeAbsRoll() ? BANK_COLOR : cols[i];
             laneButtons[i].setStyle(TOOLBTN_STYLE + String.format(
                 " -fx-text-fill: rgb(%d,%d,%d);",
-                (int) (cols[i].getRed() * 255), (int) (cols[i].getGreen() * 255),
-                (int) (cols[i].getBlue() * 255)));
+                (int) (bc.getRed() * 255), (int) (bc.getGreen() * 255),
+                (int) (bc.getBlue() * 255)));
         }
         if (resPitchCheck != null) {
             resLastGeo = geo;
@@ -794,10 +885,16 @@ public class FvdDesigner extends Application {
             + (settings.resRollAbs() && settings.resRollG()
                 ? "Bank (°)" : "Roll rate (" + ru + ")"));
         // grayed only while it would DUPLICATE the active section's
-        // own roll graph (v17.7, D144 — both views otherwise; the
-        // check's state persists across sections)
-        resRollCheck.setDisable(editor != null
-            && editor.resRollRedundant());
+        // own roll graph (v17.7, D144 — both views otherwise). Graying
+        // also DESELECTS since v18.2 (user spec — the v17.7 sticky
+        // check is gone: a grayed-but-checked box read as broken).
+        boolean redundant = editor != null && editor.resRollRedundant();
+        resRollCheck.setDisable(redundant);
+        if (redundant && resRollCheck.isSelected()) {
+            resRollCheck.setSelected(false);
+            settings.setResRoll(false);
+            if (editor != null) editor.refresh();
+        }
         tintResChecks();
     }
 
@@ -853,6 +950,15 @@ public class FvdDesigner extends Application {
     List<TrackCompiler.Span> sectionSpans;
     final ToggleButton[] laneButtons = new ToggleButton[3];
     boolean rippleT, rippleV;   // ripple-edit toggles (time / value)
+    private Label rippleTLabel;   // relabels time/distance per axis (v18.0)
+
+    /** The horizontal ripple check reads "time" or "distance" per the
+     *  plot's display domain (v18.0, D162). */
+    void syncRippleLabel(boolean dist) {
+        if (rippleTLabel != null) {
+            rippleTLabel.setText(dist ? "distance" : "time");
+        }
+    }
     boolean slideKey;           // S held: slide nodes/handles along a line
     boolean cKey;               // C held: click the track = recenter orbit
     private Spinner<Double> heartSpinner, gaugeSpinner, tieSpinner;
@@ -1053,6 +1159,10 @@ public class FvdDesigner extends Application {
         rippleLbl.setTextFill(Color.rgb(200, 205, 215));
         HBox rippleTCheck = makeCheck("time", v -> rippleT = v);
         HBox rippleVCheck = makeCheck("value", v -> rippleV = v);
+        // the horizontal ripple relabels with the plot's axis domain
+        // (v18.0, D162 — user spec: "distance" over a meters axis);
+        // the check's label is its second child (makeCheck's layout)
+        rippleTLabel = (Label) rippleTCheck.getChildren().get(1);
         Tooltip.install(rippleTCheck, new Tooltip(
             "Dragging a node horizontally also shifts every later node of the\n"
             + "lane in time — later transition lengths are preserved."));
@@ -1112,6 +1222,8 @@ public class FvdDesigner extends Application {
         Popup resPopup = new Popup();
         resPopup.getContent().add(resBox);
         resPopup.setAutoHide(true);   // backstop: clicks elsewhere close it
+        resPopup.setOnShown(e ->
+            installViewKeys(resPopup.getScene()));   // v18.1: keep riding
         // hover dismissal, verified against the REAL cursor: when the
         // popup materializes under an already-moving mouse, JavaFX can
         // skip MOUSE_ENTERED entirely — the exit-timer from leaving the
@@ -1586,6 +1698,20 @@ public class FvdDesigner extends Application {
                 e.consume();
             }
         });
+        installViewKeys(s);   // v18.1: menus never steal the ride keys
+    }
+
+    /** Ride/fly keys keep working while ANY window/popup holds key
+     *  focus (v18.1, D166 — user spec: "with any window open, WASD
+     *  still rides"): the pv popup's forwarder, installed on every
+     *  secondary Scene. Registered once per scene. */
+    private final java.util.Set<Scene> viewKeyScenes =
+        java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+    void installViewKeys(Scene s) {
+        if (s == null || !viewKeyScenes.add(s)) return;
+        s.addEventFilter(KeyEvent.KEY_PRESSED, e -> forwardViewKey(e, true));
+        s.addEventFilter(KeyEvent.KEY_RELEASED, e -> forwardViewKey(e, false));
     }
 
     /** Spinner listener that applies the value AND records it in the
@@ -1690,21 +1816,28 @@ public class FvdDesigner extends Application {
             coaster.v0 = v;
             coaster.soleSection().vDesign(v);
         });
-        // PHASE 3 FRICTION (v17.0, D133): the coaster's two loss
-        // coefficients — per-coaster, saved in the .fvd, in document
-        // undo (they change the track path: design profiles shed)
+        // PHASE 3 FRICTION (v17.0, D133; NL2-style units + defaults
+        // v18.0, D161): the coaster's two loss coefficients —
+        // per-coaster, saved in the .fvd, in document undo (they
+        // change the track path: design profiles shed). Rolling edits
+        // in m/m (step 0.001), air directly in m⁻¹ (step 1e-5 — the
+        // old per-km ×1000 display is gone).
         fricRollSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
-                0, 0.2, coaster.fricRoll, 0.005));
+                0, 0.2, coaster.fricRoll, 0.001));
         fricRollSpinner.setPrefWidth(80);
+        ((SpinnerValueFactory.DoubleSpinnerValueFactory)
+            fricRollSpinner.getValueFactory()).setConverter(
+                fixedDecimalConverter(3));
         wireDocSpinner(fricRollSpinner, v -> coaster.fricRoll = v);
-        // air drag edits in 1/km (raw 1/m needs 4+ decimals); the
-        // model stores 1/m
         fricAirSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
-                0, 20, coaster.fricAir * 1000, 0.1));
-        fricAirSpinner.setPrefWidth(80);
-        wireDocSpinner(fricAirSpinner, v -> coaster.fricAir = v / 1000);
+                0, 0.02, coaster.fricAir, 0.00001));
+        fricAirSpinner.setPrefWidth(90);
+        ((SpinnerValueFactory.DoubleSpinnerValueFactory)
+            fricAirSpinner.getValueFactory()).setConverter(
+                fixedDecimalConverter(5));
+        wireDocSpinner(fricAirSpinner, v -> coaster.fricAir = v);
 
         Label heartLbl = new Label("Heart (m)");
         heartLbl.setTextFill(Color.BLACK);   // menu popup is light; default fill washed out
@@ -1892,24 +2025,23 @@ public class FvdDesigner extends Application {
         HBox speedRow = new HBox(8, speedLbl, startSpeedSpinner);
         speedRow.setAlignment(Pos.CENTER_LEFT);
         // friction rows (v17.0): tooltips carry the model
-        Label fricRollLbl = new Label("Friction (rolling μ)");
+        Label fricRollLbl = new Label("Friction (m/m)");
         fricRollLbl.setTextFill(Color.BLACK);
         HBox fricRollRow = new HBox(8, fricRollLbl, fricRollSpinner);
         fricRollRow.setAlignment(Pos.CENTER_LEFT);
         Tooltip.install(fricRollRow, new Tooltip(
-            "Rolling/mechanical losses: constant deceleration μ·g\n"
-            + "per meter of track (0.01–0.05 is typical; 0 = the old\n"
-            + "loss-free model). Applies to the whole coaster — design\n"
-            + "profiles and the true ride both shed it."));
-        Label fricAirLbl = new Label("Air drag (per km)");
+            "Rolling/mechanical losses: constant deceleration μ·g per\n"
+            + "meter of track (dimensionless m/m). Default 0.03 ≈ NL2;\n"
+            + "0 = the old loss-free model. Applies to the whole\n"
+            + "coaster — design profiles and the true ride both shed."));
+        Label fricAirLbl = new Label("Air resistance (m⁻¹)");
         fricAirLbl.setTextFill(Color.BLACK);
         HBox fricAirRow = new HBox(8, fricAirLbl, fricAirSpinner);
         fricAirRow.setAlignment(Pos.CENTER_LEFT);
         Tooltip.install(fricAirRow, new Tooltip(
-            "Air resistance: deceleration k·v² with k entered per\n"
-            + "KILOMETER of track (1.0 here = 0.001/m; a few tenths\n"
-            + "to ~2 is typical). Fast track sheds much more than\n"
-            + "slow track."));
+            "Air resistance: deceleration k·v² with k in 1/m.\n"
+            + "Default 1.0×10⁻⁴ ≈ NL2. Fast track sheds much more\n"
+            + "than slow track."));
 
         // (the rail-color radios live in THIS menu's "Rail Color"
         // section since v17.10 — Dialogs.railColorItems assigns the
@@ -2049,7 +2181,11 @@ public class FvdDesigner extends Application {
         piece.sections.add(new ForceSection(nl, 26));
         coaster.pieces.add(piece);
         coaster.v0 = 26;
-        coaster.speedRegions.clear();
+        // NL2-like friction defaults for NEW documents (v18.0, D161):
+        // rolling 0.03 m/m, air 1.0e-4 m⁻¹. Old files keep whatever
+        // their `friction` line says (missing = 0 0, loss-free).
+        coaster.fricRoll = FRIC_ROLL_DEFAULT;
+        coaster.fricAir = FRIC_AIR_DEFAULT;
 
         DesignIO.Cosmetics def = DesignIO.Cosmetics.defaults();
         heartOffset = def.heart();
@@ -2070,8 +2206,8 @@ public class FvdDesigner extends Application {
         startZSpinner.getValueFactory().setValue(0.0);
         yawSpinner.getValueFactory().setValue(0.0);
         startSpeedSpinner.getValueFactory().setValue(26.0);
-        fricRollSpinner.getValueFactory().setValue(0.0);
-        fricAirSpinner.getValueFactory().setValue(0.0);
+        fricRollSpinner.getValueFactory().setValue(FRIC_ROLL_DEFAULT);
+        fricAirSpinner.getValueFactory().setValue(FRIC_AIR_DEFAULT);
         (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
         docApplying = false;
 
@@ -2127,8 +2263,8 @@ public class FvdDesigner extends Application {
             coaster.pieces.clear();
             coaster.pieces.addAll(r.coaster().pieces);
             coaster.v0 = r.coaster().v0;
-            coaster.speedRegions.clear();
-            coaster.speedRegions.addAll(r.coaster().speedRegions);
+            coaster.fricRoll = r.coaster().fricRoll;
+            coaster.fricAir = r.coaster().fricAir;
             editor.resetSections();   // active section 0, lanes re-pointed
 
             DesignIO.Cosmetics cos = r.cosmetics();
@@ -2147,7 +2283,7 @@ public class FvdDesigner extends Application {
             tieSpinner.getValueFactory().setValue(tieSpacing);
             startSpeedSpinner.getValueFactory().setValue(coaster.v0);
             fricRollSpinner.getValueFactory().setValue(coaster.fricRoll);
-            fricAirSpinner.getValueFactory().setValue(coaster.fricAir * 1000);
+            fricAirSpinner.getValueFactory().setValue(coaster.fricAir);
             syncPlacementSpinners();   // active piece (0 after reset)
             updatePieceButton();
             (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
@@ -2171,7 +2307,7 @@ public class FvdDesigner extends Application {
 
         Stage dlg = new Stage();
         dlg.initOwner(stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
+        // modeless since v18.1 (D166): the viewport stays reachable
         dlg.setTitle("Export NL2 CSV");
 
         ToggleGroup lineGroup = new ToggleGroup();
@@ -2190,6 +2326,7 @@ public class FvdDesigner extends Application {
         Spinner<Double> segSp = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(
             0.1, 10.0, settings.nl2SegLen(), 0.1));
         segSp.setEditable(true);
+        numericEditor(segSp, false);   // v18.1 numeric sweep
         segSp.setPrefWidth(80);
         dialogs.wireOptionSpinner(segSp, settings::setNl2SegLen);
 
@@ -2242,6 +2379,7 @@ public class FvdDesigner extends Application {
         beginMenuSession();
         dlg.setOnHidden(e -> endMenuSession());
         dlg.show();
+        installViewKeys(dlg.getScene());
     }
 
     // The graph editor lives in GraphEditor.java (Phase 1 split, D52).

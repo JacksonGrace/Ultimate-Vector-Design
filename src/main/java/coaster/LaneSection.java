@@ -104,6 +104,22 @@ public sealed abstract class LaneSection implements Section
     public boolean inflRollGlobal = false;
     public boolean inflYawPitchGlobal = false;
 
+    /** SPEED CONTROLS (Phase 3, v18.0 D160) on the section's native
+     *  axis + the plain speed-line diamonds. The list objects are
+     *  long-lived (editor holds references). */
+    public final List<SpeedControl> speedCtls = new ArrayList<>();
+    public final List<Double> speedMarks = new ArrayList<>();
+
+    @Override public List<SpeedControl> speedControls() { return speedCtls; }
+
+    @Override public List<Double> speedMarks() { return speedMarks; }
+
+    /** Lane sections take controls unless legacy-reversed or
+     *  influenced (both refuse UI-side; the compiler skips them). */
+    @Override public boolean speedControllable() {
+        return !reversed && !influenced();
+    }
+
     // ---------- INFLUENCE (v15.0, D98; SECTIONS-DESIGN §5.4) ----------
     // Sparse DELTA lanes in the OTHER mode's units (force section →
     // pitch/yaw/roll °/s, geo section → Gv/Gl g; lane 2 is the shared

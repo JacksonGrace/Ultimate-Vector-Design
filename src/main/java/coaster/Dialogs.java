@@ -228,8 +228,11 @@ class Dialogs {
             + "piece boundaries, deliberate custom speeds, tilted pieces and "
             + "bridge stitches.");
         helpKey(box, "≠v & true strokes", "a drifted section's badge wears ≠v (its info line shows the arriving speed) and thin TRUE strokes split off its curves — the same quantities at the speed the train really arrives with. POV, the stats line and the top-speed stat already ride true values. Inside a smoothed strict seam's window the strokes also show the real blended transition on both sides.");
-        helpKey(box, "Resolving", "badge > Resolve speed conflict, left to right, one section at a time: \"Make graphs real (keep shape)…\" refits the lanes at the true entry speed — the track stays put and the strokes vanish; \"Re-freeze design speed (keep graphs, reshape)\" keeps your curves and re-derives the geometry at the real speed (a tilted piece folds its tilt in first). Then Shift+B on the first node lines the seam up. Only a live bridge DIRECTLY before a section blocks resolving — convert the bridge first. Deliberate (pinned) speeds are matched around, never silently closed.");
-        helpKey(box, "Friction", "Coaster menu: FRICTION (ROLLING μ) decelerates by μ·g per meter; AIR DRAG (PER KM) by k·v². Both default 0 — the loss-free classic model. On, they shape every design profile and the true ride: long layouts genuinely run out of steam, and losses are paid BOTH ways (see Reverse).");
+        helpKey(box, "Resolving", "badge > Resolve speed conflict, left to right, one section at a time: \"Make graphs real (keep shape)…\" refits the lanes at the true entry speed — the track stays put and the strokes vanish; \"Set Design Speed to Real (keep graphs, reshape)\" keeps your curves and re-derives the geometry at the real speed (a tilted piece folds its tilt in first). Then Shift+B on the first node lines the seam up. Only a live bridge DIRECTLY before a section blocks resolving — convert the bridge first. Deliberate (pinned) speeds are matched around, never silently closed. Badge > \"Set initial design speed…\" types a starting speed directly any time (a custom value pins as a deliberate conflict; on the ride entry it writes the Start-speed spinner).");
+        helpKey(box, "Friction", "Coaster menu: FRICTION (m/m) decelerates by μ·g per meter; AIR RESISTANCE (m⁻¹) by k·v². New coasters start at 0.03 and 1.0e-4 — about NoLimits 2; zero both for the loss-free classic model. On, they shape every design profile and the true ride, and losses are paid BOTH ways (see Reverse).");
+        helpKey(box, "+V speed strip", "the +V box (bottom-left) opens the SPEED CONTROL LINE above the time axis. Click the line = a diamond; double- or right-click a diamond (or the line after it) = the stretch to the next diamond becomes a SPEED CONTROL and its options open (the same clicks reopen them). Constant Speed holds/clips to a target — Max = ceiling (snaps down), Min = floor (snaps up), both = hold exactly. Constant Acceleration approaches the target at a FELT longitudinal G instead (launches/brakes). Complex swaps the constant for an editable graph (green = speed, blue = accel). Controls act on design AND real speed alike, so a control inside a conflicted stretch closes the ≠v split at its clamp.");
+        helpKey(box, "Strip editing", "click-DRAG on a free stretch of the line to create a control from press to release (Ctrl snaps; a plain click drops a diamond instead); drag the START diamond to move a control, the END diamond to resize (its graph stretches along); ripple time/distance shifts later diamonds; Ctrl snaps; click selects, Delete removes. The strip's TOP EDGE is a grabbable divider — drag it to any height (small enough collapses to the line; drag the thin edge up to expand; the ▲ arrow still toggles). The tall view shows the resulting TRUE speed (green dotted, hover reads it — hidden inside COMPLEX speed controls, whose graph IS the speed) with ZERO on the control line itself; a control graph ending early holds its value to the control's end (dotted, clickable to append); with time ripple on, a control's LAST node never moves horizontally — controls are a hard box; a complex constant-speed control shows its resulting LONGITUDINAL G inside its span (blue dotted, hover for the value / Shift for slope; the instant boundary snaps are trimmed), and complex graphs run the REAL editor — every gesture, snap, lock, readout, the typed node dialog (double-click a node) and the Ripple checks work exactly like the main plot, at smaller nodes: click the curve to insert (Ctrl pre-snaps the white dot), box-drag or Shift+click selects several nodes and the group drags/deletes together, arrows nudge, S slides / Z/X lock an axis (with the guide lines), H levels, F straightens ahead (Shift+F/Shift+H lock), handles slide on S and snap to ease presets on Ctrl, off-screen handles show a dashed stub whose edge marker expands the scale. B on a constant-speed graph's END node snaps its value AND slope onto the real speed outside the control. Controls can never leave their section; bridges take none. In 3D every control wears a colored plate down the tie centers.");
+        helpKey(box, "Stalls", "where the true ride bottoms out at the crawl floor, everything after turns TRANSPARENT — the train never really gets there — and the POV treats that point like the END of the track: riding on jumps to the next piece (or back to the start when it is the last one); riding backward lands on the last solid sample. A Min-flag speed control (a lift) over the climb is the fix.");
 
         helpHead(box, "Pieces & strict seams");
         helpText(box, "A ride can be several PIECES, each placed independently. "
@@ -270,13 +273,13 @@ class Dialogs {
         helpKey(box, "POV", "Space rides the track. Hands-off at first — the mouse and W/S stay with the editor; right-click CAPTURES: W/S ride at TRUE speed (Shift ×4, Ctrl slow), A reverses the view (\"Backwards POV\" tag shows; A again or D = forward), Space flips fly/POV, scroll jumps along the track, right-click releases. Riding across a piece boundary follows in the editor. The light-purple graph line and the BOTTOM STATS LINE track the POV position at all times — X/Y/Z, speed, vertical and lateral G, true values.");
         helpKey(box, "Gizmos", "always on for the active piece (View > Show Gizmos; the inline Local/Global dots aim the arrows at world or piece axes): translation arrows X green / Y blue / Z red, rotation rings yaw yellow / pitch teal / roll orange — locked or bridge-owned axes build no part. Rings turn by straight-line mouse travel (~57° per radius); Ctrl snaps translation by the element-length step and rings to 1°; one undo step per drag. The sphere at the piece entry selects node 0; the seam ball opens seam settings on double-click.");
         helpKey(box, "Node markers", "small spheres at the active lane's nodes (View > Node Markers; selection in white) — click one to select that node in the graph, scrolling it into view.");
-        helpKey(box, "Combs", "FVD++-style teeth along the track — five exclusive View-menu modes: G-FORCE (vertical felt G outward on the rail gradient + lateral felt G rider-left on the absolute stops), SPEED (true speed, upward, green), GEOMETRIC (curvature per meter, teeth pointing OUTWARD from the curve — pitch/elevation teeth orange, yaw/heading teeth red, the combined tooth red-orange; its inline dots pick Local = body pitch + yaw teeth, Global = elevation + heading rates, Combined = one tooth along the curve normal — the default), and TIME (a tick every 0.1 s in light blue with WHOLE SECONDS white — a ruler along the track). Teeth grow from the heartline at exact spacing, scale with \"Comb size (%)\", never block clicks, and hide during POV. Hover any tooth for its exact value bottom-left — every curvature tooth reads °/m plus its radius (a zero component reads r=∞); time reads the ride time.");
+        helpKey(box, "Combs", "FVD++-style teeth along the track — five exclusive View-menu modes: G-FORCE (vertical felt G outward on the rail gradient + lateral felt G rider-left on the absolute stops), SPEED (true speed, upward, green), GEOMETRIC (curvature per meter, teeth pointing OUTWARD from the curve — pitch/elevation teeth orange, yaw/heading teeth red, the combined tooth red-orange; its inline dots pick Local = body pitch + yaw teeth, Global = elevation + heading rates, Combined = one tooth along the curve normal — the default), and TIME (whole seconds DEEP BLUE at 1.5× height, every 5th second RED, with light-blue fillers spaced evenly between the seconds at roughly the other combs' density). Teeth grow from the heartline at exact spacing, scale with \"Comb size (%)\", never block clicks, and hide during POV. Hover any tooth for its exact value bottom-left — every curvature tooth reads °/m plus its radius (a zero component reads r=∞); time reads the ride time.");
         helpKey(box, "Heartline", "View > Show heartline: a thin yellow strand on the integrated path, one per piece (hides during POV — the camera sits on it).");
 
         helpHead(box, "Menus & settings");
         helpKey(box, "File", "New / Save / Save As with an unsaved-changes guard · Export NL2 CSV (Ctrl+E): heartline or rail-center spline plus point spacing, both remembered per-user.");
         helpKey(box, "Edit", "SHORTCUTS — click a binding, press the new combo, ↺ resets; grouped by category; per-user. SNAPPING — the Ctrl-snap steps (time, value, roll °/s, rate °/m, element length) and each axis's snap reference: LOCAL (Δ from the previous node) or GLOBAL (absolute grid).");
-        helpKey(box, "View", "Show Gizmos + axis dots · Show heartline · Node Markers · Visualize Selection · the five comb modes with the Geometric dots + Comb size · G-Force Colors… (the SIX vertical stops shared by the rail gradient and vertical comb, plus the lateral comb's three absolute stops; per-coaster) · POV FOV · fly & orbit FOV · mouse sensitivity. Rows keep the menu open; sliders wear ↺; Ctrl+Z inside a menu undoes its edits.");
+        helpKey(box, "View", "Show Gizmos + axis dots · Show heartline · Node Markers · Visualize Selection · the five comb modes with the Geometric dots + Comb size · G-Force Colors… (the SIX vertical stops shared by the rail gradient and vertical comb, plus the lateral comb's three absolute stops; per-coaster) · POV FOV · fly & orbit FOV · mouse sensitivity. Rows keep the menu open; sliders wear ↺; Ctrl+Z inside a menu undoes its edits. Every tool window is MODELESS: with any dialog or panel open you can still right-click the viewport, fly and ride — WASD always reaches the camera, and every numeric box only ever accepts digits and a period.");
         helpKey(box, "Coaster", "heart offset · gauge · tie spacing · start speed (also on node 0's dialog) · the two FRICTION coefficients · RAIL COLOR: Solid (pick via its swatch) or Normal Force — the rails colored by the TRUE felt vertical G on the same gradient as the comb, with G-Force Colors… right below · COASTER STATISTICS: ride time, track length, height range, top speed, vertical-G range. Per-coaster, saved in the .fvd.");
         helpKey(box, "Colors", "every color control is a swatch button opening the app's picker: quick palette, your last ten, a hue/saturation plane with a brightness slider, typed RGB and hex, live preview — OK keeps, Cancel restores.");
 
@@ -289,6 +292,7 @@ class Dialogs {
         dlg.setTitle("Help");
         dlg.setScene(new Scene(scroll));
         dlg.show();
+        app.installViewKeys(dlg.getScene());
     }
 
     static void helpHead(VBox box, String text) {
@@ -329,7 +333,7 @@ class Dialogs {
     void showShortcutsDialog() {
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
+        // modeless since v18.1 (D166): the viewport stays reachable
         dlg.setTitle("Shortcuts");
 
         String[] capturing = { null };       // action id awaiting a key press
@@ -396,6 +400,7 @@ class Dialogs {
         });
         dlg.setScene(sc);
         dlg.show();
+        app.installViewKeys(dlg.getScene());
     }
 
     /** Serialize a pressed key (with modifiers) into the combo format above. */
@@ -503,6 +508,7 @@ class Dialogs {
         Spinner<Double> sp = new Spinner<>(f);
         sp.setPrefWidth(80);
         sp.setEditable(true);
+        FvdDesigner.numericEditor(sp, false);   // v18.1: digits only
         return sp;
     }
 
@@ -743,6 +749,10 @@ class Dialogs {
                     - AppSettings.SENS_DEFAULT) < 1e-9));
         sensRow.setAlignment(Pos.CENTER_LEFT);
 
+        // (a "Mesh quality (%)" slider lived here for one unshipped
+        // round — v18.2 removed it on user verdict: the tuned 100%
+        // adaptive tessellation IS the behavior, D167)
+
         Menu m = new Menu("View", null,
             new CustomMenuItem(gizmoRow, false),
             new CustomMenuItem(heartCheck, false),
@@ -881,7 +891,7 @@ class Dialogs {
     void showCombColorsDialog() {
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
+        // modeless since v18.1 (D166): the viewport stays reachable
         dlg.setTitle("G-force & comb colors");
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -904,6 +914,7 @@ class Dialogs {
         app.beginMenuSession();
         dlg.setOnHidden(e -> app.endMenuSession());
         dlg.show();
+        app.installViewKeys(dlg.getScene());
     }
 
     /** Stop rows (G value + color, one per stop) editing the given
@@ -921,6 +932,7 @@ class Dialogs {
                 new SpinnerValueFactory.DoubleSpinnerValueFactory(lo, hi, stops[gi], 0.1));
             vs.setPrefWidth(75);
             vs.setEditable(true);
+            FvdDesigner.numericEditor(vs, true);   // v18.1: G stops go negative
             vs.valueProperty().addListener((obs, o, v) -> {
                 app.pushMenuEdit(() -> vs.getValueFactory().setValue(o),
                              () -> vs.getValueFactory().setValue(v));
@@ -1024,7 +1036,7 @@ class Dialogs {
                    Runnable onOk) {
         Stage dlg = new Stage();
         dlg.initOwner(owner != null ? owner : app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
+        // modeless since v18.1 (D166): the viewport stays reachable
         dlg.setTitle("Pick color");
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -1045,6 +1057,8 @@ class Dialogs {
         for (int i = 0; i < 3; i++) {
             rgbF[i] = new TextField();
             rgbF[i].setPrefColumnCount(3);
+            // v18.1 numeric sweep (hex keeps its letters, RGB doesn't)
+            rgbF[i].setTextFormatter(FvdDesigner.numFormatter());
         }
         boolean[] updating = { false };
         Runnable paintPreview = () -> preview.setStyle(
@@ -1226,6 +1240,7 @@ class Dialogs {
         dlg.setOnCloseRequest(e -> apply.accept(initial));
         dlg.setScene(new Scene(grid));
         dlg.show();
+        app.installViewKeys(dlg.getScene());
         // the slider's .track/.thumb nodes exist only after the first
         // CSS pass — re-run the tint once the skin is up (v16.19)
         javafx.application.Platform.runLater(paintSlider);
@@ -1235,7 +1250,7 @@ class Dialogs {
     void showOptionsDialog() {
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
+        // modeless since v18.1 (D166): the viewport stays reachable
         dlg.setTitle("Snapping");
 
         Spinner<Double> snapTSp = snap125Spinner(0.01, 2.0, app.settings.snapT());
@@ -1348,6 +1363,7 @@ class Dialogs {
         app.beginMenuSession();
         dlg.setOnHidden(e -> app.endMenuSession());
         dlg.show();
+        app.installViewKeys(dlg.getScene());
     }
 
 }

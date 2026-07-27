@@ -203,6 +203,15 @@ public final class ScIntegrator {
     private static Deriv deriv(State st, Profile prof, double vDesign, double y0,
                                double[] scratch, double sCap,
                                FVDIntegrator.Friction fric) {
+        return deriv(st, prof, vDesign, y0, scratch, sCap, fric,
+            Double.NaN);
+    }
+
+    /** drive = a speed control's d(loss)/ds for this leg (replaces
+     *  friction); NaN = natural (v18.0, D160). */
+    private static Deriv deriv(State st, Profile prof, double vDesign, double y0,
+                               double[] scratch, double sCap,
+                               FVDIntegrator.Friction fric, double drive) {
         Quat q = st.q().normalize();
         Vec3 T = q.T();
         Vec3 U = q.U();
@@ -222,7 +231,8 @@ public final class ScIntegrator {
         Vec3 omega = U.scale(v * scratch[0]).add(R.scale(v * scratch[1]))
             .add(T.scale(scratch[2]));
         Quat dQ = new Quat(0, omega.x(), omega.y(), omega.z()).mul(q).scale(0.5);
-        return new Deriv(T.scale(v), dQ, v, fric.dLossDs(v) * v);
+        return new Deriv(T.scale(v), dQ, v,
+            (Double.isNaN(drive) ? fric.dLossDs(v) : drive) * v);
     }
 
     private static State advance(State y, Deriv k, double h) {
@@ -234,10 +244,17 @@ public final class ScIntegrator {
     private static State rk4(State y, Profile prof, double vDesign, double y0,
                              double h, double[] scratch, double sCap,
                              FVDIntegrator.Friction fric) {
-        Deriv k1 = deriv(y, prof, vDesign, y0, scratch, sCap, fric);
-        Deriv k2 = deriv(advance(y, k1, h / 2), prof, vDesign, y0, scratch, sCap, fric);
-        Deriv k3 = deriv(advance(y, k2, h / 2), prof, vDesign, y0, scratch, sCap, fric);
-        Deriv k4 = deriv(advance(y, k3, h), prof, vDesign, y0, scratch, sCap, fric);
+        return rk4(y, prof, vDesign, y0, h, scratch, sCap, fric,
+            Double.NaN);
+    }
+
+    private static State rk4(State y, Profile prof, double vDesign, double y0,
+                             double h, double[] scratch, double sCap,
+                             FVDIntegrator.Friction fric, double drive) {
+        Deriv k1 = deriv(y, prof, vDesign, y0, scratch, sCap, fric, drive);
+        Deriv k2 = deriv(advance(y, k1, h / 2), prof, vDesign, y0, scratch, sCap, fric, drive);
+        Deriv k3 = deriv(advance(y, k2, h / 2), prof, vDesign, y0, scratch, sCap, fric, drive);
+        Deriv k4 = deriv(advance(y, k3, h), prof, vDesign, y0, scratch, sCap, fric, drive);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -271,6 +288,16 @@ public final class ScIntegrator {
     public static Result integrate(StraightCurveSection sc, double dt,
                                    double vDesign, Vec3 pos0, Quat q0,
                                    FVDIntegrator.Friction fric) {
+        return integrate(sc, dt, vDesign, pos0, q0, fric, null);
+    }
+
+    /** SPEED-CONTROL variant (Phase 3, v18.0 D160): intervals keyed by
+     *  the section's ARC; drives/snaps per LEG (the sub-stepped units,
+     *  so control boundaries stay sharp). Null = none, bitwise. */
+    public static Result integrate(StraightCurveSection sc, double dt,
+                                   double vDesign, Vec3 pos0, Quat q0,
+                                   FVDIntegrator.Friction fric,
+                                   SpeedControl.Ctl ctl) {
         Profile prof = new Profile(sc);
         double totalLen = Math.max(prof.totalLen, 1e-6);
         double[] scratch = new double[3];
@@ -293,17 +320,21 @@ public final class ScIntegrator {
             while (remaining > 1e-12 && st.s() < totalLen - 1e-9) {
                 double v = Math.max(0.5,
                     FVDIntegrator.speedAt(st.pos(), vDesign, y0, st.loss()));
+                double sLeg = st.s();
+                // speed control (v18.0): drive per LEG at its start arc
+                double drv = ctl == null ? Double.NaN
+                    : ctl.drive(sLeg, v);
                 double target = Math.min(prof.nextBreak(st.s()), totalLen);
                 double sCap = target - 1e-9;   // stay on THIS leg's side
                 if (st.s() + v * remaining < target - 1e-12) {
-                    st = rk4(st, prof, vDesign, y0, remaining, scratch, sCap, fric);
+                    st = rk4(st, prof, vDesign, y0, remaining, scratch, sCap, fric, drv);
                     t += remaining;
                     remaining = 0;
                 } else {
                     double h = (target - st.s()) / v;
                     State end = st;
                     for (int it = 0; it < 3; it++) {
-                        end = rk4(st, prof, vDesign, y0, h, scratch, sCap, fric);
+                        end = rk4(st, prof, vDesign, y0, h, scratch, sCap, fric, drv);
                         double vEnd = Math.max(0.5,
                             FVDIntegrator.speedAt(end.pos(), vDesign, y0,
                                 end.loss()));
@@ -312,6 +343,15 @@ public final class ScIntegrator {
                     st = new State(end.pos(), end.q(), target, end.loss());
                     t += h;
                     remaining = Math.max(0, remaining - h);
+                }
+                if (ctl != null) {
+                    double vA = FVDIntegrator.speedAt(st.pos(), vDesign,
+                        y0, st.loss());
+                    double dl = ctl.snap(sLeg, v, vA, !Double.isNaN(drv));
+                    if (dl != 0) {
+                        st = new State(st.pos(), st.q(), st.s(),
+                            st.loss() + dl);
+                    }
                 }
                 st = globalRoll(st, prof, roll);
             }

@@ -124,6 +124,11 @@ public final class StraightCurveSection implements Section {
      *  native METERS axis, where elements are linear. */
     public boolean viewOtherDomain = false;
 
+    /** SPEED CONTROLS (Phase 3, v18.0 D160) over the section's arc +
+     *  the plain speed-line diamonds. */
+    public final List<SpeedControl> speedCtls = new ArrayList<>();
+    public final List<Double> speedMarks = new ArrayList<>();
+
     public StraightCurveSection(List<Element> elements, double vDesign) {
         this.elements = elements;
         this.vDesign = vDesign;
@@ -166,4 +171,10 @@ public final class StraightCurveSection implements Section {
     @Override public boolean vPinned() { return vPinned; }
 
     @Override public void vPinned(boolean p) { vPinned = p; }
+
+    @Override public List<SpeedControl> speedControls() { return speedCtls; }
+
+    @Override public List<Double> speedMarks() { return speedMarks; }
+
+    @Override public boolean speedControllable() { return !reversed; }
 }

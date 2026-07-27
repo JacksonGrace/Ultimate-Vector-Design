@@ -338,6 +338,7 @@ class Viewport3D {
                 double rideTime = app.lastSamples.get(app.lastSamples.size() - 1).t();
                 if (rideTime <= 0) return;
                 povTime = ((povTime + wheel * 0.02) % rideTime + rideTime) % rideTime;
+                povTime = povClampStall(povTime, wheel);   // solid track only (v18.0)
                 app.editor.refresh();   // POV marker always on (v16.14)
                 updatePovStats();       // live POV line (v17.11)
             } else if (orthoView) {
@@ -380,10 +381,16 @@ class Viewport3D {
                     double ratio = app.trueV == null ? 1
                         : app.trueV[at] / Math.max(0.1, app.lastSamples.get(at).v());
                     povTime = ((povTime + dir * dt * mult * ratio) % rideTime + rideTime) % rideTime;
+                    // stalled track is unreachable: jump the gap in
+                    // the direction of travel (v18.0, D163)
+                    povTime = povClampStall(povTime, dir);
                     app.editor.refresh();   // marker follows (always on, v16.14)
                 }
                 int idx = (int) FvdDesigner.clamp(povTime / FvdDesigner.INTEGRATE_DT, 0, app.lastSamples.size() - 1);
-                applyPovCamera(app.lastSamples.get(idx));
+                // camera INTERPOLATES between samples (v18.1 — the
+                // quantize-to-sample camera stepped visibly at slow
+                // ride speeds, the user's "jittering" with Ctrl)
+                applyPovCamera(povPoseAt(povTime));
                 updateGridLOD(app.lastSamples.get(idx).pos().x(), app.lastSamples.get(idx).pos().z());
                 updatePovStats();   // live POV line (v17.11)
                 // the editor FOLLOWS the ride across pieces (v13.11,
@@ -723,6 +730,7 @@ class Viewport3D {
                     .get(app.lastSamples.size() - 1).t();
                 povTime = FvdDesigner.clamp(povTime, 0, rideEnd);
             }
+            povTime = povClampStall(povTime, 1);   // solid track (v18.0)
             povLastNanos = 0;
             moveKeys.clear();
             povCaptured = keepCapture;
@@ -837,10 +845,21 @@ class Viewport3D {
     void applyPovNow() {
         if (!povActive || app.lastSamples == null
                 || app.lastSamples.isEmpty()) return;
-        int idx = (int) FvdDesigner.clamp(
-            povTime / FvdDesigner.INTEGRATE_DT, 0,
-            app.lastSamples.size() - 1);
-        applyPovCamera(app.lastSamples.get(idx));
+        applyPovCamera(povPoseAt(povTime));
+    }
+
+    /** The POV pose at an exact ride time — frame LERPED between the
+     *  bracketing samples (v18.1: the camera used to snap to the
+     *  0.01 s sample grid, a visible judder at ×0.25 speeds; the
+     *  same timeHit lerp the combs use). */
+    private FVDIntegrator.Sample povPoseAt(double t) {
+        List<FVDIntegrator.Sample> ss = app.lastSamples;
+        int idx = (int) FvdDesigner.clamp(t / FvdDesigner.INTEGRATE_DT,
+            0, ss.size() - 1);
+        ArcHit h = timeHit(ss, Math.max(0, idx - 2), t);
+        FVDIntegrator.Sample near = ss.get(idx);
+        return new FVDIntegrator.Sample(t, near.s(), h.pos(), h.T(),
+            h.U(), h.R(), near.v(), near.Gv(), near.Gl());
     }
 
     void centerFlyCursor() {
@@ -920,6 +939,8 @@ class Viewport3D {
         app.trueRates = compiled.trueRates();
         app.sectionSpans = compiled.spans();
         app.updateBridgeControls();   // gap spinner tracks live moves
+        computeStallRanges(samples);      // v18.0, D163: unreachable track
+        computePlateRanges(samples, compiled.spans());   // speed-control plates
 
         // rails + cross ties PER PIECE (v13.2): meshes never span a
         // piece boundary (detached ends stay visually detached — a
@@ -952,13 +973,43 @@ class Viewport3D {
             // renders in its full active coloring — no desaturation
             boolean act = !app.settings.visualizeSelection()
                 || (p >= runS && p <= runE);
-            parts.add(buildRailMesh(sub, i0, -app.railGauge / 2, act));
-            parts.add(buildRailMesh(sub, i0, app.railGauge / 2, act));
-            // ties build through the highlight refresh below (the
-            // active section's ties render white, v16.11)
-            TiePiece tp = new TiePiece(sub, i0, act, new Group());
-            tiePieces.add(tp);
-            parts.add(tp.group());
+            // STALLED track renders TRANSPARENT (v18.0, D163): past
+            // the sample where the true march hit the crawl floor the
+            // train never arrives — rails/ties ghost from there to
+            // the run's end (the piece splits at the stall sample)
+            int stall = stallIdxIn(i0, i1);
+            if (stall < 0 || stall >= i1) {          // fully alive
+                parts.add(buildRailMesh(sub, i0, -app.railGauge / 2, act, false));
+                parts.add(buildRailMesh(sub, i0, app.railGauge / 2, act, false));
+                TiePiece tp = new TiePiece(sub, i0, act, false, new Group());
+                tiePieces.add(tp);
+                parts.add(tp.group());
+            } else if (stall <= i0) {                // fully unreachable
+                parts.add(buildRailMesh(sub, i0, -app.railGauge / 2, act, true));
+                parts.add(buildRailMesh(sub, i0, app.railGauge / 2, act, true));
+                TiePiece tp = new TiePiece(sub, i0, act, true, new Group());
+                tiePieces.add(tp);
+                parts.add(tp.group());
+            } else {                                 // split at the stall
+                List<FVDIntegrator.Sample> alive =
+                    samples.subList(i0, stall + 1);
+                List<FVDIntegrator.Sample> dead =
+                    samples.subList(stall, i1 + 1);
+                parts.add(buildRailMesh(alive, i0, -app.railGauge / 2, act, false));
+                parts.add(buildRailMesh(alive, i0, app.railGauge / 2, act, false));
+                parts.add(buildRailMesh(dead, stall, -app.railGauge / 2, act, true));
+                parts.add(buildRailMesh(dead, stall, app.railGauge / 2, act, true));
+                TiePiece tpa = new TiePiece(alive, i0, act, false, new Group());
+                TiePiece tpd = new TiePiece(dead, stall, act, true, new Group());
+                tiePieces.add(tpa);
+                tiePieces.add(tpd);
+                parts.add(tpa.group());
+                parts.add(tpd.group());
+            }
+            // SPEED-CONTROL PLATES (v18.0, D160): a flat plate down
+            // the tie centers over every controlled stretch, colored
+            // by the control type (green = speed, blue = accel)
+            parts.addAll(buildPlateMeshes(sub));
             // heartline strand PER PIECE (v16.13): detached pieces
             // never read as one strand however close they park
             if (heart != null) heart.getChildren().add(buildHeartlineMesh(sub));
@@ -987,6 +1038,7 @@ class Viewport3D {
                 } else {
                     combs.getChildren().add(buildCombMesh(sub, i0, 8));
                     combs.getChildren().add(buildCombMesh(sub, i0, 9));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 10));
                 }
             }
         }
@@ -1072,10 +1124,47 @@ class Viewport3D {
      *  offset into the true arrays). */
     MeshView buildRailMesh(List<FVDIntegrator.Sample> samples, int base,
                            double lateral, boolean active) {
+        return buildRailMesh(samples, base, lateral, active, false);
+    }
+
+    /** Adaptive tube tessellation (v18.1, D167 — the user's "tubes
+     *  around tight corners look like connected straight sections"):
+     *  ring samples are picked by TURN ANGLE — a ring lands whenever
+     *  the tangent has swung past the angle budget since the last one
+     *  (with an arc floor so ultra-tight twists can't explode the
+     *  mesh, and an arc cap so straights still get rings). The View
+     *  menu's Mesh Quality % scales the budget: higher = smoother. */
+    private List<Integer> railRings(List<FVDIntegrator.Sample> samples) {
+        // fixed budget (v18.2 — the Mesh Quality slider was removed on
+        // user verdict; the 100% tuning IS the behavior)
+        double angMax = Math.toRadians(2.0);       // turn per ring
+        double arcMax = 1.2;                       // m, straight-track cap
+        double arcMin = 0.06;                      // m, density floor
+        List<Integer> out = new ArrayList<>();
+        out.add(0);
+        FVDIntegrator.Sample last = samples.get(0);
+        for (int i = 1; i < samples.size() - 1; i++) {
+            FVDIntegrator.Sample sm = samples.get(i);
+            double arc = sm.s() - last.s();
+            double dot = Math.max(-1, Math.min(1, sm.T().dot(last.T())));
+            double ang = Math.acos(dot);
+            if ((ang >= angMax && arc >= arcMin) || arc >= arcMax) {
+                out.add(i);
+                last = sm;
+            }
+        }
+        out.add(samples.size() - 1);
+        return out;
+    }
+
+    /** ghost = the stalled-unreachable stretch (v18.0, D163): a flat
+     *  translucent grey tube, whatever the rail-color mode. */
+    MeshView buildRailMesh(List<FVDIntegrator.Sample> samples, int base,
+                           double lateral, boolean active, boolean ghost) {
         TriangleMesh mesh = new TriangleMesh();
         int nRings = 0;
         List<Vec3> ringPos = new ArrayList<>();
-        for (int i = 0; i < samples.size(); i += SAMPLE_STRIDE) {
+        for (int i : railRings(samples)) {
             FVDIntegrator.Sample sm = samples.get(i);
             Vec3 center = sm.pos()
                 .sub(sm.U().scale(app.heartOffset))
@@ -1110,14 +1199,20 @@ class Viewport3D {
             }
         }
         PhongMaterial mat = new PhongMaterial();
-        if (app.railSolid) {
+        if (ghost) {
+            // unreachable track (v18.0, D163): see-through grey
+            mat.setDiffuseColor(Color.rgb(150, 155, 168, 0.18));
+            mat.setSpecularColor(Color.rgb(40, 40, 44));
+        } else if (app.railSolid) {
             mat.setDiffuseColor(active ? app.railColor
                 : app.railColor.deriveColor(0, 0.30, 0.80, 1));
         } else {
             mat.setDiffuseMap(buildGForceGradient(!active));
         }
-        mat.setSpecularColor(active ? Color.rgb(200, 200, 200)
-                                    : Color.rgb(90, 90, 95));
+        if (!ghost) {
+            mat.setSpecularColor(active ? Color.rgb(200, 200, 200)
+                                        : Color.rgb(90, 90, 95));
+        }
         MeshView view = new MeshView(mesh);
         view.setMaterial(mat);
         view.setCullFace(CullFace.NONE);
@@ -1170,11 +1265,198 @@ class Viewport3D {
 
     /** Per-piece tie context (v16.11): the sublist + its global sample
      *  base, kept so the ACTIVE-SECTION highlight can re-tint ties on
-     *  activation changes without recompiling the track. */
+     *  activation changes without recompiling the track. ghost = the
+     *  stalled-unreachable stretch (v18.0, D163 — renders see-through). */
     private record TiePiece(List<FVDIntegrator.Sample> samples, int base,
-                            boolean active, Group group) { }
+                            boolean active, boolean ghost, Group group) { }
     private final List<TiePiece> tiePieces = new ArrayList<>();
     private String tieSig;
+
+    // ---------- STALL RANGES (v18.0, D163) ----------
+    // Per RUN: the first sample where Pass D's true march hit the
+    // 0.1 m/s crawl floor — the train never really passes it, so
+    // everything after (to the run's end) is UNREACHABLE: rails/ties
+    // render transparent and the POV jumps across.
+    private final List<int[]> stallRanges = new ArrayList<>();
+    // speed-control PLATE ranges {global s0, s1, type} (v18.0, D160)
+    private final List<double[]> plateRanges = new ArrayList<>();
+
+    private void computeStallRanges(List<FVDIntegrator.Sample> samples) {
+        stallRanges.clear();
+        if (app.trueV == null) return;
+        // run starts mirror the compiler's rule: a piece not bridged-
+        // in and not a strict-seam follower opens a new run
+        List<Integer> starts = new ArrayList<>();
+        boolean prevEndsBridge = false;
+        int base = 0;
+        List<TrackCompiler.Span> spans = app.sectionSpans;
+        for (int p = 0; p < app.coaster.pieces.size(); p++) {
+            TrackPiece piece = app.coaster.pieces.get(p);
+            int nSec = piece.sections.size();
+            if (nSec == 0 || spans == null || base + nSec > spans.size()) {
+                base += nSec;
+                continue;
+            }
+            boolean bridgedIn = prevEndsBridge;
+            boolean followed = piece.followPrev && p > 0 && !bridgedIn
+                && !app.coaster.pieces.get(p - 1).sections.isEmpty();
+            if (!bridgedIn && !followed) {
+                starts.add(spans.get(base).i0());
+            }
+            prevEndsBridge = piece.sections
+                .get(nSec - 1) instanceof BridgeSection;
+            base += nSec;
+        }
+        starts.add(samples.size());
+        int n = Math.min(samples.size(), app.trueV.length);
+        for (int r = 0; r + 1 < starts.size(); r++) {
+            int i0 = starts.get(r), i1 = Math.min(starts.get(r + 1), n);
+            for (int i = i0; i < i1; i++) {
+                if (app.trueV[i] <= 0.1 + 1e-6) {
+                    stallRanges.add(new int[]{ i, i1 - 1 });
+                    break;
+                }
+            }
+        }
+    }
+
+    /** First stalled sample within [i0, i1], or −1. */
+    private int stallIdxIn(int i0, int i1) {
+        for (int[] r : stallRanges) {
+            if (r[1] < i0 || r[0] > i1) continue;
+            return Math.max(r[0], i0);
+        }
+        return -1;
+    }
+
+    /** POV positions stay on SOLID track (v18.0, D163; re-specced
+     *  v18.2 — his clarification: the stall point behaves like the
+     *  END OF THE TRACK, which WRAPS): riding forward into a stalled
+     *  range jumps to the NEXT piece's start — or, when the stall
+     *  sits in the last run, back to the ride's beginning, exactly
+     *  like riding off the end. Riding backward from beyond lands on
+     *  the last solid sample and continues. */
+    double povClampStall(double t, double dir) {
+        if (stallRanges.isEmpty() || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return t;
+        int idx = (int) FvdDesigner.clamp(t / FvdDesigner.INTEGRATE_DT,
+            0, app.lastSamples.size() - 1);
+        for (int[] r : stallRanges) {
+            if (idx <= r[0] || idx > r[1]) continue;
+            if (dir > 0) {
+                return r[1] + 1 < app.lastSamples.size()
+                    ? app.lastSamples.get(r[1] + 1).t()
+                    : app.lastSamples.get(0).t();   // end-of-track wrap
+            }
+            return app.lastSamples.get(r[0]).t();
+        }
+        return t;
+    }
+
+    /** Resolve each section's speed controls to GLOBAL ARC ranges
+     *  (the plates' geometry; TIME-domain positions map through the
+     *  section's own samples). */
+    private void computePlateRanges(List<FVDIntegrator.Sample> samples,
+                                    List<TrackCompiler.Span> spans) {
+        plateRanges.clear();
+        int flat = 0;
+        for (TrackPiece piece : app.coaster.pieces) {
+            for (Section sec : piece.sections) {
+                int idx = flat++;
+                if (!sec.speedControllable()
+                        || sec.speedControls().isEmpty()
+                        || idx >= spans.size()) continue;
+                TrackCompiler.Span sp = spans.get(idx);
+                boolean nd = sec.domain() == Section.Domain.DISTANCE;
+                for (SpeedControl c : sec.speedControls()) {
+                    double a, b;
+                    if (nd) {
+                        a = sp.s0() + c.x0;
+                        b = sp.s0() + c.x0 + c.len;
+                    } else {
+                        a = arcAtTime(samples, sp, c.x0);
+                        b = arcAtTime(samples, sp, c.x0 + c.len);
+                    }
+                    if (b - a > 0.05) {
+                        plateRanges.add(new double[]{ a, b, c.type });
+                    }
+                }
+            }
+        }
+    }
+
+    /** Global arc at section-local TIME lt (linear between samples). */
+    private static double arcAtTime(List<FVDIntegrator.Sample> samples,
+                                    TrackCompiler.Span sp, double lt) {
+        double t = sp.t0() + lt;
+        int lo = sp.i0(), hi = Math.min(sp.i1(), samples.size() - 1);
+        if (t <= samples.get(lo).t()) return samples.get(lo).s();
+        if (t >= samples.get(hi).t()) return samples.get(hi).s();
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (samples.get(mid).t() <= t) lo = mid; else hi = mid;
+        }
+        double u = (t - samples.get(lo).t())
+            / Math.max(1e-12, samples.get(hi).t() - samples.get(lo).t());
+        return samples.get(lo).s()
+            + u * (samples.get(hi).s() - samples.get(lo).s());
+    }
+
+    /** Flat plates down the middle of the ties over each controlled
+     *  stretch inside this sublist (v18.0, D160): a thin ribbon at
+     *  tie level, green for speed controls, blue for acceleration —
+     *  the friction-wheel/booster read. */
+    private List<MeshView> buildPlateMeshes(List<FVDIntegrator.Sample> sub) {
+        List<MeshView> out = new ArrayList<>();
+        if (sub.size() < 2 || plateRanges.isEmpty()) return out;
+        double sA = sub.get(0).s(), sB = sub.get(sub.size() - 1).s();
+        final double HALF_W = 0.16;   // m, plate half-width along R
+        final double LIFT = 0.045;    // m above the spine (tie tops)
+        for (double[] pr : plateRanges) {
+            double a = Math.max(pr[0], sA), b = Math.min(pr[1], sB);
+            if (b - a < 0.05) continue;
+            TriangleMesh mesh = new TriangleMesh();
+            mesh.getTexCoords().addAll(0, 0);
+            int v = 0, lo = 0;
+            int steps = Math.max(2, (int) Math.ceil((b - a) / 0.6));
+            Vec3 prev = null;
+            for (int k = 0; k <= steps; k++) {
+                double S = a + (b - a) * k / steps;
+                ArcHit h = arcHit(sub, lo, S);
+                lo = h.lo();
+                Vec3 center = h.pos().sub(h.U().scale(app.heartOffset))
+                    .add(h.U().scale(LIFT));
+                if (prev != null && center.sub(prev).length()
+                        > MESH_GAP_BREAK) {
+                    break;   // piece gap safety
+                }
+                prev = center;
+                Vec3 l = center.sub(h.R().scale(HALF_W));
+                Vec3 r = center.add(h.R().scale(HALF_W));
+                mesh.getPoints().addAll(
+                    (float) l.x(), (float) -l.y(), (float) l.z(),
+                    (float) r.x(), (float) -r.y(), (float) r.z());
+                if (k > 0) {
+                    int p0 = v - 2, p1 = v - 1, p2 = v, p3 = v + 1;
+                    mesh.getFaces().addAll(p0, 0, p2, 0, p1, 0);
+                    mesh.getFaces().addAll(p1, 0, p2, 0, p3, 0);
+                }
+                v += 2;
+            }
+            MeshView mv = new MeshView(mesh);
+            Color col = pr[2] == SpeedControl.ACCEL
+                ? Color.rgb(90, 160, 255) : Color.rgb(100, 220, 110);
+            PhongMaterial mat = new PhongMaterial(col);
+            WritableImage glow = new WritableImage(1, 1);
+            glow.getPixelWriter().setColor(0, 0,
+                col.deriveColor(0, 1, 0.55, 1));
+            mat.setSelfIlluminationMap(glow);   // readable in shadow
+            mv.setMaterial(mat);
+            mv.setCullFace(CullFace.NONE);
+            out.add(mv);
+        }
+        return out;
+    }
 
     /** Frame interpolated at an EXACT arc position between bracketing
      *  samples (v16.14): ties and combs used to quantize to the next
@@ -1224,6 +1506,23 @@ class Viewport3D {
         return a.add(b.sub(a).scale(u));
     }
 
+    /** Arc length at ride time t within a sublist (lerped — the time
+     *  comb's density measure, v18.0 D164). */
+    private static double arcAtT(List<FVDIntegrator.Sample> samples,
+                                 double t) {
+        int lo = 0, hi = samples.size() - 1;
+        if (t <= samples.get(0).t()) return samples.get(0).s();
+        if (t >= samples.get(hi).t()) return samples.get(hi).s();
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (samples.get(mid).t() <= t) lo = mid; else hi = mid;
+        }
+        double u = (t - samples.get(lo).t())
+            / Math.max(1e-12, samples.get(hi).t() - samples.get(lo).t());
+        return samples.get(lo).s()
+            + u * (samples.get(hi).s() - samples.get(lo).s());
+    }
+
     /** Rebuild each piece's tie group when the highlighted section
      *  changed (signature-guarded — called on every graph redraw via
      *  refreshTrackMarkers, and once per rebuildTrack). The ACTIVE
@@ -1238,7 +1537,8 @@ class Viewport3D {
         tieSig = sig;
         for (TiePiece tp : tiePieces) {
             tp.group().getChildren().setAll(
-                buildTieMeshes(tp.samples(), tp.active(), tp.base(), hi));
+                buildTieMeshes(tp.samples(), tp.active(), tp.base(), hi,
+                    tp.ghost()));
         }
     }
 
@@ -1249,7 +1549,8 @@ class Viewport3D {
      *  falls in the ACTIVE section's span build into a second, WHITE
      *  mesh (v16.11 — the selected-section cue). */
     private List<MeshView> buildTieMeshes(List<FVDIntegrator.Sample> samples,
-                                          boolean active, int base, int[] hi) {
+                                          boolean active, int base, int[] hi,
+                                          boolean ghost) {
         final double TIE_HALF_W = 0.045;  // along T (track direction)
         final double TIE_HALF_H = 0.03;   // along U
         TriangleMesh mesh = new TriangleMesh();     // normal ties
@@ -1299,10 +1600,11 @@ class Viewport3D {
         List<MeshView> out = new ArrayList<>(2);
         if (v > 0) {
             MeshView mv = new MeshView(mesh);
-            PhongMaterial mat = new PhongMaterial(active
-                ? Color.rgb(70, 74, 84) : Color.rgb(52, 55, 62));
-            mat.setSpecularColor(active
-                ? Color.rgb(90, 90, 90) : Color.rgb(60, 60, 64));
+            PhongMaterial mat = new PhongMaterial(ghost
+                ? Color.rgb(120, 124, 134, 0.15)   // unreachable (v18.0)
+                : active ? Color.rgb(70, 74, 84) : Color.rgb(52, 55, 62));
+            mat.setSpecularColor(ghost ? Color.rgb(30, 30, 32)
+                : active ? Color.rgb(90, 90, 90) : Color.rgb(60, 60, 64));
             mv.setMaterial(mat);
             mv.setCullFace(CullFace.NONE);
             out.add(mv);
@@ -1394,27 +1696,58 @@ class Viewport3D {
             app.settings.combScale(), 10, 500) / 100.0;
         if (samples.size() < 2) return new MeshView(mesh);
         int lo = 0;
-        if (kind >= 8) {
-            // TIME comb (v17.16, D157): one tick per COMB_TIME_STEP of
-            // RIDE TIME — a ruler, constant height up along U, lerped
-            // by t (timeHit) so the s/c sub-sample phase never
-            // quantizes it. kind 8 = off-second ticks, kind 9 = WHOLE
-            // seconds (white). Integer tick indices: accumulating
-            // 0.1 s floats drifts off the whole-second test.
+        if (kind == 9 || kind == 10) {
+            // TIME comb, WHOLE-SECOND ticks (v17.16, D157; recolored
+            // v18.1, D168 — user spec): exactly on every integer
+            // second, 1.5× the filler height, DEEP BLUE — and every
+            // 10th second (10, 20, …) RED (kind 10's mesh)
             double t0 = samples.get(0).t();
             double tEnd = samples.get(samples.size() - 1).t();
-            for (long k = (long) Math.ceil(t0 / COMB_TIME_STEP - 1e-9);
-                    k * COMB_TIME_STEP <= tEnd + 1e-9; k++) {
-                if ((k % 10 == 0) != (kind == 9)) continue;
-                double t = k * COMB_TIME_STEP;
+            for (long k = (long) Math.ceil(t0 - 1e-9);
+                    k <= tEnd + 1e-9; k++) {
+                // every FIFTH second red (v18.2 — was every 10th)
+                boolean red5 = k != 0 && k % 5 == 0;
+                if (red5 != (kind == 10)) continue;
+                double t = k;
                 ArcHit h = timeHit(samples, lo, t);
                 lo = h.lo();
                 Vec3 root = h.pos();
-                Vec3 tip = root.add(h.U().scale(COMB_TIME_LEN * scale));
+                Vec3 tip = root.add(h.U().scale(
+                    COMB_TIME_LEN * 1.5 * scale));
                 combPoints.add(new CombPt(root, tip, t, kind));
                 mesh.getTexCoords().addAll(0.5f, 0.5f);
                 v = addToothBox(mesh, root, tip, h.T(), h.U(), h.U(),
                     v, tc++);
+            }
+        } else if (kind == 8) {
+            // TIME comb FILLERS (v18.0, D164 — user spec): between
+            // consecutive whole seconds, N evenly TIME-spaced ticks
+            // with N picked so the tooth density roughly matches the
+            // other combs' 0.5 m arc spacing (the fixed 0.1 s grid
+            // was sparse at speed and dense in a crawl); the
+            // whole-second ticks above stay exactly where they were.
+            double t0 = samples.get(0).t();
+            double tEnd = samples.get(samples.size() - 1).t();
+            for (long k = (long) Math.floor(t0 + 1e-9);
+                    k < tEnd - 1e-9; k++) {
+                double sa = arcAtT(samples, Math.max(k, t0));
+                double sb = arcAtT(samples, Math.min(k + 1, tEnd));
+                double frac = Math.min(k + 1, tEnd) - Math.max(k, t0);
+                double secArc = frac > 1e-9 ? (sb - sa) / frac : 0;
+                int nFill = (int) FvdDesigner.clamp(
+                    Math.round(secArc / COMB_SPACING) - 1, 0, 99);
+                for (int j = 1; j <= nFill; j++) {
+                    double t = k + (double) j / (nFill + 1);
+                    if (t < t0 - 1e-9 || t > tEnd + 1e-9) continue;
+                    ArcHit h = timeHit(samples, lo, t);
+                    lo = h.lo();
+                    Vec3 root = h.pos();
+                    Vec3 tip = root.add(h.U().scale(COMB_TIME_LEN * scale));
+                    combPoints.add(new CombPt(root, tip, t, kind));
+                    mesh.getTexCoords().addAll(0.5f, 0.5f);
+                    v = addToothBox(mesh, root, tip, h.T(), h.U(), h.U(),
+                        v, tc++);
+                }
             }
         } else {
         double s0 = samples.get(0).s();
@@ -1544,8 +1877,12 @@ class Viewport3D {
                 : FvdDesigner.GEO_LANE_COLORS[2]);
         } else if (kind == 8) {
             mat.setDiffuseColor(Color.rgb(150, 210, 255));
+        } else if (kind == 9) {
+            // whole seconds DEEP BLUE, decades RED (v18.1, D168 —
+            // was white)
+            mat.setDiffuseColor(Color.rgb(35, 70, 220));
         } else {
-            mat.setDiffuseColor(Color.WHITE);
+            mat.setDiffuseColor(Color.rgb(235, 60, 45));
         }
         mat.setSpecularColor(Color.rgb(90, 90, 95));
         mv.setMaterial(mat);

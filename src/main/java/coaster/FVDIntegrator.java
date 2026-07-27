@@ -97,6 +97,11 @@ public class FVDIntegrator {
          *  within-step feed-forward uses the lane's SLOPE. Requires
          *  rollGlobal. */
         public boolean rollAbsolute = false;
+        /** SPEED CONTROLS (Phase 3, v18.0 D160): lift/brake/launch
+         *  intervals keyed by the authoring axis (t here, s in the
+         *  distance path) — step drives + post-step snaps on the loss
+         *  deficit. Null = none = every historic path bitwise. */
+        public SpeedControl.Ctl ctl = null;
     }
 
     /** Signed bank of U vs the level up at T (rad; roll-lane sign),
@@ -174,6 +179,17 @@ public class FVDIntegrator {
                                double v0, double y0, boolean rollGlobal,
                                boolean rollPM, boolean rollAbs,
                                Friction fric) {
+        return deriv(st, t, kfs, v0, y0, rollGlobal, rollPM, rollAbs,
+            fric, Double.NaN);
+    }
+
+    /** drive = a speed control's d(loss)/ds for this step (replaces
+     *  friction — the drive supplies/absorbs whatever the felt-G
+     *  contract needs); NaN = natural. */
+    private static Deriv deriv(State st, double t, List<Keyframe> kfs,
+                               double v0, double y0, boolean rollGlobal,
+                               boolean rollPM, boolean rollAbs,
+                               Friction fric, double drive) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T); // frame convention: T x R = U, R x U = T, U x T = R
@@ -190,9 +206,10 @@ public class FVDIntegrator {
             : rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
 
         // d(loss)/dt = d(loss)/ds · v (the advance rate); exactly 0.0
-        // with zero coefficients — the bitwise-off contract
+        // with zero coefficients — the bitwise-off contract. A DRIVEN
+        // step (speed control, v18.0) replaces friction outright.
         return new Deriv(T.scale(v), omega.cross(T), omega.cross(U),
-            fric.dLossDs(v) * v);
+            (Double.isNaN(drive) ? fric.dLossDs(v) : drive) * v);
     }
 
     /** The Ω roll term (rad/s). LOCAL: the lane verbatim (the
@@ -344,11 +361,15 @@ public class FVDIntegrator {
             if (rem <= dt * 1e-9) break;
             double h = (rem <= dt * 1.5) ? rem : dt;
 
+            // speed control (v18.0): per-step drive decision at the
+            // step-start axis position; NaN = natural
+            double drv = opts.ctl == null ? Double.NaN
+                : opts.ctl.drive(t, v);
             State y = new State(pos, T, U, loss);
-            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
-            Deriv k2 = deriv(advance(y, k1, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
-            Deriv k3 = deriv(advance(y, k2, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
-            Deriv k4 = deriv(advance(y, k3, h), t + h, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
+            Deriv k2 = deriv(advance(y, k1, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
+            Deriv k3 = deriv(advance(y, k2, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
+            Deriv k4 = deriv(advance(y, k3, h), t + h, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
@@ -395,6 +416,16 @@ public class FVDIntegrator {
             s += newPos.sub(pos).length();
             pos = newPos;
 
+            // speed-control snap (v18.0): the step that violates a
+            // constant-speed flag or crosses an accel target lands ON
+            // the target — a pure loss write, keyed on the step-start
+            // axis position like the drive
+            if (opts.ctl != null) {
+                double vA = speedAt(pos, opts.v0, y0, loss);
+                double dl = opts.ctl.snap(t, v, vA, !Double.isNaN(drv));
+                if (dl != 0) loss += dl;
+            }
+
             // recorded speed: energy minus the accumulated friction
             // deficit (v17.0 — with zero coefficients loss is exactly
             // 0.0 and this equals the historic expression bitwise; the
@@ -426,6 +457,14 @@ public class FVDIntegrator {
                                     double v0, double y0, boolean rollGlobal,
                                     boolean rollPM, boolean rollAbs,
                                     Friction fric) {
+        return derivDist(st, kfs, v0, y0, rollGlobal, rollPM, rollAbs,
+            fric, Double.NaN);
+    }
+
+    private static DDeriv derivDist(DState st, List<Keyframe> kfs,
+                                    double v0, double y0, boolean rollGlobal,
+                                    boolean rollPM, boolean rollAbs,
+                                    Friction fric, double drive) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T);
@@ -443,7 +482,7 @@ public class FVDIntegrator {
             : rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
 
         return new DDeriv(T.scale(v), omega.cross(T), omega.cross(U), v,
-            fric.dLossDs(v) * v);
+            (Double.isNaN(drive) ? fric.dLossDs(v) : drive) * v);
     }
 
     private static DState advanceDist(DState y, DDeriv k, double h) {
@@ -459,10 +498,19 @@ public class FVDIntegrator {
                                   double v0, double y0, double h,
                                   boolean rollGlobal, boolean rollPM,
                                   boolean rollAbs, Friction fric) {
-        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric);
-        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric);
-        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric);
-        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric);
+        return rk4Dist(y, kfs, v0, y0, h, rollGlobal, rollPM, rollAbs,
+            fric, Double.NaN);
+    }
+
+    private static DState rk4Dist(DState y, List<Keyframe> kfs,
+                                  double v0, double y0, double h,
+                                  boolean rollGlobal, boolean rollPM,
+                                  boolean rollAbs, Friction fric,
+                                  double drive) {
+        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -513,10 +561,14 @@ public class FVDIntegrator {
             addSampleDist(samples, st, t, keyframes, opts.v0, y0);
             double v = Math.max(0.5, speedAt(st.pos(), opts.v0, y0, st.loss()));
             double sPrev = st.s();
+            // speed control (v18.0): drive decided at the step-start
+            // ARC position; snap keyed on the same position below
+            double drv = opts.ctl == null ? Double.NaN
+                : opts.ctl.drive(sPrev, v);
             double hUsed;
             if (st.s() + v * dt < totalLen - 1e-12) {
                 st = rk4Dist(st, keyframes, opts.v0, y0, dt, rG,
-                    opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+                    opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
                 t += dt;
                 hUsed = dt;
             } else {
@@ -526,7 +578,8 @@ public class FVDIntegrator {
                 DState end = st;
                 for (int it = 0; it < 3; it++) {
                     end = rk4Dist(st, keyframes, opts.v0, y0, h, rG,
-                        opts.rollPerMeter, opts.rollAbsolute, opts.fric);
+                        opts.rollPerMeter, opts.rollAbsolute, opts.fric,
+                        drv);
                     double vEnd = Math.max(0.5,
                         speedAt(end.pos(), opts.v0, y0, end.loss()));
                     h += (totalLen - end.s()) / vEnd;
@@ -535,6 +588,15 @@ public class FVDIntegrator {
                     end.loss());
                 t += h;
                 hUsed = h;
+            }
+            if (opts.ctl != null) {
+                double vA = speedAt(st.pos(), opts.v0, y0, st.loss());
+                double dl = opts.ctl.snap(sPrev, v, vA,
+                    !Double.isNaN(drv));
+                if (dl != 0) {
+                    st = new DState(st.pos(), st.T(), st.U(), st.s(),
+                        st.loss() + dl);
+                }
             }
             if (rG && opts.rollAbsolute) {
                 // ABSOLUTE roll (D118): target = the lane value at

@@ -897,6 +897,7 @@ class GraphEditor extends Region {
     /** The active LaneSection while its INFLUENCE surface is being
      *  edited, else null. */
     private LaneSection activeInfl() {
+        if (surfStrip) return null;   // controls never sit on influence
         List<Section> secs = sections();
         return activeSection < secs.size()
             && secs.get(activeSection) instanceof LaneSection ls
@@ -931,6 +932,9 @@ class GraphEditor extends Region {
 
     /** Is the plot's x-axis DISTANCE (meters)? */
     private boolean axisDist() {
+        if (surfStrip) {   // the strip surface speaks its own section
+            return surfRs.sec().domain() == Section.Domain.DISTANCE;
+        }
         List<Section> secs = sections();
         if (activeSection >= secs.size()) return false;
         Section s = secs.get(activeSection);
@@ -942,6 +946,9 @@ class GraphEditor extends Region {
     /** Is the ACTIVE section natively DISTANCE-parameterized (its node
      *  math — lane x, walls, gaps — runs in meters)? */
     private boolean activeDistNative() {
+        if (surfStrip) {
+            return surfRs.sec().domain() == Section.Domain.DISTANCE;
+        }
         List<Section> secs = sections();
         return activeSection < secs.size()
             && secs.get(activeSection) instanceof LaneSection ls
@@ -1050,6 +1057,11 @@ class GraphEditor extends Region {
      *  without a live warp; linear extrapolation past the map ends so
      *  end-of-section drags keep meaning something out there). */
     private double warpFwd(double x) {
+        // STRIP surface (v18.3): control-local x → the shared plot
+        // axis, so ltToX = tToX(tOff + warpFwd) holds on both surfaces
+        if (surfStrip) {
+            return spAxisOf(surfRs, surfCtl.x0 + x) - tOff;
+        }
         return warpMap == null ? x
             : Coaster.mapCol(warpMap, warpToDist ? 0 : 1,
                 warpToDist ? 1 : 0, x);
@@ -1057,6 +1069,9 @@ class GraphEditor extends Region {
 
     /** Strip-local axis coordinate → native lane x (warpFwd's inverse). */
     private double warpInv(double a) {
+        if (surfStrip) {
+            return spNativeAtAxis(surfRs, a + tOff) - surfCtl.x0;
+        }
         return warpMap == null ? a
             : Coaster.mapCol(warpMap, warpToDist ? 1 : 0,
                 warpToDist ? 0 : 1, a);
@@ -1067,17 +1082,23 @@ class GraphEditor extends Region {
      *  step) on a meters axis. Native == axis when unwarped, so this
      *  is also the native step. */
     private double snapXStep() {
+        if (surfStrip) return spSnapStep(surfRs.sec());
         return axisDist() ? app.settings.snapLen() : snapT();
     }
 
     /** Minimum transition length in the active section's NATIVE x
      *  units (0.01 s of ride ≈ 0.1 m of track at typical speeds). */
     private double minGap() {
+        if (surfStrip) return minGapOf(surfRs.sec());
         return activeDistNative() ? 0.1 : MIN_GAP;
     }
 
     /** Insert clearance in native x units (INSERT_GAP's sibling). */
     private double insertGap() {
+        if (surfStrip) {
+            return surfRs.sec().domain() == Section.Domain.DISTANCE
+                ? 0.2 : INSERT_GAP;
+        }
         return activeDistNative() ? 0.2 : INSERT_GAP;
     }
 
@@ -1138,6 +1159,7 @@ class GraphEditor extends Region {
      *  unless the ACTIVE section views its rate lanes in the other
      *  units. v(x) reads the compiled span (1 before a compile). */
     private double rateViewScale(int lane, double localX) {
+        if (surfStrip) return 1;   // no view warps on the strip
         if (!(sections().get(activeSection) instanceof LaneSection ls)
                 || !ls.viewOtherRate() || !laneIsRate(ls, lane)) {
             return 1;
@@ -1196,12 +1218,19 @@ class GraphEditor extends Region {
     }
 
     private String laneName(int lane) {
+        if (surfStrip) {
+            return surfCtl.type == SpeedControl.ACCEL
+                ? "Acceleration" : "Speed";
+        }
         // the influence surface labels its deltas honestly with Δ
         String base = activeGeo() ? GEO_LANE_NAMES[lane] : LANE_NAMES[lane];
         return activeInfl() != null ? "Δ " + base : base;
     }
 
     private String laneUnit(int lane) {
+        if (surfStrip) {
+            return surfCtl.type == SpeedControl.ACCEL ? " g" : " m/s";
+        }
         if (lane == 2 && activeRollAbs()) return " °";
         if (laneShownPM(lane)) return " °/m";
         return activeGeo() ? " °/s" : LANE_UNITS[lane];
@@ -1211,6 +1240,7 @@ class GraphEditor extends Region {
      *  (v16.7 D119, kept in v16.9 D121 — the axis label, default
      *  scales and readouts follow what the plot SHOWS). */
     private boolean laneShownPM(int lane) {
+        if (surfStrip) return false;
         boolean nat = activeRatePM(lane);
         if (sections().get(activeSection) instanceof LaneSection ls
                 && ls.viewOtherRate() && laneIsRate(ls, lane)) {
@@ -1222,6 +1252,7 @@ class GraphEditor extends Region {
     /** Is this ACTIVE-section lane displayed in the OTHER rate units
      *  (the cross-rate view warp applies to it)? */
     private boolean laneWarped(int lane) {
+        if (surfStrip) return false;
         return sections().get(activeSection) instanceof LaneSection ls
             && ls.viewOtherRate() && laneIsRate(ls, lane);
     }
@@ -1229,8 +1260,21 @@ class GraphEditor extends Region {
     /** Is the ACTIVE section's roll lane an ABSOLUTE bank angle
      *  (v16.7, D118)? */
     private boolean activeRollAbs() {
+        if (surfStrip) return false;
         return sections().get(activeSection) instanceof LaneSection ls
             && ls.rollAbsolute && ls.rollGlobal;
+    }
+
+    /** The active section's roll lane is an ABSOLUTE bank — the
+     *  shell tints the Roll button BANK_COLOR to match (v18.2). */
+    boolean activeAbsRoll() {
+        boolean o = surfStrip;
+        surfStrip = false;
+        try {
+            return activeRollAbs();
+        } finally {
+            surfStrip = o;
+        }
     }
 
     /** Is the cross-rate right-edge axis up? The view is on and the
@@ -1276,6 +1320,10 @@ class GraphEditor extends Region {
     /** The active mode's lane accent color (geo: teal/yellow/orange) —
      *  curves, nodes, buttons, guides and 3D markers all follow it. */
     Color laneColor(int lane) {
+        if (surfStrip) {
+            return surfCtl.type == SpeedControl.ACCEL
+                ? SP_ACCEL_COLOR : SP_SPEED_COLOR;
+        }
         // an ABSOLUTE-bank lane wears the resulting bank's color
         // (v17.9, D146 — user spec: real and resulting bank match)
         if (lane == 2 && activeRollAbs()) return FvdDesigner.BANK_COLOR;
@@ -1384,6 +1432,9 @@ class GraphEditor extends Region {
      *  The INFLUENCE surface's end is the compiled duration: delta
      *  lanes modify the section, they never extend it. */
     private double sectionEnd() {
+        // the strip surface's wall is the CONTROL's extent (v18.1:
+        // graph nodes can never leave the control)
+        if (surfStrip) return surfCtl.len;
         if (activeSc() != null) return sectionDur(activeSection);
         LaneSection infl = activeInfl();
         if (infl != null) {
@@ -1505,7 +1556,7 @@ class GraphEditor extends Region {
             Menu sc = new Menu("Add straight/curve section (10 m straight)");
             MenuItem scC = new MenuItem("Continue speed conflict");
             scC.setOnAction(ev -> addSection(2, false));
-            MenuItem scR = new MenuItem("Transition to real");
+            MenuItem scR = new MenuItem("Set to Real");
             scR.setOnAction(ev -> addSection(2, true));
             sc.getItems().addAll(scC, scR);
             cm.getItems().addAll(lane, sc);
@@ -3427,11 +3478,20 @@ class GraphEditor extends Region {
                     "Make graphs real (keep shape)…");
                 real.setOnAction(ev -> makeGraphsReal(k));
                 MenuItem refr = new MenuItem(
-                    "Re-freeze design speed (keep graphs, reshape)");
+                    "Set Design Speed to Real (keep graphs, reshape)");
                 refr.setOnAction(ev -> refreezeSpeed(k));
                 resolve.getItems().addAll(real, refr);
             }
             cm.getItems().add(resolve);
+        }
+        // SET INITIAL DESIGN SPEED (v18.0, D162 — user spec): type
+        // the section's starting design speed directly; the ride
+        // entry routes to the Start-speed spinner, elsewhere it PINS
+        // (a deliberate conflict the reconcile leaves alone)
+        if (!(sec instanceof BridgeSection)) {
+            MenuItem initV = new MenuItem("Set initial design speed…");
+            initV.setOnAction(ev -> showInitSpeedDialog(k));
+            cm.getItems().add(initV);
         }
         cm.getItems().addAll(new SeparatorMenuItem(), del);
         if (sec instanceof StraightCurveSection s) {
@@ -3474,11 +3534,15 @@ class GraphEditor extends Region {
                 // two-pass runs over arc); GLOBAL-AXIS sections since
                 // v16.5 (D112 — the base converts representations)
                 boolean absRoll = lsec.rollAbsolute && lsec.rollGlobal;
+                // SPEED CONTROLS block entry (v18.0, D160): the
+                // influence two-pass would drop them — silent reshape
+                boolean hasCtls = !lsec.speedControls().isEmpty();
                 MenuItem enter = new MenuItem((geoSec
                     ? "Influence felt force graphs"
                     : "Influence resulting geo graphs")
-                    + (absRoll ? " (roll-rate sections only)" : ""));
-                enter.setDisable(lsec.reversed || absRoll);
+                    + (absRoll ? " (roll-rate sections only)"
+                        : hasCtls ? " (remove speed controls first)" : ""));
+                enter.setDisable(lsec.reversed || absRoll || hasCtls);
                 enter.setOnAction(ev -> enterInfluenceUi(k));
                 cm.getItems().add(enter);
             } else {
@@ -3730,7 +3794,6 @@ class GraphEditor extends Region {
 
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
         dlg.setTitle((inflSurf ? "Influence orientation settings — "
                                : "Orientation settings — ")
             + (geo ? "geo" : "force") + " section " + (k + 1));
@@ -3811,6 +3874,7 @@ class GraphEditor extends Region {
         sync.run();
         dlg.setScene(new Scene(grid));
         dlg.show();
+        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
     }
 
     /** Small gray caption under a dialog button (v16.7). */
@@ -3865,7 +3929,6 @@ class GraphEditor extends Region {
 
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
         dlg.setTitle("Convert — " + modeName(sec) + " section " + (k + 1));
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -4018,6 +4081,16 @@ class GraphEditor extends Region {
             boolean rateM = uMet.isSelected();
             boolean rollAbs = aAbs.isSelected() && rollG;
             boolean strict = strictRef != null && strictRef.isSelected();
+            // a ROLL-ONLY convert (v18.2, user spec): only the roll
+            // axis/behavior changes — lanes 0/1 are preserved node-
+            // exact (Coaster.preserveNonRollLanes) and the preview
+            // opens ON the roll lane, the one that moves
+            if (ls != null && !influenced && toGeo == curGeo
+                    && dom == sec.domain() && rateM == curRateM
+                    && ypG == curYpG
+                    && (rollG != curRollG || rollAbs != curAbs)) {
+                setActiveLane(2);
+            }
             if (sWhole.isSelected()) {
                 convertSection(k, toGeo, dom, rollG, ypG, rateM, rollAbs,
                     strict);
@@ -4029,6 +4102,7 @@ class GraphEditor extends Region {
         cancel.setOnAction(ev -> dlg.close());
         dlg.setScene(new Scene(grid));
         dlg.show();
+        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
     }
 
     /** A small ↺ button running the given row reset (v16.6). */
@@ -4228,7 +4302,6 @@ class GraphEditor extends Region {
 
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
         dlg.setTitle("Add force/geometric section");
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -4323,18 +4396,20 @@ class GraphEditor extends Region {
 
         ToggleGroup cg = new ToggleGroup();
         RadioButton cCont = new RadioButton("Continue speed conflict");
-        RadioButton cReal = new RadioButton("Transition to real");
+        RadioButton cReal = new RadioButton("Set to Real");
         cCont.setToggleGroup(cg);
         cReal.setToggleGroup(cg);
         cCont.setSelected(true);
         wireOriginal(cg, cCont, null);
         if (drifted) {
-            grid.addRow(row++, new Label("Seam"), new HBox(10, cCont, cReal));
+            grid.addRow(row++, new Label("Initial design speed"),
+                new HBox(10, cCont, cReal));
         }
 
         TextField vField = new TextField(
             String.format(Locale.US, "%.2f", vCont));
         vField.setPrefColumnCount(6);
+        vField.setTextFormatter(FvdDesigner.numFormatter());   // v18.1
         vField.setDisable(true);
         ToggleButton vLock = new ToggleButton("🔒");
         vLock.setFocusTraversable(false);
@@ -4390,6 +4465,7 @@ class GraphEditor extends Region {
         cancel.setOnAction(ev -> dlg.close());
         dlg.setScene(new Scene(grid));
         dlg.show();
+        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
     }
 
     /** Append a lane section with the dialog's full option set
@@ -6103,7 +6179,6 @@ class GraphEditor extends Region {
 
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
         dlg.setTitle("Element " + (idx + 1) + " — straight/curve section");
 
         GridPane grid = new GridPane();
@@ -6173,7 +6248,12 @@ class GraphEditor extends Region {
                 "Element 0's entry is the section seam — always sharp"));
         }
         for (javafx.scene.Node c : grid.getChildren()) {
-            if (c instanceof TextField tf) tf.setPrefColumnCount(7);
+            if (c instanceof TextField tf) {
+                tf.setPrefColumnCount(7);
+                // numeric-only entry (v18.1, user spec — every number
+                // box accepts digits, sign and period alone)
+                tf.setTextFormatter(FvdDesigner.signedNumFormatter());
+            }
         }
 
         Runnable sync = () -> {
@@ -6229,6 +6309,7 @@ class GraphEditor extends Region {
 
         dlg.setScene(new Scene(grid));
         dlg.show();
+        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
     }
 
     private static final int LANES = 3;
@@ -6285,6 +6366,10 @@ class GraphEditor extends Region {
     // In a geo section every lane is a rate, so all snap by the roll step.
     private double snapT() { return app.settings.snapT(); }
     private double snapVal(int lane) {
+        if (surfStrip) {   // 1 m/s speed grid, 0.1 g accel grid (v18.1)
+            return surfCtl.type == SpeedControl.ACCEL
+                ? SP_SNAP_A : SP_SNAP_V;
+        }
         // a lane DISPLAYED in °/m takes its own, finer step (v16.10,
         // user spec — the DISPLAYED units govern, so the cross-rate
         // view counts: Ctrl-snap grids live in display units)
@@ -6356,6 +6441,9 @@ class GraphEditor extends Region {
     private long dragTimerLast = 0;
     private final AnimationTimer dragGrowTimer = new AnimationTimer() {
         @Override public void handle(long now) {
+            // strip gestures never grow the plot axes (v18.3): the
+            // strip's scales are its own and its wall is absolute
+            if (surfGesture) return;
             if (dragTimerLast == 0) { dragTimerLast = now; return; }
             double dt = Math.min((now - dragTimerLast) / 1e9, 0.05);
             dragTimerLast = now;
@@ -6449,6 +6537,19 @@ class GraphEditor extends Region {
                 openMenu.hide();
                 openMenu = null;
                 return;
+            }
+            // SPEED CONTROL STRIP presses (v18.0; shared pipeline
+            // v18.3): the strip owns everything inside it
+            if (spPress(e)) return;
+            if (spFocus && e.getY() >= MARGIN_TOP
+                    && e.getY() <= MARGIN_TOP + plotHeight()) {
+                // focus returns to the plot — the shared node
+                // selection belongs to one surface at a time (v18.3)
+                spFocus = false;
+                selIdx = -1;
+                selSet.clear();
+                axisLock = 0;
+                handleViewExpand = false;
             }
             if (e.getButton() == MouseButton.PRIMARY) {
                 // the density preview owns the plot while its popup is
@@ -6548,59 +6649,8 @@ class GraphEditor extends Region {
                     }
                     return;
                 }
-                int hit = hitNode(e.getX(), e.getY());
-                // the node body ALWAYS outranks its own knobs, so a node
-                // overlapping its handles stays grabbable
-                if (selIdx >= 0 && hit != selIdx) {
-                    // an off-screen handle's edge marker: expand the view
-                    // to bring the whole handle in reach
-                    if (hitEdgeMarker(e.getX(), e.getY())) {
-                        handleViewExpand = true;
-                        redraw();
-                        return;
-                    }
-                    int knob = hitKnob(e.getX(), e.getY());
-                    if (knob != 0) {
-                        beginGesture();
-                        dragHandleIdx = selIdx;
-                        dragHandleIsOut = knob > 0;
-                        lastDragX = e.getX();
-                        lastDragY = e.getY();
-                        lastDragSnap = e.isControlDown();
-                        lastDragShift = app.slideKey;
-                        dragTimerLast = 0;
-                        dragGrowTimer.start();
-                        return;
-                    }
-                }
-                if (hit >= 0) {
-                    beginGesture();
-                    gestureStartX = e.getX();
-                    gestureStartY = e.getY();
-                    gestureNodeT = active().get(hit).t;
-                    gestureNodeV = dispVal(activeLane,
-                        active().get(hit).t, active().get(hit).val);
-                    if (e.isShiftDown()) {
-                        selSet.add(hit);               // shift+click adds
-                    } else if (!selSet.contains(hit)) {
-                        selSet.clear();                // plain click on a
-                        selSet.add(hit);               // non-member: single
-                    }
-                    if (hit != selIdx) {   // lock/expand are per selection
-                        axisLock = 0;
-                        handleViewExpand = false;
-                    }
-                    dragNodeIdx = hit;
-                    dragEndLimit = endLimitFor(hit);
-                    selIdx = hit;
-                    lastDragX = e.getX();
-                    lastDragY = e.getY();
-                    lastDragSnap = e.isControlDown();
-                    lastDragShift = app.slideKey;
-                    dragTimerLast = 0;
-                    dragGrowTimer.start();
-                    redraw();
-                } else {
+                if (pressNodesKnobs(e)) return;
+                {
                     // the '+' add-section affordance — tested AFTER the
                     // node/knob hits so an overlapping node stays
                     // grabbable (D57); the button's exposed edge still
@@ -6630,36 +6680,7 @@ class GraphEditor extends Region {
                     // press-insert-drag is one motion; Ctrl held from the
                     // start snaps the drag as usual). The insert's undo
                     // snapshot covers the whole gesture.
-                    double t = curveHitT(e.getX(), e.getY());
-                    if (!Double.isNaN(t) && e.isControlDown()) {
-                        // Ctrl: the insert lands on the snapped spot the
-                        // hover dot showed (time only; value on-curve)
-                        double s = snapInsertT(t);
-                        t = insertRoomAt(s) ? s : Double.NaN;
-                    }
-                    if (!Double.isNaN(t)) {
-                        int ni = insertNodeOnCurve(t);
-                        if (ni >= 0) {
-                            dragNodeIdx = ni;
-                            dragEndLimit = endLimitFor(ni);
-                            gestureStartX = e.getX();
-                            gestureStartY = e.getY();
-                            gestureNodeT = active().get(ni).t;
-                            gestureNodeV = dispVal(activeLane,
-                                active().get(ni).t, active().get(ni).val);
-                            dragWinT0 = viewStart();   // freeze the window,
-                            dragWinT1 = viewEnd();     // like beginGesture
-                            pendingSnapshot = null;    // insert already pushed
-                            gestureMoved = true;
-                            lastDragX = e.getX();
-                            lastDragY = e.getY();
-                            lastDragSnap = e.isControlDown();
-                            lastDragShift = app.slideKey;
-                            dragTimerLast = 0;
-                            dragGrowTimer.start();
-                        }
-                        return;
-                    }
+                    if (pressCurveInsert(e)) return;
                     // smoothing-band EDGES (v17.4, D141): the lowest
                     // interactive rank — after nodes/knobs, '+',
                     // badges, the seam line and the curve insert
@@ -6690,9 +6711,7 @@ class GraphEditor extends Region {
                     } else {
                         // empty plot: begin a box select (deselection
                         // happens on release if the box stays tiny)
-                        boxX0 = e.getX(); boxY0 = e.getY();
-                        boxX1 = boxX0;    boxY1 = boxY0;
-                        boxAdd = e.isShiftDown();
+                        pressBoxStart(e);
                     }
                 }
             } else if (e.getButton() == MouseButton.SECONDARY) {
@@ -6765,6 +6784,14 @@ class GraphEditor extends Region {
         canvas.setOnMouseMoved(e -> {
             hoverSlope = e.isShiftDown();
             ctrlHover = e.isControlDown();
+            // SPEED STRIP hover/cursor (v18.0; shared hover v18.3)
+            if (spMove(e)) return;
+            if (spHoverSurf) {
+                spHoverSurf = false;   // hover left the strip
+                hoverT = Double.NaN;
+                hoverRawT = Double.NaN;
+                hoverNodeIdx = -1;
+            }
             boolean pcLine = pcSec == activeSection && pcSec >= 0
                 && Math.abs(e.getX() - pcLineX()) <= 6
                 && e.getY() >= MARGIN_TOP
@@ -6885,6 +6912,7 @@ class GraphEditor extends Region {
         });
 
         canvas.setOnMouseDragged(e -> {
+            if (spDrag(e)) return;   // divider + diamond drags (v18.0)
             if (pcDragLine && e.isPrimaryButtonDown()) {
                 // the line MAGNETIZES onto nearby ACTIVE-lane nodes on
                 // lane strips (v14.0; 5 px + active lane only, v14.4)
@@ -6951,19 +6979,32 @@ class GraphEditor extends Region {
                 lastDragSnap = e.isControlDown();
                 lastDragShift = app.slideKey;
                 // free by default; S (held) slides in-line, CTRL snaps
-                dragHandleTo(e.getX(), e.getY(), app.slideKey, e.isControlDown());
+                if (surfGesture) {   // strip-surface gesture (v18.3)
+                    withSurf(() -> dragHandleTo(e.getX(), e.getY(),
+                        app.slideKey, e.isControlDown()));
+                } else {
+                    dragHandleTo(e.getX(), e.getY(), app.slideKey,
+                        e.isControlDown());
+                }
             } else if (dragNodeIdx >= 0) {
                 commitGestureSnapshot();
                 lastDragX = e.getX();
                 lastDragY = e.getY();
                 lastDragSnap = e.isControlDown();
                 lastDragShift = app.slideKey;
-                dragNodeTo(e.getX(), e.getY(), e.isControlDown(), app.slideKey);
+                if (surfGesture) {   // strip-surface gesture (v18.3)
+                    withSurf(() -> dragNodeTo(e.getX(), e.getY(),
+                        e.isControlDown(), app.slideKey));
+                } else {
+                    dragNodeTo(e.getX(), e.getY(), e.isControlDown(),
+                        app.slideKey);
+                }
             }
         });
 
         canvas.setOnMouseReleased(e -> {
             dragGrowTimer.stop();
+            if (spRelease(e)) return;   // strip releases (v18.0)
             if (e.getButton() == MouseButton.SECONDARY && rClickElem >= 0
                     && Math.hypot(e.getX() - rPressX, e.getY() - rPressY) <= 3) {
                 int el = rClickElem;
@@ -7000,34 +7041,8 @@ class GraphEditor extends Region {
             }
             rClickSeg = -1;
             if (!Double.isNaN(boxX0)) {
-                double x0 = Math.min(boxX0, boxX1), x1 = Math.max(boxX0, boxX1);
-                double y0 = Math.min(boxY0, boxY1), y1 = Math.max(boxY0, boxY1);
-                if (x1 - x0 < 3 && y1 - y0 < 3) {
-                    // a plain click on empty plot: deselect
-                    if (selIdx >= 0 && !boxAdd) {
-                        selIdx = -1;
-                        selSet.clear();
-                        axisLock = 0;
-                        handleViewExpand = false;
-                    }
-                } else {
-                    if (!boxAdd) selSet.clear();
-                    List<BezierBaker.Node> lane = active();
-                    int first = -1;   // primary = EARLIEST node in the box
-                    for (int i = 0; i < lane.size(); i++) {
-                        double px = ltToX(lane.get(i).t);
-                        double py = valToY(activeLane, dispVal(activeLane,
-                            lane.get(i).t, lane.get(i).val));
-                        if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
-                            selSet.add(i);
-                            if (first < 0) first = i;
-                        }
-                    }
-                    if (first >= 0) selIdx = first;
-                    else if (selSet.isEmpty()) selIdx = -1;
-                    axisLock = 0;
-                }
-                boxX0 = Double.NaN;
+                if (surfGesture) withSurf(this::finishBoxSelect);
+                else finishBoxSelect();
             }
             dragNodeIdx = -1;
             dragHandleIdx = -1;
@@ -7038,11 +7053,13 @@ class GraphEditor extends Region {
             shiftAxis = 0;
             pendingSnapshot = null;
             gestureMoved = false;
+            surfGesture = false;      // the strip's gesture flag (v18.3)
             redraw();                 // view re-fits after the drag
         });
 
         canvas.setOnMouseClicked(e -> {
             if (e.getClickCount() == 2 && e.getButton() == MouseButton.PRIMARY) {
+                if (spDoubleClick(e)) return;   // strip (v18.0/v18.3)
                 StraightCurveSection sc = activeSc();
                 if (sc != null) {
                     double gt = xToT(e.getX());
@@ -7066,9 +7083,16 @@ class GraphEditor extends Region {
         redraw();
     }
 
-    private List<BezierBaker.Node> active() { return app.lanes.get(activeLane); }
+    private List<BezierBaker.Node> active() {
+        // THE editing-surface choke (v18.3, D172): the strip surface
+        // retargets the whole node pipeline at a control's graph
+        return surfStrip ? surfCtl.lane : app.lanes.get(activeLane);
+    }
 
-    void refresh() { redraw(); }
+    void refresh() {
+        spAfterRebuild();   // the options popup follows compiles
+        redraw();
+    }
 
     /** A node or handle drag gesture is in progress (keyboard combos
      *  formed by held drag modifiers are suppressed while true). */
@@ -7085,7 +7109,9 @@ class GraphEditor extends Region {
         for (int i = 0; i < lane.size(); i++) {
             times[i] = nodeGlobalTime(lane.get(i).t);
         }
-        app.refreshTrackMarkers(activeLane, selSet, selIdx, times);
+        app.refreshTrackMarkers(activeLane,
+            spFocus ? java.util.Collections.emptySet() : selSet,
+            spFocus ? -1 : selIdx, times);
     }
 
     /** Spine-level track position of the primary selected node, or
@@ -7180,6 +7206,7 @@ class GraphEditor extends Region {
         hoverSlope = on;
         if (!Double.isNaN(hoverT) || hoverResComp != 0
                 || hoverDerLane >= 0 || hoverNodeIdx >= 0
+                || spHoverKind != 0
                 || dragNodeIdx >= 0) redraw();   // mid-drag twins (v16.16)
     }
 
@@ -7188,6 +7215,7 @@ class GraphEditor extends Region {
         selSet.clear();
         axisLock = 0;
         handleViewExpand = false;
+        spClearSel();   // strip selection + its popup (v18.0)
     }
 
     // ---------- toolbar actions ----------
@@ -7294,6 +7322,2318 @@ class GraphEditor extends Region {
         app.rebuildTrack();
     }
 
+    // ---------- shared press pipeline (v18.3, D172) ----------
+    // Extracted verbatim from the press handler so the SPEED STRIP
+    // surface runs the identical node/knob/insert/box ladder.
+
+    /** The node/knob/edge-marker press ladder. True = consumed (a
+     *  gesture began or the view expanded). */
+    private boolean pressNodesKnobs(javafx.scene.input.MouseEvent e) {
+        int hit = hitNode(e.getX(), e.getY());
+        // the node body ALWAYS outranks its own knobs, so a node
+        // overlapping its handles stays grabbable
+        if (selIdx >= 0 && hit != selIdx) {
+            // an off-screen handle's edge marker: expand the view
+            // to bring the whole handle in reach
+            if (hitEdgeMarker(e.getX(), e.getY())) {
+                handleViewExpand = true;
+                redraw();
+                return true;
+            }
+            int knob = hitKnob(e.getX(), e.getY());
+            if (knob != 0) {
+                beginGesture();
+                dragHandleIdx = selIdx;
+                dragHandleIsOut = knob > 0;
+                lastDragX = e.getX();
+                lastDragY = e.getY();
+                lastDragSnap = e.isControlDown();
+                lastDragShift = app.slideKey;
+                dragTimerLast = 0;
+                dragGrowTimer.start();
+                return true;
+            }
+        }
+        if (hit >= 0) {
+            beginGesture();
+            gestureStartX = e.getX();
+            gestureStartY = e.getY();
+            gestureNodeT = active().get(hit).t;
+            gestureNodeV = dispVal(activeLane,
+                active().get(hit).t, active().get(hit).val);
+            if (e.isShiftDown()) {
+                selSet.add(hit);               // shift+click adds
+            } else if (!selSet.contains(hit)) {
+                selSet.clear();                // plain click on a
+                selSet.add(hit);               // non-member: single
+            }
+            if (hit != selIdx) {   // lock/expand are per selection
+                axisLock = 0;
+                handleViewExpand = false;
+            }
+            dragNodeIdx = hit;
+            dragEndLimit = endLimitFor(hit);
+            selIdx = hit;
+            lastDragX = e.getX();
+            lastDragY = e.getY();
+            lastDragSnap = e.isControlDown();
+            lastDragShift = app.slideKey;
+            dragTimerLast = 0;
+            dragGrowTimer.start();
+            redraw();
+            return true;
+        }
+        return false;
+    }
+
+    /** A click ON the active curve inserts a node there — and keeps
+     *  DRAGGING it in the same gesture (v10.1). True = the press was
+     *  on the curve (whether or not the insert succeeded). */
+    private boolean pressCurveInsert(javafx.scene.input.MouseEvent e) {
+        double t = curveHitT(e.getX(), e.getY());
+        if (!Double.isNaN(t) && e.isControlDown()) {
+            // Ctrl: the insert lands on the snapped spot the
+            // hover dot showed (time only; value on-curve)
+            double s = snapInsertT(t);
+            t = insertRoomAt(s) ? s : Double.NaN;
+        }
+        if (Double.isNaN(t)) return false;
+        int ni = insertNodeOnCurve(t);
+        if (ni >= 0) {
+            dragNodeIdx = ni;
+            dragEndLimit = endLimitFor(ni);
+            gestureStartX = e.getX();
+            gestureStartY = e.getY();
+            gestureNodeT = active().get(ni).t;
+            gestureNodeV = dispVal(activeLane,
+                active().get(ni).t, active().get(ni).val);
+            dragWinT0 = viewStart();   // freeze the window,
+            dragWinT1 = viewEnd();     // like beginGesture
+            pendingSnapshot = null;    // insert already pushed
+            gestureMoved = true;
+            lastDragX = e.getX();
+            lastDragY = e.getY();
+            lastDragSnap = e.isControlDown();
+            lastDragShift = app.slideKey;
+            dragTimerLast = 0;
+            dragGrowTimer.start();
+        }
+        return true;
+    }
+
+    /** Begin a box select on empty surface (deselection happens on
+     *  release if the box stays tiny). */
+    private void pressBoxStart(javafx.scene.input.MouseEvent e) {
+        boxX0 = e.getX(); boxY0 = e.getY();
+        boxX1 = boxX0;    boxY1 = boxY0;
+        boxAdd = e.isShiftDown();
+    }
+
+    /** Box-select completion — shared by the plot and the strip
+     *  surface (v18.3): tiny box = deselect, otherwise select the
+     *  caught nodes with the EARLIEST as primary. */
+    private void finishBoxSelect() {
+        double x0 = Math.min(boxX0, boxX1), x1 = Math.max(boxX0, boxX1);
+        double y0 = Math.min(boxY0, boxY1), y1 = Math.max(boxY0, boxY1);
+        if (x1 - x0 < 3 && y1 - y0 < 3) {
+            // a plain click on empty plot: deselect
+            if (selIdx >= 0 && !boxAdd) {
+                selIdx = -1;
+                selSet.clear();
+                axisLock = 0;
+                handleViewExpand = false;
+            }
+        } else {
+            if (!boxAdd) selSet.clear();
+            List<BezierBaker.Node> lane = active();
+            int first = -1;   // primary = EARLIEST node in the box
+            for (int i = 0; i < lane.size(); i++) {
+                double px = ltToX(lane.get(i).t);
+                double py = valToY(activeLane, dispVal(activeLane,
+                    lane.get(i).t, lane.get(i).val));
+                if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
+                    selSet.add(i);
+                    if (first < 0) first = i;
+                }
+            }
+            if (first >= 0) selIdx = first;
+            else if (selSet.isEmpty()) selIdx = -1;
+            axisLock = 0;
+        }
+        boxX0 = Double.NaN;
+    }
+
+    // =================================================================
+    // SPEED CONTROL STRIP (Phase 3, v18.0 D160; parity rounds v18.1
+    // D165 / v18.2 D170; SHARED-PIPELINE rebuild v18.3 D172): a lane
+    // above the x-axis, toggled by the "+V" box at the graph's bottom
+    // left, sharing the plot's x mapping (domain views included). The
+    // thin strip is the SPEED CONTROL LINE: diamonds partition it,
+    // double/right-clicking a diamond (or the line after one) turns
+    // the following stretch into a SPEED CONTROL and opens its
+    // options popup. The strip's top edge is a draggable height
+    // DIVIDER; tall, it shows the resulting TRUE speed plus complex
+    // control graphs — which edit through the MAIN editor's OWN
+    // pipeline on the strip "surface" (see the surface core below):
+    // the same hit tests, gestures, snapping, guides, readouts,
+    // handles, dialog, ripple and locks, at strip-sized nodes.
+    // Bridges take no controls (the baseline draws dashed there).
+    // =================================================================
+
+    private static final double SP_H_THIN = 26;
+    private static final Color SP_SPEED_COLOR = Color.rgb(100, 220, 110);
+    private static final Color SP_ACCEL_COLOR = Color.rgb(90, 160, 255);
+    private static final Color SP_LINE_COLOR = Color.rgb(115, 125, 140);
+    // Ctrl-snap steps for complex-graph VALUES (x snaps by the axis
+    // step like everything else)
+    private static final double SP_SNAP_V = 1.0;    // m/s
+    private static final double SP_SNAP_A = 0.1;    // g
+
+    // selection: which control/mark is lit (Delete removes it)
+    private int spSelPiece = -1, spSelSec = -1, spSelCtl = -1, spSelMark = -1;
+    // the last press landed in the strip → Delete and the selection
+    // actions target IT, not the plot's node selection
+    private boolean spFocus = false;
+    // diamond/mark drags: 1 = control start (move), 2 = control end
+    // (resize), 3 = mark
+    private int spDragKind = 0;
+    private double spPressX, spPressY;
+    private boolean spPendingAdd = false;   // clean click on empty line
+    private int spRClick = 0;               // right-press target
+    private boolean spDragDivider = false;  // the strip-height divider
+    // hover readout for the resulting TRUE-speed curve (lane hovers
+    // ride the shared overlays)
+    private int spHoverKind = 0;   // 1 = true speed, 2 = longitudinal G
+    private double spHoverX, spHoverY, spHoverVal;
+    private int spHoverIdx = 0;    // sample under a kind-2 hover
+    // click-DRAG on the empty control line creates a control from
+    // press to release (v18.4, D173; spDragKind 4 while live):
+    // the pressed section + the free interval around the press
+    private int spNewPiece = -1, spNewSec = -1;
+    private double spNewX0, spNewX1, spNewLo, spNewHi;
+    // ZERO SITS ON THE CONTROL LINE (v18.2): both value scales are
+    // linear about the line — v·k above it for speed, a·k for accel
+    // (negative accel dips below)
+    private double spVHi = 40, spALo = -1, spAHi = 2;
+    private javafx.stage.Popup spPopup;
+    private Runnable spPopupSync;
+
+    // ---------- the EDITING SURFACE core (v18.3, D172) ----------
+    // The user's verdict on the v18.1/2 parallel mini-editor:
+    // "recycle the EXACT graph-editor code". The whole main pipeline
+    // runs on ONE active lane through a small set of CHOKE-POINT
+    // helpers (active/ltToX/xToLt/valToY/yToVal/dispVal/laneColor/
+    // laneUnit/snaps/gaps/end-wall/node sizes/…). surfStrip retargets
+    // them at a complex speed control's lane inside the strip —
+    // everything else is the SAME code, so behavior matches by
+    // construction. Every guard defaults to the original expression:
+    // the main editor is bitwise-untouched while the surface is off.
+    private boolean surfStrip = false;
+    private SpeedControl surfCtl;
+    private RunSec surfRs;
+    private boolean surfGesture = false;   // the live gesture is the strip's
+    private boolean spHoverSurf = false;   // hoverT belongs to the strip
+
+    private void withSurf(Runnable r) {
+        if (surfStrip) {
+            r.run();
+            return;
+        }
+        surfCtl = spSel();
+        surfRs = spSelRunSec();
+        if (surfCtl == null || surfRs == null) return;
+        surfStrip = true;
+        try {
+            r.run();
+        } finally {
+            surfStrip = false;
+        }
+    }
+
+    /** The strip surface owns the selection (a complex control's
+     *  node is selected there). */
+    private boolean stripHasNodeSel() {
+        return spFocus && selIdx >= 0 && spSel() != null
+            && spSel().complex && spSelRunSec() != null;
+    }
+
+    /** Route a selection action onto the strip surface when it owns
+     *  the selection (v18.3): re-enters the SAME method with
+     *  surfStrip set — one implementation, two surfaces. */
+    private boolean stripRoute(Runnable self) {
+        if (surfStrip || !stripHasNodeSel()) return false;
+        withSurf(self);
+        return true;
+    }
+
+    // edit-region bounds — the plot rect or the strip rect
+    private double editL() { return MARGIN_LEFT; }
+    private double editR() { return canvas.getWidth() - marginRight(); }
+    private double editT() { return surfStrip ? spTop() : MARGIN_TOP; }
+    private double editB() {
+        return surfStrip ? spBottom() : MARGIN_TOP + plotHeight();
+    }
+
+    // node/knob sizes — the strip keeps its smaller look (the user's
+    // one deliberate visual difference)
+    private double nodeR() { return surfStrip ? 3.5 : NODE_RADIUS; }
+    private double nodeHit() { return surfStrip ? 8 : NODE_HIT; }
+    private double knobR() { return surfStrip ? 3.2 : KNOB_RADIUS; }
+    private double knobHit() { return surfStrip ? 8 : KNOB_HIT; }
+
+    // ---------- strip geometry ----------
+
+    private boolean spVisible() { return app.settings.showSpeedStrip(); }
+
+    private double speedStripH() {
+        if (!spVisible()) return 0;
+        return app.settings.speedStripTall()
+            ? FvdDesigner.clamp(app.settings.speedStripSize(), 44, 420)
+            : SP_H_THIN;
+    }
+
+    private double spTop() { return MARGIN_TOP + plotHeight() + 1; }
+
+    private double spBottom() { return spTop() + speedStripH() - 2; }
+
+    /** The speed-control LINE: the tall view's ZERO line (graphs grow
+     *  up from it, negative accel dips below — v18.2, user spec);
+     *  mid-strip when collapsed. */
+    private double spLineY() {
+        if (!app.settings.speedStripTall()) {
+            return (spTop() + spBottom()) / 2;
+        }
+        return spTop() + (spBottom() - spTop()) * 0.72;
+    }
+
+    /** The strip-height DIVIDER band: the strip's top edge (v18.2 —
+     *  drag like the main SplitPane divider; from the thin strip it
+     *  expands, below the threshold it collapses back). */
+    private boolean spDividerHit(double x, double y) {
+        return spVisible() && x >= MARGIN_LEFT
+            && x <= canvas.getWidth() - marginRight()
+            && Math.abs(y - (spTop() - 1)) <= 4;
+    }
+
+    /** The "+V" toggle box (always drawn, bottom-left). */
+    private boolean spBoxHit(double x, double y) {
+        double h = canvas.getHeight();
+        return x >= 4 && x <= 34 && y >= h - 26 && y <= h - 6;
+    }
+
+    /** The expand/collapse arrow at the strip's left gutter. */
+    private boolean spArrowHit(double x, double y) {
+        if (!spVisible()) return false;
+        return x >= MARGIN_LEFT - 18 && x <= MARGIN_LEFT - 2
+            && y >= spLineY() - 9 && y <= spLineY() + 9;
+    }
+
+    private boolean spInStrip(double y) {
+        return spVisible() && y >= spTop() && y <= spBottom();
+    }
+
+    // ---------- x mapping (any run strip) ----------
+
+    /** Section-local native x → pixel, any run strip. */
+    private double spXOf(RunSec rs, double nx) {
+        return tToX(spAxisOf(rs, nx));
+    }
+
+    private double spAxisOf(RunSec rs, double nx) {
+        // never through warpFwd while the SURFACE is the strip —
+        // warpFwd's surface leg calls back here (v18.3)
+        boolean act = rs.piece() == activePiece
+            && rs.section() == activeSection && !surfStrip;
+        if (act) return tOff + warpFwd(nx);
+        boolean nd = rs.sec().domain() == Section.Domain.DISTANCE;
+        if (nd == axisDistPlain()) return rs.t0() + nx;
+        TrackCompiler.Span sp = spanAt(rs.piece(), rs.section());
+        if (sp == null || app.lastSamples == null) return rs.t0() + nx;
+        double[][] map = Coaster.sectionMap(app.lastSamples, sp, false);
+        return rs.t0() + Coaster.mapCol(map, nd ? 1 : 0, nd ? 0 : 1, nx);
+    }
+
+    /** Pixel → section-local native x for a given strip. */
+    private double spNativeAt(RunSec rs, double px) {
+        return spNativeAtAxis(rs, xToTPlain(px));
+    }
+
+    /** AXIS coordinate → section-local native x (warpInv's strip leg
+     *  shares it with the pixel path, v18.3). */
+    private double spNativeAtAxis(RunSec rs, double a) {
+        boolean act = rs.piece() == activePiece
+            && rs.section() == activeSection && !surfStrip;
+        if (act) return warpInv(a - tOff);
+        boolean nd = rs.sec().domain() == Section.Domain.DISTANCE;
+        if (nd == axisDistPlain()) return a - rs.t0();
+        TrackCompiler.Span sp = spanAt(rs.piece(), rs.section());
+        if (sp == null || app.lastSamples == null) return a - rs.t0();
+        double[][] map = Coaster.sectionMap(app.lastSamples, sp, false);
+        return Coaster.mapCol(map, nd ? 0 : 1, nd ? 1 : 0, a - rs.t0());
+    }
+
+    /** The PLOT axis mappings regardless of the editing surface —
+     *  spAxisOf/spNativeAt* always speak the shared x-axis. */
+    private double xToTPlain(double px) {
+        boolean o = surfStrip;
+        surfStrip = false;
+        try {
+            return xToT(px);
+        } finally {
+            surfStrip = o;
+        }
+    }
+
+    private boolean axisDistPlain() {
+        boolean o = surfStrip;
+        surfStrip = false;
+        try {
+            return axisDist();
+        } finally {
+            surfStrip = o;
+        }
+    }
+
+    // ---------- model accessors ----------
+
+    /** The section's native extent (control positions clamp inside). */
+    private double spSecEnd(Section s) {
+        if (s instanceof StraightCurveSection sc) return sc.totalLen();
+        if (s instanceof LaneSection ls) return BezierBaker.rideEnd(ls.lanes);
+        return 0;
+    }
+
+    /** The native Ctrl-snap step for a section's axis. */
+    private double spSnapStep(Section s) {
+        return s.domain() == Section.Domain.DISTANCE
+            ? app.settings.snapLen() : app.settings.snapT();
+    }
+
+    private double minGapOf(Section s) {
+        return s.domain() == Section.Domain.DISTANCE ? 0.1 : MIN_GAP;
+    }
+
+    private RunSec spRunSecAt(double px) {
+        RunSec rs = runSecAt(xToTPlain(px));
+        return rs != null && rs.sec().speedControllable() ? rs : null;
+    }
+
+    private Section spSelSection() {
+        if (spSelPiece < 0 || spSelPiece >= app.coaster.pieces.size()) return null;
+        List<Section> secs = app.coaster.pieces.get(spSelPiece).sections;
+        return spSelSec >= 0 && spSelSec < secs.size()
+            ? secs.get(spSelSec) : null;
+    }
+
+    private SpeedControl spSel() {
+        Section s = spSelSection();
+        if (s == null || spSelCtl < 0
+                || spSelCtl >= s.speedControls().size()) return null;
+        return s.speedControls().get(spSelCtl);
+    }
+
+    private RunSec spSelRunSec() {
+        for (RunSec rs : runLayout()) {
+            if (rs.piece() == spSelPiece && rs.section() == spSelSec) {
+                return rs;
+            }
+        }
+        return null;
+    }
+
+    /** Global-axis intervals covered by COMPLEX SPEED-type controls
+     *  (v18.4, D173; complex-only since v18.5, D174 — user spec): the
+     *  resulting TRUE-speed curve and its hover hide there — the
+     *  control's own GRAPH is the speed. A plain constant control's
+     *  flat segment sits on the line, so the true curve stays. */
+    private List<double[]> spSpeedCtlAxisRanges() {
+        List<double[]> iv = new ArrayList<>();
+        for (RunSec rs : runLayout()) {
+            if (!rs.sec().speedControllable()) continue;
+            for (SpeedControl c : rs.sec().speedControls()) {
+                if (c.type != SpeedControl.SPEED || !c.complex) continue;
+                iv.add(new double[]{ spAxisOf(rs, c.x0),
+                    spAxisOf(rs, c.x0 + c.len) });
+            }
+        }
+        return iv;
+    }
+
+    private static boolean spInRanges(List<double[]> iv, double a) {
+        for (double[] r : iv) {
+            if (a >= r[0] - 1e-9 && a <= r[1] + 1e-9) return true;
+        }
+        return false;
+    }
+
+    // samples skipped at a speed control's ends before reading the
+    // longitudinal force: the boundary snap is an instant Δv whose
+    // difference quotient is meaningless (v18.4, user spec)
+    private static final int SP_LONGG_EDGE = 4;
+
+    /** Is axis coordinate a inside a complex const-SPEED control's
+     *  longitudinal-G span (edges excluded)? The owning control, or
+     *  null. */
+    private SpeedControl spLongGAt(double a) {
+        int i = sampleIdxAtAxis(a);
+        for (RunSec rs : runLayout()) {
+            if (!rs.sec().speedControllable()) continue;
+            for (SpeedControl c : rs.sec().speedControls()) {
+                if (!c.complex || c.type != SpeedControl.SPEED) continue;
+                int iA = sampleIdxAtAxis(spAxisOf(rs, c.x0))
+                    + SP_LONGG_EDGE;
+                int iB = sampleIdxAtAxis(spAxisOf(rs, c.x0 + c.len))
+                    - SP_LONGG_EDGE;
+                if (i >= iA && i <= iB) return c;
+            }
+        }
+        return null;
+    }
+
+    /** Felt LONGITUDINAL G at sample i off the TRUE profile:
+     *  (d(v²/2)/ds + g·T.y)/g — the D160 accel-control quantity. */
+    private double spLongG(int i) {
+        List<FVDIntegrator.Sample> ss = app.lastSamples;
+        int n = Math.min(ss.size(), app.trueV.length);
+        if (i < 1 || i > n - 2) return Double.NaN;
+        double ds = ss.get(i + 1).s() - ss.get(i - 1).s();
+        if (ds < 1e-9) return Double.NaN;
+        double a = (app.trueV[i + 1] * app.trueV[i + 1]
+            - app.trueV[i - 1] * app.trueV[i - 1]) / (2 * ds);
+        return (a + FVDIntegrator.G0 * ss.get(i).T().y())
+            / FVDIntegrator.G0;
+    }
+
+    /** Derived longitudinal-G curve inside a complex const-SPEED
+     *  control (v18.4, D173): what the clamp makes the rider feel
+     *  along the track — accel-control BLUE, dotted like every
+     *  derived curve, edges excluded. */
+    private void spStrokeLongG(GraphicsContext gc, RunSec rs,
+                               SpeedControl c) {
+        if (app.trueV == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()) return;
+        int n = Math.min(app.lastSamples.size(), app.trueV.length);
+        int iA = sampleIdxAtAxis(spAxisOf(rs, c.x0)) + SP_LONGG_EDGE;
+        int iB = sampleIdxAtAxis(spAxisOf(rs, c.x0 + c.len))
+            - SP_LONGG_EDGE;
+        if (iB - iA < 2) return;
+        gc.setStroke(SP_ACCEL_COLOR);
+        gc.setLineWidth(1.2);
+        gc.setLineDashes(3, 4);
+        gc.setGlobalAlpha(0.85);
+        gc.beginPath();
+        boolean started = false;
+        for (int i = Math.max(1, iA); i <= Math.min(n - 2, iB); i++) {
+            double gL = spLongG(i);
+            if (Double.isNaN(gL)) {
+                started = false;
+                continue;
+            }
+            double px = tToX(gAxis(i));
+            double py = spAToY(gL);
+            if (!started) {
+                gc.moveTo(px, py);
+                started = true;
+            } else {
+                gc.lineTo(px, py);
+            }
+        }
+        gc.stroke();
+        gc.setLineDashes((double[]) null);
+        gc.setGlobalAlpha(1);
+    }
+
+    private void spClearSel() {
+        spSelPiece = spSelSec = spSelCtl = spSelMark = -1;
+        spDropNodeSel();
+        spFocus = false;
+        spHideCtlPopup();
+    }
+
+    /** Selecting a control/mark (or clearing) drops any strip NODE
+     *  selection — the shared selIdx belongs to the strip while
+     *  spFocus (v18.3). */
+    private void spDropNodeSel() {
+        if (spFocus) {
+            selIdx = -1;
+            selSet.clear();
+            axisLock = 0;
+            handleViewExpand = false;
+        }
+    }
+
+    /** Stale-state sanitation, called from redraw. */
+    private void spSanitize() {
+        spClampControls();
+        if (spSelPiece < 0) return;
+        Section s = spSelSection();
+        if (s == null
+                || (spSelCtl >= 0 && spSelCtl >= s.speedControls().size())
+                || (spSelMark >= 0 && spSelMark >= s.speedMarks().size())) {
+            spClearSel();
+            return;
+        }
+        SpeedControl c = spSel();
+        int nMax = c == null ? 0 : c.lane.size();
+        if (spFocus) {
+            selSet.removeIf(i -> i >= nMax);
+            if (selIdx >= nMax) selIdx = -1;
+        }
+    }
+
+    /** Controls can NEVER sit past their section (v18.1, user spec —
+     *  a shortened section pulls them back in; independently clamped
+     *  controls may then overlap, stacked at the end, and the hit
+     *  tests' list order picks the FIRST). Lists stay x-sorted so
+     *  "first" is deterministic. A clamp changes the physics —
+     *  rebuild once, deferred out of the draw pass. */
+    private void spClampControls() {
+        boolean changed = false;
+        for (RunSec rs : runLayout()) {
+            Section s = rs.sec();
+            if (!s.speedControllable()) continue;
+            List<SpeedControl> cs = s.speedControls();
+            List<Double> marks = s.speedMarks();
+            if (cs.isEmpty() && marks.isEmpty()) continue;
+            double end = spSecEnd(s);
+            double minLen = Math.min(minGapOf(s) * 2, Math.max(end, 0.01));
+            SpeedControl sel = spSel();
+            for (SpeedControl c : cs) {
+                double nl = FvdDesigner.clamp(c.len, minLen,
+                    Math.max(minLen, end));
+                double nx = FvdDesigner.clamp(c.x0, 0,
+                    Math.max(0, end - nl));
+                if (nl != c.len || nx != c.x0) {
+                    if (c.complex && !c.lane.isEmpty() && c.len > 1e-9
+                            && nl != c.len) {
+                        double f = nl / c.len;
+                        double[] gaps = BezierBaker.segGaps(c.lane);
+                        for (BezierBaker.Node nd : c.lane) nd.t *= f;
+                        BezierBaker.rescaleDvToGaps(c.lane, gaps);
+                    }
+                    c.len = nl;
+                    c.x0 = nx;
+                    changed = true;
+                }
+            }
+            for (int i = 0; i < marks.size(); i++) {
+                double m = FvdDesigner.clamp(marks.get(i), 0, end);
+                if (m != marks.get(i)) {
+                    marks.set(i, m);
+                    changed = true;
+                }
+            }
+            boolean sorted = true;
+            for (int i = 1; i < cs.size(); i++) {
+                if (cs.get(i).x0 < cs.get(i - 1).x0) { sorted = false; break; }
+            }
+            if (!sorted) {
+                cs.sort(java.util.Comparator.comparingDouble(c -> c.x0));
+                if (sel != null && s == spSelSection()) {
+                    spSelCtl = cs.indexOf(sel);   // selection follows
+                }
+                changed = true;
+            }
+        }
+        if (changed) {
+            javafx.application.Platform.runLater(app::rebuildTrack);
+        }
+    }
+
+    // ---------- drawing ----------
+
+    void spDraw(GraphicsContext gc, double w, double h) {
+        // the "+V" toggle box, always visible at the bottom left
+        boolean on = spVisible();
+        gc.setFill(on ? Color.rgb(45, 75, 50) : Color.rgb(38, 42, 53));
+        gc.fillRoundRect(4, h - 26, 30, 20, 5, 5);
+        gc.setStroke(on ? SP_SPEED_COLOR : Color.rgb(110, 118, 134));
+        gc.setLineWidth(1);
+        gc.strokeRoundRect(4, h - 26, 30, 20, 5, 5);
+        gc.setFill(on ? SP_SPEED_COLOR : Color.rgb(160, 168, 182));
+        gc.setFont(Font.font(11));
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setTextBaseline(VPos.CENTER);
+        gc.fillText("+V", 19, h - 16);
+        if (!on) return;
+
+        boolean tall = app.settings.speedStripTall();
+        double top = spTop(), bot = spBottom(), lineY = spLineY();
+        double plotRight = w - marginRight();
+        // strip background
+        gc.setFill(Color.rgb(24, 27, 35));
+        gc.fillRect(MARGIN_LEFT, top, plotRight - MARGIN_LEFT, bot - top);
+        // the height DIVIDER grip on the strip's top edge (v18.2)
+        gc.setStroke(Color.rgb(95, 102, 120));
+        gc.setLineWidth(1);
+        gc.strokeLine(MARGIN_LEFT, top - 1, plotRight, top - 1);
+        gc.setStroke(Color.rgb(150, 158, 175));
+        gc.setLineWidth(3);
+        double gcx = (MARGIN_LEFT + plotRight) / 2;
+        gc.strokeLine(gcx - 12, top - 1, gcx + 12, top - 1);
+        gc.setLineWidth(1);
+        // expand/collapse arrow in the left gutter
+        gc.setFill(Color.rgb(160, 168, 182));
+        gc.setFont(Font.font(10));
+        gc.fillText(tall ? "▼" : "▲", MARGIN_LEFT - 10, lineY);
+
+        spFitScales();
+
+        gc.save();
+        gc.beginPath();
+        gc.rect(MARGIN_LEFT, top, plotRight - MARGIN_LEFT, bot - top);
+        gc.clip();
+
+        List<RunSec> rl = runLayout();
+        // resulting TRUE speed, green dotted, tall view only —
+        // HIDDEN inside SPEED-type controls since v18.4 (D173, user
+        // spec: it just overlapped the control's own line/graph)
+        if (tall && app.trueV != null && app.lastSamples != null
+                && app.trueV.length == app.lastSamples.size()) {
+            double rT0 = runT0(), rT1 = rT0 + runDur();
+            List<double[]> hideIv = spSpeedCtlAxisRanges();
+            gc.setStroke(SP_SPEED_COLOR);
+            gc.setLineWidth(1.2);
+            gc.setLineDashes(3, 4);
+            gc.setGlobalAlpha(0.85);
+            gc.beginPath();
+            boolean started = false;
+            for (int i = 0; i < app.trueV.length; i++) {
+                double a = gAxis(i);
+                if (a < rT0 || a > rT1 || spInRanges(hideIv, a)) {
+                    started = false;
+                    continue;
+                }
+                double px = tToX(a);
+                double py = spVToY(app.trueV[i]);
+                if (!started) { gc.moveTo(px, py); started = true; }
+                else gc.lineTo(px, py);
+            }
+            gc.stroke();
+            gc.setLineDashes((double[]) null);
+            gc.setGlobalAlpha(1);
+        }
+
+        // STRIP VALUE AXIS (v18.3 — the main plot's grid/label
+        // pattern on the selected control's scale; speed scale
+        // otherwise): faded lines + labels, ZERO on the control line
+        if (tall) {
+            SpeedControl axC = spSel() != null && spSel().complex
+                ? spSel() : null;
+            boolean acc = axC != null
+                && axC.type == SpeedControl.ACCEL;
+            double hiV = acc ? spAHi : spVHi;
+            double loV = acc ? Math.min(spALo, 0) : 0;
+            double gStep = niceStep(Math.max(1e-6, hiV - loV)
+                * 30 / Math.max(30, bot - top));
+            gc.setLineWidth(1);
+            gc.setStroke(Color.rgb(42, 47, 60));
+            for (double v2 = Math.ceil(loV / gStep) * gStep;
+                    v2 <= hiV + 1e-9; v2 += gStep) {
+                double gy = acc ? spAToY(v2) : spVToY(v2);
+                if (gy < top + 2 || gy > bot - 2) continue;
+                gc.strokeLine(MARGIN_LEFT, gy, plotRight, gy);
+            }
+            gc.setFill(Color.rgb(118, 124, 140));
+            gc.setFont(Font.font(9));
+            gc.setTextAlign(TextAlignment.RIGHT);
+            gc.setTextBaseline(VPos.CENTER);
+            for (double v2 = Math.ceil(loV / gStep) * gStep;
+                    v2 <= hiV + 1e-9; v2 += gStep) {
+                double gy = acc ? spAToY(v2) : spVToY(v2);
+                if (gy < top + 2 || gy > bot - 2) continue;
+                gc.fillText(fmtVal(v2), MARGIN_LEFT - 4, gy);
+            }
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.TOP);
+        }
+
+        // the speed-control line per strip: solid where controls can
+        // live, dashed where they can't (bridges, influenced, legacy-
+        // reversed)
+        for (RunSec rs : rl) {
+            double x0 = tToX(rs.t0());
+            double x1 = tToX(rs.t0() + rs.dur());
+            boolean can = rs.sec().speedControllable();
+            gc.setStroke(SP_LINE_COLOR);
+            gc.setLineWidth(1.4);
+            if (!can) gc.setLineDashes(2, 5);
+            gc.strokeLine(Math.max(x0, MARGIN_LEFT), lineY,
+                Math.min(x1, plotRight), lineY);
+            gc.setLineDashes((double[]) null);
+            if (!can) continue;
+            Section s = rs.sec();
+            // control segments — brighter and thicker, type-colored
+            List<SpeedControl> ctls = s.speedControls();
+            for (int ci = 0; ci < ctls.size(); ci++) {
+                SpeedControl c = ctls.get(ci);
+                double cx0 = spXOf(rs, c.x0);
+                double cx1 = spXOf(rs, c.x0 + c.len);
+                boolean sel = spSelPiece == rs.piece()
+                    && spSelSec == rs.section() && spSelCtl == ci;
+                Color col = c.type == SpeedControl.ACCEL
+                    ? SP_ACCEL_COLOR : SP_SPEED_COLOR;
+                if (sel) {
+                    gc.setStroke(Color.rgb(255, 255, 255, 0.35));
+                    gc.setLineWidth(7);
+                    gc.strokeLine(cx0, lineY, cx1, lineY);
+                }
+                gc.setStroke(col);
+                gc.setLineWidth(3.2);
+                gc.strokeLine(cx0, lineY, cx1, lineY);
+                // complex graph in the tall view
+                if (tall && c.complex && !c.lane.isEmpty()) {
+                    spStrokeCtlLane(gc, rs, c, sel);
+                }
+                // derived LONGITUDINAL G inside a complex const-
+                // speed control (v18.4, D173) — blue dotted
+                if (tall && c.complex && c.type == SpeedControl.SPEED) {
+                    spStrokeLongG(gc, rs, c);
+                }
+                // end diamonds
+                spDiamond(gc, cx0, lineY, col, sel);
+                spDiamond(gc, cx1, lineY, col, sel);
+            }
+            // plain marks
+            List<Double> marks = s.speedMarks();
+            for (int mi = 0; mi < marks.size(); mi++) {
+                boolean sel = spSelPiece == rs.piece()
+                    && spSelSec == rs.section() && spSelMark == mi;
+                spDiamond(gc, spXOf(rs, marks.get(mi)), lineY,
+                    Color.rgb(185, 192, 205), sel);
+            }
+        }
+
+        // drag-to-CREATE preview (v18.4, D173): the pending control
+        // as a translucent segment + end diamonds + length readout
+        if (spDragKind == 4) {
+            RunSec nrs = spNewRunSec();
+            if (nrs != null) {
+                double nx0 = spXOf(nrs, Math.min(spNewX0, spNewX1));
+                double nx1 = spXOf(nrs, Math.max(spNewX0, spNewX1));
+                gc.setGlobalAlpha(0.6);
+                gc.setStroke(SP_SPEED_COLOR);
+                gc.setLineWidth(3.2);
+                gc.strokeLine(nx0, lineY, nx1, lineY);
+                gc.setGlobalAlpha(1);
+                spDiamond(gc, nx0, lineY, SP_SPEED_COLOR, false);
+                spDiamond(gc, nx1, lineY, SP_SPEED_COLOR, false);
+                gc.setFill(Color.WHITE);
+                gc.setFont(Font.font(10));
+                gc.setTextAlign(TextAlignment.LEFT);
+                gc.setTextBaseline(VPos.BOTTOM);
+                gc.fillText(String.format("length %.2f %s",
+                    Math.abs(spNewX1 - spNewX0),
+                    nrs.sec().domain() == Section.Domain.DISTANCE
+                        ? "m" : "s"),
+                    nx0 + 4, lineY - 8);
+            }
+        }
+
+        // the SHARED EDITING OVERLAYS on the selected complex control
+        // (v18.3, D172): the main plot's nodes, rings, readouts,
+        // insert dot, axis-lock guides, handles and box band —
+        // IDENTICAL code on the strip surface, strip-sized nodes
+        SpeedControl ovC = spSel();
+        if (tall && ovC != null && ovC.complex
+                && spSelRunSec() != null) {
+            withSurf(() -> drawEditOverlays(gc, w));
+        }
+
+        // derived-curve hover readouts (each curve's own color — the
+        // derived-curve rule; lane hovers ride the shared overlays):
+        // kind 1 = resulting TRUE speed, kind 2 = longitudinal G
+        // inside a complex const-speed control (v18.4)
+        if (spHoverKind != 0) {
+            Color hc = spHoverKind == 2 ? SP_ACCEL_COLOR
+                                        : SP_SPEED_COLOR;
+            gc.setGlobalAlpha(0.55);
+            gc.setFill(hc);
+            gc.fillOval(spHoverX - 4, spHoverY - 4, 8, 8);
+            gc.setGlobalAlpha(0.9);
+            gc.setFont(Font.font(10));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.BOTTOM);
+            String txt;
+            if (spHoverKind == 2) {
+                // composed at DRAW time so a Shift press mid-hover
+                // flips value↔slope without a mouse move (the main
+                // plot's shiftHover contract)
+                if (hoverSlope) {
+                    int n2 = Math.min(app.lastSamples.size(),
+                        app.trueV.length);
+                    int i0 = Math.max(1, spHoverIdx - 2);
+                    int i1 = Math.min(n2 - 2, spHoverIdx + 2);
+                    double span = gAxis(i1) - gAxis(i0);
+                    double sl = span < 1e-9 ? 0
+                        : (spLongG(i1) - spLongG(i0)) / span;
+                    txt = String.format("long G %.2f g/%s", sl, xUnit());
+                } else {
+                    txt = String.format("long G = %.2f g", spHoverVal);
+                }
+            } else {
+                txt = String.format("v = %.2f m/s", spHoverVal);
+            }
+            double tx = FvdDesigner.clamp(spHoverX + 8,
+                MARGIN_LEFT + 2, plotRight - 70);
+            gc.fillText(txt, tx, spHoverY - 5);
+            gc.setGlobalAlpha(1);
+        }
+        gc.restore();
+    }
+
+    private void spDiamond(GraphicsContext gc, double x, double y,
+                           Color col, boolean sel) {
+        double r = sel ? 6 : 4.5;
+        gc.setFill(col);
+        gc.fillPolygon(new double[]{ x, x + r, x, x - r },
+                       new double[]{ y - r, y, y + r, y }, 4);
+        gc.setStroke(sel ? Color.WHITE : Color.rgb(20, 22, 28));
+        gc.setLineWidth(sel ? 1.5 : 1);
+        gc.strokePolygon(new double[]{ x, x + r, x, x - r },
+                         new double[]{ y - r, y, y + r, y }, 4);
+    }
+
+    /** Fit the tall view's speed + accel scales (frozen mid-gesture).
+     *  Both scales are LINEAR ABOUT ZERO = the control line (v18.2);
+     *  the shared handleViewExpand (the off-screen-handle click)
+     *  additionally reaches the selected node's handle positions. */
+    private void spFitScales() {
+        if (surfGesture || spDragKind != 0
+                || (spFocus && (dragNodeIdx >= 0 || dragHandleIdx >= 0))) {
+            return;
+        }
+        double vHi = 10, aLo = -0.5, aHi = 1;
+        if (app.trueV != null && app.lastSamples != null) {
+            double rT0 = runT0(), rT1 = rT0 + runDur();
+            for (int i = 0; i < app.trueV.length; i++) {
+                double a = gAxis(i);
+                if (a < rT0 || a > rT1) continue;
+                vHi = Math.max(vHi, app.trueV[i]);
+            }
+        }
+        for (RunSec rs : runLayout()) {
+            for (SpeedControl c : rs.sec().speedControls()) {
+                if (c.type == SpeedControl.SPEED) {
+                    vHi = Math.max(vHi, c.speed);
+                    if (c.complex) {
+                        for (BezierBaker.Node n : c.lane) {
+                            vHi = Math.max(vHi, n.val);
+                        }
+                    }
+                } else {
+                    aHi = Math.max(aHi, c.accel);
+                    if (c.complex) {
+                        for (BezierBaker.Node n : c.lane) {
+                            aHi = Math.max(aHi, n.val);
+                            aLo = Math.min(aLo, n.val);
+                        }
+                    }
+                }
+                // the derived longitudinal-G curve joins the accel
+                // fit (v18.5, D174 — user spec: it must always stay
+                // in view vertically)
+                if (c.complex && c.type == SpeedControl.SPEED
+                        && app.trueV != null && app.lastSamples != null
+                        && !app.lastSamples.isEmpty()) {
+                    int n2 = Math.min(app.lastSamples.size(),
+                        app.trueV.length);
+                    int iA = sampleIdxAtAxis(spAxisOf(rs, c.x0))
+                        + SP_LONGG_EDGE;
+                    int iB = sampleIdxAtAxis(spAxisOf(rs, c.x0 + c.len))
+                        - SP_LONGG_EDGE;
+                    for (int i = Math.max(1, iA);
+                            i <= Math.min(n2 - 2, iB); i++) {
+                        double gL = spLongG(i);
+                        if (Double.isNaN(gL)) continue;
+                        aHi = Math.max(aHi, gL);
+                        aLo = Math.min(aLo, gL);
+                    }
+                }
+            }
+        }
+        // the expand click: bring the selected node's handles in view
+        SpeedControl sc = spSel();
+        if (handleViewExpand && spFocus && sc != null && sc.complex
+                && selIdx >= 0 && selIdx < sc.lane.size()) {
+            BezierBaker.Node n = sc.lane.get(selIdx);
+            if (sc.type == SpeedControl.SPEED) {
+                vHi = Math.max(vHi, Math.max(n.val + n.outDv,
+                    n.val + n.inDv));
+            } else {
+                aHi = Math.max(aHi, Math.max(n.val + n.outDv,
+                    n.val + n.inDv));
+                aLo = Math.min(aLo, Math.min(n.val + n.outDv,
+                    n.val + n.inDv));
+            }
+        }
+        spVHi = vHi * 1.12;
+        spALo = Math.min(aLo - 0.2, -0.2);
+        spAHi = aHi + 0.3;
+    }
+
+    private double spVToY(double v) {
+        double top = spTop() + 4;
+        double k = (spLineY() - top) / Math.max(1e-9, spVHi);
+        return spLineY() - v * k;
+    }
+
+    private double spYToV(double y) {
+        double top = spTop() + 4;
+        double k = (spLineY() - top) / Math.max(1e-9, spVHi);
+        return (spLineY() - y) / Math.max(1e-9, k);
+    }
+
+    /** Accel g → y: linear about zero = the line; the units-per-px
+     *  slope also fits the below-line dip room. */
+    private double spAK() {
+        double top = spTop() + 4, bot = spBottom() - 4;
+        double up = (spLineY() - top) / Math.max(1e-9, spAHi);
+        double dn = spALo < -1e-9
+            ? (bot - spLineY()) / (-spALo) : Double.MAX_VALUE;
+        return Math.min(up, dn);
+    }
+
+    private double spAToY(double v) {
+        return spLineY() - v * spAK();
+    }
+
+    private double spYToA(double y) {
+        return (spLineY() - y) / Math.max(1e-9, spAK());
+    }
+
+    private double spValToY(SpeedControl c, double v) {
+        return c.type == SpeedControl.ACCEL ? spAToY(v) : spVToY(v);
+    }
+
+    private double spYToVal(SpeedControl c, double y) {
+        return c.type == SpeedControl.ACCEL ? spYToA(y) : spYToV(y);
+    }
+
+    /** Stroke a complex control's graph — curve + the zero-line fill
+     *  shadow only (v18.3: nodes/rings/handles draw through the
+     *  SHARED overlays — one editor, two surfaces; the strip keeps
+     *  its smaller line by design). */
+    private void spStrokeCtlLane(GraphicsContext gc, RunSec rs,
+                                 SpeedControl c, boolean sel) {
+        Color col = c.type == SpeedControl.ACCEL
+            ? SP_ACCEL_COLOR : SP_SPEED_COLOR;
+        List<double[]> poly = BezierBaker.polyline(c.lane);
+        List<double[]> pts = new ArrayList<>(poly.size() + 2);
+        double lx0 = c.lane.get(0).t;
+        double lx1 = c.lane.get(c.lane.size() - 1).t;
+        if (lx0 > 1e-9) {
+            pts.add(new double[]{ spXOf(rs, c.x0),
+                spValToY(c, c.lane.get(0).val), 0 });
+        }
+        for (double[] p : poly) {
+            pts.add(new double[]{ spXOf(rs, c.x0 + p[0]),
+                spValToY(c, p[1]), p[0] });
+        }
+        boolean tail = lx1 < c.len - 1e-9;
+        if (tail) {
+            pts.add(new double[]{ spXOf(rs, c.x0 + c.len),
+                spValToY(c, c.lane.get(c.lane.size() - 1).val), c.len });
+        }
+        double zy = spValToY(c, 0);
+        gc.setFill(col.deriveColor(0, 1, 1, 0.13));
+        gc.beginPath();
+        gc.moveTo(pts.get(0)[0], zy);
+        for (double[] p : pts) gc.lineTo(p[0], p[1]);
+        gc.lineTo(pts.get(pts.size() - 1)[0], zy);
+        gc.closePath();
+        gc.fill();
+        gc.setStroke(col);
+        gc.setLineWidth(sel ? 2 : 1.4);
+        int strokeEnd = pts.size() - (tail ? 1 : 0);
+        gc.beginPath();
+        gc.moveTo(pts.get(0)[0], pts.get(0)[1]);
+        for (int i = 1; i < strokeEnd; i++) {
+            // locked segments drop the curve stroke (v18.4, D173):
+            // they wear the MINI twin lines below, the main plot's
+            // "pinned" look at strip size
+            if (spSegLocked(c.lane,
+                    (pts.get(i - 1)[2] + pts.get(i)[2]) / 2)) {
+                gc.moveTo(pts.get(i)[0], pts.get(i)[1]);
+            } else {
+                gc.lineTo(pts.get(i)[0], pts.get(i)[1]);
+            }
+        }
+        gc.stroke();
+        if (tail) {
+            // hold-to-end continuation DOTTED like the lane strips
+            // (v18.5, D174): the graph past its last node holds the
+            // final value to the control's end
+            gc.setLineDashes(3, 7);
+            gc.beginPath();
+            gc.moveTo(pts.get(strokeEnd - 1)[0], pts.get(strokeEnd - 1)[1]);
+            gc.lineTo(pts.get(strokeEnd)[0], pts.get(strokeEnd)[1]);
+            gc.stroke();
+            gc.setLineDashes((double[]) null);
+        }
+        // mini Shift+F / Shift+H visuals (v18.4): twin skinny lines
+        // along the chord normal; LEVEL locks tint the band between
+        gc.setLineWidth(0.8);
+        for (int i = 0; i < c.lane.size() - 1; i++) {
+            BezierBaker.Node a = c.lane.get(i);
+            if (!a.lockedOut()) continue;
+            BezierBaker.Node b = c.lane.get(i + 1);
+            double ax = spXOf(rs, c.x0 + a.t), ay = spValToY(c, a.val);
+            double bx = spXOf(rs, c.x0 + b.t), by = spValToY(c, b.val);
+            double dx = bx - ax, dy = by - ay;
+            double len2 = Math.hypot(dx, dy);
+            if (len2 < 1e-6) continue;
+            double ox = -dy / len2 * 1.1, oy = dx / len2 * 1.1;
+            if (a.levelOut) {   // level segments are horizontal
+                gc.setFill(col.deriveColor(0, 1, 1, 0.35));
+                gc.fillRect(Math.min(ax, bx), ay - Math.abs(oy),
+                            Math.abs(bx - ax), Math.abs(oy) * 2);
+            }
+            gc.strokeLine(ax + ox, ay + oy, bx + ox, by + oy);
+            gc.strokeLine(ax - ox, ay - oy, bx - ox, by - oy);
+        }
+        gc.setLineWidth(1);
+    }
+
+    /** Does lane-local x sit inside a LOCKED segment (Shift+F/H)? */
+    private static boolean spSegLocked(List<BezierBaker.Node> lane,
+                                       double x) {
+        for (int i = 0; i < lane.size() - 1; i++) {
+            if (lane.get(i).lockedOut()
+                    && x >= lane.get(i).t - 1e-9
+                    && x <= lane.get(i + 1).t + 1e-9) return true;
+        }
+        return false;
+    }
+
+    // ---------- hit tests ----------
+
+    /** {rs-index-in-runLayout, ctlIdx, which} where which: 1 = start
+     *  diamond, 2 = end diamond, 3 = mark (ctlIdx = mark index);
+     *  null = none. */
+    private int[] spFindDiamond(double x, double y) {
+        if (Math.abs(y - spLineY()) > 8) return null;
+        List<RunSec> rl = runLayout();
+        for (int r = 0; r < rl.size(); r++) {
+            RunSec rs = rl.get(r);
+            if (!rs.sec().speedControllable()) continue;
+            List<SpeedControl> ctls = rs.sec().speedControls();
+            for (int ci = 0; ci < ctls.size(); ci++) {
+                SpeedControl c = ctls.get(ci);
+                if (Math.abs(x - spXOf(rs, c.x0 + c.len)) <= 7) {
+                    return new int[]{ r, ci, 2 };
+                }
+                if (Math.abs(x - spXOf(rs, c.x0)) <= 7) {
+                    return new int[]{ r, ci, 1 };
+                }
+            }
+            List<Double> marks = rs.sec().speedMarks();
+            for (int mi = 0; mi < marks.size(); mi++) {
+                if (Math.abs(x - spXOf(rs, marks.get(mi))) <= 7) {
+                    return new int[]{ r, mi, 3 };
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Control whose SEGMENT the point sits on: {rs-index, ctlIdx}. */
+    private int[] spFindSegment(double x, double y) {
+        if (Math.abs(y - spLineY()) > 6) return null;
+        List<RunSec> rl = runLayout();
+        for (int r = 0; r < rl.size(); r++) {
+            RunSec rs = rl.get(r);
+            if (!rs.sec().speedControllable()) continue;
+            List<SpeedControl> ctls = rs.sec().speedControls();
+            for (int ci = 0; ci < ctls.size(); ci++) {
+                SpeedControl c = ctls.get(ci);
+                double x0 = spXOf(rs, c.x0), x1 = spXOf(rs, c.x0 + c.len);
+                if (x >= x0 + 4 && x <= x1 - 4) return new int[]{ r, ci };
+            }
+        }
+        return null;
+    }
+
+    /** Any complex curve (unselected controls included): {rs, ctl}. */
+    private int[] spHitComplexCurve(double x, double y) {
+        List<RunSec> rl = runLayout();
+        for (int r = 0; r < rl.size(); r++) {
+            RunSec rs = rl.get(r);
+            if (!rs.sec().speedControllable()) continue;
+            List<SpeedControl> ctls = rs.sec().speedControls();
+            for (int ci = 0; ci < ctls.size(); ci++) {
+                SpeedControl c = ctls.get(ci);
+                if (!c.complex || c.lane.isEmpty()) continue;
+                double lx = spNativeAt(rs, x) - c.x0;
+                if (lx < 0 || lx > c.len) continue;
+                double cv = BezierBaker.exactAt(c.lane, lx);
+                if (Math.abs(y - spValToY(c, cv)) <= 6) {
+                    return new int[]{ r, ci };
+                }
+            }
+        }
+        return null;
+    }
+
+    // ---------- interactions ----------
+
+    /** PRIMARY/SECONDARY press in the strip region; true = consumed. */
+    private boolean spPress(javafx.scene.input.MouseEvent e) {
+        double x = e.getX(), y = e.getY();
+        if (e.getButton() == MouseButton.PRIMARY && spBoxHit(x, y)) {
+            app.settings.setShowSpeedStrip(!spVisible());
+            if (!spVisible()) spClearSel();
+            redraw();
+            return true;
+        }
+        if (!spVisible()) return false;
+        // the height DIVIDER outranks everything on the edge (v18.2)
+        if (e.getButton() == MouseButton.PRIMARY && spDividerHit(x, y)) {
+            spDragDivider = true;
+            spHoverKind = 0;
+            return true;
+        }
+        if (e.getButton() == MouseButton.PRIMARY && spArrowHit(x, y)) {
+            app.settings.setSpeedStripTall(!app.settings.speedStripTall());
+            redraw();
+            return true;
+        }
+        if (!spInStrip(y)) return false;
+        // an open density preview / partial-convert mode owns the doc
+        if (pvBefore != null || pcSec >= 0) return true;
+        if (!spFocus) {
+            // focus arrives from the plot: the shared node selection
+            // belongs to ONE surface at a time (v18.3)
+            selIdx = -1;
+            selSet.clear();
+            axisLock = 0;
+            handleViewExpand = false;
+        }
+        spPressX = x;
+        spPressY = y;
+        spPendingAdd = false;
+        spRClick = 0;
+        spHoverKind = 0;     // no stale dot under a gesture (v18.2)
+        if (e.getButton() == MouseButton.SECONDARY) {
+            // clean release opens create/options (right-drag still pans)
+            spRClick = 1;
+            rPressX = x;
+            rPressY = y;
+            return false;   // let the pan setup run
+        }
+        if (e.getButton() != MouseButton.PRIMARY) return true;
+        // the SHARED editor pipeline owns the selected control's
+        // graph (v18.3, D172): nodes/knobs/edge-markers take the main
+        // plot's press rank — the same code, on the strip surface
+        if (app.settings.speedStripTall() && spSel() != null
+                && spSel().complex && spSelRunSec() != null) {
+            boolean[] used = { false };
+            withSurf(() -> used[0] = pressNodesKnobs(e));
+            if (used[0]) {
+                spFocus = true;
+                surfGesture = true;
+                return true;
+            }
+        }
+        int[] dia = spFindDiamond(x, y);
+        if (dia != null) {
+            RunSec rs = runLayout().get(dia[0]);
+            spSelPiece = rs.piece();
+            spSelSec = rs.section();
+            if (dia[2] == 3) {
+                spSelMark = dia[1];
+                spSelCtl = -1;
+            } else {
+                spSelCtl = dia[1];
+                spSelMark = -1;
+            }
+            spDropNodeSel();
+            spFocus = true;
+            beginGesture();
+            spDragKind = dia[2];
+            redraw();
+            return true;
+        }
+        int[] seg = spFindSegment(x, y);
+        if (seg != null) {
+            RunSec rs = runLayout().get(seg[0]);
+            spSelPiece = rs.piece();
+            spSelSec = rs.section();
+            spSelCtl = seg[1];
+            spSelMark = -1;
+            spDropNodeSel();
+            spFocus = true;
+            redraw();
+            return true;
+        }
+        // clicking another complex control's CURVE selects it
+        if (app.settings.speedStripTall()) {
+            int[] hitC = spHitComplexCurve(x, y);
+            if (hitC != null) {
+                RunSec rs = runLayout().get(hitC[0]);
+                if (rs.piece() != spSelPiece || rs.section() != spSelSec
+                        || hitC[1] != spSelCtl) {
+                    spSelPiece = rs.piece();
+                    spSelSec = rs.section();
+                    spSelCtl = hitC[1];
+                    spSelMark = -1;
+                    spDropNodeSel();
+                    spFocus = true;
+                    redraw();
+                    return true;
+                }
+            }
+        }
+        // empty line: a clean click adds a diamond on release; a
+        // DRAG creates a control press→release (v18.4, D173)
+        RunSec addRs = Math.abs(y - spLineY()) <= 8 ? spRunSecAt(x) : null;
+        if (addRs != null) {
+            spPendingAdd = true;
+            spNewPiece = -1;
+            double nx0 = spNativeAt(addRs, x);
+            double end = spSecEnd(addRs.sec());
+            if (nx0 > 1e-6 && nx0 < end - 1e-6) {
+                boolean free = true;
+                double lo = 0, hi = end;
+                for (SpeedControl c : addRs.sec().speedControls()) {
+                    if (nx0 >= c.x0 - 1e-9 && nx0 <= c.x0 + c.len + 1e-9) {
+                        free = false;
+                        break;
+                    }
+                    if (c.x0 + c.len <= nx0) lo = Math.max(lo, c.x0 + c.len);
+                    if (c.x0 >= nx0) hi = Math.min(hi, c.x0);
+                }
+                if (free) {   // remember the free interval for the drag
+                    spNewPiece = addRs.piece();
+                    spNewSec = addRs.section();
+                    spNewX0 = nx0;
+                    spNewX1 = nx0;
+                    spNewLo = lo;
+                    spNewHi = hi;
+                }
+            }
+            return true;
+        }
+        // curve INSERT + box select through the shared pipeline
+        // (v18.3): the insert keeps dragging in-gesture, exactly like
+        // clicking the main plot's curve; empty tall space starts the
+        // box band
+        SpeedControl bc = spSel();
+        if (app.settings.speedStripTall() && bc != null && bc.complex
+                && spSelRunSec() != null) {
+            withSurf(() -> {
+                if (!pressCurveInsert(e)) pressBoxStart(e);
+            });
+            spFocus = true;
+            surfGesture = true;
+            return true;
+        }
+        spClearSel();
+        redraw();
+        return true;
+    }
+
+    /** Strip drags; true = consumed. (Node/handle/box drags of the
+     *  complex graphs run through the MAIN drag handler on the strip
+     *  surface since v18.3.) */
+    private boolean spDrag(javafx.scene.input.MouseEvent e) {
+        if (spDragDivider) {
+            // the strip's top edge follows the cursor (v18.2): below
+            // the threshold the strip collapses to the thin line;
+            // dragging the thin strip's edge up expands it
+            double newH = canvas.getHeight() - MARGIN_BOTTOM - e.getY();
+            if (newH < 40) {
+                if (app.settings.speedStripTall()) {
+                    app.settings.setSpeedStripTall(false);
+                }
+            } else {
+                if (!app.settings.speedStripTall()) {
+                    app.settings.setSpeedStripTall(true);
+                }
+                app.settings.setSpeedStripSize(
+                    FvdDesigner.clamp(newH, 44, 420));
+            }
+            redraw();
+            return true;
+        }
+        // drag-to-CREATE (v18.4, D173): a pending empty-line click
+        // that moves past the deadband becomes a new-control drag
+        if (spPendingAdd && spNewPiece >= 0
+                && Math.hypot(e.getX() - spPressX, e.getY() - spPressY) > 3) {
+            spPendingAdd = false;
+            beginGesture();
+            spDragKind = 4;
+        }
+        if (spDragKind == 4) {
+            RunSec rs = spNewRunSec();
+            if (rs != null) {
+                double nx = spNativeAt(rs, e.getX());
+                if (e.isControlDown()) {
+                    double st = spSnapStep(rs.sec());
+                    nx = Math.round(nx / st) * st;
+                }
+                spNewX1 = FvdDesigner.clamp(nx, spNewLo, spNewHi);
+                redraw();
+            }
+            return true;
+        }
+        if (spDragKind != 0) {
+            if (Math.hypot(e.getX() - spPressX, e.getY() - spPressY) <= 3
+                    && !gestureMoved) {
+                return true;   // click deadband — selection only
+            }
+            commitGestureSnapshot();
+            spDragDiamondTo(e.getX(), e.isControlDown());
+            return true;
+        }
+        return false;
+    }
+
+    private RunSec spNewRunSec() {
+        for (RunSec rs : runLayout()) {
+            if (rs.piece() == spNewPiece && rs.section() == spNewSec) {
+                return rs;
+            }
+        }
+        return null;
+    }
+
+    private void spDragDiamondTo(double x, boolean snap) {
+        Section s = spSelSection();
+        RunSec rs = spSelRunSec();
+        if (s == null || rs == null) return;
+        double nx = spNativeAt(rs, x);
+        if (snap) {
+            double st = spSnapStep(s);
+            nx = Math.round(nx / st) * st;
+        }
+        double end = spSecEnd(s);
+        List<SpeedControl> ctls = s.speedControls();
+        if (spDragKind == 3 && spSelMark >= 0
+                && spSelMark < s.speedMarks().size()) {
+            double old = s.speedMarks().get(spSelMark);
+            double nv = FvdDesigner.clamp(nx, 0, end);
+            s.speedMarks().set(spSelMark, nv);
+            if (app.rippleT && nv != old) {
+                spRipple(s, old + 1e-9, nv - old, end);
+            }
+            redraw();
+            return;
+        }
+        SpeedControl c = spSel();
+        if (c == null) return;
+        if (spDragKind == 1) {
+            // MOVE the control (length kept); clamp against neighbors
+            double lo = 0, hi = end - c.len;
+            for (SpeedControl o : ctls) {
+                if (o == c) continue;
+                if (o.x0 + o.len <= c.x0 + 1e-9) {
+                    lo = Math.max(lo, o.x0 + o.len);
+                }
+                if (o.x0 >= c.x0 + c.len - 1e-9 && !app.rippleT) {
+                    hi = Math.min(hi, o.x0 - c.len);
+                }
+            }
+            double x0new = FvdDesigner.clamp(nx, lo, Math.max(lo, hi));
+            double dx = x0new - c.x0;
+            if (app.rippleT && dx != 0) {
+                dx = spRippleLimit(s, c, dx, end);
+                x0new = c.x0 + dx;
+            }
+            c.x0 = x0new;
+            if (app.rippleT && dx != 0) spRipple(s, c.x0 - dx + 1e-12, dx, end);
+        } else if (spDragKind == 2) {
+            // RESIZE: the end diamond sets the length
+            double minLen = minGapOf(s) * 2;
+            double hi = end - c.x0;
+            for (SpeedControl o : ctls) {
+                if (o == c) continue;
+                if (o.x0 >= c.x0 + c.len - 1e-9 && !app.rippleT) {
+                    hi = Math.min(hi, o.x0 - c.x0);
+                }
+            }
+            double lenNew = FvdDesigner.clamp(nx - c.x0, minLen, hi);
+            double dx = lenNew - c.len;
+            if (app.rippleT && dx != 0) {
+                dx = spRippleLimit(s, c, dx, end);
+                lenNew = c.len + dx;
+            }
+            double oldEnd = c.x0 + c.len;
+            c.len = lenNew;
+            if (c.complex && !c.lane.isEmpty() && c.len > 1e-9) {
+                // the graph stretches with the control (fractions of
+                // the extent — the handle-fraction philosophy)
+                double f = c.len / Math.max(1e-9, oldEnd - c.x0);
+                double[] gaps = BezierBaker.segGaps(c.lane);
+                for (BezierBaker.Node nd : c.lane) nd.t *= f;
+                BezierBaker.rescaleDvToGaps(c.lane, gaps);
+            }
+            if (app.rippleT && dx != 0) spRipple(s, oldEnd, dx, end);
+        }
+        app.rebuildTrack();
+        redraw();
+    }
+
+    /** Ripple headroom: the largest |dx| every later control/mark can
+     *  absorb without leaving the section. */
+    private double spRippleLimit(Section s, SpeedControl moved,
+                                 double dx, double end) {
+        if (dx <= 0) return dx;
+        double room = Double.MAX_VALUE;
+        for (SpeedControl o : s.speedControls()) {
+            if (o == moved || o.x0 < moved.x0) continue;
+            room = Math.min(room, end - (o.x0 + o.len));
+        }
+        for (double m : s.speedMarks()) {
+            if (m >= moved.x0) room = Math.min(room, end - m);
+        }
+        return Math.min(dx, Math.max(0, room));
+    }
+
+    /** Shift every control/mark at or beyond `from` by dx (the
+     *  horizontal ripple applied to the speed line). */
+    private void spRipple(Section s, double from, double dx, double end) {
+        for (SpeedControl o : s.speedControls()) {
+            if (o != spSel() && o.x0 >= from - 1e-9) {
+                o.x0 = FvdDesigner.clamp(o.x0 + dx, 0, end - o.len);
+            }
+        }
+        List<Double> marks = s.speedMarks();
+        for (int i = 0; i < marks.size(); i++) {
+            if (i == spSelMark && spDragKind == 3) continue;
+            if (marks.get(i) >= from - 1e-9) {
+                marks.set(i, FvdDesigner.clamp(marks.get(i) + dx, 0, end));
+            }
+        }
+    }
+
+    /** Release in/for the strip; true = consumed. (Node/handle/box
+     *  releases run through the MAIN release handler since v18.3.) */
+    private boolean spRelease(javafx.scene.input.MouseEvent e) {
+        if (spDragDivider) {
+            spDragDivider = false;
+            return true;
+        }
+        // drag-to-CREATE lands (v18.4, D173): the dragged stretch
+        // becomes a SPEED control (min length enforced, marks the
+        // range swallowed are consumed), selected — options via the
+        // usual double/right-click
+        if (spDragKind == 4) {
+            spDragKind = 0;
+            RunSec nrs = spNewRunSec();
+            if (nrs != null && Math.abs(spNewX1 - spNewX0) > 1e-9) {
+                Section s = nrs.sec();
+                double minLen = minGapOf(s) * 2;
+                double lo = Math.min(spNewX0, spNewX1);
+                double hi = Math.max(spNewX0, spNewX1);
+                if (hi - lo < minLen) {   // grow into the free room
+                    hi = Math.min(spNewHi, lo + minLen);
+                    lo = Math.max(spNewLo, hi - minLen);
+                }
+                if (hi - lo >= minLen - 1e-9) {
+                    commitGestureSnapshot();
+                    SpeedControl c = new SpeedControl(lo, hi - lo);
+                    c.speed = Math.max(0.5,
+                        Math.round(spDesignSpeedAt(nrs, lo)));
+                    s.speedControls().add(c);
+                    final double mLo = lo, mHi = hi;
+                    s.speedMarks().removeIf(
+                        m -> m >= mLo - 1e-9 && m <= mHi + 1e-9);
+                    spSelPiece = nrs.piece();
+                    spSelSec = nrs.section();
+                    spSelCtl = s.speedControls().indexOf(c);
+                    spSelMark = -1;
+                    spDropNodeSel();
+                    spFocus = true;
+                    app.rebuildTrack();
+                }
+            }
+            spNewPiece = -1;
+            spPendingAdd = false;
+            pendingSnapshot = null;
+            gestureMoved = false;
+            redraw();
+            return true;
+        }
+        boolean was = spDragKind != 0;
+        spDragKind = 0;
+        // clean RIGHT-click: create control / open options (the pan
+        // deadband rule)
+        if (spRClick != 0 && e.getButton() == MouseButton.SECONDARY
+                && Math.hypot(e.getX() - spPressX, e.getY() - spPressY) <= 3) {
+            spRClick = 0;
+            spPromoteOrOptions(e.getX(), e.getY(), e.getScreenX(),
+                e.getScreenY());
+            return true;
+        }
+        spRClick = 0;
+        if (spPendingAdd && e.getButton() == MouseButton.PRIMARY
+                && Math.hypot(e.getX() - spPressX, e.getY() - spPressY) <= 3) {
+            spPendingAdd = false;
+            spNewPiece = -1;
+            RunSec rs = spRunSecAt(e.getX());
+            if (rs != null) {
+                double nx = spNativeAt(rs, e.getX());
+                double end = spSecEnd(rs.sec());
+                if (nx > 1e-6 && nx < end - 1e-6) {
+                    // not inside an existing control
+                    boolean free = true;
+                    for (SpeedControl c : rs.sec().speedControls()) {
+                        if (nx > c.x0 - 1e-9 && nx < c.x0 + c.len + 1e-9) {
+                            free = false;
+                            break;
+                        }
+                    }
+                    if (free) {
+                        pushUndoSnapshot();
+                        rs.sec().speedMarks().add(nx);
+                        spSelPiece = rs.piece();
+                        spSelSec = rs.section();
+                        spSelMark = rs.sec().speedMarks().size() - 1;
+                        spSelCtl = -1;
+                        spDropNodeSel();
+                        spFocus = true;
+                        redraw();
+                    }
+                }
+            }
+            return true;
+        }
+        spPendingAdd = false;
+        spNewPiece = -1;
+        if (was) {
+            pendingSnapshot = null;
+            gestureMoved = false;
+            redraw();
+            return true;
+        }
+        return false;
+    }
+
+    /** Double-click in the strip: node dialog on a graph node (the
+     *  shared editor's typed dialog, v18.3), else promote/options;
+     *  true = consumed. */
+    private boolean spDoubleClick(javafx.scene.input.MouseEvent e) {
+        if (!spVisible() || !spInStrip(e.getY())) return false;
+        SpeedControl dc = spSel();
+        if (app.settings.speedStripTall() && dc != null && dc.complex
+                && spSelRunSec() != null) {
+            int[] hit = { -1 };
+            withSurf(() -> hit[0] = hitNode(e.getX(), e.getY()));
+            if (hit[0] >= 0) {
+                final int hn = hit[0];
+                spFocus = true;
+                selIdx = hn;
+                selSet.clear();
+                selSet.add(hn);
+                withSurf(() -> showNodeEditor(hn));
+                return true;
+            }
+        }
+        spPromoteOrOptions(e.getX(), e.getY(), e.getScreenX(),
+            e.getScreenY());
+        return true;
+    }
+
+    /** The promote/options entry (double-click or clean right-click on
+     *  a diamond, a control, or the line): an existing control opens
+     *  its Speed Control options; a plain stretch after a diamond
+     *  becomes a NEW control first. */
+    private void spPromoteOrOptions(double x, double y, double sx,
+                                    double sy) {
+        int[] seg = spFindSegment(x, y);
+        int[] dia = spFindDiamond(x, y);
+        List<RunSec> rl = runLayout();
+        if (seg != null || (dia != null && dia[2] != 3)) {
+            int r = seg != null ? seg[0] : dia[0];
+            int ci = seg != null ? seg[1] : dia[1];
+            RunSec rs = rl.get(r);
+            spSelPiece = rs.piece();
+            spSelSec = rs.section();
+            spSelCtl = ci;
+            spSelMark = -1;
+            spDropNodeSel();
+            spFocus = true;
+            redraw();
+            spShowCtlPopup(sx, sy);
+            return;
+        }
+        RunSec rs = dia != null ? rl.get(dia[0]) : spRunSecAt(x);
+        if (rs == null) {
+            if (runSecAt(xToTPlain(x)) != null) {
+                app.statsLabel.setText("Speed controls aren't available "
+                    + "on this section (bridge / influenced / legacy-"
+                    + "reversed).");
+            }
+            return;
+        }
+        double nx = dia != null && dia[2] == 3
+            ? rs.sec().speedMarks().get(dia[1]) + 1e-6
+            : spNativeAt(rs, x);
+        spCreateControlAt(rs, nx, sx, sy);
+    }
+
+    /** Turn the plain stretch containing native x into a control:
+     *  boundaries = the nearest marks/control edges (section ends
+     *  included), the consumed marks become the control's own
+     *  diamonds. Opens the options popup. */
+    private void spCreateControlAt(RunSec rs, double nx, double sx,
+                                   double sy) {
+        Section s = rs.sec();
+        double end = spSecEnd(s);
+        if (end < 0.05) return;
+        double lo = 0, hi = end;
+        for (SpeedControl c : s.speedControls()) {
+            if (nx >= c.x0 - 1e-9 && nx <= c.x0 + c.len + 1e-9) {
+                // inside an existing control: open it instead
+                spSelPiece = rs.piece();
+                spSelSec = rs.section();
+                spSelCtl = s.speedControls().indexOf(c);
+                spSelMark = -1;
+                spDropNodeSel();
+                spFocus = true;
+                redraw();
+                spShowCtlPopup(sx, sy);
+                return;
+            }
+            if (c.x0 + c.len <= nx) lo = Math.max(lo, c.x0 + c.len);
+            if (c.x0 >= nx) hi = Math.min(hi, c.x0);
+        }
+        Integer loMark = null, hiMark = null;
+        List<Double> marks = s.speedMarks();
+        for (int i = 0; i < marks.size(); i++) {
+            double m = marks.get(i);
+            if (m <= nx && m > lo) { lo = m; loMark = i; }
+            if (m > nx && m < hi) { hi = m; hiMark = i; }
+        }
+        if (hi - lo < minGapOf(s) * 2) return;
+        pushUndoSnapshot();
+        SpeedControl c = new SpeedControl(lo, hi - lo);
+        // target defaults to the design speed arriving at the control
+        c.speed = Math.max(0.5, Math.round(spDesignSpeedAt(rs, lo)));
+        s.speedControls().add(c);
+        // the boundary marks become the control's own diamonds
+        if (hiMark != null && loMark != null) {
+            marks.remove(Math.max(loMark, hiMark));
+            marks.remove(Math.min(loMark, hiMark));
+        } else if (hiMark != null) {
+            marks.remove((int) hiMark);
+        } else if (loMark != null) {
+            marks.remove((int) loMark);
+        }
+        spSelPiece = rs.piece();
+        spSelSec = rs.section();
+        spSelCtl = s.speedControls().size() - 1;
+        spSelMark = -1;
+        spDropNodeSel();
+        spFocus = true;
+        app.rebuildTrack();
+        redraw();
+        spShowCtlPopup(sx, sy);
+    }
+
+    /** Design speed at a section-local native x (compiled samples). */
+    private double spDesignSpeedAt(RunSec rs, double nx) {
+        TrackCompiler.Span sp = spanAt(rs.piece(), rs.section());
+        if (sp == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()) {
+            return rs.sec().vDesign();
+        }
+        boolean nd = rs.sec().domain() == Section.Domain.DISTANCE;
+        int i = Math.max(0, Math.min(app.lastSamples.size() - 1,
+            sampleIdxAtCoord(nd ? sp.s0() + nx : sp.t0() + nx, nd)));
+        return app.lastSamples.get(i).v();
+    }
+
+    /** Sample index nearest a GLOBAL t or s coordinate. */
+    private int sampleIdxAtCoord(double v, boolean dist) {
+        List<FVDIntegrator.Sample> ss = app.lastSamples;
+        int lo = 0, hi = ss.size() - 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            double c = dist ? ss.get(mid).s() : ss.get(mid).t();
+            if (c <= v) lo = mid; else hi = mid;
+        }
+        double a = dist ? ss.get(lo).s() : ss.get(lo).t();
+        double b = dist ? ss.get(hi).s() : ss.get(hi).t();
+        return v - a <= b - v ? lo : hi;
+    }
+
+    /** Design + true END speeds of the selected control (the options
+     *  popup's reference readout). */
+    private double[] spEndSpeeds(RunSec rs, SpeedControl c) {
+        TrackCompiler.Span sp = spanAt(rs.piece(), rs.section());
+        if (sp == null || app.lastSamples == null || app.trueV == null) {
+            return new double[]{ Double.NaN, Double.NaN };
+        }
+        boolean nd = rs.sec().domain() == Section.Domain.DISTANCE;
+        double gx = (nd ? sp.s0() : sp.t0()) + c.x0 + c.len;
+        int i = Math.max(0, Math.min(
+            Math.min(app.lastSamples.size(), app.trueV.length) - 1,
+            sampleIdxAtCoord(gx, nd)));
+        return new double[]{ app.lastSamples.get(i).v(), app.trueV[i] };
+    }
+
+    /** Strip hover: divider cursor, the SHARED lane-hover pipeline on
+     *  the selected control's graph, and the resulting TRUE-speed
+     *  readout; true = the cursor/hover was handled here. */
+    private boolean spMove(javafx.scene.input.MouseEvent e) {
+        // the strip-height divider cursor (v18.2)
+        if (spDragDivider || spDividerHit(e.getX(), e.getY())) {
+            canvas.setCursor(Cursor.V_RESIZE);
+            return true;
+        }
+        int hk = 0;
+        double hx = 0, hy = 0, hv = 0;
+        if (spVisible() && (spInStrip(e.getY())
+                || spBoxHit(e.getX(), e.getY())
+                || spArrowHit(e.getX(), e.getY()))) {
+            boolean overDia = spFindDiamond(e.getX(), e.getY()) != null;
+            canvas.setCursor(overDia ? Cursor.H_RESIZE
+                : spFindSegment(e.getX(), e.getY()) != null
+                    || spBoxHit(e.getX(), e.getY())
+                    || spArrowHit(e.getX(), e.getY())
+                    ? Cursor.HAND : Cursor.DEFAULT);
+            if (app.settings.speedStripTall() && spInStrip(e.getY())) {
+                // the SHARED hover pipeline on the selected control's
+                // graph (v18.3): insert dot, Ctrl snap, node pre-light
+                // and Shift-slope all come from the main plot's own
+                // code via the overlays
+                SpeedControl hcv = spSel();
+                if (hcv != null && hcv.complex && spSelRunSec() != null) {
+                    boolean[] did = { false };
+                    withSurf(() -> {
+                        int hn2 = hitNode(e.getX(), e.getY());
+                        double t = hn2 < 0 && (selIdx < 0 || !spFocus
+                                || hitKnob(e.getX(), e.getY()) == 0)
+                            ? curveHitT(e.getX(), e.getY()) : Double.NaN;
+                        hoverRawT = t;
+                        t = snappedHover(t);
+                        hoverT = t;
+                        hoverNodeIdx = hn2;
+                        did[0] = hn2 >= 0 || !Double.isNaN(t);
+                    });
+                    if (did[0]) {
+                        if (!spHoverSurf) spHoverSurf = true;
+                        spHoverKind = 0;
+                        redraw();
+                        return true;
+                    }
+                    if (spHoverSurf) {
+                        spHoverSurf = false;
+                        hoverT = Double.NaN;
+                        hoverRawT = Double.NaN;
+                        hoverNodeIdx = -1;
+                        redraw();
+                    }
+                }
+                if (app.trueV != null && app.lastSamples != null
+                        && !app.lastSamples.isEmpty()) {
+                    double a = xToTPlain(e.getX());
+                    int gi = sampleIdxAtAxis(a);
+                    // longitudinal-G hover inside complex const-
+                    // speed controls (v18.4) — the blue dotted curve
+                    if (spLongGAt(a) != null) {
+                        double gL = spLongG(gi);
+                        if (!Double.isNaN(gL)) {
+                            double py = spAToY(gL);
+                            if (Math.abs(e.getY() - py) <= 8) {
+                                hk = 2;
+                                hx = e.getX();
+                                hy = py;
+                                hv = gL;
+                                spHoverIdx = gi;
+                            }
+                        }
+                    }
+                    // TRUE-speed hover — hidden inside SPEED-type
+                    // controls like the curve itself (v18.4)
+                    if (hk == 0 && a >= runT0()
+                            && a <= runT0() + runDur()
+                            && !spInRanges(spSpeedCtlAxisRanges(), a)
+                            && gi >= 0 && gi < app.trueV.length) {
+                        double py = spVToY(app.trueV[gi]);
+                        if (Math.abs(e.getY() - py) <= 8) {
+                            hk = 1;
+                            hx = e.getX();
+                            hy = py;
+                            hv = app.trueV[gi];
+                        }
+                    }
+                }
+            }
+        } else if (!spInStrip(e.getY())) {
+            if (spHoverKind != 0) {
+                spHoverKind = 0;
+                redraw();
+            }
+            return false;
+        }
+        if (hk != spHoverKind || Math.abs(hx - spHoverX) > 0.5
+                || Math.abs(hv - spHoverVal) > 1e-9) {
+            spHoverKind = hk;
+            spHoverX = hx;
+            spHoverY = hy;
+            spHoverVal = hv;
+            redraw();
+        }
+        return spInStrip(e.getY());
+    }
+
+    /** Delete with the strip focused (v18.3): graph nodes route
+     *  through the SHARED lane deletion (the main rules — node 0
+     *  stays, last node shortens the graph); otherwise the selected
+     *  CONTROL or MARK deletes. True = handled. */
+    boolean spDeleteSelected() {
+        Section s = spSelSection();
+        if (s == null) return false;
+        SpeedControl c = spSel();
+        if (c != null && selIdx < 0) {
+            pushUndoSnapshot();
+            s.speedControls().remove(spSelCtl);
+            spClearSel();
+            app.rebuildTrack();
+            redraw();
+            return true;
+        }
+        if (c == null && spSelMark >= 0
+                && spSelMark < s.speedMarks().size()) {
+            pushUndoSnapshot();
+            s.speedMarks().remove(spSelMark);
+            spClearSel();
+            redraw();
+            return true;
+        }
+        return false;
+    }
+
+    /** Match a complex const-speed graph's end node to the TRUE
+     *  speed just OUTSIDE the control — value and slope in the
+     *  section's native axis units. */
+    private boolean spMatchRealEnd(SpeedControl c, RunSec rs,
+                                   boolean start) {
+        TrackCompiler.Span sp = spanAt(rs.piece(), rs.section());
+        if (sp == null || app.trueV == null || app.lastSamples == null
+                || app.lastSamples.size() < 8) return false;
+        boolean nd = rs.sec().domain() == Section.Domain.DISTANCE;
+        double gx = (nd ? sp.s0() : sp.t0()) + c.x0 + (start ? 0 : c.len);
+        int at = sampleIdxAtCoord(gx, nd);
+        int n = Math.min(app.lastSamples.size(), app.trueV.length);
+        // read ~3 samples OUTSIDE the control (the inside is the
+        // clamp's own doing)
+        int a = start ? Math.max(0, at - 5) : Math.min(n - 1, at + 2);
+        int b = start ? Math.max(0, at - 2) : Math.min(n - 1, at + 5);
+        if (b <= a) return false;
+        double ca = nd ? app.lastSamples.get(a).s()
+                       : app.lastSamples.get(a).t();
+        double cb = nd ? app.lastSamples.get(b).s()
+                       : app.lastSamples.get(b).t();
+        if (cb - ca < 1e-9) return false;
+        double vT = app.trueV[start ? b : a];   // nearest the boundary,
+                                                // outside
+        double slope = (app.trueV[b] - app.trueV[a]) / (cb - ca);
+        pushUndoSnapshot();
+        BezierBaker.Node node = c.lane.get(start ? 0
+            : c.lane.size() - 1);
+        node.val = FvdDesigner.clamp(vT, 0.5, 200);
+        node.smooth = true;
+        if (start && c.lane.size() > 1) {
+            node.outDv = slope
+                * BezierBaker.effOutDt(node, c.lane.get(1));
+        } else if (!start && c.lane.size() > 1) {
+            node.inDv = slope * BezierBaker.effInDt(
+                c.lane.get(c.lane.size() - 2), node);
+        }
+        app.rebuildTrack();
+        redraw();
+        return true;
+    }
+
+    // ---------- the Speed Control options popup ----------
+
+    private void spHideCtlPopup() {
+        if (spPopup != null) {
+            spPopup.hide();
+            spPopup = null;
+            spPopupSync = null;
+        }
+    }
+
+    void spShowCtlPopup(double sx, double sy) {
+        spHideCtlPopup();
+        SpeedControl c = spSel();
+        RunSec rs = spSelRunSec();
+        if (c == null || rs == null) return;
+        javafx.stage.Popup pop = new javafx.stage.Popup();
+        pop.setAutoHide(false);   // Apply-free live panel; ✕ closes
+        spPopup = pop;
+        VBox box = new VBox(7);
+        box.setPadding(new javafx.geometry.Insets(10, 14, 10, 12));
+        box.setStyle("-fx-background-color: rgb(38,42,53);"
+            + " -fx-background-radius: 6;"
+            + " -fx-border-color: rgb(95,102,120);"
+            + " -fx-border-radius: 6;");
+
+        boolean[] syncing = { false };
+        String unit = rs.sec().domain() == Section.Domain.DISTANCE
+            ? "m" : "s";
+
+        Label title = new Label("Speed Control");
+        title.setTextFill(Color.WHITE);
+        title.setStyle("-fx-font-weight: bold;");
+        Button close = new Button("✕");
+        close.setFocusTraversable(false);
+        close.setStyle("-fx-font-size: 9px; -fx-padding: 1 5 1 5;");
+        close.setOnAction(ev -> spHideCtlPopup());
+        javafx.scene.layout.Region tSpacer = new javafx.scene.layout.Region();
+        HBox.setHgrow(tSpacer, javafx.scene.layout.Priority.ALWAYS);
+        HBox titleRow = new HBox(8, title, tSpacer, close);
+        titleRow.setAlignment(Pos.CENTER_LEFT);
+
+        ToggleGroup tg = new ToggleGroup();
+        RadioButton rSpeed = new RadioButton("Constant Speed (lift, transport)");
+        RadioButton rAccel = new RadioButton("Constant Acceleration (launch, brake)");
+        for (RadioButton rb : new RadioButton[]{ rSpeed, rAccel }) {
+            rb.setToggleGroup(tg);
+            rb.setTextFill(Color.WHITE);
+            rb.setStyle("-fx-font-size: 11px;");
+        }
+        CheckBox complex = new CheckBox("Complex control (editable graph)");
+        complex.setTextFill(Color.WHITE);
+        complex.setStyle("-fx-font-size: 11px;");
+
+        Label speedLbl = new Label("Speed (m/s)");
+        speedLbl.setTextFill(Color.WHITE);
+        speedLbl.setStyle("-fx-font-size: 11px;");
+        Spinner<Double> speedSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0.5, 200, c.speed, 1));
+        speedSp.setEditable(true);
+        speedSp.setPrefWidth(76);
+        FvdDesigner.numericEditor(speedSp, false);   // v18.1: digits only
+        Button editGraph = new Button("Edit Speed");
+        editGraph.setFocusTraversable(false);
+        editGraph.setStyle("-fx-font-size: 11px;");
+        CheckBox maxC = new CheckBox("Max speed");
+        CheckBox minC = new CheckBox("Min speed");
+        for (CheckBox cb : new CheckBox[]{ maxC, minC }) {
+            cb.setTextFill(Color.WHITE);
+            cb.setStyle("-fx-font-size: 11px;");
+        }
+        HBox speedRow = new HBox(8);
+        speedRow.setAlignment(Pos.CENTER_LEFT);
+        HBox limitRow = new HBox(10, maxC, minC);
+        limitRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label accelLbl = new Label("Acceleration (g)");
+        accelLbl.setTextFill(Color.WHITE);
+        accelLbl.setStyle("-fx-font-size: 11px;");
+        Spinner<Double> accelSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0, 20, c.accel, 0.05));
+        accelSp.setEditable(true);
+        accelSp.setPrefWidth(76);
+        FvdDesigner.numericEditor(accelSp, false);
+        HBox accelRow = new HBox(8);
+        accelRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label startLbl = new Label("Start (" + unit + ")");
+        startLbl.setTextFill(Color.WHITE);
+        startLbl.setStyle("-fx-font-size: 11px;");
+        Spinner<Double> startSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0, 100000, c.x0, unit.equals("m") ? 1 : 0.1));
+        startSp.setEditable(true);
+        startSp.setPrefWidth(76);
+        FvdDesigner.numericEditor(startSp, false);
+        Label lenLbl = new Label("Length (" + unit + ")");
+        lenLbl.setTextFill(Color.WHITE);
+        lenLbl.setStyle("-fx-font-size: 11px;");
+        Spinner<Double> lenSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                // v18.1: minimum length = 2× the domain's min node gap
+                unit.equals("m") ? 0.2 : 0.02, 100000, c.len,
+                unit.equals("m") ? 1 : 0.1));
+        lenSp.setEditable(true);
+        lenSp.setPrefWidth(76);
+        FvdDesigner.numericEditor(lenSp, false);
+        HBox posRow = new HBox(8, startLbl, startSp, lenLbl, lenSp);
+        posRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label endLbl = new Label();
+        endLbl.setTextFill(Color.rgb(160, 220, 170));
+        endLbl.setStyle("-fx-font-size: 11px;");
+
+        Runnable relayout = () -> {
+            speedRow.getChildren().clear();
+            accelRow.getChildren().clear();
+            boolean acc = c.type == SpeedControl.ACCEL;
+            if (c.complex && !acc) {
+                editGraph.setText("Edit Speed");
+                speedRow.getChildren().addAll(speedLbl, editGraph);
+            } else {
+                speedLbl.setText(acc ? "Target speed (m/s)" : "Speed (m/s)");
+                speedRow.getChildren().addAll(speedLbl, speedSp);
+            }
+            speedRow.getChildren().add(limitRow);
+            if (acc) {
+                if (c.complex) {
+                    editGraph.setText("Edit Acceleration");
+                    accelRow.getChildren().addAll(accelLbl, editGraph);
+                } else {
+                    accelRow.getChildren().addAll(accelLbl, accelSp);
+                }
+                accelRow.setVisible(true);
+                accelRow.setManaged(true);
+            } else {
+                accelRow.setVisible(false);
+                accelRow.setManaged(false);
+            }
+        };
+
+        Runnable sync = () -> {
+            syncing[0] = true;
+            (c.type == SpeedControl.ACCEL ? rAccel : rSpeed)
+                .setSelected(true);
+            complex.setSelected(c.complex);
+            speedSp.getValueFactory().setValue(c.speed);
+            accelSp.getValueFactory().setValue(c.accel);
+            maxC.setSelected(c.maxLimit);
+            minC.setSelected(c.minLimit);
+            startSp.getValueFactory().setValue(c.x0);
+            lenSp.getValueFactory().setValue(c.len);
+            double[] es = spEndSpeeds(rs, c);
+            endLbl.setText(Double.isNaN(es[0]) ? "End speed: —"
+                : Math.abs(es[0] - es[1]) > 0.05
+                ? String.format("End speed: %.1f m/s (true %.1f)",
+                    es[0], es[1])
+                : String.format("End speed: %.1f m/s", es[0]));
+            relayout.run();
+            syncing[0] = false;
+        };
+        spPopupSync = sync;
+
+        // every discrete change: one undo step, live rebuild
+        Runnable changed = () -> {
+            if (syncing[0]) return;
+            app.rebuildTrack();
+            redraw();
+            sync.run();
+        };
+        rSpeed.setOnAction(ev -> {
+            if (syncing[0]) return;
+            pushUndoSnapshot();
+            c.type = SpeedControl.SPEED;
+            if (c.complex) c.freshLane(c.speed);
+            changed.run();
+        });
+        rAccel.setOnAction(ev -> {
+            if (syncing[0]) return;
+            pushUndoSnapshot();
+            c.type = SpeedControl.ACCEL;
+            if (c.complex) c.freshLane(c.accel);
+            changed.run();
+        });
+        complex.setOnAction(ev -> {
+            if (syncing[0]) return;
+            pushUndoSnapshot();
+            c.complex = complex.isSelected();
+            if (c.complex && c.lane.size() < 2) {
+                c.freshLane(c.type == SpeedControl.ACCEL
+                    ? c.accel : c.speed);
+            }
+            changed.run();
+        });
+        editGraph.setOnAction(ev -> {
+            if (!app.settings.speedStripTall()) {
+                app.settings.setSpeedStripTall(true);
+            }
+            if (!spVisible()) app.settings.setShowSpeedStrip(true);
+            redraw();
+            spMovePopupClear(pop);
+        });
+        speedSp.valueProperty().addListener((o, a, v) -> {
+            if (syncing[0] || v == null) return;
+            pushUndoSnapshot();
+            c.speed = v;
+            changed.run();
+        });
+        accelSp.valueProperty().addListener((o, a, v) -> {
+            if (syncing[0] || v == null) return;
+            pushUndoSnapshot();
+            c.accel = v;
+            changed.run();
+        });
+        maxC.setOnAction(ev -> {
+            if (syncing[0]) return;
+            pushUndoSnapshot();
+            c.maxLimit = maxC.isSelected();
+            if (!c.maxLimit && !c.minLimit) c.minLimit = true;  // one stays
+            changed.run();
+        });
+        minC.setOnAction(ev -> {
+            if (syncing[0]) return;
+            pushUndoSnapshot();
+            c.minLimit = minC.isSelected();
+            if (!c.maxLimit && !c.minLimit) c.maxLimit = true;
+            changed.run();
+        });
+        startSp.valueProperty().addListener((o, a, v) -> {
+            if (syncing[0] || v == null) return;
+            Section s = spSelSection();
+            if (s == null) return;
+            pushUndoSnapshot();
+            c.x0 = FvdDesigner.clamp(v, 0,
+                Math.max(0, spSecEnd(s) - c.len));
+            changed.run();
+        });
+        lenSp.valueProperty().addListener((o, a, v) -> {
+            if (syncing[0] || v == null) return;
+            Section s = spSelSection();
+            if (s == null) return;
+            pushUndoSnapshot();
+            double oldLen = c.len;
+            c.len = FvdDesigner.clamp(v, minGapOf(s) * 2,
+                Math.max(minGapOf(s) * 2, spSecEnd(s) - c.x0));
+            if (c.complex && !c.lane.isEmpty() && oldLen > 1e-9) {
+                double f = c.len / oldLen;
+                double[] gaps = BezierBaker.segGaps(c.lane);
+                for (BezierBaker.Node nd : c.lane) nd.t *= f;
+                BezierBaker.rescaleDvToGaps(c.lane, gaps);
+            }
+            changed.run();
+        });
+
+        // End speed reads directly UNDER the target-speed row (v18.1,
+        // user spec — it is that row's reference)
+        box.getChildren().addAll(titleRow, rSpeed, rAccel, complex,
+            speedRow, endLbl, accelRow, posRow);
+        double[] grab = new double[2];
+        box.setOnMousePressed(ev -> {
+            grab[0] = ev.getScreenX() - pop.getX();
+            grab[1] = ev.getScreenY() - pop.getY();
+        });
+        box.setOnMouseDragged(ev -> {
+            pop.setX(ev.getScreenX() - grab[0]);
+            pop.setY(ev.getScreenY() - grab[1]);
+        });
+        pop.getContent().add(box);
+        sync.run();
+        pop.show(canvas.getScene().getWindow(), sx + 12, sy - 40);
+        // ride/fly keys keep working while the panel holds key focus
+        // (v18.1 — the pv popup's forwarder)
+        app.installViewKeys(pop.getScene());
+        hookSpFocus();
+    }
+
+    // the Speed Control panel hides when the APP loses focus and
+    // returns — same spot, still open — when it comes back (v18.1,
+    // user spec; the pv popup's v14.4 pattern: a Popup is its own OS
+    // window and would float above other applications otherwise).
+    private boolean spFocusHooked, spFocusHidden;
+    private double spHidX, spHidY;
+
+    private void hookSpFocus() {
+        if (spFocusHooked || canvas.getScene() == null
+                || canvas.getScene().getWindow() == null) return;
+        spFocusHooked = true;
+        canvas.getScene().getWindow().focusedProperty()
+            .addListener((o, was, is) -> {
+                if (!is && spPopup != null && spPopup.isShowing()) {
+                    spHidX = spPopup.getX();
+                    spHidY = spPopup.getY();
+                    spPopup.hide();
+                    spFocusHidden = true;
+                } else if (is && spFocusHidden) {
+                    spFocusHidden = false;
+                    if (spPopup != null && spSel() != null) {
+                        spPopup.show(canvas.getScene().getWindow(),
+                            spHidX, spHidY);
+                    }
+                }
+            });
+    }
+
+    /** Nudge the options popup out of the strip's way (the Edit
+     *  Speed/Accel button just expanded it). */
+    private void spMovePopupClear(javafx.stage.Popup pop) {
+        javafx.geometry.Point2D p = canvas.localToScreen(0, spTop());
+        if (p != null && pop.getY() + pop.getHeight() > p.getY() - 4) {
+            pop.setY(Math.max(20, p.getY() - pop.getHeight() - 8));
+        }
+    }
+
+    /** The popup follows compiles (end-speed label + stale checks). */
+    private void spAfterRebuild() {
+        if (spPopup != null && spPopup.isShowing()) {
+            if (spSel() == null) spHideCtlPopup();
+            else if (spPopupSync != null) spPopupSync.run();
+        }
+    }
+
+    /** SET INITIAL DESIGN SPEED (v18.0, D162 — user spec): type the
+     *  section's starting design speed directly, any time after
+     *  creation. The ride entry (piece 0, section 0) writes through
+     *  the Start-speed spinner (v0 coupling + its own undo); any
+     *  other section pins (a deliberate conflict, exactly like the
+     *  Add dialog's unlocked padlock). "Set Design Speed to Real" =
+     *  the resolve op's refreeze, verbatim. */
+    private void showInitSpeedDialog(int k) {
+        List<Section> secs = sections();
+        if (k >= secs.size()) return;
+        Section sec = secs.get(k);
+        javafx.stage.Stage dlg = new javafx.stage.Stage();
+        dlg.initOwner(canvas.getScene().getWindow());
+        dlg.setTitle("Initial design speed");
+        Label lbl = new Label("Initial design speed (m/s)");
+        TextField vf = new TextField(
+            String.format(Locale.US, "%.2f", sec.vDesign()));
+        vf.setPrefColumnCount(7);
+        vf.setTextFormatter(FvdDesigner.numFormatter());   // v18.1
+        Button toReal = new Button("Set Design Speed to Real");
+        toReal.setFocusTraversable(false);
+        toReal.setOnAction(ev -> {
+            dlg.close();
+            refreezeSpeed(k);
+        });
+        Button apply = new Button("Apply");
+        apply.setDefaultButton(true);
+        Button cancel = new Button("Cancel");
+        cancel.setCancelButton(true);
+        cancel.setOnAction(ev -> dlg.close());
+        apply.setOnAction(ev -> {
+            double v;
+            try {
+                v = Double.parseDouble(vf.getText().trim());
+            } catch (NumberFormatException ex) {
+                return;
+            }
+            v = FvdDesigner.clamp(v, 1, 100);
+            dlg.close();
+            if (Math.abs(v - sec.vDesign()) < 1e-9) return;
+            if (activePiece == 0 && k == 0) {
+                // the ride entry: the Start-speed spinner owns it
+                app.startSpeedSpinner.getValueFactory().setValue(v);
+            } else {
+                pushUndoSnapshot();
+                sec.vDesign(v);
+                sec.vPinned(true);   // deliberate: reconcile leaves it
+                app.rebuildTrack();
+            }
+            redraw();
+        });
+        HBox row = new HBox(8, lbl, vf);
+        row.setAlignment(Pos.CENTER_LEFT);
+        HBox buttons = new HBox(8, toReal, apply, cancel);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        VBox box = new VBox(10, row, buttons);
+        box.setPadding(new javafx.geometry.Insets(12));
+        dlg.setScene(new javafx.scene.Scene(box));
+        dlg.show();
+        app.installViewKeys(dlg.getScene());
+    }
+
+
     // ---------- undo ----------
 
     private FvdDesigner.DocState snapshot() { return app.snapshotDoc(); }
@@ -7362,6 +9702,20 @@ class GraphEditor extends Region {
     // ---------- smooth toggle ----------
 
     void toggleSmooth() {
+        // strip surface (v18.3): a const-speed control's END nodes
+        // match the REAL speed outside the control; interior nodes
+        // take the SHARED smooth/broken toggle on the strip surface
+        if (!surfStrip && stripHasNodeSel()) {
+            withSurf(this::toggleSmooth);
+            return;
+        }
+        if (surfStrip && selIdx >= 0
+                && (selIdx == 0 || selIdx == active().size() - 1)) {
+            if (surfCtl.type == SpeedControl.SPEED) {
+                spMatchRealEnd(surfCtl, surfRs, selIdx == 0);
+            }
+            return;
+        }
         // section-EDGE nodes have no smooth/broken meaning (one handle) —
         // there B RETURNS the node to the boundary value + slope (v10.1)
         if (selIdx == 0 || selIdx == active().size() - 1) {
@@ -7524,6 +9878,10 @@ class GraphEditor extends Region {
      *  neighbor value/slope, exactly like pressing B on each in turn
      *  (v10.4 user spec), as ONE undo step. */
     void matchBoundaryAll() {
+        if (!surfStrip && stripHasNodeSel()) {
+            toggleSmooth();   // one lane on the strip — B's move
+            return;
+        }
         List<BezierBaker.Node> lane = active();
         if (selIdx < 0) {
             app.statsLabel.setText("Shift+B needs a selected section-EDGE "
@@ -8325,6 +10683,9 @@ class GraphEditor extends Region {
      *  is deliberately extended: drag to the end, release, grab it
      *  again to pull further. MAX_VALUE = no wall. */
     private double endLimitFor(int nodeIdx) {
+        // strip surface: ABSOLUTE wall at the control's end — no
+        // started-at-end extension (the control's diamonds resize it)
+        if (surfStrip) return surfCtl.len;
         List<BezierBaker.Node> lane = active();
         if (nodeIdx != lane.size() - 1) return Double.MAX_VALUE;
         // the influence surface's wall is ABSOLUTE (no started-at-end
@@ -8343,7 +10704,10 @@ class GraphEditor extends Region {
 
     private double maxT() { return Math.max(0.5, runDur()); }
     private double domain() { return maxT() * 1.08; }
-    private double plotHeight() { return canvas.getHeight() - MARGIN_TOP - MARGIN_BOTTOM; }
+    private double plotHeight() {
+        return canvas.getHeight() - MARGIN_TOP - MARGIN_BOTTOM
+            - speedStripH();
+    }
     private double plotWidth() { return canvas.getWidth() - MARGIN_LEFT - marginRight(); }
 
     private double viewStart() {
@@ -8385,6 +10749,7 @@ class GraphEditor extends Region {
             + FvdDesigner.clamp((x - MARGIN_LEFT) / plotWidth(), 0, 1) * (viewEnd() - viewStart());
     }
     private double valToY(int lane, double val) {
+        if (surfStrip) return spValToY(surfCtl, val);
         // NO clamping: out-of-view geometry keeps its true position
         // (drawing is clipped to the plot; clamping here bent the
         // apparent angle of off-screen handles)
@@ -8392,6 +10757,7 @@ class GraphEditor extends Region {
         return MARGIN_TOP + plotHeight() * (1 - t);
     }
     private double yToVal(int lane, double y) {
+        if (surfStrip) return spYToVal(surfCtl, y);
         double t = 1 - (y - MARGIN_TOP) / plotHeight();
         return curMin[lane] + FvdDesigner.clamp(t, 0, 1) * (curMax[lane] - curMin[lane]);
     }
@@ -8404,25 +10770,25 @@ class GraphEditor extends Region {
             double px = ltToX(lane.get(i).t);
             double py = valToY(activeLane, dispVal(activeLane,
                 lane.get(i).t, lane.get(i).val));
-            if (Math.hypot(x - px, y - py) <= NODE_HIT) return i;
+            if (Math.hypot(x - px, y - py) <= nodeHit()) return i;
         }
         return -1;
     }
 
     private int hitKnob(double x, double y) {
         double[] out = knobPos(selIdx, true);
-        if (out != null && Math.hypot(x - out[0], y - out[1]) <= KNOB_HIT) return 1;
+        if (out != null && Math.hypot(x - out[0], y - out[1]) <= knobHit()) return 1;
         double[] in = knobPos(selIdx, false);
-        if (in != null && Math.hypot(x - in[0], y - in[1]) <= KNOB_HIT) return -1;
+        if (in != null && Math.hypot(x - in[0], y - in[1]) <= knobHit()) return -1;
         return 0;
     }
 
     /** The hollow marker where an off-screen handle exits the plot. */
     private boolean hitEdgeMarker(double x, double y) {
         return (outEdgeMarker != null
-                    && Math.hypot(x - outEdgeMarker[0], y - outEdgeMarker[1]) <= KNOB_HIT)
+                    && Math.hypot(x - outEdgeMarker[0], y - outEdgeMarker[1]) <= knobHit())
             || (inEdgeMarker != null
-                    && Math.hypot(x - inEdgeMarker[0], y - inEdgeMarker[1]) <= KNOB_HIT);
+                    && Math.hypot(x - inEdgeMarker[0], y - inEdgeMarker[1]) <= knobHit());
     }
 
     /** Hit test the INACTIVE lanes: nodes first, then curve bodies.
@@ -8604,6 +10970,11 @@ class GraphEditor extends Region {
      *  grid modifier the node LANDS on the grid instead. Auto-repeat
      *  (holding the key) gives continuous movement for free. */
     boolean nudgeSelected(int dtDir, int dvDir, boolean grid) {
+        if (!surfStrip && stripHasNodeSel()) {
+            final boolean[] r = { false };
+            withSurf(() -> r[0] = nudgeSelected(dtDir, dvDir, grid));
+            return r[0];
+        }
         if (selIdx < 0) return false;
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(selIdx);
@@ -8653,17 +11024,42 @@ class GraphEditor extends Region {
             double hi = (app.rippleT || idx == lane.size() - 1)
                     ? Double.MAX_VALUE
                     : lane.get(idx + 1).t - minGap();
+            if (surfStrip) {
+                // the control is a HARD BOX (v18.5, D174): its LAST
+                // node never moves horizontally under a time ripple
+                // (value ripple still applies) and nothing leaves the
+                // control — the drag clamps against the pinned end
+                if (idx == lane.size() - 1) {
+                    hi = Math.min(hi, surfCtl.len);
+                } else if (app.rippleT) {
+                    hi = Math.min(hi, lane.get(lane.size() - 1).t
+                        - minGap() * (lane.size() - 1 - idx));
+                }
+            }
             newT = FvdDesigner.clamp(newT, lo, hi);
         }
         double[] gaps = BezierBaker.segGaps(lane);
         if (app.rippleT || app.rippleV) {
             // shift everything after the node by the same deltas on the
             // enabled axes: time keeps later transitions, value
-            // translates the rest of the graph
+            // translates the rest of the graph — on the STRIP surface
+            // the LAST node holds its x (v18.5, D174)
             double dT = newT - n.t, dV = newVal - n.val;
             for (int j = idx + 1; j < lane.size(); j++) {
-                if (app.rippleT) lane.get(j).t += dT;
+                if (app.rippleT && !(surfStrip && j == lane.size() - 1)) {
+                    lane.get(j).t += dT;
+                }
                 if (app.rippleV) lane.get(j).val += dV;
+            }
+            if (surfStrip && app.rippleT && lane.size() >= 2) {
+                // belt: rippled interiors never cross the pinned end
+                double bound = lane.get(lane.size() - 1).t;
+                for (int j = lane.size() - 2; j > idx; j--) {
+                    if (lane.get(j).t > bound - minGap()) {
+                        lane.get(j).t = bound - minGap();
+                    }
+                    bound = lane.get(j).t;
+                }
             }
         }
         n.t = newT;
@@ -8931,7 +11327,17 @@ class GraphEditor extends Region {
     }
 
     void deleteSelected() {
-        if (activeSc() != null) {   // Delete removes the selected element
+        if (!surfStrip) {
+            // the strip owns Delete while focused (v18.0/v18.3):
+            // selected graph nodes take the SHARED deletion below;
+            // otherwise the selected control/mark removes itself
+            if (stripHasNodeSel()) {
+                withSurf(this::deleteSelected);
+                return;
+            }
+            if (spFocus && spDeleteSelected()) return;
+        }
+        if (activeSc() != null && !surfStrip) {
             deleteElement(elSel);
             return;
         }
@@ -8989,6 +11395,7 @@ class GraphEditor extends Region {
      *  With fewer than two selected this falls back to flattening the
      *  selected node's handles (H's classic single-node meaning). */
     void levelSelected() {
+        if (stripRoute(this::levelSelected)) return;
         if (selIdx < 0) return;
         if (selSet.size() < 2) {
             flattenHandles();
@@ -9009,6 +11416,7 @@ class GraphEditor extends Region {
 
     /** Z/X: constrain node drags to one axis; same key again unlocks. */
     void toggleAxisLock(boolean vertical) {
+        if (stripRoute(() -> toggleAxisLock(vertical))) return;
         if (selIdx < 0) return;
         int target = vertical ? 1 : 2;
         axisLock = (axisLock == target) ? 0 : target;
@@ -9020,6 +11428,7 @@ class GraphEditor extends Region {
      *  straight line. Smooth nodes re-angle their far handles to keep
      *  C1 continuity. */
     void straightenSelected() {
+        if (stripRoute(this::straightenSelected)) return;
         if (selSet.size() != 2) return;
         List<Integer> idx = new ArrayList<>(selSet);
         java.util.Collections.sort(idx);
@@ -9133,6 +11542,7 @@ class GraphEditor extends Region {
      *  gesture). enforceLocks() re-chords locked segments after every
      *  edit, so dragging an endpoint keeps the line straight. */
     void toggleStraightLock() {
+        if (stripRoute(this::toggleStraightLock)) return;
         List<BezierBaker.Node> lane = active();
         Set<Integer> sel = lockSelection();
         List<Integer> pairs = selectedPairs(sel);
@@ -9176,7 +11586,20 @@ class GraphEditor extends Region {
      *  endpoints keep C1 by re-angling their far handle — unless that
      *  side is itself locked, which owns its own handles. */
     private void enforceLocks() {
-        for (List<BezierBaker.Node> ln : app.lanes) {
+        for (List<BezierBaker.Node> ln : app.lanes) enforceLockLane(ln);
+        // complex speed-control graphs share the whole lock machinery
+        // (v18.3): every control lane, every section
+        for (TrackPiece p : app.coaster.pieces) {
+            for (Section s : p.sections) {
+                for (SpeedControl c : s.speedControls()) {
+                    if (c.complex) enforceLockLane(c.lane);
+                }
+            }
+        }
+    }
+
+    private void enforceLockLane(List<BezierBaker.Node> ln) {
+        {
             for (int i = 0; i < ln.size() - 1; i++) {
                 BezierBaker.Node a = ln.get(i);
                 if (!a.lockedOut()) continue;
@@ -9227,6 +11650,7 @@ class GraphEditor extends Region {
      *  nodes inserted on it stay on the line. Swaps directly with
      *  Shift+F: locking one way clears the other. */
     void toggleLevelLock() {
+        if (stripRoute(this::toggleLevelLock)) return;
         List<BezierBaker.Node> lane = active();
         Set<Integer> sel = lockSelection();
         List<Integer> pairs = selectedPairs(sel);
@@ -9459,13 +11883,20 @@ class GraphEditor extends Region {
      *  its global value); handles are segment fractions. 3 decimals. */
     private void showNodeEditor(int idx) {
         List<BezierBaker.Node> lane = active();
+        // the strip surface's dialog (v18.3): capture the surface —
+        // Apply and the live twins run AFTER withSurf returned, so
+        // they re-enter it themselves (the typed dialog is part of
+        // the recycled-editor contract)
+        final boolean dSurf = surfStrip;
+        final SpeedControl dCtl = surfCtl;
+        final RunSec dRs = surfRs;
+        final String dUnit = laneUnit(activeLane);
         BezierBaker.Node n = lane.get(idx);
         BezierBaker.Node prev = idx > 0 ? lane.get(idx - 1) : null;
         boolean hasOut = idx < lane.size() - 1;
 
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
         dlg.setTitle("Node " + idx + " — " + laneName(activeLane));
 
         GridPane grid = new GridPane();
@@ -9474,7 +11905,7 @@ class GraphEditor extends Region {
         grid.setPadding(new Insets(14));
 
         TextField dtField = null, valField, v0Field = null;
-        TextField inField = null, outField = null;
+        TextField inField = null, outField = null, initField = null;
         int row = 0;
         if (prev != null) {
             dtField = new TextField(String.format(Locale.US, "%.3f", n.t - prev.t));
@@ -9488,8 +11919,24 @@ class GraphEditor extends Region {
             Runnable dtSync = () -> {
                 try {
                     double d = Double.parseDouble(fDtL.getText().trim());
-                    dtAbs.setText(String.format(Locale.US, "(= %.3f %s abs)",
-                        tOff + warpFwd(fPrev.t + d), axisDist() ? "m" : "s"));
+                    boolean os = surfStrip;
+                    SpeedControl oc = surfCtl;
+                    RunSec orr = surfRs;
+                    if (dSurf) {
+                        surfCtl = dCtl;
+                        surfRs = dRs;
+                        surfStrip = true;
+                    }
+                    try {
+                        dtAbs.setText(String.format(Locale.US,
+                            "(= %.3f %s abs)",
+                            tOff + warpFwd(fPrev.t + d),
+                            axisDist() ? "m" : "s"));
+                    } finally {
+                        surfStrip = os;
+                        surfCtl = oc;
+                        surfRs = orr;
+                    }
                 } catch (NumberFormatException ex) {
                     dtAbs.setText("");
                 }
@@ -9501,12 +11948,23 @@ class GraphEditor extends Region {
             grid.addRow(row++, new Label(activeDistNative()
                 ? "Transition length (m)" : "Transition time (s)"),
                 dtField, dtAbs);
-        } else if (activeSection == 0 && activeInfl() == null) {
+        } else if (!dSurf && activePiece == 0 && activeSection == 0
+                && activeInfl() == null) {
             // node 0 of the FIRST section: the ride's start speed lives
             // here too (same value as the Coaster-menu spinner). Not on
             // the influence surface — its node 0 is just a delta.
             v0Field = new TextField(String.format(Locale.US, "%.3f", app.coaster.v0));
             grid.addRow(row++, new Label("Start speed (m/s)"), v0Field);
+        } else if (!dSurf && activeInfl() == null) {
+            // node 0 of any LATER section (v18.2, user spec — his
+            // completed sentence): the INITIAL DESIGN SPEED is typed
+            // here; a change PINS a deliberate conflict (the D162
+            // badge-dialog semantics). The ride entry (piece 0,
+            // section 0) keeps its Start-speed row above.
+            initField = new TextField(String.format(Locale.US, "%.3f",
+                sections().get(activeSection).vDesign()));
+            grid.addRow(row++, new Label("Initial design speed (m/s)"),
+                initField);
         }
         // vertical axis is the GLOBAL value, not a delta — except on
         // the influence surface, where the value IS the delta
@@ -9521,7 +11979,7 @@ class GraphEditor extends Region {
                 try {
                     double v = Double.parseDouble(fValL.getText().trim());
                     valDelta.setText(String.format(Locale.US, "(Δ %+.3f%s)",
-                        v - fPrev.val, laneUnit(activeLane)));
+                        v - fPrev.val, dUnit));
                 } catch (NumberFormatException ex) {
                     valDelta.setText("");
                 }
@@ -9541,13 +11999,18 @@ class GraphEditor extends Region {
             grid.addRow(row++, new Label("Out handle"), outField);
         }
         for (javafx.scene.Node c : grid.getChildren()) {
-            if (c instanceof TextField tf) tf.setPrefColumnCount(7);
+            if (c instanceof TextField tf) {
+                tf.setPrefColumnCount(7);
+                // numeric-only entry (v18.1, user spec — every number
+                // box accepts digits, sign and period alone)
+                tf.setTextFormatter(FvdDesigner.signedNumFormatter());
+            }
         }
 
         // section-edge nodes: the boundary return lives here too (same
         // one-time value + slope move as pressing B on the node)
-        boolean edgeStart = idx == 0 && activeSection > 0;
-        boolean edgeEnd = idx == lane.size() - 1 && idx > 0
+        boolean edgeStart = !dSurf && idx == 0 && activeSection > 0;
+        boolean edgeEnd = !dSurf && idx == lane.size() - 1 && idx > 0
             && activeSection < sections().size() - 1;
         if (edgeStart || edgeEnd) {
             Button match = new Button("Match boundary (value + slope)");
@@ -9567,8 +12030,9 @@ class GraphEditor extends Region {
         grid.add(buttons, 0, row, 2, 1);
 
         final TextField fDt = dtField, fVal = valField, fV0 = v0Field;
-        final TextField fIn = inField, fOut = outField;
-        ok.setOnAction(ev -> {
+        final TextField fIn = inField, fOut = outField, fInit = initField;
+        final int dlgSec = activeSection;
+        Runnable okCore = () -> {
             pushUndoSnapshot();
             // typed fractions SLIDE the knob along its current line (S
             // semantics): dv scales with the length, angle preserved
@@ -9588,6 +12052,18 @@ class GraphEditor extends Region {
                 app.startSpeedSpinner.getValueFactory().setValue(
                     FvdDesigner.clamp(parseOr(fV0, app.coaster.v0), 1, 100));
             }
+            if (fInit != null && dlgSec < sections().size()) {
+                // a changed initial design speed PINS (v18.2 — the
+                // D162 deliberate-conflict semantics; the reconcile
+                // leaves it alone, B lines the real graphs up)
+                Section s0 = sections().get(dlgSec);
+                double nv = FvdDesigner.clamp(
+                    parseOr(fInit, s0.vDesign()), 1, 100);
+                if (Math.abs(nv - s0.vDesign()) > 1e-9) {
+                    s0.vDesign(nv);
+                    s0.vPinned(true);
+                }
+            }
             double val = parseOr(fVal, n.val);
             if (prev != null) {
                 double dt = Math.max(minGap(), parseOr(fDt, n.t - prev.t));
@@ -9595,12 +12071,32 @@ class GraphEditor extends Region {
             } else {
                 moveNode(idx, n.t, val);
             }
+        };
+        ok.setOnAction(ev -> {
+            if (dSurf) {   // re-enter the captured strip surface
+                boolean os = surfStrip;
+                SpeedControl oc = surfCtl;
+                RunSec orr = surfRs;
+                surfCtl = dCtl;
+                surfRs = dRs;
+                surfStrip = true;
+                try {
+                    okCore.run();
+                } finally {
+                    surfStrip = os;
+                    surfCtl = oc;
+                    surfRs = orr;
+                }
+            } else {
+                okCore.run();
+            }
             dlg.close();
         });
         cancel.setOnAction(ev -> dlg.close());
 
         dlg.setScene(new Scene(grid));
         dlg.show();
+        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
     }
 
     /** Auto-fit each lane's value axis to the curve within the current
@@ -9674,7 +12170,7 @@ class GraphEditor extends Region {
                 }
             }
             // expanded-handle view: include the selected node's knobs
-            if (handleViewExpand && L == activeLane
+            if (handleViewExpand && !spFocus && L == activeLane
                     && selIdx >= 0 && selIdx < app.lanes.get(L).size()) {
                 BezierBaker.Node sn = app.lanes.get(L).get(selIdx);
                 double sf = rateViewScale(L, sn.t);
@@ -9847,7 +12343,6 @@ class GraphEditor extends Region {
     void showResultingSettings() {
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.initModality(Modality.WINDOW_MODAL);
         dlg.setTitle("Resulting graph settings");
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -9936,6 +12431,7 @@ class GraphEditor extends Region {
         grid.add(foot, 0, row, 2, 1);
         dlg.setScene(new Scene(grid));
         dlg.show();
+        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
     }
 
     private double resToY(double v) {
@@ -9977,6 +12473,23 @@ class GraphEditor extends Region {
     // ---------- drawing ----------
 
     private void redraw() {
+        // ALWAYS drawn from the MAIN surface (v18.4, D173 — the
+        // strip-flashing root cause): a strip-surface mutation
+        // (dragNodeTo under withSurf) triggers rebuildTrack →
+        // refresh() → redraw() with surfStrip still set, and that
+        // frame rendered the whole plot through the STRIP's chokes
+        // (wrong lane, wrong scales) — the main graphs "disappeared"
+        // until the gesture's own redraw repainted. The strip
+        // re-enters its own surface via spDraw's withSurf.
+        if (surfStrip) {
+            surfStrip = false;
+            try {
+                redraw();
+            } finally {
+                surfStrip = true;
+            }
+            return;
+        }
         GraphicsContext gc = canvas.getGraphicsContext2D();
         double w = canvas.getWidth(), h = canvas.getHeight();
         if (w <= 0 || h <= 0 || plotWidth() <= 0 || plotHeight() <= 0) return;
@@ -10211,221 +12724,6 @@ class GraphEditor extends Region {
             gc.setGlobalAlpha(1.0);
         }
 
-        List<BezierBaker.Node> lane = active();
-        for (int i = 0; i < lane.size(); i++) {
-            double px = ltToX(lane.get(i).t);
-            double py = valToY(activeLane, dispVal(activeLane,
-                lane.get(i).t, lane.get(i).val));
-            boolean isSel = (i == selIdx);
-            boolean isDragged = (i == dragNodeIdx);
-
-            if (isSel || selSet.contains(i)) {
-                // primary = solid white ring; other members = fainter
-                gc.setStroke(isSel ? Color.WHITE : Color.rgb(255, 255, 255, 0.5));
-                gc.setLineWidth(isSel ? 1.5 : 1.2);
-                gc.strokeOval(px - NODE_RADIUS - 3, py - NODE_RADIUS - 3,
-                              (NODE_RADIUS + 3) * 2, (NODE_RADIUS + 3) * 2);
-            } else if (i == hoverNodeIdx && dragNodeIdx < 0
-                    && dragHandleIdx < 0) {
-                // GREY hover ring (v16.15, user spec): the node under
-                // the cursor pre-lights before the white click ring
-                gc.setStroke(Color.rgb(170, 175, 185, 0.85));
-                gc.setLineWidth(1.3);
-                gc.strokeOval(px - NODE_RADIUS - 3, py - NODE_RADIUS - 3,
-                              (NODE_RADIUS + 3) * 2, (NODE_RADIUS + 3) * 2);
-            }
-            gc.setFill(isDragged ? Color.WHITE : laneColor(activeLane));
-            gc.fillOval(px - NODE_RADIUS, py - NODE_RADIUS, NODE_RADIUS * 2, NODE_RADIUS * 2);
-            if (!isDragged && i == hoverNodeIdx && dragNodeIdx < 0
-                    && dragHandleIdx < 0) {
-                // GREY node-hover readout (v16.15, user spec): the
-                // drag readout's numbers without the click — and
-                // SHIFT swaps in the computed twins: the ABSOLUTE
-                // axis position + the CHANGE from the previous node
-                gc.setFill(Color.rgb(170, 175, 185));
-                gc.setFont(Font.font(11));
-                gc.setTextAlign(TextAlignment.LEFT);
-                gc.setTextBaseline(VPos.TOP);
-                BezierBaker.Node nd = lane.get(i);
-                double shown = dispVal(activeLane, nd.t, nd.val);
-                String xu = xUnit();
-                String txt;
-                if (hoverSlope) {
-                    String dv = i > 0
-                        ? String.format("  Δ%+.2f%s",
-                            nd.val - lane.get(i - 1).val,
-                            laneUnit(activeLane))
-                        : "";
-                    txt = String.format("%s=%.2f%s%s",
-                        axisDist() ? "s" : "t",
-                        tOff + warpFwd(nd.t), xu, dv);
-                } else {
-                    String vTxt = String.format("%.2f%s", shown,
-                        laneUnit(activeLane));
-                    txt = i == 0 ? vTxt
-                        : String.format("Δ%s=%.2f%s  %s",
-                            axisDist() ? "s" : "t",
-                            warpFwd(nd.t) - warpFwd(lane.get(i - 1).t),
-                            xu, vTxt);
-                }
-                double tw = txt.length() * 6.5;
-                double tx = FvdDesigner.clamp(px + 8, MARGIN_LEFT + 4,
-                    w - marginRight() - tw - 4);
-                double ty = FvdDesigner.clamp(py - 20, MARGIN_TOP + 4,
-                    MARGIN_TOP + plotHeight() - 16);
-                gc.fillText(txt, tx, ty);
-            }
-            if (isDragged) {
-                gc.setFill(Color.WHITE);
-                gc.setFont(Font.font(11));
-                gc.setTextAlign(TextAlignment.LEFT);
-                gc.setTextBaseline(VPos.TOP);
-                // transition time from the previous node; global value +
-                // unit. Position clamped INTO the plot so the readout
-                // stays readable while dragging past the bounds.
-                BezierBaker.Node nd = lane.get(i);
-                // Resulting view: the readout leads with the RESULTING
-                // value under the node and carries the delta along
-                double shown = dispVal(activeLane, nd.t, nd.val);
-                double off = dispOff(activeLane, nd.t);
-                String vTxt = off != 0
-                    ? String.format("%.2f%s (Δ %+.2f)", shown,
-                        laneUnit(activeLane), nd.val)
-                    // `shown` == nd.val without a warp; the cross-rate
-                    // view shows the displayed value (v16.9, D121)
-                    : String.format("%.2f%s", shown, laneUnit(activeLane));
-                // x readout in the DISPLAY domain: native Δ unwarped
-                // (Δt or Δs per the section), the warped axis Δ in a
-                // cross-domain view — always what the plot shows.
-                // SHIFT mid-drag (v16.16, user spec) swaps in the
-                // computed twins, exactly like shift+hover: the
-                // ABSOLUTE axis position + the Δ from the last node
-                String xu = xUnit();
-                String txt;
-                if (hoverSlope) {
-                    String dv = i > 0
-                        ? String.format("  Δ%+.2f%s",
-                            nd.val - lane.get(i - 1).val,
-                            laneUnit(activeLane))
-                        : "";
-                    txt = String.format("%s=%.2f%s%s",
-                        axisDist() ? "s" : "t",
-                        tOff + warpFwd(nd.t), xu, dv);
-                } else {
-                    txt = i == 0
-                        ? String.format("%s=%.2f%s  %s",
-                            axisDist() ? "s" : "t", warpFwd(nd.t), xu, vTxt)
-                        : String.format("Δ%s=%.2f%s  %s",
-                            axisDist() ? "s" : "t",
-                            warpFwd(nd.t) - warpFwd(lane.get(i - 1).t),
-                            xu, vTxt);
-                }
-                double tw = txt.length() * 6.5;   // approx width at 11 px
-                double tx = FvdDesigner.clamp(px + 8, MARGIN_LEFT + 4, w - marginRight() - tw - 4);
-                double ty = FvdDesigner.clamp(py - 20, MARGIN_TOP + 4, MARGIN_TOP + plotHeight() - 16);
-                gc.fillText(txt, tx, ty);
-            }
-        }
-
-        // insert preview: translucent white dot riding the curve, with
-        // the lane's value at that point alongside (the DISPLAYED
-        // curve: base+delta in the influence Resulting view)
-        if (!Double.isNaN(hoverT)) {
-            double hv = dispVal(activeLane, hoverT,
-                BezierBaker.evalAt(lane, hoverT));
-            double hx = ltToX(hoverT);
-            double hy = valToY(activeLane, hv);
-            gc.setGlobalAlpha(0.5);
-            gc.setFill(Color.WHITE);
-            gc.fillOval(hx - 4, hy - 4, 8, 8);
-            gc.setGlobalAlpha(0.75);
-            gc.setFont(Font.font(10));
-            gc.setTextAlign(TextAlignment.LEFT);
-            gc.setTextBaseline(VPos.BOTTOM);
-            String hoverTxt;
-            if (hoverSlope) {
-                // Shift: the ANALYTIC slope here replaces the value
-                // (differencing the baked polyline stair-stepped).
-                // Native units — divided onto the DISPLAY axis when
-                // the strip is warped (the slope you SEE, v16.0).
-                double slope;
-                if (laneWarped(activeLane)) {
-                    // cross-rate view (v16.9, D121): the DISPLAYED
-                    // slope — value scale AND x-axis both warp
-                    double hStep = activeDistNative() ? 0.5 : 0.02;
-                    double y1 = dispVal(activeLane, hoverT + hStep,
-                        BezierBaker.evalAt(lane, hoverT + hStep));
-                    double y0 = dispVal(activeLane, hoverT - hStep,
-                        BezierBaker.evalAt(lane, hoverT - hStep));
-                    double dx = warpMap != null
-                        ? warpFwd(hoverT + hStep) - warpFwd(hoverT - hStep)
-                        : 2 * hStep;
-                    slope = Math.abs(dx) < 1e-12 ? 0 : (y1 - y0) / dx;
-                } else {
-                    slope = BezierBaker.slopeAt(lane, hoverT);
-                    if (warpMap != null) {
-                        double hStep = activeDistNative() ? 0.5 : 0.02;
-                        double da = warpFwd(hoverT + hStep)
-                            - warpFwd(hoverT - hStep);
-                        slope = Math.abs(da) < 1e-12 ? 0
-                            : slope * 2 * hStep / da;
-                    }
-                }
-                hoverTxt = String.format("%.2f %s/%s", slope,
-                    laneUnit(activeLane).trim(), xUnit());
-            } else {
-                hoverTxt = String.format("%.2f%s", hv, laneUnit(activeLane));
-                // CROSS-RATE view (v16.9, D121): hv is already the
-                // warped display value — the NATIVE value rides
-                // along in parentheses
-                if (laneWarped(activeLane)) {
-                    hoverTxt += String.format(" (= %.2f%s)",
-                        BezierBaker.evalAt(lane, hoverT),
-                        activeRatePM(activeLane) ? " °/m" : " °/s");
-                }
-            }
-            // §5.2: the true value rides along once it visibly differs
-            // (not on the influence surface — its deltas aren't the
-            // quantity the true arrays measure; the overlays carry true)
-            if (activeInfl() == null) {
-                hoverTxt += trueSuffix(
-                    sampleIdxAtAxis(tOff + warpFwd(hoverT)),
-                    activeLane, hoverSlope);
-            }
-            // CTRL (v16.16, user spec): the snapped spot's GLOBAL
-            // axis position leads the readout — you see exactly
-            // where the grid point sits before clicking to insert
-            if (ctrlHover) {
-                hoverTxt = String.format("%s=%.2f%s  ",
-                    axisDist() ? "s" : "t",
-                    tOff + warpFwd(hoverT), xUnit()) + hoverTxt;
-            }
-            gc.fillText(hoverTxt, hx + 8, hy - 6);
-            gc.setGlobalAlpha(1.0);
-        }
-
-        // axis-lock guide: the line the node rides along. Explicit Z/X
-        // overrides the transient slide axis. Color = what the drag
-        // CHANGES: vertical movement changes the VALUE (lane color);
-        // horizontal movement changes TIME (light purple).
-        int lock = axisLock != 0 ? axisLock
-                 : (dragNodeIdx >= 0 ? shiftAxis : 0);
-        if (selIdx >= 0 && lock != 0) {
-            double lx = ltToX(lane.get(selIdx).t);
-            double ly = valToY(activeLane, dispVal(activeLane,
-                lane.get(selIdx).t, lane.get(selIdx).val));
-            gc.setGlobalAlpha(0.5);
-            gc.setLineWidth(1.5);
-            if (lock == 1) {
-                gc.setStroke(laneColor(activeLane));
-                gc.strokeLine(lx, MARGIN_TOP, lx, MARGIN_TOP + plotHeight());
-            } else {
-                gc.setStroke(FvdDesigner.TIME_COLOR);
-                gc.strokeLine(MARGIN_LEFT, ly, w - marginRight(), ly);
-            }
-            gc.setGlobalAlpha(1.0);
-        }
-
         // POV position on the track — drawn ALWAYS since v17.11
         // (user spec: the POV position persists outside POV view and
         // the bottom stats line tracks it; the line is its marker)
@@ -10440,18 +12738,10 @@ class GraphEditor extends Region {
             }
         }
 
-        if (selIdx >= 0) drawHandles(gc, selIdx);
-
-        // box-select rubber band
-        if (!Double.isNaN(boxX0)) {
-            double bx = Math.min(boxX0, boxX1), by = Math.min(boxY0, boxY1);
-            double bw = Math.abs(boxX1 - boxX0), bh = Math.abs(boxY1 - boxY0);
-            gc.setFill(Color.rgb(255, 255, 255, 0.07));
-            gc.fillRect(bx, by, bw, bh);
-            gc.setStroke(Color.rgb(255, 255, 255, 0.55));
-            gc.setLineWidth(1);
-            gc.strokeRect(bx, by, bw, bh);
-        }
+        // the shared editing overlays: nodes, rings, readouts, insert
+        // dot, guides, handles, box band (v18.3 — extracted so the
+        // speed strip draws the SAME overlays on its own surface)
+        drawEditOverlays(gc, w);
 
         // the split-line overlay on LANE and S/C strips (v14.0 — the
         // bridge strip draws its own inside drawBridgeStrip); on top
@@ -10465,6 +12755,12 @@ class GraphEditor extends Region {
         drawSectionBadges(gc, w);
 
         gc.restore();   // end plot clip
+
+        // SPEED CONTROL STRIP (Phase 3, v18.0 D160) — below the plot,
+        // outside its clip; the Ripple label follows the axis units
+        spSanitize();
+        spDraw(gc, w, h);
+        app.syncRippleLabel(axisDist());
 
         gc.setGlobalAlpha(1.0);
         gc.setFont(Font.font(11));
@@ -10739,6 +13035,254 @@ class GraphEditor extends Region {
         gc.stroke();
     }
 
+    /** The editing surface's overlays — nodes, selection rings,
+     *  hover/drag readouts, the insert dot, axis-lock guides, handles
+     *  and the box band. ONE implementation for the plot AND the
+     *  speed strip (v18.3, D172): the surface chokes (active/ltToX/
+     *  valToY/nodeR/edit bounds/…) retarget everything, and the
+     *  shared selection/hover/gesture state applies only on the
+     *  surface that owns it (spFocus / spHoverSurf / surfGesture). */
+    private void drawEditOverlays(GraphicsContext gc, double w) {
+        boolean owns = spFocus == surfStrip;
+        int sel = owns ? selIdx : -1;
+        java.util.Set<Integer> selMembers = owns ? selSet
+            : java.util.Collections.emptySet();
+        int dragged = owns ? dragNodeIdx : -1;
+        int draggedH = owns ? dragHandleIdx : -1;
+        boolean hovOwn = spHoverSurf == surfStrip;
+        double hovT = hovOwn ? hoverT : Double.NaN;
+        int hovN = hovOwn ? hoverNodeIdx : -1;
+
+        List<BezierBaker.Node> lane = active();
+        for (int i = 0; i < lane.size(); i++) {
+            double px = ltToX(lane.get(i).t);
+            double py = valToY(activeLane, dispVal(activeLane,
+                lane.get(i).t, lane.get(i).val));
+            boolean isSel = (i == sel);
+            boolean isDragged = (i == dragged);
+
+            if (isSel || selMembers.contains(i)) {
+                // primary = solid white ring; other members = fainter
+                gc.setStroke(isSel ? Color.WHITE : Color.rgb(255, 255, 255, 0.5));
+                gc.setLineWidth(isSel ? 1.5 : 1.2);
+                gc.strokeOval(px - nodeR() - 3, py - nodeR() - 3,
+                              (nodeR() + 3) * 2, (nodeR() + 3) * 2);
+            } else if (i == hovN && dragged < 0
+                    && draggedH < 0) {
+                // GREY hover ring (v16.15, user spec): the node under
+                // the cursor pre-lights before the white click ring
+                gc.setStroke(Color.rgb(170, 175, 185, 0.85));
+                gc.setLineWidth(1.3);
+                gc.strokeOval(px - nodeR() - 3, py - nodeR() - 3,
+                              (nodeR() + 3) * 2, (nodeR() + 3) * 2);
+            }
+            gc.setFill(isDragged ? Color.WHITE : laneColor(activeLane));
+            gc.fillOval(px - nodeR(), py - nodeR(), nodeR() * 2, nodeR() * 2);
+            if (!isDragged && i == hovN && dragged < 0
+                    && draggedH < 0) {
+                // GREY node-hover readout (v16.15, user spec): the
+                // drag readout's numbers without the click — and
+                // SHIFT swaps in the computed twins: the ABSOLUTE
+                // axis position + the CHANGE from the previous node
+                gc.setFill(Color.rgb(170, 175, 185));
+                gc.setFont(Font.font(11));
+                gc.setTextAlign(TextAlignment.LEFT);
+                gc.setTextBaseline(VPos.TOP);
+                BezierBaker.Node nd = lane.get(i);
+                double shown = dispVal(activeLane, nd.t, nd.val);
+                String xu = xUnit();
+                String txt;
+                if (hoverSlope) {
+                    String dv = i > 0
+                        ? String.format("  Δ%+.2f%s",
+                            nd.val - lane.get(i - 1).val,
+                            laneUnit(activeLane))
+                        : "";
+                    txt = String.format("%s=%.2f%s%s",
+                        axisDist() ? "s" : "t",
+                        tOff + warpFwd(nd.t), xu, dv);
+                } else {
+                    String vTxt = String.format("%.2f%s", shown,
+                        laneUnit(activeLane));
+                    txt = i == 0 ? vTxt
+                        : String.format("Δ%s=%.2f%s  %s",
+                            axisDist() ? "s" : "t",
+                            warpFwd(nd.t) - warpFwd(lane.get(i - 1).t),
+                            xu, vTxt);
+                }
+                double tw = txt.length() * 6.5;
+                double tx = FvdDesigner.clamp(px + 8, editL() + 4,
+                    editR() - tw - 4);
+                double ty = FvdDesigner.clamp(py - 20, editT() + 4,
+                    editB() - 16);
+                gc.fillText(txt, tx, ty);
+            }
+            if (isDragged) {
+                gc.setFill(Color.WHITE);
+                gc.setFont(Font.font(11));
+                gc.setTextAlign(TextAlignment.LEFT);
+                gc.setTextBaseline(VPos.TOP);
+                // transition time from the previous node; global value +
+                // unit. Position clamped INTO the plot so the readout
+                // stays readable while dragging past the bounds.
+                BezierBaker.Node nd = lane.get(i);
+                // Resulting view: the readout leads with the RESULTING
+                // value under the node and carries the delta along
+                double shown = dispVal(activeLane, nd.t, nd.val);
+                double off = dispOff(activeLane, nd.t);
+                String vTxt = off != 0
+                    ? String.format("%.2f%s (Δ %+.2f)", shown,
+                        laneUnit(activeLane), nd.val)
+                    // `shown` == nd.val without a warp; the cross-rate
+                    // view shows the displayed value (v16.9, D121)
+                    : String.format("%.2f%s", shown, laneUnit(activeLane));
+                // x readout in the DISPLAY domain: native Δ unwarped
+                // (Δt or Δs per the section), the warped axis Δ in a
+                // cross-domain view — always what the plot shows.
+                // SHIFT mid-drag (v16.16, user spec) swaps in the
+                // computed twins, exactly like shift+hover: the
+                // ABSOLUTE axis position + the Δ from the last node
+                String xu = xUnit();
+                String txt;
+                if (hoverSlope) {
+                    String dv = i > 0
+                        ? String.format("  Δ%+.2f%s",
+                            nd.val - lane.get(i - 1).val,
+                            laneUnit(activeLane))
+                        : "";
+                    txt = String.format("%s=%.2f%s%s",
+                        axisDist() ? "s" : "t",
+                        tOff + warpFwd(nd.t), xu, dv);
+                } else {
+                    txt = i == 0
+                        ? String.format("%s=%.2f%s  %s",
+                            axisDist() ? "s" : "t", warpFwd(nd.t), xu, vTxt)
+                        : String.format("Δ%s=%.2f%s  %s",
+                            axisDist() ? "s" : "t",
+                            warpFwd(nd.t) - warpFwd(lane.get(i - 1).t),
+                            xu, vTxt);
+                }
+                double tw = txt.length() * 6.5;   // approx width at 11 px
+                double tx = FvdDesigner.clamp(px + 8, editL() + 4, editR() - tw - 4);
+                double ty = FvdDesigner.clamp(py - 20, editT() + 4, editB() - 16);
+                gc.fillText(txt, tx, ty);
+            }
+        }
+
+        // insert preview: translucent white dot riding the curve, with
+        // the lane's value at that point alongside (the DISPLAYED
+        // curve: base+delta in the influence Resulting view)
+        if (!Double.isNaN(hovT)) {
+            double hv = dispVal(activeLane, hovT,
+                BezierBaker.evalAt(lane, hovT));
+            double hx = ltToX(hovT);
+            double hy = valToY(activeLane, hv);
+            gc.setGlobalAlpha(0.5);
+            gc.setFill(Color.WHITE);
+            gc.fillOval(hx - 4, hy - 4, 8, 8);
+            gc.setGlobalAlpha(0.75);
+            gc.setFont(Font.font(10));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.setTextBaseline(VPos.BOTTOM);
+            String hovTxt;
+            if (hoverSlope) {
+                // Shift: the ANALYTIC slope here replaces the value
+                // (differencing the baked polyline stair-stepped).
+                // Native units — divided onto the DISPLAY axis when
+                // the strip is warped (the slope you SEE, v16.0).
+                double slope;
+                if (laneWarped(activeLane)) {
+                    // cross-rate view (v16.9, D121): the DISPLAYED
+                    // slope — value scale AND x-axis both warp
+                    double hStep = activeDistNative() ? 0.5 : 0.02;
+                    double y1 = dispVal(activeLane, hovT + hStep,
+                        BezierBaker.evalAt(lane, hovT + hStep));
+                    double y0 = dispVal(activeLane, hovT - hStep,
+                        BezierBaker.evalAt(lane, hovT - hStep));
+                    double dx = warpMap != null
+                        ? warpFwd(hovT + hStep) - warpFwd(hovT - hStep)
+                        : 2 * hStep;
+                    slope = Math.abs(dx) < 1e-12 ? 0 : (y1 - y0) / dx;
+                } else {
+                    slope = BezierBaker.slopeAt(lane, hovT);
+                    if (warpMap != null && !surfStrip) {
+                        double hStep = activeDistNative() ? 0.5 : 0.02;
+                        double da = warpFwd(hovT + hStep)
+                            - warpFwd(hovT - hStep);
+                        slope = Math.abs(da) < 1e-12 ? 0
+                            : slope * 2 * hStep / da;
+                    }
+                }
+                hovTxt = String.format("%.2f %s/%s", slope,
+                    laneUnit(activeLane).trim(), xUnit());
+            } else {
+                hovTxt = String.format("%.2f%s", hv, laneUnit(activeLane));
+                // CROSS-RATE view (v16.9, D121): hv is already the
+                // warped display value — the NATIVE value rides
+                // along in parentheses
+                if (laneWarped(activeLane)) {
+                    hovTxt += String.format(" (= %.2f%s)",
+                        BezierBaker.evalAt(lane, hovT),
+                        activeRatePM(activeLane) ? " °/m" : " °/s");
+                }
+            }
+            // §5.2: the true value rides along once it visibly differs
+            // (not on the influence surface — its deltas aren't the
+            // quantity the true arrays measure; the overlays carry true)
+            if (!surfStrip && activeInfl() == null) {
+                hovTxt += trueSuffix(
+                    sampleIdxAtAxis(tOff + warpFwd(hovT)),
+                    activeLane, hoverSlope);
+            }
+            // CTRL (v16.16, user spec): the snapped spot's GLOBAL
+            // axis position leads the readout — you see exactly
+            // where the grid point sits before clicking to insert
+            if (ctrlHover) {
+                hovTxt = String.format("%s=%.2f%s  ",
+                    axisDist() ? "s" : "t",
+                    tOff + warpFwd(hovT), xUnit()) + hovTxt;
+            }
+            gc.fillText(hovTxt, hx + 8, hy - 6);
+            gc.setGlobalAlpha(1.0);
+        }
+
+        // axis-lock guide: the line the node rides along. Explicit Z/X
+        // overrides the transient slide axis. Color = what the drag
+        // CHANGES: vertical movement changes the VALUE (lane color);
+        // horizontal movement changes TIME (light purple).
+        int lock = !owns ? 0 : axisLock != 0 ? axisLock
+                 : (dragged >= 0 ? shiftAxis : 0);
+        if (sel >= 0 && lock != 0) {
+            double lx = ltToX(lane.get(sel).t);
+            double ly = valToY(activeLane, dispVal(activeLane,
+                lane.get(sel).t, lane.get(sel).val));
+            gc.setGlobalAlpha(0.5);
+            gc.setLineWidth(1.5);
+            if (lock == 1) {
+                gc.setStroke(laneColor(activeLane));
+                gc.strokeLine(lx, editT(), lx, editB());
+            } else {
+                gc.setStroke(FvdDesigner.TIME_COLOR);
+                gc.strokeLine(editL(), ly, editR(), ly);
+            }
+            gc.setGlobalAlpha(1.0);
+        }
+
+        if (sel >= 0) drawHandles(gc, sel);
+
+        // box-select rubber band
+        if (!Double.isNaN(boxX0) && surfGesture == surfStrip) {
+            double bx = Math.min(boxX0, boxX1), by = Math.min(boxY0, boxY1);
+            double bw = Math.abs(boxX1 - boxX0), bh = Math.abs(boxY1 - boxY0);
+            gc.setFill(Color.rgb(255, 255, 255, 0.07));
+            gc.fillRect(bx, by, bw, bh);
+            gc.setStroke(Color.rgb(255, 255, 255, 0.55));
+            gc.setLineWidth(1);
+            gc.strokeRect(bx, by, bw, bh);
+        }
+
+    }
+
     private void drawHandles(GraphicsContext gc, int idx) {
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(idx);
@@ -10768,8 +13312,8 @@ class GraphEditor extends Region {
                     gc.setLineDashes((double[]) null);
                 }
             }
-            boolean offscreen = k[0] < MARGIN_LEFT || k[0] > canvas.getWidth() - marginRight()
-                             || k[1] < MARGIN_TOP || k[1] > MARGIN_TOP + plotHeight();
+            boolean offscreen = k[0] < editL() || k[0] > editR()
+                             || k[1] < editT() || k[1] > editB();
 
             gc.setGlobalAlpha(dragging ? 1.0 : HANDLE_ALPHA);
             gc.setStroke(Color.WHITE);
@@ -10781,16 +13325,16 @@ class GraphEditor extends Region {
                 gc.setLineDashes(3, 5);
                 gc.strokeLine(nx, ny, edge[0], edge[1]);
                 gc.setLineDashes((double[]) null);
-                gc.strokeOval(edge[0] - KNOB_RADIUS, edge[1] - KNOB_RADIUS,
-                              KNOB_RADIUS * 2, KNOB_RADIUS * 2);
+                gc.strokeOval(edge[0] - knobR(), edge[1] - knobR(),
+                              knobR() * 2, knobR() * 2);
                 if (out) outEdgeMarker = edge; else inEdgeMarker = edge;
             } else {
                 gc.strokeLine(nx, ny, k[0], k[1]);
                 gc.setFill(Color.WHITE);
                 if (n.smooth) {
-                    gc.fillOval(k[0] - KNOB_RADIUS, k[1] - KNOB_RADIUS, KNOB_RADIUS * 2, KNOB_RADIUS * 2);
+                    gc.fillOval(k[0] - knobR(), k[1] - knobR(), knobR() * 2, knobR() * 2);
                 } else {
-                    gc.fillRect(k[0] - KNOB_RADIUS, k[1] - KNOB_RADIUS, KNOB_RADIUS * 2, KNOB_RADIUS * 2);
+                    gc.fillRect(k[0] - knobR(), k[1] - knobR(), knobR() * 2, knobR() * 2);
                 }
             }
             if (dragging) {
@@ -10806,8 +13350,8 @@ class GraphEditor extends Region {
                     out ? n.outFrac : n.inFrac,
                     dragPresetName != null ? " " + dragPresetName : "",
                     out ? n.outDv : n.inDv),
-                    FvdDesigner.clamp(k[0] + 8, MARGIN_LEFT, canvas.getWidth() - 140),
-                    FvdDesigner.clamp(k[1] - 16, MARGIN_TOP, MARGIN_TOP + plotHeight() - 14));
+                    FvdDesigner.clamp(k[0] + 8, editL(), canvas.getWidth() - 140),
+                    FvdDesigner.clamp(k[1] - 16, editT(), editB() - 14));
             }
         }
         gc.setGlobalAlpha(1.0);
@@ -10816,8 +13360,8 @@ class GraphEditor extends Region {
     /** Where the segment (x0,y0)->(x1,y1) exits the plot rectangle. */
     private double[] clipToPlot(double x0, double y0, double x1, double y1) {
         double t = 1;
-        double L = MARGIN_LEFT, R = canvas.getWidth() - marginRight();
-        double T = MARGIN_TOP, B = MARGIN_TOP + plotHeight();
+        double L = editL(), R = editR();
+        double T = editT(), B = editB();
         if (x1 < L) t = Math.min(t, (L - x0) / (x1 - x0));
         if (x1 > R) t = Math.min(t, (R - x0) / (x1 - x0));
         if (y1 < T) t = Math.min(t, (T - y0) / (y1 - y0));

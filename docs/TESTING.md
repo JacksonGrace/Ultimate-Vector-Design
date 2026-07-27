@@ -1752,6 +1752,31 @@
     contracting sequences, so every previously-converging march
     (all of 53a-c and 54a-d) reproduces verbatim.
 
+55. **v18.0 gates (Phase3Gate 87; D160 speed controls).** All
+    passed 2026-07-25: (55a) a constant-speed control on flat
+    track snaps to 15 m/s within one step, holds it EXACTLY and
+    keeps the shed energy past the control; (55b) a 1 g launch's
+    speed ramp matches the analytic dv/dt = g·A to 3e-11 m/s and
+    lands exactly on its 40 m/s target; (55c) a control inside a
+    deliberately conflicted (pinned) section closes the
+    design/true split to exactly 0.0 downstream; (55d) a max-only
+    brake under friction lands ON its 5 m/s target at the
+    crossing, then friction keeps shedding below it (a ceiling,
+    not a motor) with design == true; (55e) an inert control (past
+    the lane end) leaves every sample BITWISE — the zero-controls
+    contract the whole old suite also pins; (55f) the node split
+    partitions controls exactly (a straddler clips in two) and
+    merge re-covers the interval + marks; (55g) domain conversion
+    carries a control at its ARC position through the section map
+    (ends within fit residual); (55h) geo and s/c sections clamp
+    identically (all three integrators); (55i) a min-flag lift
+    RESCUES a stalling 60° geo climb in both the design and the
+    true pass (floor held at 8 m/s exactly).
+    Round 2 adds (55j) a roll-only convert (local -> global on a
+    +-40 deg/s wave): lanes 0/1 BIT-EXACT to the original nodes and
+    the ride end within 3 mm — the residual lives in the roll lane
+    alone (D169).
+
 99. v17.6 (D143) — the both-global fix + resulting settings:
     (a) BOTH-GLOBAL ADD: after any curving force section, ⊕ > Add
     geometric section with Global roll AND Global yaw/pitch — the
@@ -1981,6 +2006,160 @@
     settings) — it used to read "Gl … g". (d) every bridge's exit
     boundary draws the strict-seam DOUBLE line, with no carets or
     diamond on it; ordinary section boundaries stay single.
+
+111. v18.0 (D160-D164) — SPEED CONTROLS: (a) the "+V" box at the
+    graph's bottom-left toggles the speed strip; the ▲ at its left
+    edge expands the tall view (both persist across restarts).
+    (b) Click the line = a diamond appears; double-click or
+    right-click the diamond (or the line after it) = the stretch
+    to the next diamond/section end becomes a CONTROL (green =
+    constant speed) and the Speed Control options open — movable,
+    live, with the end-speed reference. Close it, double/right-
+    click the control again — it re-opens. (c) Constant Speed with
+    both flags on a fast section: the resulting speed (green
+    dotted, tall view) snaps flat at the target; uncheck Min —
+    below-target stretches run natural; try unchecking BOTH —
+    the other re-checks. (d) Constant Acceleration 1 g toward a
+    high target = a straight speed ramp; toward a low target with
+    Max only = a brake. (e) Complex control: Edit Speed expands
+    the strip and the graph edits like a lane (insert on the
+    curve, drag nodes/handles, Ctrl snaps, Delete removes a node);
+    the resulting speed follows the graph. (f) Drag the START
+    diamond = the control moves; the END diamond = it resizes
+    (its graph stretching along); ripple "time"/"distance" shifts
+    later diamonds; nothing ever leaves the section. (g) The 3D
+    view wears a green/blue PLATE down the tie centers under every
+    control; a control on a conflicted section pulls design AND
+    true speed onto the same clamp — the ≠v badge downstream
+    clears. (h) Speed a section down until the ride can't finish:
+    track past the stall turns TRANSPARENT and the POV jumps over
+    it (W into the gap lands on the next run's start, S backs onto
+    the last solid sample); add a Min lift over the climb — solid
+    again. (i) Friction rows read m/m and m⁻¹ (arrow steps 0.001 /
+    0.00001); a NEW document starts at 0.03 / 1.0e-4; loading an
+    OLD file shows ITS values (the load-friction bug is fixed).
+    (j) Badge menu > "Set initial design speed…" types a speed
+    directly (elsewhere = deliberate conflict, pinned; on the ride
+    entry it writes the Start-speed spinner); its "Set Design
+    Speed to Real" button == the renamed resolve op. The Add
+    dialog's fork row now says "Initial design speed" with "Set to
+    Real". (k) TIME comb: whole-second ticks stay put; fillers
+    space evenly between them at roughly the other combs' density
+    — fast track gets more, crawls get few. (l) Reverse piece on a
+    piece with controls refuses with the hint; Influence entry
+    grays with "(remove speed controls first)". Save/load a doc
+    with plain + complex controls + a bare diamond: everything
+    returns; Ctrl+Z steps through strip edits one gesture each.
+
+112. v18.1 (D165-D168) — the speed-control feedback round:
+    (a) Speed Control popup: End speed sits right under the speed
+    row; typing letters/spaces into any of its boxes does nothing;
+    Alt-Tab to another app — the panel vanishes; come back — it
+    reappears in place. (b) Complex graph: with a node selected,
+    Z then a drag moves only vertically (Z again frees it), X only
+    horizontally, holding S slides along your dominant motion;
+    H flattens its handles; F straightens the segment ahead;
+    Shift+F keeps it straight through further edits, Shift+H
+    levels it; Shift-hovering the curve reads the slope; the curve
+    wears the translucent shadow to zero and nodes pre-light with
+    a grey ring. (c) On a constant-speed complex control, press B
+    on the FIRST node: its value and slope snap onto the incoming
+    real speed (green dotted meets the graph smoothly); same on
+    the LAST node against the outgoing side; Shift+B identical.
+    (d) Shorten a section under a control (drag its last lane node
+    left): the control squeezes back inside — never past the end;
+    stack two controls at the end and click the pile: the FIRST
+    one selects. Min length is 0.02 s / 0.2 m everywhere. (e) Open
+    ANY window — node editor, Convert, Snapping, Shortcuts, the
+    Speed Control panel — then right-click the viewport: fly
+    works, WASD works, W/S ride in POV; letters never land in a
+    numeric box (only digits and one period type anywhere).
+    (f) TIME comb: seconds deep blue and taller, 10/20/30 s red,
+    fillers light blue. (g) Ride W into a stalled (transparent)
+    stretch: the camera stops exactly at the stall point like a
+    track end; S backs off it. Ride at Ctrl ×0.25: buttery — no
+    sample-stepping. (h) View > Mesh quality: at 400% a tight
+    corkscrew's tubes read round; at 25% visibly faceted; default
+    100% is already smoother in curves than before at about the
+    same triangle budget (rings concentrate where the track
+    turns).
+
+113. v18.2 (D169-D171) — the second speed-control feedback round:
+    (a) With the Speed Control panel (or ANY window) open:
+    right-click the viewport, press Space — POV toggles; T /
+    Shift+T ortho views work too. (b) Resulting ▾ roll check: make
+    it redundant (matching settings over a geo section) — it grays
+    AND unchecks; re-enable elsewhere manually. (c) Convert a
+    force section changing ONLY Roll axis (or behavior): the Gv/Gl
+    graphs don't move AT ALL (nodes identical), the preview opens
+    ON the roll lane, and the fitted roll lane converges with
+    density; the density slider changes nothing on lanes 0/1.
+    (d) An absolute-bank section's third lane button reads red
+    like its curve. (e) TIME comb: red ticks at 5, 10, 15 s….
+    (f) Ride W into a stalled stretch: the POV jumps to the next
+    piece — or to the ride start when it is the last/only piece —
+    exactly like riding off the end; S from beyond backs onto the
+    last solid sample. (g) Strip graphs: box-drag selects several
+    nodes (Shift adds), the group drags together and Delete
+    removes it; arrows nudge; Ctrl-hover shows the white snapped
+    insert dot; S/Z/X draw their guide lines; drag a handle off
+    the strip — dashed stub + hollow marker, click it and the
+    scale expands to reach; the zero line IS the control line
+    (speed above, negative accel below, "0" labeled on it).
+    (h) Grab the strip's top edge: drag up/down resizes (persists
+    across restarts), below ~40 px it collapses to the thin line,
+    dragging the thin edge up re-expands. (i) Double-click node 0
+    of any non-first section: the dialog carries "Initial design
+    speed (m/s)" — changing it pins a deliberate conflict; node 0
+    of the ride keeps "Start speed".
+114. v18.3 (D172) — the strip IS the editor: select a complex
+    control, tall view. (a) Every gesture matches the main plot
+    EXACTLY (rings, hover/drag readouts + Shift twins, guides,
+    ease-preset snap names, Ctrl-presnapped insert dot, box band,
+    S/Z/X, H/F, Shift+F/Shift+H twin-line lock visuals — enforced
+    on control lanes through any edit), at smaller nodes/lines.
+    (b) Double-click a strip node: the TYPED dialog opens
+    (transition/value/handles, numeric-only) and Apply edits the
+    control's graph; no Start-speed/boundary rows there. (c) The
+    Ripple time/value checks apply to strip node drags exactly
+    like lane drags. (d) Drag a strip node against the control's
+    ends: hard wall BOTH sides (no started-at-end extension), and
+    the plot axes never auto-grow during strip drags. (e) The
+    main plot never shows a phantom insert dot while the strip is
+    hovered, and vice versa. (f) With a strip node selected,
+    click the plot: the strip's node selection drops (and the
+    reverse) — Delete always targets the surface last pressed.
+    (g) The tall strip wears its own value gridlines + labels on
+    the selected control's scale, zero ON the control line.
+115. v18.4 (D173) — strip refinements: (a) Click-DRAG on a free
+    stretch of the control line: translucent preview grows with
+    the drag (Ctrl snaps, length readout), release creates a
+    selected SPEED control exactly press→release, clamped against
+    neighbors; a plain click still drops a diamond; Ctrl+Z removes
+    the whole creation. (b) The green dotted TRUE-speed curve is
+    GONE inside constant/complex SPEED controls (no overlap) but
+    still there over accel controls and plain track; its hover
+    follows. (c) Restart the app: the strip is always closed
+    (tall/height remembered for when you reopen it). (d) Drag a
+    strip node / hold a snapping shortcut: the MAIN graphs stay
+    rock solid — no flashing (the redraw surface-leak fix).
+    (e) A complex const-speed control shows a blue dotted
+    longitudinal-G curve inside its span (edges trimmed — the
+    boundary snap is instant); hover reads "long G = X g", Shift
+    the slope; same blue as accel graphs. (f) Shift+F/Shift+H on
+    strip segments draw mini twin-line (+ band for level) visuals
+    like the main plot.
+116. v18.5 (D174): (a) A PLAIN constant-speed control: the green
+    dotted true-speed curve still crosses it; check Complex — the
+    curve disappears inside; uncheck — it returns. (b) Author a
+    complex speed graph over steep track: the blue long-G curve
+    never leaves the strip vertically (the accel scale expands to
+    fit it). (c) Time ripple ON: drag an interior graph node right
+    — later nodes shift along but the control's LAST node stays
+    put and nothing exits the control; with value ripple it still
+    moves vertically. (d) Pull a control graph's last node left of
+    the control end: the remainder draws DOTTED at the held value,
+    and clicking the dotted stretch appends a node there.
 
 
 

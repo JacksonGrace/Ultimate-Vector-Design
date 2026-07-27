@@ -104,10 +104,6 @@ public final class DesignIO {
         StringBuilder ls = new StringBuilder("latstops");
         for (double v : cos.latStops()) ls.append(String.format(Locale.US, " %.4f", v));
         out.println(ls);
-        for (Coaster.SpeedRegion r : c.speedRegions) {
-            out.printf(Locale.US, "speedregion %.4f %.4f %s %.4f%n",
-                r.s0(), r.length(), r.mode(), r.value());
-        }
         for (TrackPiece piece : c.pieces) {
             // 5th-8th fields (v12.1): the piece's BASE ORIENTATION
             // quaternion (split/reversal anchor); missing = identity,
@@ -206,6 +202,7 @@ public final class DesignIO {
                                 rm, e.rollVal);
                         }
                     }
+                    writeSpeedCtls(out, sc.speedCtls, sc.speedMarks);
                     out.println("endsection");
                     continue;
                 }
@@ -240,6 +237,7 @@ public final class DesignIO {
                         writeNode(out, "n", n);
                     }
                 }
+                writeSpeedCtls(out, fs.speedCtls, fs.speedMarks);
                 if (fs.influenced()) {
                     // INFLUENCE (v15.0, D98): operating speed + delta
                     // lanes in the exact `n` grammar; missing = the
@@ -291,6 +289,7 @@ public final class DesignIO {
         Section curSection = null;
         int curLane = -1;
         int curDLane = -1;   // influence delta lane (v15.0, D98)
+        SpeedControl curCtl = null;   // speed control (v18.0, D160)
         // legacy flat files: one implicit piece + section holds everything
         if (!v3) {
             curPiece = new TrackPiece(0, 21, 0, 0);
@@ -360,9 +359,6 @@ public final class DesignIO {
                     for (int k = 0; k < 3 && k < parts.length - 1; k++)
                         lats[k] = clamp(Double.parseDouble(parts[k + 1]), 0, GRAD_G_MAX);
                 }
-                case "speedregion" -> c.speedRegions.add(new Coaster.SpeedRegion(
-                    Double.parseDouble(parts[1]), Double.parseDouble(parts[2]),
-                    parts[3], Double.parseDouble(parts[4])));
                 case "piece" -> {
                     curPiece = new TrackPiece(
                         clamp(Double.parseDouble(parts[1]), -500, 500),
@@ -438,6 +434,7 @@ public final class DesignIO {
                     curPiece.sections.add(curSection);
                     curLane = -1;
                     curDLane = -1;
+                    curCtl = null;
                 }
                 case "lane" -> {
                     if (!(curSection instanceof LaneSection))
@@ -449,6 +446,39 @@ public final class DesignIO {
                     if (!(curSection instanceof LaneSection ls) || curLane < 0)
                         throw new IOException("node outside lane section");
                     ls.lanes.get(curLane).add(parseNode(parts));
+                }
+                // ---- SPEED CONTROLS (v18.0, D160; missing = none —
+                // unknown-line rule covers old readers) ----
+                case "sctl" -> {
+                    List<SpeedControl> dst = ctlListOf(curSection);
+                    if (dst == null)
+                        throw new IOException("sctl outside lane/sc section");
+                    curCtl = new SpeedControl(
+                        Double.parseDouble(parts[3]),
+                        Math.max(0.01, Double.parseDouble(parts[4])));
+                    curCtl.type = parts[1].equals("1")
+                        ? SpeedControl.ACCEL : SpeedControl.SPEED;
+                    curCtl.complex = parts[2].equals("1");
+                    curCtl.speed = clamp(Double.parseDouble(parts[5]), 0.5, 200);
+                    curCtl.accel = clamp(Double.parseDouble(parts[6]), 0, 20);
+                    curCtl.minLimit = parts[7].equals("1");
+                    curCtl.maxLimit = parts[8].equals("1");
+                    if (!curCtl.minLimit && !curCtl.maxLimit) {
+                        curCtl.minLimit = true;   // at least one, always
+                        curCtl.maxLimit = true;
+                    }
+                    dst.add(curCtl);
+                }
+                case "cn" -> {
+                    if (curCtl == null)
+                        throw new IOException("cn outside speed control");
+                    curCtl.lane.add(parseNode(parts));
+                }
+                case "smark" -> {
+                    List<Double> dst = markListOf(curSection);
+                    if (dst == null)
+                        throw new IOException("smark outside lane/sc section");
+                    dst.add(Double.parseDouble(parts[1]));
                 }
                 // ---- INFLUENCE lines (v15.0, D98; missing = section
                 // loads uninfluenced — the unknown-line rule covers
@@ -606,10 +636,40 @@ public final class DesignIO {
                 }
                 if (legacy1) convertLegacyHandles(fs);
             }
+            // complex speed controls heal to a flat two-node graph
+            // when their cn block is missing/degenerate (v18.0)
+            for (Section s : piece.sections) {
+                for (SpeedControl sc2 : s.speedControls()) {
+                    if (sc2.complex && sc2.lane.size() < 2) {
+                        sc2.freshLane(sc2.type == SpeedControl.ACCEL
+                            ? sc2.accel : sc2.speed);
+                    }
+                }
+            }
         }
 
         return new LoadResult(c, new Cosmetics(heart, gauge, tie, solid,
             rail, grad, stops, latc, lats));
+    }
+
+    /** SPEED CONTROLS (v18.0, D160): one `sctl` line per control —
+     *  type (0 speed / 1 accel), complex flag, start, length, target
+     *  speed, accel, min/max flags — followed by its complex graph's
+     *  nodes as `cn` lines (the shared node grammar), plus `smark`
+     *  lines for plain speed-line diamonds. Old readers ignore all
+     *  three as unknown lines. */
+    private static void writeSpeedCtls(PrintWriter out,
+                                       List<SpeedControl> ctls,
+                                       List<Double> marks) {
+        for (SpeedControl c : ctls) {
+            out.printf(Locale.US, "sctl %d %d %.4f %.4f %.4f %.4f %d %d%n",
+                c.type, c.complex ? 1 : 0, c.x0, c.len, c.speed, c.accel,
+                c.minLimit ? 1 : 0, c.maxLimit ? 1 : 0);
+            for (BezierBaker.Node n : c.lane) writeNode(out, "cn", n);
+        }
+        for (double m : marks) {
+            out.printf(Locale.US, "smark %.4f%n", m);
+        }
     }
 
     /** One node line in the shared `n`/`dn` grammar (9 fields; the
@@ -635,6 +695,20 @@ public final class DesignIO {
         n.straightOut = parts.length > 8 && parts[8].equals("1");
         n.levelOut = parts.length > 9 && parts[9].equals("1");
         return n;
+    }
+
+    /** The mutable speed-control list of a lane/sc section (null =
+     *  the section mode carries none). */
+    private static List<SpeedControl> ctlListOf(Section s) {
+        if (s instanceof LaneSection ls) return ls.speedCtls;
+        if (s instanceof StraightCurveSection sc) return sc.speedCtls;
+        return null;
+    }
+
+    private static List<Double> markListOf(Section s) {
+        if (s instanceof LaneSection ls) return ls.speedMarks;
+        if (s instanceof StraightCurveSection sc) return sc.speedMarks;
+        return null;
     }
 
     /** Four quat fields starting at parts[at]. Re-normalized only when

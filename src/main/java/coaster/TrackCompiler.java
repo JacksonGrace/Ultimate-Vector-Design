@@ -15,8 +15,9 @@ import java.util.List;
  *   Pass D (dynamics, global):  assembled geometry + coaster v0 ->
  *       true speed per sample from energy vs the FIRST sample's height
  *       minus the document's FRICTION losses (Phase 3, v17.0 D133 —
- *       rolling + air, marched in travel order; speed regions still
- *       to come).
+ *       rolling + air, marched in travel order) and through the
+ *       sections' SPEED CONTROLS (v18.0, D160 — the same drive/snap
+ *       rules the design integrators apply).
  *   Pass A (analysis, global):  geometry + true speed -> resulting
  *       body rates (and, later, true forces).
  *
@@ -265,10 +266,47 @@ public final class TrackCompiler {
                 secIdx++;
             }
         }
-        double[] trueV = passD(all, runs, c.fricRoll, c.fricAir);
+        double[] trueV = passD(all, runs, c.fricRoll, c.fricAir,
+            ctlSampleRows(all, spans, c));
         double[][] rates = passA(all, runs);
         return new Result(all, trueV, rates,
             trueFelt(all, trueV), trueRates(all, rates, trueV), spans);
+    }
+
+    /** SPEED CONTROLS resolved per global sample (v18.0, D160): row i
+     *  = {type, target, accel, min, max} where sample i sits inside a
+     *  control (complex graphs evaluated at the sample's own local x),
+     *  null elsewhere. Null outright when no section carries any —
+     *  passD's bitwise-off gate. The DESIGN pass placed each control's
+     *  samples; the REAL march applies it over the same track region
+     *  (the hardware sits where the design put it). */
+    static double[][] ctlSampleRows(List<FVDIntegrator.Sample> all,
+                                    List<Span> spans, Coaster c) {
+        double[][] rows = null;
+        int flat = 0;
+        for (TrackPiece piece : c.pieces) {
+            for (Section sec : piece.sections) {
+                int idx = flat++;
+                if (!sec.speedControllable()
+                        || sec.speedControls().isEmpty()) continue;
+                if (idx >= spans.size()) continue;
+                Span sp = spans.get(idx);
+                boolean distAxis = sec.domain() == Section.Domain.DISTANCE;
+                if (rows == null) rows = new double[all.size()][];
+                for (int i = sp.i0(); i <= sp.i1() && i < all.size(); i++) {
+                    double x = distAxis
+                        ? all.get(i).s() - sp.s0()
+                        : all.get(i).t() - sp.t0();
+                    for (SpeedControl sc : sec.speedControls()) {
+                        if (x >= sc.x0 && x < sc.x0 + sc.len) {
+                            rows[i] = SpeedControl.rowFor(sc, x - sc.x0);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return rows;
     }
 
     /** {curvature dT/ds, its derivative d²T/ds²} at sample `at`, from
@@ -368,7 +406,8 @@ public final class TrackCompiler {
                 return reverseAndPlace(rr.samples(), entry);
             }
             ScIntegrator.Result r = ScIntegrator.integrate(
-                sc, dt, sc.vDesign, entry.pos(), entry.orient(), fric);
+                sc, dt, sc.vDesign, entry.pos(), entry.orient(), fric,
+                SpeedControl.Ctl.of(sc.speedCtls));
             FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
             TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
                 entry.s0() + last.s(), entry.t0() + last.t());
@@ -762,6 +801,11 @@ public final class TrackCompiler {
         opts.rollPerMeter = fs.ratePerMeter;   // v16.6, D115
         opts.rollAbsolute = fs.rollAbsolute && fs.rollGlobal;   // v16.7, D118
         if (opts.rollAbsolute) kfs = exactRoll(kfs, fs.lanes.get(2));
+        // speed controls (v18.0, D160) — legacy-reversed/influenced
+        // sections carry none (speedControllable gates); null = bitwise
+        if (fs.speedControllable()) {
+            opts.ctl = SpeedControl.Ctl.of(fs.speedCtls);
+        }
         if (fs.reversed) {
             // canonical frame at the ENTRY HEIGHT: energy is
             // height-relative but float rounding is not — this keeps
@@ -807,16 +851,19 @@ public final class TrackCompiler {
             return reverseAndPlace(rr.samples(), entry);
         }
         // quaternion-native (the §2 amendment): the exit orientation
-        // is the integrated q itself, not a frame round-trip
+        // is the integrated q itself, not a frame round-trip.
+        // Speed controls (v18.0): null unless the section carries any
+        SpeedControl.Ctl ctl = gs.speedControllable()
+            ? SpeedControl.Ctl.of(gs.speedCtls) : null;
         GeoIntegrator.Result r = dist
             ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
                 gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
-                gAbs, fric)
+                gAbs, fric, ctl)
             : GeoIntegrator.integrate(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
                 gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
-                gAbs, fric);
+                gAbs, fric, ctl);
         FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
         TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t());
@@ -1212,7 +1259,7 @@ public final class TrackCompiler {
      *  sample arc (Heun; the true ride always sheds in TRAVEL order —
      *  which is exactly how a pre-resolve reversed section's design
      *  profile stays honestly conflicted). Zero coefficients add a
-     *  literal − 0.0 — bitwise. Speed regions still to come. */
+     *  literal − 0.0 — bitwise. */
     public static double[] passD(List<FVDIntegrator.Sample> samples,
                                  List<double[]> runs) {
         return passD(samples, runs, 0, 0);
@@ -1221,6 +1268,20 @@ public final class TrackCompiler {
     public static double[] passD(List<FVDIntegrator.Sample> samples,
                                  List<double[]> runs,
                                  double fricRoll, double fricAir) {
+        return passD(samples, runs, fricRoll, fricAir, null);
+    }
+
+    /** SPEED-CONTROL variant (v18.0, D160): ctl = per-sample resolved
+     *  rows from {@link #ctlSampleRows} (null = none — the friction
+     *  march below is arithmetic-identical to the historic path). A
+     *  driven interval replaces friction (the drive absorbs it, the
+     *  felt-G contract); snaps land the march ON the target exactly
+     *  like the design integrators, so a control closes design/real
+     *  conflicts by construction. */
+    public static double[] passD(List<FVDIntegrator.Sample> samples,
+                                 List<double[]> runs,
+                                 double fricRoll, double fricAir,
+                                 double[][] ctl) {
         double[] v = new double[samples.size()];
         boolean fOn = fricRoll != 0 || fricAir != 0;
         for (int r = 0; r < runs.size(); r++) {
@@ -1236,7 +1297,14 @@ public final class TrackCompiler {
                     + 2 * FVDIntegrator.G0 * (y0 - samples.get(i).pos().y())
                     - loss, 0));
                 v[i] = Math.max(0.1, vh);
-                if (fOn && i + 1 < i1) {
+                double[] row = ctl == null ? null : ctl[i];
+                double drv = SpeedControl.driveRow(row, vh);
+                if (!Double.isNaN(drv) && i + 1 < i1) {
+                    // driven interval: loss' is the constant ∓2gA —
+                    // exact over the sample arc, friction absorbed
+                    loss += drv * (samples.get(i + 1).s()
+                        - samples.get(i).s());
+                } else if (fOn && i + 1 < i1) {
                     double ds = samples.get(i + 1).s() - samples.get(i).s();
                     double f0 = 2 * (fricRoll * FVDIntegrator.G0
                         + fricAir * vh * vh);
@@ -1246,6 +1314,14 @@ public final class TrackCompiler {
                     double f1 = 2 * (fricRoll * FVDIntegrator.G0
                         + fricAir * vp2);
                     loss += (f0 + f1) / 2 * ds;
+                }
+                if (row != null && i + 1 < i1) {
+                    double vA = Math.sqrt(Math.max(v0 * v0
+                        + 2 * FVDIntegrator.G0
+                        * (y0 - samples.get(i + 1).pos().y()) - loss, 0));
+                    double dl = SpeedControl.snapRow(row, vh, vA,
+                        !Double.isNaN(drv));
+                    if (dl != 0) loss += dl;
                 }
             }
         }

@@ -131,6 +131,17 @@ public final class GeoIntegrator {
                                boolean rollGlobal, boolean ypGlobal,
                                boolean perMeter, boolean rollAbs,
                                FVDIntegrator.Friction fric) {
+        return deriv(st, t, kfs, vDesign, y0, rollGlobal, ypGlobal,
+            perMeter, rollAbs, fric, Double.NaN);
+    }
+
+    /** drive = a speed control's d(loss)/ds for this step (replaces
+     *  friction); NaN = natural (v18.0, D160). */
+    private static Deriv deriv(State st, double t, List<FVDIntegrator.Keyframe> kfs,
+                               double vDesign, double y0,
+                               boolean rollGlobal, boolean ypGlobal,
+                               boolean perMeter, boolean rollAbs,
+                               FVDIntegrator.Friction fric, double drive) {
         Quat q = st.q().normalize();   // stages hand us slightly non-unit q
         Vec3 T = q.T();
         Vec3 U = q.U();
@@ -145,7 +156,8 @@ public final class GeoIntegrator {
                 ? Math.toRadians(FVDIntegrator.rollSlopeAt(kfs, t))
                 : Double.NaN);
         Quat dQ = new Quat(0, omega.x(), omega.y(), omega.z()).mul(q).scale(0.5);
-        return new Deriv(T.scale(v), dQ, fric.dLossDs(v) * v);
+        return new Deriv(T.scale(v), dQ,
+            (Double.isNaN(drive) ? fric.dLossDs(v) : drive) * v);
     }
 
     private static State advance(State y, Deriv k, double h) {
@@ -199,6 +211,18 @@ public final class GeoIntegrator {
                                    boolean rollGlobal, boolean ypGlobal,
                                    boolean perMeter, boolean rollAbs,
                                    FVDIntegrator.Friction fric) {
+        return integrate(keyframes, dt, vDesign, pos0, q0, rollGlobal,
+            ypGlobal, perMeter, rollAbs, fric, null);
+    }
+
+    /** SPEED-CONTROL variant (Phase 3, v18.0 D160): lift/brake/launch
+     *  intervals keyed by section-local time. Null = none, bitwise. */
+    public static Result integrate(List<FVDIntegrator.Keyframe> keyframes, double dt,
+                                   double vDesign, Vec3 pos0, Quat q0,
+                                   boolean rollGlobal, boolean ypGlobal,
+                                   boolean perMeter, boolean rollAbs,
+                                   FVDIntegrator.Friction fric,
+                                   SpeedControl.Ctl ctl) {
         double totalTime = keyframes.get(keyframes.size() - 1).t();
 
         Vec3 pos = pos0;
@@ -250,11 +274,14 @@ public final class GeoIntegrator {
             if (rem <= dt * 1e-9) break;
             double h = (rem <= dt * 1.5) ? rem : dt;
 
+            // speed control (v18.0): per-step drive at the step-start
+            // time; post-step snap below
+            double drv = ctl == null ? Double.NaN : ctl.drive(t, v);
             State y = new State(pos, q, loss);
-            Deriv k1 = deriv(y, t, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-            Deriv k2 = deriv(advance(y, k1, h / 2), t + h / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-            Deriv k3 = deriv(advance(y, k2, h / 2), t + h / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-            Deriv k4 = deriv(advance(y, k3, h), t + h, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
+            Deriv k1 = deriv(y, t, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric, drv);
+            Deriv k2 = deriv(advance(y, k1, h / 2), t + h / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric, drv);
+            Deriv k3 = deriv(advance(y, k2, h / 2), t + h / 2, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric, drv);
+            Deriv k4 = deriv(advance(y, k3, h), t + h, keyframes, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric, drv);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
@@ -264,6 +291,11 @@ public final class GeoIntegrator {
                     .scale(h / 6)).normalize();
             loss += (k1.dLoss() + 2 * k2.dLoss() + 2 * k3.dLoss()
                 + k4.dLoss()) * h / 6;
+            if (ctl != null) {
+                double vA = FVDIntegrator.speedAt(newPos, vDesign, y0, loss);
+                double dl = ctl.snap(t, v, vA, !Double.isNaN(drv));
+                if (dl != 0) loss += dl;
+            }
             if (rollGlobal && rollAbs) {
                 // ABSOLUTE roll (D118): target = the lane value at
                 // the just-reached time (C1 read, v16.9 D121)
@@ -327,6 +359,16 @@ public final class GeoIntegrator {
                                     boolean rollGlobal, boolean ypGlobal,
                                     boolean perMeter, boolean rollAbs,
                                     FVDIntegrator.Friction fric) {
+        return derivDist(st, kfs, vDesign, y0, rollGlobal, ypGlobal,
+            perMeter, rollAbs, fric, Double.NaN);
+    }
+
+    private static DDeriv derivDist(DState st, List<FVDIntegrator.Keyframe> kfs,
+                                    double vDesign, double y0,
+                                    boolean rollGlobal, boolean ypGlobal,
+                                    boolean perMeter, boolean rollAbs,
+                                    FVDIntegrator.Friction fric,
+                                    double drive) {
         Quat q = st.q().normalize();
         Vec3 T = q.T();
         Vec3 U = q.U();
@@ -344,7 +386,8 @@ public final class GeoIntegrator {
                     FVDIntegrator.rollSlopeAt(kfs, st.s())) * v
                 : Double.NaN);
         Quat dQ = new Quat(0, omega.x(), omega.y(), omega.z()).mul(q).scale(0.5);
-        return new DDeriv(T.scale(v), dQ, v, fric.dLossDs(v) * v);
+        return new DDeriv(T.scale(v), dQ, v,
+            (Double.isNaN(drive) ? fric.dLossDs(v) : drive) * v);
     }
 
     private static DState advanceDist(DState y, DDeriv k, double h) {
@@ -358,10 +401,20 @@ public final class GeoIntegrator {
                                   boolean rollGlobal, boolean ypGlobal,
                                   boolean perMeter, boolean rollAbs,
                                   FVDIntegrator.Friction fric) {
-        DDeriv k1 = derivDist(y, kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
-        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric);
+        return rk4Dist(y, kfs, vDesign, y0, h, rollGlobal, ypGlobal,
+            perMeter, rollAbs, fric, Double.NaN);
+    }
+
+    private static DState rk4Dist(DState y, List<FVDIntegrator.Keyframe> kfs,
+                                  double vDesign, double y0, double h,
+                                  boolean rollGlobal, boolean ypGlobal,
+                                  boolean perMeter, boolean rollAbs,
+                                  FVDIntegrator.Friction fric,
+                                  double drive) {
+        DDeriv k1 = derivDist(y, kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric, drive);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric, drive);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric, drive);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, vDesign, y0, rollGlobal, ypGlobal, perMeter, rollAbs, fric, drive);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -448,6 +501,19 @@ public final class GeoIntegrator {
                                        boolean rollGlobal, boolean ypGlobal,
                                        boolean perMeter, boolean rollAbs,
                                        FVDIntegrator.Friction fric) {
+        return integrateDist(keyframes, dt, vDesign, pos0, q0, rollGlobal,
+            ypGlobal, perMeter, rollAbs, fric, null);
+    }
+
+    /** SPEED-CONTROL variant (Phase 3, v18.0 D160): intervals keyed by
+     *  section-local ARC. Null = none, bitwise. */
+    public static Result integrateDist(List<FVDIntegrator.Keyframe> keyframes,
+                                       double dt, double vDesign,
+                                       Vec3 pos0, Quat q0,
+                                       boolean rollGlobal, boolean ypGlobal,
+                                       boolean perMeter, boolean rollAbs,
+                                       FVDIntegrator.Friction fric,
+                                       SpeedControl.Ctl ctl) {
         double totalLen = Math.max(keyframes.get(keyframes.size() - 1).t(), 1e-6);
 
         DState st = new DState(pos0, q0.normalize(), 0, 0);
@@ -465,10 +531,12 @@ public final class GeoIntegrator {
             double v = Math.max(0.5,
                 FVDIntegrator.speedAt(st.pos(), vDesign, y0, st.loss()));
             double sPrev = st.s();
+            // speed control (v18.0): drive at the step-start arc
+            double drv = ctl == null ? Double.NaN : ctl.drive(sPrev, v);
             double hUsed;
             if (st.s() + v * dt < totalLen - 1e-12) {
                 st = rk4Dist(st, keyframes, vDesign, y0, dt,
-                    rollGlobal, ypGlobal, perMeter, rollAbs, fric);
+                    rollGlobal, ypGlobal, perMeter, rollAbs, fric, drv);
                 t += dt;
                 hUsed = dt;
             } else {
@@ -476,7 +544,8 @@ public final class GeoIntegrator {
                 DState end = st;
                 for (int it = 0; it < 3; it++) {
                     end = rk4Dist(st, keyframes, vDesign, y0, h,
-                        rollGlobal, ypGlobal, perMeter, rollAbs, fric);
+                        rollGlobal, ypGlobal, perMeter, rollAbs, fric,
+                        drv);
                     double vEnd = Math.max(0.5,
                         FVDIntegrator.speedAt(end.pos(), vDesign, y0,
                             end.loss()));
@@ -485,6 +554,15 @@ public final class GeoIntegrator {
                 st = new DState(end.pos(), end.q(), totalLen, end.loss());
                 t += h;
                 hUsed = h;
+            }
+            if (ctl != null) {
+                double vA = FVDIntegrator.speedAt(st.pos(), vDesign, y0,
+                    st.loss());
+                double dl = ctl.snap(sPrev, v, vA, !Double.isNaN(drv));
+                if (dl != 0) {
+                    st = new DState(st.pos(), st.q(), st.s(),
+                        st.loss() + dl);
+                }
             }
             if (rollGlobal && rollAbs) {
                 // ABSOLUTE roll (D118): target = the lane value at

@@ -14,8 +14,9 @@ import java.util.List;
  * document with the milestone-B UI split (D50).
  *
  * v0 is the DYNAMICS entry speed (Pass D). Today it always equals the
- * single force section's vDesign — the Start-speed spinner writes both
- * — and they only diverge when Phase 3 speed control arrives.
+ * single force section's vDesign — the Start-speed spinner writes
+ * both. (Phase 3's speed CONTROLS live per section — SpeedControl on
+ * LaneSection/StraightCurveSection, v18.0 D160.)
  */
 public class Coaster {
 
@@ -39,12 +40,10 @@ public class Coaster {
 
     public final List<TrackPiece> pieces = new ArrayList<>();
 
-    /** Phase-3 dynamics regions — the MODEL slot exists from Phase 1 so
-     *  FVDD3 and the pass pipeline have a stable place for them (§6).
-     *  Anchored by global arc length s. Modes arrive in Phase 3. */
-    public record SpeedRegion(double s0, double length, String mode, double value) {}
-
-    public final List<SpeedRegion> speedRegions = new ArrayList<>();
+    // (The Phase-1 SpeedRegion placeholder record retired in v18.0,
+    // D160: real speed controls live PER SECTION — SpeedControl on
+    // LaneSection/StraightCurveSection. No file ever carried a
+    // `speedregion` line; the loader ignores any as unknown.)
 
     /** Today's app shape: one piece at (x,y,z), one force section whose
      *  lane lists are SHARED BY REFERENCE with the caller (the graph
@@ -199,6 +198,10 @@ public class Coaster {
         if (piece.sections.isEmpty()) return false;
         for (Section s : piece.sections) {
             if (s instanceof BridgeSection) return false;
+            // SPEED CONTROLS refuse reversal (v18.0, D160): a lift/
+            // brake acting on the mirrored flow is ill-defined —
+            // remove the controls first (the editor explains)
+            if (!s.speedControls().isEmpty()) return false;
         }
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
         int span0 = 0;
@@ -1339,9 +1342,41 @@ public class Coaster {
             return true;
         }
         if (sp.i1() - sp.i0() < 4) return false;
-        piece.sections.set(secIdx, fitLanes(
+        LaneSection realFit = fitLanes(
             withEntry(r.samples(), sp, dt),
-            vTrue, sec instanceof GeoSection, dt, spacing, adaptTol));
+            vTrue, sec instanceof GeoSection, dt, spacing, adaptTol);
+        // speed controls keep their TRACK position (v18.0, D160): a
+        // TIME section's refit runs on the TRUE clock, so control
+        // times re-map arc-invariantly (design t → arc → true t);
+        // DISTANCE sections carry verbatim (the arc axis is shared).
+        if (sec.domain() == Section.Domain.TIME
+                && !sec.speedControls().isEmpty()) {
+            double[][] tm = trueClockMap(r, sp);
+            List<SpeedControl> part = SpeedControl.portion(
+                sec.speedControls(), 0, Double.POSITIVE_INFINITY);
+            for (SpeedControl c : part) {
+                double a = mapCol(tm, 0, 1, c.x0);
+                double b = mapCol(tm, 0, 1, c.x0 + c.len);
+                if (c.complex && !c.lane.isEmpty()) {
+                    double[] gaps = BezierBaker.segGaps(c.lane);
+                    double cx0 = c.x0;
+                    for (BezierBaker.Node n : c.lane) {
+                        n.t = mapCol(tm, 0, 1, cx0 + n.t) - a;
+                    }
+                    BezierBaker.rescaleDvToGaps(c.lane, gaps);
+                }
+                c.x0 = a;
+                c.len = Math.max(0.01, b - a);
+            }
+            realFit.speedCtls.addAll(part);
+            for (double m : sec.speedMarks()) {
+                realFit.speedMarks.add(mapCol(tm, 0, 1, m));
+            }
+        } else {
+            carrySpeedCtls(sec, sp, r.samples(), realFit, 0,
+                Double.POSITIVE_INFINITY);
+        }
+        piece.sections.set(secIdx, realFit);
         return true;
     }
 
@@ -1567,6 +1602,88 @@ public class Coaster {
         return map[lo][to] + u * (map[hi][to] - map[lo][to]);
     }
 
+    /** Carry SPEED CONTROLS + marks from a section onto its refit
+     *  twin (v18.0, D160): the source range [lo, hi] (source-native
+     *  axis) clips EXACTLY (SpeedControl.portion — complex graphs de
+     *  Casteljau at the cut), then, when the domains differ, every
+     *  coordinate maps through the span's compiled {t,s} map into the
+     *  output domain (the hardware keeps its track position; the
+     *  refit reproduces the speeds, so the mapped clock matches to
+     *  fit residual). Same-domain carries are exact copies. dst must
+     *  be freshly built (its lists start empty). */
+    static void carrySpeedCtls(Section src, TrackCompiler.Span sp,
+                               List<FVDIntegrator.Sample> samples,
+                               Section dst, double lo, double hi) {
+        if (!dst.speedControllable()) return;
+        List<SpeedControl> part =
+            SpeedControl.portion(src.speedControls(), lo, hi);
+        List<Double> marks =
+            SpeedControl.marksPortion(src.speedMarks(), lo, hi);
+        if (part.isEmpty() && marks.isEmpty()) return;
+        boolean fromDist = src.domain() == Section.Domain.DISTANCE;
+        boolean toDist = dst.domain() == Section.Domain.DISTANCE;
+        if (fromDist != toDist && sp != null && samples != null) {
+            double[][] map = sectionMap(samples, sp, false);
+            int fc = fromDist ? 1 : 0, tc = toDist ? 1 : 0;
+            double base = mapCol(map, fc, tc, lo);
+            for (SpeedControl c : part) {
+                double a = mapCol(map, fc, tc, lo + c.x0) - base;
+                double b = mapCol(map, fc, tc, lo + c.x0 + c.len) - base;
+                if (c.complex && !c.lane.isEmpty()) {
+                    double[] gaps = BezierBaker.segGaps(c.lane);
+                    double cx0 = c.x0;
+                    for (BezierBaker.Node n : c.lane) {
+                        n.t = mapCol(map, fc, tc, lo + cx0 + n.t)
+                            - base - a;
+                    }
+                    BezierBaker.rescaleDvToGaps(c.lane, gaps);
+                }
+                c.x0 = a;
+                c.len = Math.max(0.01, b - a);
+            }
+            for (int i = 0; i < marks.size(); i++) {
+                marks.set(i, mapCol(map, fc, tc, lo + marks.get(i)) - base);
+            }
+        }
+        dst.speedControls().addAll(part);
+        dst.speedMarks().addAll(marks);
+    }
+
+    /** ROLL-ONLY converts keep the NON-ROLL lanes verbatim (v18.2,
+     *  D169): deep node copies of the source's lanes 0/1 replace the
+     *  fitted ones — locks, handles and all. */
+    private static void preserveNonRollLanes(LaneSection src,
+                                             LaneSection conv) {
+        for (int L = 0; L < 2; L++) {
+            List<BezierBaker.Node> dst = conv.lanes.get(L);
+            dst.clear();
+            for (BezierBaker.Node n : src.lanes.get(L)) dst.add(n.copy());
+        }
+    }
+
+    /** makeGraphsReal's clock carry (v18.0): a TIME section refit at
+     *  the TRUE speed keeps each control at its ARC position — old
+     *  design time → arc → the true clock (trapezoid over trueV).
+     *  Rows {tOld, tTrue} local to the span. */
+    private static double[][] trueClockMap(TrackCompiler.Result r,
+                                           TrackCompiler.Span sp) {
+        int i0 = sp.i0(), i1 = Math.min(sp.i1(), r.samples().size() - 1);
+        double[][] map = new double[i1 - i0 + 1][2];
+        double tt = 0;
+        for (int i = i0; i <= i1; i++) {
+            if (i > i0) {
+                double ds = r.samples().get(i).s()
+                    - r.samples().get(i - 1).s();
+                double vm = Math.max(0.5,
+                    (r.trueV()[i] + r.trueV()[i - 1]) / 2);
+                tt += ds / vm;
+            }
+            map[i - i0][0] = r.samples().get(i).t() - sp.t0();
+            map[i - i0][1] = tt;
+        }
+        return map;
+    }
+
     /** DOMAIN CONVERSION (v16.1, D104 — user re-spec 2026-07-12,
      *  REPLACING v16.0's exact node map): a same-mode carpet REFIT
      *  into the OTHER domain through the standard convert engine —
@@ -1597,6 +1714,9 @@ public class Coaster {
             ls.vDesign(), ls instanceof GeoSection, dt, spacing, adaptTol,
             toDist ? Section.Domain.DISTANCE : Section.Domain.TIME);
         conv.vPinned = sec.vPinned();
+        // speed controls follow the domain flip (v18.0, D160)
+        carrySpeedCtls(sec, sp, r.samples(), conv, 0,
+            Double.POSITIVE_INFINITY);
         piece.sections.set(secIdx, conv);
         return true;
     }
@@ -2281,7 +2401,16 @@ public class Coaster {
             withEntry(r.samples(), sp, dt),
             ls.vDesign(), ls instanceof GeoSection, dt, spacing, adaptTol,
             ls.domain(), toRollG, toYpG, false, false);
+        // roll-only bake keeps lanes 0/1 node-exact (v18.2, D169 —
+        // same rule as the Convert dialog's roll-only path)
+        if (!ls.influenced() && toYpG == ls.yawPitchGlobal
+                && !ls.ratePerMeter && toRollG != ls.rollGlobal) {
+            preserveNonRollLanes(ls, conv);
+        }
         conv.vPinned = sec.vPinned();
+        // same domain + clock: speed controls carry verbatim (v18.0)
+        carrySpeedCtls(sec, sp, r.samples(), conv, 0,
+            Double.POSITIVE_INFINITY);
         piece.sections.set(secIdx, conv);
         return true;
     }
@@ -3083,6 +3212,16 @@ public class Coaster {
         // the second half is a no-op on the shared profile anyway)
         keep.vPinned(sec.vPinned());
         conv.vPinned = sec.vPinned();
+        // speed controls partition at the cut (v18.0, D160): each
+        // half takes its share — the kept side exactly, the converted
+        // side mapped when the output domain differs. cutNative = the
+        // cut position on the SOURCE's own axis.
+        double cutNative = sec.domain() == Section.Domain.DISTANCE
+            ? cs.s() - sp.s0() : cs.t() - sp.t0();
+        carrySpeedCtls(sec, sp, r.samples(), left ? conv : keep,
+            0, cutNative);
+        carrySpeedCtls(sec, sp, r.samples(), left ? keep : conv,
+            cutNative, Double.POSITIVE_INFINITY);
         piece.sections.set(secIdx, left ? conv : keep);
         piece.sections.add(secIdx + 1, left ? keep : conv);
         return true;
@@ -3146,6 +3285,14 @@ public class Coaster {
             h.rollAbsolute = ls.rollAbsolute;
             h.vPinned(ls.vPinned());
         }
+        // speed controls partition at the cut, native axis — exact
+        // (v18.0, D160; straddling controls clip into two)
+        a.speedCtls.addAll(SpeedControl.portion(ls.speedCtls, 0, xc));
+        b.speedCtls.addAll(SpeedControl.portion(ls.speedCtls, xc,
+            Double.POSITIVE_INFINITY));
+        a.speedMarks.addAll(SpeedControl.marksPortion(ls.speedMarks, 0, xc));
+        b.speedMarks.addAll(SpeedControl.marksPortion(ls.speedMarks, xc,
+            Double.POSITIVE_INFINITY));
         piece.sections.set(secIdx, a);
         piece.sections.add(secIdx + 1, b);
         return true;
@@ -3266,6 +3413,15 @@ public class Coaster {
         ms.ratePerMeter = a.ratePerMeter;
         ms.rollAbsolute = a.rollAbsolute;
         ms.vPinned(a.vPinned());
+        // speed controls: A's verbatim + B's shifted by A's extent
+        // (v18.0, D160 — the split partition's exact inverse)
+        ms.speedCtls.addAll(SpeedControl.copyList(a.speedCtls));
+        for (SpeedControl c : SpeedControl.copyList(b.speedCtls)) {
+            c.x0 += dA;
+            ms.speedCtls.add(c);
+        }
+        ms.speedMarks.addAll(a.speedMarks);
+        for (double m : b.speedMarks) ms.speedMarks.add(m + dA);
         piece.sections.set(secIdx, ms);
         piece.sections.remove(secIdx + 1);
         return true;
@@ -3469,12 +3625,31 @@ public class Coaster {
             withEntry(r.samples(), sp, dt),
             sec.vDesign(), toGeo, dt, spacing, adaptTol,
             outDom, rollG, ypG, rateM, rollAbs);
+        // ROLL-ONLY convert (v18.2, D169 — user spec): when nothing
+        // but the roll axis/behavior changes, lanes 0/1 keep their
+        // AUTHORED nodes bit-exactly — Gv/Gl (or pitch/yaw) targets
+        // mean exactly what they meant under any roll representation;
+        // only the roll lane re-fits to the measured bank/rate in the
+        // new semantics. The whole conversion residual then lives in
+        // lane 2 alone.
+        if (sec instanceof LaneSection src && !src.influenced()
+                && toGeo == (src instanceof GeoSection)
+                && outDom == src.domain()
+                && rateM == src.ratePerMeter
+                && ypG == src.yawPitchGlobal
+                && (rollG != src.rollGlobal
+                    || rollAbs != src.rollAbsolute)) {
+            preserveNonRollLanes(src, conv);
+        }
         // a SPEED-CONFLICTED section stays conflicted through a convert
         // (v15.1, D99 — user rule: "the geo section should still have
         // design/real speed conflict and shouldn't change shape"): the
         // pin rides along, so the reconcile keeps leaving it alone and
         // the shape survives (vDesign already carries over above)
         conv.vPinned = sec.vPinned();
+        // speed controls carry (v18.0, D160 — mapped on domain flips)
+        carrySpeedCtls(sec, sp, r.samples(), conv, 0,
+            Double.POSITIVE_INFINITY);
         piece.sections.set(secIdx, conv);
         return true;
     }
