@@ -321,6 +321,9 @@ public class FVDIntegrator {
 
         Vec3 pos = opts.pos0;
         double v = opts.v0;
+        double vRec = v;   // the RECORDED speed — honest since v18.6
+                           // (D175): no 0.1 park on the graphs; the
+                           // loop's v keeps the floor for decisions
         Vec3 T = opts.startHeading.normalize();
         // orthonormalize the entry up against T (float-exact no-op for
         // the default (0,1,0) against (1,0,0): dot is 0, sqrt(1) is 1)
@@ -344,7 +347,8 @@ public class FVDIntegrator {
         double t = 0;
         while (true) {
             Keyframe kf = interpAt(keyframes, t);
-            samples.add(new Sample(t, s, pos, T, U, R, v, kf.Gv(), kf.Gl()));
+            samples.add(new Sample(t, s, pos, T, U, R, vRec,
+                kf.Gv(), kf.Gl()));
 
             // END LANDING (v17.10, D147): the closing step is sized to
             // land the last sample EXACTLY on the authored end. The
@@ -428,9 +432,14 @@ public class FVDIntegrator {
 
             // recorded speed: energy minus the accumulated friction
             // deficit (v17.0 — with zero coefficients loss is exactly
-            // 0.0 and this equals the historic expression bitwise; the
-            // old inert per-second bleed factor is gone)
-            v = Math.max(0.1, speedAt(pos, opts.v0, y0, loss));
+            // 0.0 and this equals the historic expression bitwise).
+            // HONEST record since v18.6 (D175 — the user's "speed
+            // becomes piecewise near zero": the max(0.1,·) parked
+            // every slow dip at exactly 0.1 on the graphs); the
+            // loop-internal v keeps the floor for the drive/trapezoid
+            // decisions — physics bitwise.
+            vRec = speedAt(pos, opts.v0, y0, loss);
+            v = Math.max(0.1, vRec);
 
             t = (h == dt) ? t + dt : totalTime;
         }
@@ -534,7 +543,7 @@ public class FVDIntegrator {
         Keyframe kf = interpAt(kfs, st.s());
         double v = speedAt(st.pos(), v0, y0, st.loss());
         samples.add(new Sample(t, st.s(), st.pos(), T, U, U.cross(T),
-            Math.max(0.1, v), kf.Gv(), kf.Gl()));
+            v, kf.Gv(), kf.Gl()));   // honest record (v18.6, D175)
     }
 
     /** DISTANCE-domain run: keyframes over arc length (meters in the

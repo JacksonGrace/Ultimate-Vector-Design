@@ -1757,7 +1757,9 @@ public class Coaster {
                 // the ref at the new speed with the deltas on top.
                 // Pinned influenced sections still skip via the pin.)
                 int ip = r.spans().get(spanIdx - 1).i1();
-                double vIn = r.samples().get(ip).v();
+                // floored where the record was historically clamped
+                // (v18.6, D175 — samples carry honest speeds now)
+                double vIn = Math.max(0.1, r.samples().get(ip).v());
                 // REAL-ANCHORED continuation (v15.2, D101): a section
                 // lined up with a drifted neighbor's TRUE curves (the
                 // transition-to-real state) keeps chasing the REAL
@@ -1767,7 +1769,9 @@ public class Coaster {
                 // vDesign already sits nearer (0.2 = the UI's
                 // DRIFT_EPS).
                 if (ip < r.trueV().length) {
-                    double vTrue = r.trueV()[ip];
+                    // floored where trueV was historically clamped
+                    // (v18.6, D175 — the array records honest values)
+                    double vTrue = Math.max(0.1, r.trueV()[ip]);
                     if (Math.abs(vTrue - vIn) > 0.2
                             && Math.abs(sec.vDesign() - vTrue)
                                < Math.abs(sec.vDesign() - vIn)) {

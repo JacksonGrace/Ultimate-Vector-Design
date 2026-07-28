@@ -412,6 +412,6 @@ public final class ScIntegrator {
         double gv = -scratch[1] * v * v / FVDIntegrator.G0 + U.y();
         double gl = scratch[0] * v * v / FVDIntegrator.G0 + R.y();
         samples.add(new FVDIntegrator.Sample(t, st.s(), st.pos(), T, U, R,
-            Math.max(0.1, v), gv, gl));
+            v, gv, gl));   // honest record (v18.6, D175)
     }
 }

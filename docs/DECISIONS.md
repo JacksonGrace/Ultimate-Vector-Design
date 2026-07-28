@@ -6699,3 +6699,72 @@ Six refinements on the v18.3 shared-editor strip:
   hold-final-value continuation DOTTED (the lane strips' 3/7
   convention); the shared pipeline already makes the held stretch
   clickable to append.
+
+## D175. v18.6: menu slim-down + HONEST low-speed records + strip scale growth (user, 2026-07-28)
+
+Also his verdict: NO Advanced Friction Model — the two-coefficient
+model stays the whole friction story (the D160-round design for a
+normal-force-scaled μ toggle is dropped, not deferred).
+
+- The Coaster menu's "Start speed" row is GONE: the ride entry speed
+  is edited in node 0's double-click dialog (its historic second
+  home). The spinner OBJECT survives off-scene as the v0
+  write-through choke (undo + rebuild wiring; loads/News still set it
+  programmatically).
+- LOW-SPEED "PIECEWISE" SPEEDS root-caused: every integrator RECORDED
+  max(0.1, v) per sample and passD recorded max(0.1, vh) — on the
+  resulting graph every slow dip PARKED at exactly 0.1 m/s, and the
+  design/true pair grazed the clamp differently (the jitter he saw
+  near zero-speed stretches; FVD++ has no such park). A probe showed
+  the underlying data perfectly smooth — the stair was pure record
+  clamping. ALL FIVE record sites now store the HONEST value (force
+  time+dist, geo time+dist, s/c, and passD); every INTERNAL floor is
+  untouched (vSafe 0.5 for ω, the 0.5 creep advance, the loop v that
+  feeds drive/trapezoid decisions) — physics bitwise. Consumers that
+  divide or seed design speeds floor at their own sites (reconcile's
+  vIn/vTrue, entrySpeeds, the add-dialog vEnd/vAuto — Math.max(0.1,·)
+  = exactly the values they historically read); the viewport's stall
+  predicate (≤ 0.1 + ε) selects identical ranges either way. Gate
+  48f's stall check now compares ABOVE the 0.1 creep floor explicitly
+  — it always meant "no conflict above the creep floor", and honest
+  records expose the sqrt-amplified creep-zone residual its own
+  comment already called measurement scale.
+- The strip's value scale GROWS during node/handle drags exactly like
+  the plot's axes (dragGrowTimer's surface branch): overshoot past
+  the strip's top expands the edited control's scale at a
+  proportional rate (accel also grows downward; the speed scale's
+  zero stays ON the line), re-dispatching the drag per tick — no
+  more snap-to-scale after release.
+
+## D176. v18.7: POV un-freeze + popup Start/End + viewport trio (user, 2026-07-28)
+
+- POV STUCK AT ZERO-SPEED SECTIONS (his regression report on D175):
+  the ride advance scales povTime by trueV[at]/max(0.1, vDesign) —
+  with HONEST records the numerator now goes to 0 approaching a
+  stall, so the advance Zeno-froze just short of the stall range and
+  povClampStall's end-of-track wrap never fired. The RIDE ratio now
+  floors its numerator at 0.1 (max(0.1, trueV)/max(0.1, vD)) — the
+  exact pre-v18.6 crawl feel, guaranteed to reach the range; the
+  graphs stay honest (this is ride pacing, not display).
+- The Speed Control popup shows BOTH boundary speeds — "Start:
+  12.3 m/s (true 11.8)" and "End: …" (his exact labels; the true
+  twin appears only when split ≥ 0.05 m/s) — via spCtlSpeeds(end),
+  spEndSpeeds generalized.
+- Translation gizmo arrows are DOUBLE-ENDED (a mirrored shaft+tip
+  half rotated 180° about local X): grab either side, same
+  absolute-from-press drag math. The bridge LENGTH tangent arrow
+  stays one-sided — its direction means "longer".
+- Node markers ride the HEARTLINE in orbit/fly (user spec — they sat
+  at spine/track level like ties); POV keeps the spine height (the
+  camera occupies the heartline). The marker signature carries
+  povActive so Space transitions rebuild.
+- AXES REFERENCE: a 96 px canvas at the viewport's bottom right
+  draws the world X/Y/Z directions under the CURRENT camera —
+  gizmo-arrow colors, back-pointing axes dimmed and drawn first,
+  labels at the tips, a lightweight always-on AnimationTimer that
+  redraws only when the camera rotation matrix actually changes
+  (screen-right = axis·camX column, screen-down = axis·camY, world
+  +Y entering as scene −Y per the Y-flip discipline).
+
+NEXT SESSION (his note): straight/curve sections — interactive in
+the viewport, etc.

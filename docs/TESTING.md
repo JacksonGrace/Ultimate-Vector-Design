@@ -2160,6 +2160,33 @@
     moves vertically. (d) Pull a control graph's last node left of
     the control end: the remainder draws DOTTED at the held value,
     and clicking the dotted stretch appends a node there.
+117. v18.6 (D175): (a) The Coaster menu carries NO Start-speed row
+    — double-click node 0 of the ride to edit it (still one undo
+    step, title dirties, clamped 1..100). (b) Slow track to a
+    crawl (heavy friction): the resulting speed curve descends
+    SMOOTHLY through 0.1 toward 0 — no flat park at exactly
+    0.1 m/s, no jitter where it grazes; stall transparency and
+    the POV wrap behave as before (the ≤0.1 predicate reads the
+    same ranges). (c) Drag a strip graph node past the strip's
+    top edge: the value scale grows continuously under the cursor
+    (accel graphs also grow downward past the line); release
+    re-fits — exactly the plot's edge-growth feel. (d) Phase3Gate
+    88 green (48f compares above the 0.1 creep floor — honest
+    records expose the sqrt-amplified creep-zone residual its
+    comment always documented).
+118. v18.7 (D176): (a) Ride W into a stalled stretch: the POV
+    slows to the crawl floor and then WRAPS (next piece / ride
+    start) — it must never freeze short of the jump. (b) The
+    Speed Control popup reads "Start: X m/s" and "End: X m/s"
+    under the speed row, each with "(true Y)" when the design/
+    true split exceeds 0.05 m/s. (c) Every translation gizmo
+    arrow points BOTH ways and drags from either side; the
+    bridge-length tangent arrow stays single. (d) In orbit/fly
+    the node markers sit ON the heartline; enter POV — they drop
+    to track level (and back on exit). (e) The bottom-right XYZ
+    compass tracks every orbit/fly/POV/ortho camera move live —
+    X green, Y blue (up), Z red; axes pointing away from the
+    viewer draw dimmed.
 
 
 

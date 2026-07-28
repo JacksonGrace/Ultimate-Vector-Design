@@ -262,7 +262,7 @@ public final class GeoIntegrator {
                 gl = Math.toRadians(kf.Gl() * rsF) * v / FVDIntegrator.G0 + R.y();
             }
             samples.add(new FVDIntegrator.Sample(t, s, pos, T, U, R,
-                Math.max(0.1, v), gv, gl));
+                v, gv, gl));   // honest record (v18.6, D175)
             qEnd = q;   // the exit contract: the LAST SAMPLE's orientation
                         // (the loop's own q ends one step PAST it, D80)
 
@@ -454,7 +454,7 @@ public final class GeoIntegrator {
             gl = Math.toRadians(kf.Gl() * rsF) * v / FVDIntegrator.G0 + R.y();
         }
         samples.add(new FVDIntegrator.Sample(t, st.s(), st.pos(), T, U, R,
-            Math.max(0.1, v), gv, gl));
+            v, gv, gl));   // honest record (v18.6, D175)
     }
 
     /** DISTANCE-domain run: rate keyframes over arc length. qEnd = the

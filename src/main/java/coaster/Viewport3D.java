@@ -378,8 +378,16 @@ class Viewport3D {
                     int at = (int) FvdDesigner.clamp(
                         povTime / FvdDesigner.INTEGRATE_DT, 0,
                         app.lastSamples.size() - 1);
+                    // the RIDE keeps a 0.1 m/s crawl floor (v18.7,
+                    // D176): the records are HONEST since v18.6, so
+                    // an unfloored ratio → 0 approaching a stall and
+                    // povTime froze just short of the stall range —
+                    // the wrap never fired (the user's "stuck at
+                    // zero"). The floor restores the historic feel
+                    // and guarantees the range is reached.
                     double ratio = app.trueV == null ? 1
-                        : app.trueV[at] / Math.max(0.1, app.lastSamples.get(at).v());
+                        : Math.max(0.1, app.trueV[at])
+                            / Math.max(0.1, app.lastSamples.get(at).v());
                     povTime = ((povTime + dir * dt * mult * ratio) % rideTime + rideTime) % rideTime;
                     // stalled track is unreachable: jump the gap in
                     // the direction of travel (v18.0, D163)
@@ -456,7 +464,8 @@ class Viewport3D {
         sb.append(lane).append('|').append(selIdx).append('|').append(sel)
           .append('|').append(laneCol)
           .append('|').append(System.identityHashCode(app.lastSamples))
-          .append('|').append(app.settings.trackMarkers());
+          .append('|').append(app.settings.trackMarkers())
+          .append('|').append(povActive);   // marker height flips (v18.7)
         // nodeTimes = each node's GLOBAL RIDE TIME, computed by the
         // editor (v16.0 — distance-domain lanes' x is meters, so the
         // old tOff + n.t no longer meant time)
@@ -470,7 +479,12 @@ class Viewport3D {
             int idx = (int) FvdDesigner.clamp(Math.round(nodeTimes[i] / FvdDesigner.INTEGRATE_DT),
                                   0, app.lastSamples.size() - 1);
             FVDIntegrator.Sample sm = app.lastSamples.get(idx);
-            Vec3 p = sm.pos().sub(sm.U().scale(app.heartOffset));   // spine, like ties
+            // ORBIT/FLY: the markers ride the HEARTLINE (v18.7, D176
+            // — user spec); POV keeps the spine-level spheres (the
+            // camera travels the heartline itself)
+            Vec3 p = povActive
+                ? sm.pos().sub(sm.U().scale(app.heartOffset))
+                : sm.pos();
             boolean isSel = i == selIdx || sel.contains(i);
             // selection reads from any distance: white AND bigger
             Sphere ball = new Sphere(isSel ? 0.32 : 0.22, 12);
@@ -1663,6 +1677,78 @@ class Viewport3D {
     private final List<CombPt> combPoints = new ArrayList<>();
     Group combGroup;   // all comb meshes; hidden while riding POV
     final Label combLabel = new Label();   // bottom-left readout (v16.14)
+
+    // AXES REFERENCE (v18.7, D176 — user spec): a bottom-right mini
+    // compass showing the WORLD X/Y/Z directions under the CURRENT
+    // view, gizmo-arrow colors, synced by its own lightweight timer
+    // (redraws only when the camera rotation actually changes)
+    final Canvas axesCanvas = new Canvas(96, 96);
+    private double[] axesSig = new double[9];
+    private boolean axesStarted = false;
+
+    void startAxesRef() {
+        if (axesStarted) return;
+        axesStarted = true;
+        axesCanvas.setMouseTransparent(true);
+        new AnimationTimer() {
+            @Override public void handle(long now) {
+                updateAxesRef();
+            }
+        }.start();
+    }
+
+    private void updateAxesRef() {
+        javafx.scene.Camera cam = sub.getCamera();
+        if (cam == null) return;
+        javafx.scene.transform.Transform tr = cam.getLocalToSceneTransform();
+        double[] m = { tr.getMxx(), tr.getMxy(), tr.getMxz(),
+                       tr.getMyx(), tr.getMyy(), tr.getMyz(),
+                       tr.getMzx(), tr.getMzy(), tr.getMzz() };
+        boolean same = true;
+        for (int i = 0; i < 9; i++) {
+            if (Math.abs(m[i] - axesSig[i]) > 1e-9) {
+                same = false;
+                break;
+            }
+        }
+        if (same) return;
+        axesSig = m;
+        // camera basis in SCENE coords = the rotation's columns
+        Vec3 camX = new Vec3(m[0], m[3], m[6]);
+        Vec3 camY = new Vec3(m[1], m[4], m[7]);
+        Vec3 camZ = new Vec3(m[2], m[5], m[8]);
+        // world axes in scene coords (the Y-flip discipline: world
+        // +Y up = scene −Y); screen-right = ·camX, screen-down = ·camY
+        Vec3[] axes = { new Vec3(1, 0, 0), new Vec3(0, -1, 0),
+                        new Vec3(0, 0, 1) };
+        Color[] cols = { GIZ_X, GIZ_Y, GIZ_Z };
+        String[] names = { "X", "Y", "Z" };
+        GraphicsContext gc = axesCanvas.getGraphicsContext2D();
+        double w = axesCanvas.getWidth(), h = axesCanvas.getHeight();
+        gc.clearRect(0, 0, w, h);
+        double cx = w / 2, cy = h / 2, len = 30;
+        // back-facing axes draw first (and dimmer) so the ones
+        // pointing at the viewer overlay them
+        Integer[] order = { 0, 1, 2 };
+        java.util.Arrays.sort(order, (a, b) -> Double.compare(
+            axes[b].dot(camZ), axes[a].dot(camZ)));
+        gc.setFont(Font.font(11));
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.setTextBaseline(VPos.CENTER);
+        for (int k : order) {
+            double dx = axes[k].dot(camX), dy = axes[k].dot(camY);
+            boolean away = axes[k].dot(camZ) > 0;   // into the screen
+            gc.setGlobalAlpha(away ? 0.45 : 1.0);
+            gc.setStroke(cols[k]);
+            gc.setLineWidth(2);
+            gc.strokeLine(cx, cy, cx + dx * len, cy + dy * len);
+            gc.setFill(cols[k]);
+            gc.fillText(names[k], cx + dx * (len + 9), cy + dy * (len + 9));
+        }
+        gc.setGlobalAlpha(1.0);
+        gc.setFill(Color.rgb(200, 205, 215));
+        gc.fillOval(cx - 2, cy - 2, 4, 4);
+    }
     /** Bottom-left "riding backward" indicator (v16.16, user spec —
      *  same styling as the comb readout; A is the fixed key, not a
      *  rebindable action). Never up together with combLabel: combs
@@ -2594,7 +2680,7 @@ class Viewport3D {
             dirs.add(new Ax(() -> new Vec3(0, 0, 1), GIZ_Z));
         }
         for (Ax ax : dirs) {
-            Group arrow = gizmoArrow(rig, ax.dir(), ax.col());
+            Group arrow = gizmoArrow(rig, ax.dir(), ax.col(), true);
             wireAxisDrag(arrow, rig, ax.dir(), sink);
             rig.group.getChildren().add(arrow);
         }
@@ -2625,12 +2711,31 @@ class Viewport3D {
      *  precision). */
     private Group gizmoArrow(Rig rig,
             java.util.function.Supplier<Vec3> dir, Color col) {
+        return gizmoArrow(rig, dir, col, false);
+    }
+
+    /** twoSided (v18.7, D176 — user spec): TRANSLATION arrows point
+     *  BOTH ways from the anchor (a mirrored shaft+tip half); the
+     *  bridge LENGTH tangent stays one-sided (its direction means
+     *  "longer"). The drag math is unchanged — either side grabs. */
+    private Group gizmoArrow(Rig rig,
+            java.util.function.Supplier<Vec3> dir, Color col,
+            boolean twoSided) {
         PhongMaterial mat = gizmoMat(col);
         Cylinder shaft = new Cylinder(0.05, 1.0);
         shaft.setMaterial(mat);
         shaft.setTranslateY(0.5);
         MeshView tip = cone(0.13, 1.0, 1.32, mat);
         Group g = new Group(shaft, tip);
+        if (twoSided) {
+            Cylinder shaft2 = new Cylinder(0.05, 1.0);
+            shaft2.setMaterial(mat);
+            shaft2.setTranslateY(0.5);
+            MeshView tip2 = cone(0.13, 1.0, 1.32, mat);
+            Group neg = new Group(shaft2, tip2);
+            neg.getTransforms().add(new Rotate(180, Rotate.X_AXIS));
+            g.getChildren().add(neg);
+        }
         Rotate rot = new Rotate();
         g.getTransforms().add(rot);
         Runnable aimIt = () -> aim(rot, dir.get());

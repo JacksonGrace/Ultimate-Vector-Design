@@ -1436,6 +1436,12 @@ public class FvdDesigner extends Application {
         StackPane.setAlignment(viewport.povLabel, Pos.BOTTOM_LEFT);
         StackPane.setMargin(viewport.povLabel, new Insets(8));
         subHolder.getChildren().add(viewport.povLabel);
+        // AXES REFERENCE (v18.7, D176): world-XYZ compass, bottom
+        // right, live with every camera move
+        StackPane.setAlignment(viewport.axesCanvas, Pos.BOTTOM_RIGHT);
+        StackPane.setMargin(viewport.axesCanvas, new Insets(6));
+        subHolder.getChildren().add(viewport.axesCanvas);
+        viewport.startAxesRef();
 
         mainSplit = new SplitPane(subHolder, bottom);
         mainSplit.setOrientation(Orientation.VERTICAL);
@@ -2022,6 +2028,10 @@ public class FvdDesigner extends Application {
         bridgePosRow = new HBox(8, bPosLbl,
             bridgeXSpinner, bridgeYSpinner, bridgeZSpinner);
         bridgePosRow.setAlignment(Pos.CENTER_LEFT);
+        // the Start-speed row LEFT the Coaster menu in v18.6 (D175,
+        // user spec) — the spinner remains the v0 write-through choke
+        // (undo + rebuild wiring): the ride entry's node-0 dialog and
+        // loads/News still set it programmatically
         HBox speedRow = new HBox(8, speedLbl, startSpeedSpinner);
         speedRow.setAlignment(Pos.CENTER_LEFT);
         // friction rows (v17.0): tooltips carry the model
@@ -2061,7 +2071,6 @@ public class FvdDesigner extends Application {
             new CustomMenuItem(heartRow, false),
             new CustomMenuItem(gaugeRow, false),
             new CustomMenuItem(tieRow, false),
-            new CustomMenuItem(speedRow, false),
             new CustomMenuItem(fricRollRow, false),
             new CustomMenuItem(fricAirRow, false));
         // "Rail Color" section (v17.10, user spec — moved here from

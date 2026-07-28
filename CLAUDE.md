@@ -750,6 +750,16 @@ Viewport3D.java     JavaFX 3D VIEW (split out v9.4, D54): orbit/fly/POV
                     straights, arc floor on twists; a Mesh-quality
                     slider existed for one unshipped round — v18.2
                     removed it, the tuned budget IS the behavior).
+                    v18.7 (D176): translation gizmo arrows are
+                    DOUBLE-ENDED (the length tangent stays one-
+                    sided); node markers ride the HEARTLINE in
+                    orbit/fly (spine in POV); the bottom-right
+                    AXES COMPASS (axesCanvas, gizmo colors, own
+                    change-guarded timer) shows the world X/Y/Z
+                    under the live camera; the POV ride advance
+                    floors its trueV ratio at 0.1 — honest v18.6
+                    records made the unfloored advance Zeno-freeze
+                    short of the stall wrap.
 
 Dialogs.java        JavaFX DIALOGS (split out v9.4, D54): Help,
                     Shortcuts, Rail colors, Options + option-row
@@ -804,7 +814,13 @@ source tree — they won't compile against the current time-domain API.
   is paid BOTH ways, so a natural-speed reversal can STALL (the
   preview warns; more entry speed fixes). The reversed FLAG remains
   only as the legacy-file compile path (D67 semantics unchanged).
-- `vSafe = max(v, 0.5)` guards divide-by-zero near stalls.
+- `vSafe = max(v, 0.5)` guards divide-by-zero near stalls. The
+  RECORDED sample speeds (and Pass D's trueV) are HONEST since v18.6
+  (D175): the old per-sample `max(0.1, v)` record parked every slow
+  dip at exactly 0.1 on the resulting graphs (the user's "piecewise"
+  stair) — all five record sites store the raw value now, every
+  internal floor is unchanged (bitwise physics), and consumers that
+  divide or seed design speeds floor at THEIR sites.
 - The integrated path **is the heartline** (forces are felt at the rider's
   heart). Rails are derived: `spine = heart − U·heartOffset`, rails at
   `spine ± R·(gauge/2)`, radius 0.07 m (140 mm dia). `heartOffset` negative
@@ -1611,8 +1627,8 @@ stretch to the next boundary into a CONTROL (consuming its marks)
 and opens the SPEED CONTROL options (movable dark popup: Constant
 Speed | Constant Acceleration radios, Complex check, speed box +
 Max/Min checks — at least one always on — accel box, Start/Length
-spinners in native units, read-only "End speed" showing true when
-split, Edit Speed/Accel button that expands the strip and nudges
+spinners in native units, read-only "Start:"/"End:" speed readouts
+showing true when split (both since v18.7 D176), Edit Speed/Accel button that expands the strip and nudges
 the popup clear); the same clicks REOPEN it. Left-click selects
 (Delete removes — strip focus rules; spFocus), start-diamond drag
 MOVES, end-diamond drag RESIZES (complex graphs stretch along,
@@ -1630,7 +1646,9 @@ hover value, Shift slope; joins the accel scale FIT so it always
 stays in view, D174), locked strip segments wear MINI
 twin-line Shift+F/H visuals, a graph ending early holds its
 value to the control's end DOTTED, the control is a HARD BOX
-under ripples (time-ripple pins its LAST node, D174), and
+under ripples (time-ripple pins its LAST node, D174), the strip's
+value scale GROWS under edge-overshoot drags like the plot axes
+(dragGrowTimer's surface branch, v18.6 D175), and
 complex graphs edit through the
 REAL editor
 (v18.3, D172 — the user's "recycle the exact code" verdict ended
@@ -2220,9 +2238,11 @@ ORBIT drag, REPLACING left-drag entirely (v16.12, user re-spec of
 the v16.11 pan; the primary button is selection/gizmos only;
 panView survives for the ortho right-drag pan; secondary stays
 excluded — fly-exit stale-anchor jump). On-track NODE
-MARKERS (Options toggle, default on): a small spine-level sphere per
-active-lane node, selection in white, signature-guarded rebuild on graph
-redraws; a clean CLICK on one selects that node in the graph and
+MARKERS (Options toggle, default on): a small sphere per
+active-lane node — on the HEARTLINE in orbit/fly since v18.7 (D176;
+POV keeps the spine-level position, the camera rides the heartline)
+— selection in white, signature-guarded rebuild on graph
+redraws (the signature carries povActive); a clean CLICK on one selects that node in the graph and
 re-centers a manual zoom window onto it (v16.11 — marker pick beats
 the track-activate click, 14 px). PLACEMENT GIZMOS (v16.11 D123,
 reworked v16.12 D124; ALWAYS-ON since v17.7 D144): the reveal-click
@@ -2282,19 +2302,23 @@ active. Toolbar "Resulting ▾" is a plain Button + ContextMenu (a
 MenuButton's arrow region broke the flat button look). Coaster (Heart
 spinner −3..3 default 1.0, Gauge spinner 0.3..2.5 default 1.0, Tie-spacing
 spinner 0.2..10 m default 1.0 (cross ties placed by arc length, flush with
-the rails), Start speed spinner 1–100 m/s default 26, "Friction
+the rails), "Friction
 (rolling μ)" 0..0.2 step 0.005 + "Air drag (per km)" 0..20 step 0.1
 (v17.0 D133 — the model's fricAir is 1/m, the spinner edits ×1000;
-tooltips carry the model; both wireDocSpinner = document undo) — the PIECE rows
+tooltips carry the model; both wireDocSpinner = document undo;
+the START SPEED row LEFT this menu in v18.6 D175 — the spinner
+object survives OFF-SCENE as the v0 write-through choke with its
+undo wiring, and node 0's dialog is the one editing surface) — the PIECE rows
 (x/y/z ±500 m + yaw ±360°, the ACTIVE piece's placement, re-synced on
 piece switches; saved per `piece` line; y = height above the y=0
 ground, default 21) MOVED to the toolbar "Track Piece ▾" dropdown (renamed from
 "Placement ▾" + made a MOVABLE dark popup, v17.8 D145) next
 to the piece selector in v13.2 (D74), along with "Reverse piece" —
 the Coaster menu keeps only truly per-coaster knobs. Start speed is
-saved as the `v0` line and is ALSO editable in the first node's
+saved as the `v0` line and is edited ONLY in the first node's
 double-click
-dialog — the dialog writes through the spinner. Rail color lives in
+dialog since v18.6 (D175 — the dialog writes through the off-scene
+spinner). Rail color lives in
 the COASTER menu's "Rail Color" section since v17.10 (D149 — was
 the View menu v16.14-v17.9): "Solid" (its SQUARE 22×22 swatch —
 all pickers shrank square in v17.10 — shows inline while selected;
@@ -2401,7 +2425,9 @@ lives in DECISIONS.md, not Help).
 - FRICTION corners (v17.0, D133/D134): the bridge length optimizer's
   rateCost ladder stays LOSS-FREE (a relative smoothness ranking —
   friction shifts every candidate alike; the applied geometry is
-  friction-aware). An s/c GLOBAL-bank element's spine moves ~mm-cm
+  friction-aware). The two-coefficient model is the WHOLE friction
+  story — a normal-force-scaled "Advanced Friction Model" was
+  designed and REJECTED by the user (v18.6, D175). An s/c GLOBAL-bank element's spine moves ~mm-cm
   under friction (the bank projection's per-leg cadence is
   speed-dependent, O(dt²) — RATE-roll spines are exact, gated).
   Stalling designs (easier to hit with friction) still creep through

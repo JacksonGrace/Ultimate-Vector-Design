@@ -1296,7 +1296,15 @@ public final class TrackCompiler {
                 double vh = Math.sqrt(Math.max(v0 * v0
                     + 2 * FVDIntegrator.G0 * (y0 - samples.get(i).pos().y())
                     - loss, 0));
-                v[i] = Math.max(0.1, vh);
+                // recorded HONEST since v18.6 (D175 — the user's
+                // "speed becomes piecewise near zero"): the old
+                // max(0.1, vh) parked every slow dip at exactly
+                // 0.1 m/s on the resulting graph. The march below
+                // always used the raw vh; consumers that divide or
+                // seed design speeds floor at THEIR sites, and the
+                // viewport's stall predicate (≤ 0.1) reads the same
+                // ranges either way.
+                v[i] = vh;
                 double[] row = ctl == null ? null : ctl[i];
                 double drv = SpeedControl.driveRow(row, vh);
                 if (!Double.isNaN(drv) && i + 1 < i1) {

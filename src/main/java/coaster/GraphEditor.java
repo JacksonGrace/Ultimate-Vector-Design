@@ -4226,7 +4226,7 @@ class GraphEditor extends Region {
         FVDIntegrator.Sample end = endIdx >= 0 ? app.lastSamples.get(endIdx) : null;
         boolean tru = real && endIdx >= 0 && trueArraysReady()
             && endIdx < app.trueV.length;
-        double vEnd = tru ? app.trueV[endIdx]
+        double vEnd = tru ? Math.max(0.1, app.trueV[endIdx])
             : end != null ? end.v() : prevSec.vDesign();
         // authored roll only reads WITH the chain from a non-reversed,
         // UN-influenced lane section on the DESIGN fork; otherwise
@@ -4490,7 +4490,7 @@ class GraphEditor extends Region {
             ? app.lastSamples.get(endIdx) : null;
         boolean tru = real && endIdx >= 0 && trueArraysReady()
             && endIdx < app.trueV.length;
-        double vAuto = tru ? app.trueV[endIdx]
+        double vAuto = tru ? Math.max(0.1, app.trueV[endIdx])
             : end != null ? end.v() : prevSec.vDesign();
         double vEnd = Double.isNaN(vCustom) ? vAuto : vCustom;
         // ABSOLUTE roll hold (v16.7): the lane holds the CURRENT
@@ -5341,8 +5341,11 @@ class GraphEditor extends Region {
         TrackCompiler.Span sp = spanAt(p, k);
         if (sp == null || app.trueV == null || app.lastSamples == null
                 || sp.i0() >= app.trueV.length) return null;
+        // the true read floors where the array was historically
+        // clamped (v18.6, D175) — seam matching and refreezes keep
+        // their old near-stall behavior while the DISPLAY is honest
         return new double[]{ app.lastSamples.get(sp.i0()).v(),
-                             app.trueV[sp.i0()] };
+                             Math.max(0.1, app.trueV[sp.i0()]) };
     }
 
     /** The thin TRUE companion strokes over the whole run — one per
@@ -6441,9 +6444,47 @@ class GraphEditor extends Region {
     private long dragTimerLast = 0;
     private final AnimationTimer dragGrowTimer = new AnimationTimer() {
         @Override public void handle(long now) {
-            // strip gestures never grow the plot axes (v18.3): the
-            // strip's scales are its own and its wall is absolute
-            if (surfGesture) return;
+            if (surfGesture) {
+                // STRIP-surface gestures grow the STRIP's value scale
+                // instead of the plot axes (v18.6, D175 — the main
+                // plot's edge-growth behavior on the second surface):
+                // overshoot past the strip's top/bottom expands the
+                // edited control's scale at a proportional rate. The
+                // x axes stay put — the control is a hard box.
+                if (dragTimerLast == 0) { dragTimerLast = now; return; }
+                double sdt = Math.min((now - dragTimerLast) / 1e9, 0.05);
+                dragTimerLast = now;
+                if (dragNodeIdx < 0 && dragHandleIdx < 0) return;
+                SpeedControl c = spSel();
+                if (c == null) return;
+                double top = spTop() + 4, bot = spBottom() - 4;
+                double hgt = Math.max(40, bot - top);
+                boolean grew = false;
+                if (lastDragY < top) {
+                    double f = 1 + (top - lastDragY) * 3 * sdt / hgt;
+                    if (c.type == SpeedControl.ACCEL) spAHi *= f;
+                    else spVHi *= f;
+                    grew = true;
+                } else if (lastDragY > bot
+                        && c.type == SpeedControl.ACCEL) {
+                    // below the line only the accel scale has room —
+                    // the speed scale's zero sits ON the line
+                    spALo -= (lastDragY - bot) * 3 * sdt
+                        * (spAHi - spALo) / hgt;
+                    grew = true;
+                }
+                if (grew) {
+                    commitGestureSnapshot();
+                    if (dragNodeIdx >= 0) {
+                        withSurf(() -> dragNodeTo(lastDragX, lastDragY,
+                            lastDragSnap, lastDragShift));
+                    } else {
+                        withSurf(() -> dragHandleTo(lastDragX, lastDragY,
+                            lastDragShift, lastDragSnap));
+                    }
+                }
+                return;
+            }
             if (dragTimerLast == 0) { dragTimerLast = now; return; }
             double dt = Math.min((now - dragTimerLast) / 1e9, 0.05);
             dragTimerLast = now;
@@ -9059,19 +9100,30 @@ class GraphEditor extends Region {
         return v - a <= b - v ? lo : hi;
     }
 
-    /** Design + true END speeds of the selected control (the options
-     *  popup's reference readout). */
-    private double[] spEndSpeeds(RunSec rs, SpeedControl c) {
+    /** Design + true speeds at the selected control's START or END
+     *  (the options popup's reference readouts — both since v18.7,
+     *  D176). */
+    private double[] spCtlSpeeds(RunSec rs, SpeedControl c, boolean end) {
         TrackCompiler.Span sp = spanAt(rs.piece(), rs.section());
         if (sp == null || app.lastSamples == null || app.trueV == null) {
             return new double[]{ Double.NaN, Double.NaN };
         }
         boolean nd = rs.sec().domain() == Section.Domain.DISTANCE;
-        double gx = (nd ? sp.s0() : sp.t0()) + c.x0 + c.len;
+        double gx = (nd ? sp.s0() : sp.t0()) + c.x0 + (end ? c.len : 0);
         int i = Math.max(0, Math.min(
             Math.min(app.lastSamples.size(), app.trueV.length) - 1,
             sampleIdxAtCoord(gx, nd)));
         return new double[]{ app.lastSamples.get(i).v(), app.trueV[i] };
+    }
+
+    /** "Start: 12.3 m/s (true 11.8)" — the popup's speed readout
+     *  format (v18.7, D176: his exact labels). */
+    private static String spSpeedLbl(String name, double[] sv) {
+        if (Double.isNaN(sv[0])) return name + ": —";
+        return Math.abs(sv[0] - sv[1]) > 0.05
+            ? String.format("%s: %.1f m/s (true %.1f)",
+                name, sv[0], sv[1])
+            : String.format("%s: %.1f m/s", name, sv[0]);
     }
 
     /** Strip hover: divider cursor, the SHARED lane-hover pipeline on
@@ -9360,6 +9412,9 @@ class GraphEditor extends Region {
         HBox posRow = new HBox(8, startLbl, startSp, lenLbl, lenSp);
         posRow.setAlignment(Pos.CENTER_LEFT);
 
+        Label startSpdLbl = new Label();
+        startSpdLbl.setTextFill(Color.rgb(160, 220, 170));
+        startSpdLbl.setStyle("-fx-font-size: 11px;");
         Label endLbl = new Label();
         endLbl.setTextFill(Color.rgb(160, 220, 170));
         endLbl.setStyle("-fx-font-size: 11px;");
@@ -9402,12 +9457,11 @@ class GraphEditor extends Region {
             minC.setSelected(c.minLimit);
             startSp.getValueFactory().setValue(c.x0);
             lenSp.getValueFactory().setValue(c.len);
-            double[] es = spEndSpeeds(rs, c);
-            endLbl.setText(Double.isNaN(es[0]) ? "End speed: —"
-                : Math.abs(es[0] - es[1]) > 0.05
-                ? String.format("End speed: %.1f m/s (true %.1f)",
-                    es[0], es[1])
-                : String.format("End speed: %.1f m/s", es[0]));
+            // Start + End reference readouts (v18.7, D176 — his
+            // exact labels)
+            startSpdLbl.setText(spSpeedLbl("Start",
+                spCtlSpeeds(rs, c, false)));
+            endLbl.setText(spSpeedLbl("End", spCtlSpeeds(rs, c, true)));
             relayout.run();
             syncing[0] = false;
         };
@@ -9507,7 +9561,7 @@ class GraphEditor extends Region {
         // End speed reads directly UNDER the target-speed row (v18.1,
         // user spec — it is that row's reference)
         box.getChildren().addAll(titleRow, rSpeed, rAccel, complex,
-            speedRow, endLbl, accelRow, posRow);
+            speedRow, startSpdLbl, endLbl, accelRow, posRow);
         double[] grab = new double[2];
         box.setOnMousePressed(ev -> {
             grab[0] = ev.getScreenX() - pop.getX();
