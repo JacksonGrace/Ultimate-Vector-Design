@@ -3260,6 +3260,32 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     yaw "3" screenshot - narrow boxes widened to 82 px). (d) The
     reverse button reads "Reverse piece...".
 
+132. v18.21 (D192): clear ANY spinner box completely, then click
+    off OR press Enter: the value commits to ZERO (clamped into
+    range - gauge lands at 0.3, bridge length at 1) and the box
+    shows it; typing garbage like a lone "-" restores the old
+    value. The low-speed stairstep report is NOT reproducible
+    headlessly (SpeedStairProbe: all speed arrays smooth to the
+    honest 0.0 stall park) - regression-check speed curves around
+    a stall against that probe before touching speed paths.
+
+133. v18.22 (D193): load a file whose piece is TILTED (pitch
+    delta) so design and true speeds split hard, and ride POV
+    toward the true stall: the Speed readout in the stats line
+    glides continuously (no 1.99 -> 1.67 -> 1.26 steps) and the
+    ride slow-down FEELS continuous - both interpolate at the
+    exact ride time now instead of reading the nearest design-
+    spaced sample. The stall wrap, the 0.1 crawl floor, the
+    graphs and all recorded arrays are bitwise-unchanged
+    (StairFileProbe is the reference for the arrays).
+
+134. v18.23 (D194): ride POV into a stall (the Speed Stairstepping
+    file): the moment the Speed readout reaches 0.000 the camera
+    wraps - to the ride start (or past the stalled stretch) with
+    NO frozen crawl first; entering POV parked exactly on a stall
+    start wraps the same way. Riding BACKWARD still parks at the
+    stall's first sample and rides out freely.
+
 ## Debugging heuristics learned the hard way
 
 - Wild 3D output after math edits → check the frame-rotation sign (`−ωU·R`)

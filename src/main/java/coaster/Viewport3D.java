@@ -463,11 +463,14 @@ class Viewport3D {
                     // ride at the TRUE speed (round A, §5.1): the time
                     // axis is design time, so covering true meters per
                     // wall second means advancing it by v_true/v_design
-                    // at the current sample (ratio 1 until drift)
-                    int at = (int) FvdDesigner.clamp(
-                        app.povTime / FvdDesigner.INTEGRATE_DT, 0,
-                        app.lastSamples.size() - 1);
-                    // the RIDE keeps a 0.1 m/s crawl floor (v18.7,
+                    // — INTERPOLATED at the exact povTime since v18.22
+                    // (D193: on a tilted/drifted section the design-
+                    // spaced samples sit decimeters apart while the
+                    // true speed loses whole m/s per sample — the
+                    // nearest-sample ratio made the ride advance and
+                    // speed readout step visibly approaching a stall,
+                    // his "locked to distance increments").
+                    // The RIDE keeps its 0.1 m/s crawl floor (v18.7,
                     // D176): the records are HONEST since v18.6, so
                     // an unfloored ratio → 0 approaching a stall and
                     // app.povTime froze just short of the stall range —
@@ -475,8 +478,8 @@ class Viewport3D {
                     // zero"). The floor restores the historic feel
                     // and guarantees the range is reached.
                     double ratio = app.trueV == null ? 1
-                        : Math.max(0.1, app.trueV[at])
-                            / Math.max(0.1, app.lastSamples.get(at).v());
+                        : Math.max(0.1, app.trueVAt(app.povTime))
+                            / Math.max(0.1, app.designVAt(app.povTime));
                     app.povTime = ((app.povTime + dir * dt * mult * ratio) % rideTime + rideTime) % rideTime;
                     // stalled track is unreachable: jump the gap in
                     // the direction of travel (v18.0, D163)
@@ -1502,7 +1505,18 @@ class Viewport3D {
         int idx = (int) FvdDesigner.clamp(t / FvdDesigner.INTEGRATE_DT,
             0, app.lastSamples.size() - 1);
         for (int[] r : stallRanges) {
-            if (idx <= r[0] || idx > r[1]) continue;
+            // forward travel wraps the INSTANT the speed reads zero
+            // (v18.23, D194 — user spec): ON the first stalled
+            // sample, or in the gap just before it once the
+            // interpolated true speed dies — the old idx > r[0]
+            // gate made the ride crawl a full design-sample past
+            // the zero point at the floored ratio (whole seconds
+            // of frozen POV on a drifted section) first.
+            boolean inside = dir > 0 ? idx >= r[0] && idx <= r[1]
+                                     : idx > r[0] && idx <= r[1];
+            boolean atZero = dir > 0 && idx == r[0] - 1
+                && app.trueV != null && app.trueVAt(t) <= 5e-4;
+            if (!inside && !atZero) continue;
             if (dir > 0) {
                 return r[1] + 1 < app.lastSamples.size()
                     ? app.lastSamples.get(r[1] + 1).t()

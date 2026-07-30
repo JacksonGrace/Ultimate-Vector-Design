@@ -751,7 +751,13 @@ Viewport3D.java     JavaFX 3D VIEW (split out v9.4, D54): orbit/fly/POV
                     v18.1 (D167): the POV camera INTERPOLATES the
                     heartline frame at the exact povTime (povPoseAt
                     — it snapped to the 0.01 s grid, juddering at
-                    Ctrl ×0.25) and rail tubes tessellate by TURN
+                    Ctrl ×0.25; since v18.22 D193 the ride VALUES
+                    interpolate too — FvdDesigner.povBracket/
+                    trueVAt/designVAt feed the stats line and the
+                    advance ratio, ending the stall-approach speed
+                    stair on tilted/drifted sections whose design-
+                    spaced samples sit decimeters apart) and rail
+                    tubes tessellate by TURN
                     ANGLE (railRings — ~2°/ring, 1.2 m cap on
                     straights, arc floor on twists; a Mesh-quality
                     slider existed for one unshipped round — v18.2
@@ -2650,8 +2656,9 @@ lives in DECISIONS.md, not Help).
   under friction (the bank projection's per-leg cadence is
   speed-dependent, O(dt²) — RATE-roll spines are exact, gated).
   Stalling designs (easier to hit with friction) still creep through
-  at the 0.5 floor — real stall/rollback is future speed-section
-  work. REVERSAL corners: a natural-speed reversal STALLS wherever
+  at the 0.5 floor — FINAL by user decision (D195): the ghost
+  track + the instant POV wrap ARE the stall model; no rollback
+  simulation. REVERSAL corners: a natural-speed reversal STALLS wherever
   the climb home exceeds the recorded end energy (real physics —
   the preview telltale + a higher entry speed are the answer); a
   LEGACY kinked reversed seam cannot survive the chained re-author
@@ -2699,9 +2706,12 @@ lives in DECISIONS.md, not Help).
   < 40 collapses; the arrow stays the quick toggle). Stall
   transparency reads Pass D's 0.1 m/s floor and the POV treats the
   stall like the END OF THE TRACK — wraps to the next piece or the
-  ride start (D171, his clarification of D168's stop) — real
-  stall/rollback physics is still future work (the creep-through
-  model remains; the ghost track is the honest display). ROLL-ONLY
+  ride start (D171, his clarification of D168's stop; the wrap
+  fires the INSTANT the interpolated speed reads zero since
+  v18.23 D194 — the old gate crawled a full design-sample past
+  the zero point first) — the creep-through model + ghost track
+  are the FINAL stall story (user decision, D195: no rollback
+  simulation). ROLL-ONLY
   converts keep lanes 0/1 BIT-EXACT (D169 — only the roll lane
   refits; the preview auto-selects it; gate 55j 3 mm).
 - ALL TOOL WINDOWS ARE MODELESS since v18.1 (D166 — viewport controls
@@ -2920,12 +2930,43 @@ constant-felt-G + complex graphs with min/max semantics, applied to
 design AND real speed equally (a clamp closes ≠v conflicts), tie
 plates, stall-transparent track + POV skip, NL2 friction units and
 defaults, time-comb density; gated TESTING #55 + walkthrough #111) →
-real stall/rollback handling (the 0.1 m/s creep floor is still the
-model — the transparent ghost track is its honest display).
+~~real stall/rollback handling~~ REJECTED by user decision (D195,
+2026-07-29): the 0.1 m/s creep floor, the transparent ghost track
+and the instant POV wrap (D194) ARE the final stall model — no
+rollback simulation. PHASE 3 IS COMPLETE.
 
-**Phase 4 — interop & full interactivity:** NL2 CSV import (external-
-geometry sections), viewport editing part 2 (drag values/times/handles in
-3D), Euler display toggle.
+**Phase 4 — the s/c overhaul & content (user-approved order, D195):**
+1. STRAIGHT/CURVE OVERHAUL (the next arc): richer elements —
+   planar vs 3D curves with editable beginning/ending SLOPES and
+   RADII (advanced turns), FULL roll customization, end-to-start
+   CLOSURE (line a piece's end up with its own start), and strong
+   VIEWPORT interactivity: drag an s/c section's 3D nodes and
+   NEIGHBORING s/c sections re-solve live (e.g. moving a
+   straight's end continuously re-solves the previous curve's
+   turn angle). The gizmo drag pattern (absolute-from-press,
+   solve, rebuild) applied to element parameters.
+2. TRAIN APPROXIMATION GRAPHS: felt forces at the train's BACK/
+   FRONT and LEFT/RIGHT seats — deliberately NO simulation, the
+   POV position = the train middle (front/back = felt evaluated
+   at arc ± offset at the train's speed; seats = analytic
+   lateral-offset terms off Ω — the D99 lesson: no differencing).
+   Enabled/configured in the Resulting dropdown.
+3. IMPORTS & CONTENT: NL2 CSV import (external-geometry
+   sections); ground IMAGES; 3D MODELS (image-textured, .glb —
+   dependency decision pending: JavaFX has no glTF loader); NL2
+   TERRAIN; MARKERS (3D nodes joined by lines); SKYBOX in the NL2
+   image format (images only, no nl2env); full track
+   customization (textures, track types). Save format grows
+   asset-reference lines (path-vs-embed decision pending).
+4. 3D NODAL TRACK INFLUENCE (post-first-release, his ranking): a
+   node placed ON the track with draggable influence-extent
+   neighbors; moving it deforms that window geometrically without
+   moving track outside it; a roll variant too. (Geometry-space —
+   the D139/D140 smoothing machinery generalized; felt re-derives
+   via the κ identity. NOT the dynamics-space Influence feature —
+   naming will matter.)
+Interleaved throughout: his running laundry list of minor updates
+(the session feedback rounds).
 
 **Small items, anytime:** spine box in the rail mesh (copy
-`buildTieMesh`), friction spinner (subsumed by Phase 3).
+`buildTieMesh`), Euler display toggle.

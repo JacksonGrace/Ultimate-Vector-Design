@@ -448,14 +448,51 @@ public class FvdDesigner extends Application {
         sp.getEditor().setTextFormatter(
             signed ? signedNumFormatter() : numFormatter());
         sp.focusedProperty().addListener((o, was, is) -> {
-            if (!is && sp.isEditable()) {
-                try {
-                    sp.commitValue();
-                } catch (RuntimeException ex) {
-                    sp.getEditor().setText(String.valueOf(sp.getValue()));
-                }
-            }
+            if (!is && sp.isEditable()) commitTyped(sp);
         });
+        // ENTER on a blank editor took Spinner's internal commit,
+        // whose converter returns NULL for empty text — the value
+        // property went null and the box stayed empty (v18.21, D192)
+        sp.getEditor().addEventFilter(
+            javafx.scene.input.KeyEvent.KEY_PRESSED, ev -> {
+                if (ev.getCode() == javafx.scene.input.KeyCode.ENTER
+                        && sp.isEditable() && isBlankEditor(sp)) {
+                    commitTyped(sp);
+                    ev.consume();
+                }
+            });
+    }
+
+    private static boolean isBlankEditor(Spinner<?> sp) {
+        String t = sp.getEditor().getText();
+        return t == null || t.isBlank();
+    }
+
+    /** Commit the typed editor text (v18.20 D191; blank rule v18.21
+     *  D192 — user spec): a CLEARED box commits ZERO, clamped into
+     *  the factory's range; unparsable text falls back to the
+     *  current value. The explicit setText matters — when the value
+     *  doesn't change, no listener re-renders the empty editor. */
+    static void commitTyped(Spinner<?> sp) {
+        if (isBlankEditor(sp)) {
+            if (sp.getValueFactory() instanceof
+                    SpinnerValueFactory.DoubleSpinnerValueFactory f) {
+                double z = Math.min(f.getMax(), Math.max(f.getMin(), 0));
+                f.setValue(z);
+                sp.getEditor().setText(f.getConverter() != null
+                    ? f.getConverter().toString(z) : String.valueOf(z));
+            } else {
+                // custom factories (the snap-step walker): keep the
+                // value, just restore the text
+                sp.getEditor().setText(String.valueOf(sp.getValue()));
+            }
+            return;
+        }
+        try {
+            sp.commitValue();
+        } catch (RuntimeException ex) {
+            sp.getEditor().setText(String.valueOf(sp.getValue()));
+        }
     }
 
     /** TYPE-ANYWHERE spinner (v18.20, D191 — user spec: every
@@ -839,20 +876,62 @@ public class FvdDesigner extends Application {
         updatePovStats();
     }
 
+    /** Bracketing sample pair {i, j, frac} for an exact ride time —
+     *  by the samples' OWN t fields (the s/c sub-sample phase rule:
+     *  never assume sample i sits at i·dt), clamped into every
+     *  parallel array. Shared by the POV stats and the ride advance
+     *  (v18.22, D193). */
+    private double[] povBracket(double t) {
+        int hi = Math.min(lastSamples.size(),
+            Math.min(trueV.length, trueFelt.length)) - 1;
+        int i = (int) clamp(t / INTEGRATE_DT, 0, hi);
+        while (i > 0 && lastSamples.get(i).t() > t) i--;
+        while (i + 1 <= hi && lastSamples.get(i + 1).t() <= t) i++;
+        int j = Math.min(i + 1, hi);
+        double t0 = lastSamples.get(i).t(), t1 = lastSamples.get(j).t();
+        double f = t1 > t0 ? clamp((t - t0) / (t1 - t0), 0, 1) : 0;
+        return new double[]{ i, j, f };
+    }
+
+    /** TRUE speed at the exact ride time — LINEAR between the
+     *  bracketing samples (v18.22, D193 — his stall-approach stair:
+     *  on a drifted section the design-spaced samples sit ~0.3 m
+     *  apart while the true speed loses whole m/s per sample, so
+     *  every nearest-sample consumer stepped visibly; the D167 pose
+     *  interpolation applied to the VALUES). */
+    double trueVAt(double t) {
+        double[] b = povBracket(t);
+        return trueV[(int) b[0]]
+            + (trueV[(int) b[1]] - trueV[(int) b[0]]) * b[2];
+    }
+
+    /** DESIGN speed at the exact ride time (the samples' recorded
+     *  profile), same interpolation. */
+    double designVAt(double t) {
+        double[] b = povBracket(t);
+        double a = lastSamples.get((int) b[0]).v();
+        return a + (lastSamples.get((int) b[1]).v() - a) * b[2];
+    }
+
     /** The bottom stats line = the CURRENT (shared) POV position
      *  (v17.11; pane-shared since v18.10): X/Y/Z, speed and
-     *  vertical/lateral G at povTime, TRUE values. */
+     *  vertical/lateral G at povTime, TRUE values — interpolated at
+     *  the exact ride time since v18.22 (D193). */
     void updatePovStats() {
         if (lastSamples == null || lastSamples.isEmpty()
                 || trueV == null || trueFelt == null) return;
-        int idx = (int) clamp(povTime / INTEGRATE_DT, 0,
-            Math.min(lastSamples.size(),
-                Math.min(trueV.length, trueFelt.length)) - 1);
-        FVDIntegrator.Sample sm = lastSamples.get(idx);
+        double[] b = povBracket(povTime);
+        int i = (int) b[0], j = (int) b[1];
+        double f = b[2];
+        Vec3 pa = lastSamples.get(i).pos(), pb = lastSamples.get(j).pos();
         statsLabel.setText(String.format(
             "POV   X: %.3f   Y: %.3f   Z: %.3f   |   Speed: %.3f m/s   |   Vertical G: %.3f   |   Lateral G: %.3f",
-            sm.pos().x(), sm.pos().y(), sm.pos().z(),
-            trueV[idx], trueFelt[idx][0], trueFelt[idx][1]));
+            pa.x() + (pb.x() - pa.x()) * f,
+            pa.y() + (pb.y() - pa.y()) * f,
+            pa.z() + (pb.z() - pa.z()) * f,
+            trueV[i] + (trueV[j] - trueV[i]) * f,
+            trueFelt[i][0] + (trueFelt[j][0] - trueFelt[i][0]) * f,
+            trueFelt[i][1] + (trueFelt[j][1] - trueFelt[i][1]) * f));
     }
 
     void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx,

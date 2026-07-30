@@ -7455,6 +7455,110 @@ Round 13 — four items.
 - The Track Piece popup's reverse button reads "Reverse piece…"
   (the "(rebuild backward)" parenthetical is gone).
 
+## D192 (v18.21) — blank-spinner zero commit; the stairstep investigation
 
-NEXT SESSION (his note): straight/curve sections — interactive in
-the viewport, etc.
+Round 14, two items.
+
+- BLANK SPINNER = ZERO (user spec: "delete everything and click
+  off, it goes to zero"): commitTyped replaces the bare
+  commitValue in numericEditor's focus-loss hook — a CLEARED
+  editor commits 0 clamped into the factory's range (gauge lands
+  on its 0.3 min, bridge length on 1) and explicitly re-renders
+  the text (a no-change setValue fires no listener, which is why
+  the box stayed empty before). ENTER on a blank editor was the
+  same hole via Spinner's INTERNAL commit — DoubleStringConverter
+  returns NULL for empty text, so the value property literally
+  went null; an event filter routes it through commitTyped.
+  Custom factories (the snap-step walker) restore the current
+  value instead of forcing 0.
+- LOW-SPEED STAIRSTEP report ("occurring again"): NOT REPRODUCED
+  in the model or the display pipeline. SpeedStairProbe
+  (scratchpad) drives a stalling geo climb — with and without
+  friction + a low brake control — and every array is smooth to
+  machine precision into the stall (0.53 → 0.46 → ... → 0.04 →
+  honest 0.0 through the creep): all five D175 record sites still
+  store raw speeds, Pass D's trueV marches raw, the strip's green
+  curve strokes trueV per sample, gAxis/spVToY are continuous,
+  and the only remaining max(0.1) sites are the D175-sanctioned
+  consumer floors (reconcile seeding, ratio divisions). Candidate
+  explanations pending his file: an honest FLAT-ZERO stall zone
+  reading as a "stair" (possibly new stalls, since the D184/D185/
+  D187 sign flips change old files' shapes non-mirror-wise), or a
+  surface not yet named (POV ride feel vs the strip curve).
+  Awaiting the file / a pointer to which surface shows it.
+
+## D193 (v18.22) — the POV stall-approach stair: interpolate the ride values
+
+Round 15 — his file (Speed Stairstepping 7.29.26.fvd) closed the
+D192 investigation. The arrays were never wrong: the file's piece
+carries an 11-degree PITCH TILT, so the design profile (rigid-tilt
+rule, D100: sections solve at genPose, the tilt is placement) rides
+~28.6 m/s while the TRUE march climbs the tilted track and stalls —
+an honest, documented ≠v split. The consequence nobody had hit yet:
+the design profile spaces the samples (~0.286 m apart here), and
+near the true stall the TRUE speed loses 0.3-0.6 m/s PER SAMPLE
+(his exact readouts 1.992 → 1.666 → 1.261 → 0.637 → 0.000 are
+consecutive samples, machine-verified by StairFileProbe). Every
+nearest-sample consumer of the ride position therefore STEPPED
+visibly — the bottom stats line AND the ride-advance ratio (the
+"feel"). His diagnosis was exactly right: the speed was locked to
+the design sample spacing — distance increments.
+
+Fix = the D167 treatment (the camera pose already interpolates at
+the exact povTime) applied to the VALUES: FvdDesigner.povBracket
+finds the bracketing sample pair by the samples' OWN t fields (the
+s/c sub-sample phase rule) clamped into every parallel array;
+trueVAt/designVAt interpolate linearly, and updatePovStats renders
+interpolated position, speed and felt Gs. The povTimer's advance
+ratio reads trueVAt/designVAt at the exact povTime (the D176 0.1
+crawl floors unchanged). Physics, records and graphs untouched —
+this is purely the POV readout/feel layer, per his "the most
+important thing is for it to not change other things".
+
+## D194 (v18.23) — the stall wrap fires the instant the speed reads zero
+
+Round 16, one item ("go back to the start / to the next piece a
+little earlier — preferably the instant it hits 0.000 m/s"):
+povClampStall's forward gate was idx > r[0] — the ride had to
+crawl a FULL design-sample past the first stalled sample before
+wrapping, and at the floored advance ratio on a drifted section
+(0.1/28.6 in his file) that one 0.01 s design-gap costs ~3 wall
+seconds of frozen POV. Forward travel now wraps ON the first
+stalled sample AND at the interpolated zero point in the gap just
+before it (trueVAt ≤ 5e-4 — the readout shows 0.000 at that
+instant); POV entry's forward clamp inherits the same rule, so
+parking exactly on a stall start no longer shows a frozen camera.
+Backward travel keeps the historic gate (park at the range start,
+ride out freely). The honest decel INTO the stall is untouched —
+only the dead crawl past zero is gone.
+
+## D195 — PHASE 3 COMPLETE (stall/rollback REJECTED); the Phase 4 roadmap
+
+User decisions, 2026-07-29, closing the phase:
+
+- REAL STALL/ROLLBACK PHYSICS: REJECTED — "I actually don't want
+  real stall/rollback physics." The 0.1 m/s creep floor, the
+  transparent ghost track (D163) and the instant POV wrap (D194)
+  are the FINAL stall model. With friction (D133) and speed
+  controls (D160) long done, PHASE 3 IS COMPLETE.
+- PHASE 4 adopted, his items and order: (1) the STRAIGHT/CURVE
+  OVERHAUL — advanced turns (planar vs 3D, editable end slopes/
+  radii), full roll customization, end-to-start closure, strong
+  viewport interactivity with neighbor re-solve; (2) TRAIN
+  APPROXIMATION GRAPHS — back/front + left/right-seat felt off
+  the POV-as-train-middle, no simulation, Resulting-dropdown
+  surface; (3) IMPORTS & CONTENT — incl. NL2 CSV import (kept
+  from the old roadmap on his confirmation), ground images, .glb
+  models, NL2 terrain, markers, NL2-image skybox, track
+  customization; (4) 3D NODAL TRACK INFLUENCE, post-first-release
+  by his own ranking. Viewport-editing-part-2 from the old
+  roadmap is subsumed by (1)+(4); the Euler display toggle drops
+  to the small-items list. A running laundry list of minor
+  updates interleaves throughout, session-feedback style.
+
+The next arc: (1), straight/curve sections in the viewport.
+
+
+NEXT SESSION: Phase 4 item 1 — the STRAIGHT/CURVE OVERHAUL
+(advanced turns, roll customization, closure, viewport
+interactivity with neighbor re-solve).
