@@ -135,6 +135,49 @@ public final class TrackPiece {
         return new TrackPose(new Vec3(x, y, z), q);
     }
 
+    /** INVERSE of entryPose()'s orientation composition (v18.19,
+     *  D190 — the local gizmo's rotate-about-the-drawn-axis): the
+     *  {yawDeg, pitchDeg, rollDeg} deltas that reproduce `target`
+     *  on top of `base`, or null where a heading is undefined
+     *  (either T near vertical). Exact for |pitch| < 90: the
+     *  composition preserves heading through its pitch/roll steps
+     *  and elevation through roll, so the three extract in
+     *  sequence — yaw from the heading gap, pitch from the
+     *  elevation gap, roll as the U-vs-U twist about the shared T. */
+    public static double[] decomposeEntry(Quat base, Quat target) {
+        Vec3 tb = base.T(), tt = target.T();
+        double hb = Math.hypot(tb.x(), tb.z());
+        double ht = Math.hypot(tt.x(), tt.z());
+        if (hb < 1e-6 || ht < 1e-6) return null;
+        double yaw = wrap180(Math.toDegrees(
+            Math.atan2(-tt.z(), tt.x()) - Math.atan2(-tb.z(), tb.x())));
+        Quat q1 = yaw == 0 ? base : Quat.aboutY(yaw).mul(base);
+        Vec3 t1 = q1.T();
+        double pitch = Math.toDegrees(
+            Math.atan2(tt.y(), ht)
+            - Math.atan2(t1.y(), Math.hypot(t1.x(), t1.z())));
+        Quat q2 = q1;
+        if (pitch != 0) {
+            Vec3 r = new Vec3(-t1.z(), 0, t1.x());
+            double len = r.length();
+            if (len > 1e-9) {
+                q2 = Quat.aboutAxis(r.scale(1 / len),
+                    Math.toRadians(pitch)).mul(q1);
+            }
+        }
+        Vec3 u2 = q2.U(), ut = target.U(), ax = q2.T();
+        double roll = Math.toDegrees(Math.atan2(
+            u2.cross(ut).dot(ax), u2.dot(ut)));
+        return new double[]{ yaw, pitch, roll };
+    }
+
+    static double wrap180(double d) {
+        d = d % 360;
+        if (d > 180) d -= 360;
+        if (d < -180) d += 360;
+        return d;
+    }
+
     /** BAKE every orientation delta into the base orientation (v16.1,
      *  D106 — the resolve ops' orientation resolution; the D100
      *  split/reverse corner as an explicit op): the entry pose is

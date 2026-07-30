@@ -37,8 +37,6 @@ public class AppSettings {
         { "delNode", "Delete selected node",      "Delete", "Graph editor" },
         { "append", "Append 1 s of track",        "A", "Graph editor" },
         { "pov",    "POV ride",                   "Space", "View" },
-        { "viewTop",  "Top view (ortho)",         "T", "View" },
-        { "viewSide", "Side view (ortho)",        "Shift+T", "View" },
         { "save",   "Save design",                "Ctrl+S", "File" },
         { "load",   "Load design",                "Ctrl+O", "File" },
         { "newfile", "New design",                "Ctrl+N", "File" },
@@ -259,17 +257,9 @@ public class AppSettings {
         save();
     }
 
-    /** Placement/seam gizmos always show for the active piece since
-     *  v17.7 (D144 — the reveal-click gating is gone); this View-menu
-     *  check is the only off switch. */
-    public boolean showGizmos() {
-        return Boolean.parseBoolean(props.getProperty("showGizmos", "true"));
-    }
-
-    public void setShowGizmos(boolean on) {
-        props.setProperty("showGizmos", String.valueOf(on));
-        save();
-    }
+    // ("Show Gizmos" is GONE, v18.16 D187 — the reveal gating is the
+    // ball click; a stale showGizmos key in the properties file is
+    // ignored, the D84 precedent.)
 
     /** SPEED-CONTROL STRIP (v18.0, D160): the "+V" box toggles the
      *  strip above the x-axis; the arrow expands it to the tall view
@@ -339,14 +329,18 @@ public class AppSettings {
 
     /** Gizmo translation arrows follow the piece's entry frame (local)
      *  instead of world X/Y/Z (v16.11) — a pure view choice, toggled
-     *  by the viewport's overlay button; switching never moves track. */
+     *  by the viewport's overlay button; switching never moves track.
+     *  SESSION-ONLY since v18.16 (D187, user spec): every launch
+     *  starts GLOBAL — the field never touches the properties file
+     *  (a stale persisted gizmoLocal key is ignored). */
+    private boolean gizmoLocal = false;
+
     public boolean gizmoLocal() {
-        return Boolean.parseBoolean(props.getProperty("gizmoLocal", "false"));
+        return gizmoLocal;
     }
 
     public void setGizmoLocal(boolean on) {
-        props.setProperty("gizmoLocal", String.valueOf(on));
-        save();
+        gizmoLocal = on;
     }
 
     /** Track COMB mode (v16.13; three-way since v16.14, FIVE-way

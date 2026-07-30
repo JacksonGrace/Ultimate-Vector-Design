@@ -3005,6 +3005,261 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     the reverse. Other lanes unaffected. Both off: old clamped single-node
     behavior. Ctrl+Z undoes a whole ripple drag as one step.
 
+119. v18.8 (D177-D178): (a) Load "B Shortcut not working
+    7.28.26.fvd", select the geo section, Shift+B on its first node:
+    the resulting/true ROLL graph no longer steps ~35 deg/s at the
+    force->geo seam (residual ~1 deg/s), re-presses stable; the
+    geo->force seam behaves as before. (b) Top-left of the viewport:
+    a "Fly/Orbit >" label; click it, pick POV/Top/Side - the camera
+    switches and the label follows every mode change (Space, T,
+    Shift+T, fly included). (c) T / Shift+T are TRUE orthographic:
+    parallel rails stay parallel across the screen (no vanishing
+    point); zoom/pan/T-exit/orbit-away behave exactly as before;
+    clicks, node-marker picks, gizmo drags and comb hovers all work
+    in ortho. (d) The XYZ compass sits bottom-LEFT; hover a comb
+    tooth (readout appears) or ride POV backward - the compass hops
+    just above the label, never overlapping. (e) COLLAPSE the graph
+    panel, enter POV: node markers sit at TRACK level (not floating
+    at the heartline). (f) Hover readouts near the plot's right edge
+    (lane value, resulting overlay, derived curve, speed strip) stay
+    fully inside the plot, like the drag readout. (g) Shrink the
+    window until the y-axis title nears a corner: the max/min scale
+    numbers vanish instead of overlapping it. (h) The speed-control
+    popup shows "Start: ... End: ..." on ONE row, Start first.
+    (i) Hovering Resulting / the piece selector / Track Piece
+    (or Bridge properties) shows NO tooltip.
+
+120. v18.9 (D179-D180): (a) In his edited file, activate the geo
+    section: the force strip's grayed teal/yellow/orange curves now
+    JOIN the geo lanes at the seam (they drew body rates before —
+    huge false step); hovers on them read the same units. (b) Drag a
+    speed control's colored SEGMENT: the whole control moves under
+    the cursor (Ctrl snaps, ripple honored); the end diamond still
+    resizes; a plain click just selects. (c) Close and reopen the
+    strip with +V: it arrives COLLAPSED even if it was tall before.
+    (d) Hover the green true-speed curve where it hugs the strip's
+    top edge: the "v = ..." readout stays fully inside the strip.
+    (e) Enter a Side view: a faint horizontal GROUND LINE marks y=0;
+    it tracks pan/zoom. (f) The second dropdown under the view label
+    offers Front/Back/Right/Left/Tangent to Selection; each looks
+    down the advertised world axis; Shift+T still re-tangents.
+    (g) View menu: ONE "FOV" slider — it drives orbit, fly AND POV.
+    (h) "Add View" in the view label's list: a second pane appears
+    right, divider drags; the new pane orbits/zooms/pans and takes
+    Top/Side (with sub-modes + ground line) independently; edits in
+    the graph appear in it after every rebuild. "Remove View" drops
+    it and the remaining panes reflow. POV/fly/clicking-to-edit
+    stay primary-pane-only (deliberate scope).
+
+121. v18.10 (D181): (a) Add View: the new pane is FULLY live —
+    orbit, fly (right-click), POV (Space while hovering it), gizmo
+    drags, node-marker clicks, comb hovers, its own compass/labels;
+    Space toggles POV in whichever pane the mouse is over (or the
+    captured one); entering fly in one pane releases a capture in
+    another; both panes riding POV show the SAME position (shared).
+    Remove View on ANY pane (including the original) removes THAT
+    pane; the last pane refuses. The graph collapse arrow always
+    sits in the rightmost pane. (b) Top/Side views draw a
+    world-aligned GRID overlay (1-2-5 adaptive, majors heavier);
+    in Tangent side view the vertical lines measure from the
+    selected node's anchored spot and DON'T slide when the node
+    moves; heights stay absolute. (c) Picking "Side" from the view
+    list = Front; the Tangent view shows two buttons below the
+    dropdown - refresh (re-tangent to current selection) and
+    reverse (180 deg flip in place, grid unchanged) with
+    "Refresh"/"Reverse View" tooltips. (d) The top-right
+    "Axes: global/local" button is GONE (View menu dots remain).
+    (e) Open any file: no Resulting overlays are checked.
+    (f) A near-vertical stretch keeps its resulting world-rate
+    graphs live until ~87 deg elevation (was ~81). (g) Expand the
+    speed strip with a plain control selected: the control line
+    stays put and the scale grows upward; select a complex control:
+    the line moves up for below-line room as before.
+
+122. v18.11 (D182): (a) Add View from a pane in any mode: the new
+    pane arrives in Fly/Orbit looking the same way as its spawner.
+    (b) Two panes riding POV: A in the captured one reverses ONLY
+    that pane (its own "Backwards POV" tag; the other keeps its
+    direction). (c) View menu reads "Show Heartline" / "Show Node
+    Markers". (d) Ortho scroll zoom is twice as fast; zooming IN
+    pulls the point under the cursor toward the cursor; zooming out
+    recedes from the center. (e) The Top/Side grid is 1 m squares
+    stepping x10 as you zoom out (majors every 10th line). (f) With
+    a comb readout or the backwards tag visible bottom-left, the
+    compass does NOT move - the text just draws over it. (g) Every
+    reset arrow (View menu sliders, convert-dialog rows, seam
+    settings, shortcut dialog) and the tangent refresh button show
+    a ROUND-bottomed drawn circle-arrow, centered; the s/c chip's
+    rate marker too. (h) Rapid-click the strip's expand/collapse
+    arrow repeatedly: it only toggles - no diamonds or speed
+    controls appear. (i) Hovering a VIEW: 1/2/3/4/5/6 jump to
+    Front/Back/Right/Left/Top/Tangent (T and Shift+T do nothing
+    now); hovering the GRAPH: 1/2/3 switch lanes as ever and 6
+    re-tangents the last-hovered view; while captured (fly or
+    right-clicked POV) the digits act on the captured pane.
+
+123. v18.12 (D183): (a) Fly into a view, then press 1-5: the gizmos
+    arrive correctly sized immediately (no click needed). (b) The
+    "Backwards POV" tag shows "(A)" only while right-clicked in.
+    (c) In Front view with Global axes: no Z arrow (Top: no Y;
+    Right/Left: no X) - the white ball is fully visible; drag it to
+    move the piece in the view plane (works in perspective too);
+    Ctrl+drag with Global snaps onto whole grid coordinates, with
+    Local it steps from the start position; double-click the ball =
+    the Track Piece panel (bridge-end ball = bridge properties,
+    seam ball = seam settings, as before). The ball grows/shrinks
+    with the gizmo; with Show Gizmos off it keeps its old fixed
+    size. (d) Reset icons are thinner; the SHORTCUTS dialog's
+    binding resets wear them too; the tangent view's reverse button
+    matches the refresh button's style. (e) Color swatches: the
+    fill sits exactly inside the outline (no bleed below).
+    (f) Rapid double-clicks on the strip's expand/collapse arrow
+    only toggle - never a control (the double-click path is guarded
+    now, not just the press).
+
+124. v18.13 (D184): (a) LATERAL SIGN: a flat RIGHT turn's felt
+    lateral reads NEGATIVE everywhere (graphs, hover, stats line,
+    popup); authoring +Gl turns LEFT on screen; the lateral comb's
+    teeth sit on the SAME side as before the flip; reversal still
+    negates laterals; converts/influence/B-matching all line up
+    under the new sign (suites re-baselined: chirality, s/c felt,
+    influence e, DomainGate 40b). Old files with lateral content
+    load MIRRORED - expected. (b) Single-click the control line =
+    diamond; QUICK second click = the diamond is replaced by a
+    control spanning its neighbors (or section ends), options open
+    - same as right-clicking; an old diamond double-clicked keeps
+    the historic promote. (c) Double-click ANY part of a gizmo
+    (arrows, rings, ball): the entry gizmo opens the Track Piece
+    rows even while a bridge section is active; the bridge gizmo
+    always opens the bridge rows; the seam gizmo its pop-out; a
+    drag never triggers it. (d) In Front/Top/etc. views only the
+    IN-PLANE ring builds (yaw in Top; roll/pitch per heading in
+    side views) - the white center is clear. (e) The entry ball is
+    WHITE, replaces the node-0 marker (no z-fighting sphere pair),
+    and scales with the gizmo. (f) Ctrl+dragging an arrow with
+    Global axes lands the piece on whole grid coordinates in ALL
+    axes; Local still steps from the start.
+
+125. v18.14 (D185): (a) YAW SIGN: authoring a positive geo yaw rate
+    turns LEFT on screen (same side as +Gl, D184's pairing
+    restored); the resulting yaw and heading-rate graphs/hovers
+    read positive through a left turn; a global-axes geo section's
+    heading lane turns left for positive values too. (b) Geo->
+    force convert of a left turn produces +Gl lanes; force->geo of
+    a +Gl section produces +yaw lanes; both round-trip (the two
+    negations cancel in the extraction - it reads exactly like the
+    pre-D184 code but MEANS reported-left). (c) B/Shift+B across
+    force<->geo seams still match value+slope and re-presses stay
+    put (matcher entries + exits rewritten to the reported
+    contract). (d) Seam spike carets: a yaw-kinked seam's caret
+    points the way the flipped yaw graph spikes (the lane-1 caret
+    was ALSO owed by D184's felt flip - one negation fixes both
+    views). (e) Piece yaw PLACEMENT, strict-seam held angles,
+    gizmo rings and the compass are ANGLES, not rates - their
+    sense is deliberately unchanged. (f) Old files with geo yaw
+    content change shape, and with roll present it is NOT a pure
+    mirror (twoSecPiece's flipped twin genuinely stalls - the 48g
+    analysis); direction fixtures re-baselined by authoring the
+    mirrored value (Phase2 chirality, Phase3 yaw -12, DomainGate
+    41c spiral -15), every invariance gate untouched and green.
+
+126. v18.15 (D186): (a) YAW ANGLES: typing +30 into "Piece yaw",
+    "Next piece yaw" or a strict seam's yaw row aims LEFT (the
+    D185 rate pairing); loading any old file changes NO pose (the
+    negation is display-only - stored values and the file keep the
+    internal sense, so a pre-flip save shows its yaw numbers
+    negated but sits identically); gizmo yaw rings drag exactly as
+    before and the spinners re-sync negated after a ring drag; the
+    seam row's live (continuous) readout, Discontinuous seed, and
+    both resets stay self-consistent. The s/c arc angle keeps its
+    own rider-right + direction-arrow spec (deliberate). (b) The
+    white center ball holds the SAME proportion to its gizmo at
+    every camera distance, perspective and ortho (was: historic
+    world size far away - invisible); gizmos hidden = the old
+    fixed-size marker. (c) In Top/Front/Back/Right/Left the
+    overlay grid lines sit ON the 3D ground grid's lines (X, Z and
+    height), and a Global Ctrl-snapped gizmo drag lands the piece
+    exactly on overlay lines; the Tangent side view still anchors
+    its horizontal grid at the selected node.
+
+127. v18.16 (D187): (a) GIZMO REVEAL: only the white balls show at
+    first; clicking one reveals ITS rig (entry/seam ball = the
+    piece/seam gizmo, bridge-end ball = the bridge gizmo), clicking
+    the track/background or another piece hides it, clicking the
+    same ball again toggles it off. The revealed gizmo draws
+    THROUGH the track and ground; the top-right Local/Global
+    button appears only while revealed, and every program launch
+    starts Global. The View menu has no gizmo row anymore. Ball
+    drag/double-click/node-0 select unchanged; POV still hides
+    everything. (b) VIEW LIST: the view label's list is flat -
+    Fly/Orbit, POV, Top, Front, Back, Right, Left, Tangent to
+    Selection (no Side sub-dropdown); the label wears the specific
+    name (Tangent shows the rotate/reverse tools right below);
+    digits 1-6 unchanged. (c) S/C ARC: a +90 flat arc turns LEFT
+    (chip arrow agrees); dir 90 still pulls UP; negative mirrors;
+    old files with flat arcs load mirrored. Phase2's s/c direction
+    fixtures author -90 for right turns now; all suites green.
+
+128. v18.17 (D188): (a) The gizmo looks EXACTLY like it always did
+    (arrows pass through the ring correctly, no inside-out
+    shading) while still drawing through track/ground - it renders
+    in its own depth-buffered overlay SubScene; orbit/fly/ortho/
+    zoom all keep the overlay glued to the main view (mirrored
+    camera per frame). Clicks pass through empty overlay regions:
+    track activation, node markers, click-off-to-hide all work
+    while a rig is shown. (b) The un-revealed white ball is FIXED
+    size at any distance; click reveals, drag moves the owner AND
+    reveals mid-drag; the revealed rig's own center ball scales
+    with the rig, sits correctly among the arrows (not hidden
+    behind them), click hides, drag moves, double-click opens
+    settings. (c) Toggling any pitch/roll padlock (Placement rows
+    or bridge panel) adds/removes that ring INSTANTLY. (d)
+    Clicking any 3D node marker selects THAT node in the graph
+    (was: the previous one whenever the entry ball replaced node
+    0's marker - the pick returned list position as node index).
+
+129. v18.18 (D189): (a) FLY over a revealed gizmo: the cursor stays
+    hidden and the look stays smooth even when the screen center
+    crosses gizmo geometry (the overlay is mouse-transparent in
+    fly/POV); exiting fly restores gizmo clicks. (b) While a rig
+    is shown, its fixed track ball is HIDDEN (the scaling center
+    ball is the white); the other handle ball (e.g. bridge end)
+    stays visible; reveal-by-drag keeps the dragged ball until
+    release. (c) With "Gizmos: Local", the rotation rings aim
+    along the piece's own frame - roll/yaw/pitch rings tilt with
+    the object, and dragging a ring rotates the WHOLE rig rigidly
+    with it (NL2 look); Global keeps the world/Euler aiming. Ring
+    writes are unchanged (one Euler quantity each, 1 degree Ctrl
+    snap, one undo per drag). (d) The top-right button reads
+    "Gizmos: Local" / "Gizmos: Global".
+
+130. v18.19 (D190): (a) TRUE LOCAL ROTATION: with Gizmos: Local on
+    a tilted piece, dragging ANY ring turns the track exactly
+    about the drawn axis (watch the other rings/arrows ride along
+    rigidly); with an axis locked the object follows as closely as
+    the remaining deltas allow; Global drags are bit-identical to
+    before. DecompProbe (scratchpad) gates the math: in-range
+    inversion 1.3e-12 deg, ring loop <= 1.1e-5 deg at poles. (b)
+    Pressing A with the cursor over any 3D view does NOT append
+    (over the graph it still does). (c) With a node selected, a
+    clean click on empty viewport space or bare track deselects it
+    (marker clicks still select; gizmo clicks don't deselect). (d)
+    Double-clicking a white ball or any rig part opens its
+    settings panel NEXT TO the click; the toolbar "Track Piece"
+    button and the seam line keep their old panel positions.
+
+131. v18.20 (D191): (a) Drag a piece with any gizmo part and
+    release: the graph strips (derived curves, true strokes, the
+    speed-conflict overlays) repaint IMMEDIATELY - no hover
+    needed. (b) Every numeric box in the app accepts typed input:
+    the Track Piece x/y/z/yaw rows, Coaster-menu heart/gauge/tie/
+    friction rows, start speed - and on EVERY spinner, typing a
+    value then clicking elsewhere COMMITS it (was: silently
+    reverted unless you pressed ENTER); garbage text falls back
+    to the old value. (c) No spinner clips its digits (the Piece
+    yaw "3" screenshot - narrow boxes widened to 82 px). (d) The
+    reverse button reads "Reverse piece...".
+
 ## Debugging heuristics learned the hard way
 
 - Wild 3D output after math edits → check the frame-rotation sign (`−ωU·R`)

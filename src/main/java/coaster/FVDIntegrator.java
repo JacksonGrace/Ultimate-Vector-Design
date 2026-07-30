@@ -199,7 +199,9 @@ public class FVDIntegrator {
         double vSafe = Math.max(v, 0.5);
 
         double omegaU = (G0 * (kf.Gv() - U.y())) / vSafe;
-        double omegaR = (G0 * (kf.Gl() - R.y())) / vSafe;
+        // LATERAL SIGN (v18.13, D184): +Gl = felt RIGHT — the lane
+        // negates into the historic left-positive internal relation
+        double omegaR = -(G0 * (kf.Gl() + R.y())) / vSafe;
         Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU));
         omega = omega.add(T.scale(rollAbs && rollGlobal
             ? rollTermPhi(Math.toRadians(rollSlopeAt(kfs, t)), T, omega)
@@ -482,7 +484,7 @@ public class FVDIntegrator {
         double v = Math.max(0.5, speedAt(st.pos(), v0, y0, st.loss()));
 
         double omegaU = (G0 * (kf.Gv() - U.y())) / v;
-        double omegaR = (G0 * (kf.Gl() - R.y())) / v;
+        double omegaR = -(G0 * (kf.Gl() + R.y())) / v;   // +Gl = right (D184)
         Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU));
         omega = omega.add(T.scale(rollAbs && rollGlobal
             // slope per METER on an arc axis: phi' = slope x v
@@ -667,7 +669,10 @@ public class FVDIntegrator {
             Vec3 dT = b.T().sub(a.T()).scale(1 / dt);
             Vec3 dU = b.U().sub(a.U()).scale(1 / dt);
             out[i][1] = Math.toDegrees(dT.dot(c.U()));
-            out[i][2] = Math.toDegrees(dT.dot(c.R()));
+            // YAW SIGN (v18.14, D185): +yaw = a LEFT turn — the
+            // reported rate negates the internal U-rotation sense,
+            // pairing with D184's +Gl = body-right
+            out[i][2] = Math.toDegrees(-dT.dot(c.R()));
             out[i][3] = Math.toDegrees(-dU.dot(c.R()));
         }
         return out;

@@ -2199,7 +2199,9 @@ public class Coaster {
             double vSafe = Math.max(0.5, sm.v());
             double kU = FVDIntegrator.G0 * (sm.Gv() - sm.U().y())
                 / (vSafe * vSafe);
-            double kR = FVDIntegrator.G0 * (sm.Gl() - sm.R().y())
+            // REPORTED yaw curvature (+ = left, D185; the D184 and
+            // D185 negations cancel here)
+            double kR = FVDIntegrator.G0 * (sm.Gl() + sm.R().y())
                 / (vSafe * vSafe);
             rate[i][0] = Math.toDegrees(kU * vG);
             rate[i][1] = Math.toDegrees(kR * vG);
@@ -2228,7 +2230,7 @@ public class Coaster {
                 val[i][0] = Math.toRadians(rate[i][0]) * vGs[i]
                     / FVDIntegrator.G0 + sm.U().y();
                 val[i][1] = Math.toRadians(rate[i][1]) * vGs[i]
-                    / FVDIntegrator.G0 + sm.R().y();
+                    / FVDIntegrator.G0 - sm.R().y();   // D184+D185
                 val[i][2] = rate[i][2];
             }
         }
@@ -2359,7 +2361,10 @@ public class Coaster {
     static double[] worldRates(FVDIntegrator.Sample sm, double pitchDeg,
                                double yawDeg, double rollDeg) {
         Vec3 T = sm.T(), U = sm.U(), R = sm.R();
-        Vec3 om = U.scale(Math.toRadians(yawDeg))
+        // yawDeg arrives in the REPORTED sense (+yaw = left turn,
+        // v18.14 D185) — the internal U-rotation negates it; the
+        // returned heading' negates back on the way out
+        Vec3 om = U.scale(-Math.toRadians(yawDeg))
             .add(R.scale(-Math.toRadians(pitchDeg)))
             .add(T.scale(Math.toRadians(rollDeg)));
         Vec3 tp = om.cross(T);
@@ -2369,16 +2374,20 @@ public class Coaster {
         // ψ'/φ' amplify by 1/cos²θ toward vertical, and a capped spike
         // in a BANK-RATE lane integrates into a garbage bank target
         // downstream of the loop (measured: 121 m of track error).
-        // Past ~81° elevation the rates read NaN — bakes hold the
+        // Past the threshold the rates read NaN — bakes hold the
         // angle (rate 0, matching the integrator's own vertical
-        // hold-off), matchers refuse with the reason.
-        boolean ok = cosTh > 0.15;
+        // hold-off), matchers refuse with the reason. TIGHTENED
+        // 0.15 → 0.05 (~81° → ~87°) in v18.10 (D181, user spec:
+        // resulting graphs flattened to zero too early; the 3600 °/s
+        // GLOBAL_RATE_CAP still bounds what a capped spike can
+        // inject, and the display paths draw 0 at NaN as before).
+        boolean ok = cosTh > 0.05;
         double thp = ok ? tp.y() / cosTh : Double.NaN;
         double psp = ok
             ? (T.z() * tp.x() - T.x() * tp.z()) / horiz2 : Double.NaN;
         double php = ok ? om.dot(T) - psp * T.y()   // sinθ = T.y
                         : Double.NaN;
-        return new double[]{ Math.toDegrees(thp), Math.toDegrees(psp),
+        return new double[]{ Math.toDegrees(thp), Math.toDegrees(-psp),
             Math.toDegrees(php) };
     }
 

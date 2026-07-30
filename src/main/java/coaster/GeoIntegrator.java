@@ -93,14 +93,15 @@ public final class GeoIntegrator {
                          double rateScale, double absPhi) {
         if (!rollGlobal && !ypGlobal && rateScale == 1
                 && Double.isNaN(absPhi)) {
-            return U.scale(Math.toRadians(kf.Gl()))           // yaw slot
+            // yaw slot NEGATED (v18.14, D185: +yaw = left turn)
+            return U.scale(-Math.toRadians(kf.Gl()))
                 .add(R.scale(-Math.toRadians(kf.Gv())))       // pitch slot
                 .add(T.scale(Math.toRadians(kf.rollRateDeg())));
         }
         double gvR = kf.Gv() * rateScale;
         double glR = kf.Gl() * rateScale;
         if (!rollGlobal && !ypGlobal) {
-            return U.scale(Math.toRadians(glR))
+            return U.scale(-Math.toRadians(glR))   // +yaw = left (D185)
                 .add(R.scale(-Math.toRadians(gvR)))
                 .add(T.scale(Math.toRadians(
                     kf.rollRateDeg() * rateScale)));
@@ -109,12 +110,17 @@ public final class GeoIntegrator {
         if (ypGlobal) {
             Vec3 h = new Vec3(-T.z(), 0, T.x());   // horizontal pitch-up axis
             double len = h.length();
-            base = new Vec3(0, Math.toRadians(glR), 0);
+            // +heading' = LEFT turn (v18.14, D185 — the reported
+            // sense, like the local yaw lane)
+            base = new Vec3(0, -Math.toRadians(glR), 0);
             base = len > 1e-6
                 ? base.add(h.scale(Math.toRadians(gvR) / len))
                 : base.add(R.scale(-Math.toRadians(gvR)));
         } else {
-            base = U.scale(Math.toRadians(glR))
+            // the third local-base build (global ROLL with local
+            // yaw/pitch) — +yaw = left here too (v18.14, D185; the
+            // 51a gate caught exactly this one missing)
+            base = U.scale(-Math.toRadians(glR))
                 .add(R.scale(-Math.toRadians(gvR)));
         }
         // GLOBAL roll: the sub-step feed-forward body rate (v16.4,
@@ -256,10 +262,12 @@ public final class GeoIntegrator {
                         ? Math.toRadians(FVDIntegrator.rollSlopeAt(keyframes, t))
                         : Double.NaN);
                 gv = -om.dot(R) * v / FVDIntegrator.G0 + U.y();
-                gl = om.dot(U) * v / FVDIntegrator.G0 + R.y();
+                gl = -(om.dot(U) * v / FVDIntegrator.G0 + R.y());   // +Gl = right (D184)
             } else {
                 gv = Math.toRadians(kf.Gv() * rsF) * v / FVDIntegrator.G0 + U.y();
-                gl = Math.toRadians(kf.Gl() * rsF) * v / FVDIntegrator.G0 + R.y();
+                // internal omega_U = the NEGATED yaw lane (D185): the
+                // D184 record -(omega*v/g + R.y) unfolds to lane*v/g - R.y
+                gl = Math.toRadians(kf.Gl() * rsF) * v / FVDIntegrator.G0 - R.y();
             }
             samples.add(new FVDIntegrator.Sample(t, s, pos, T, U, R,
                 v, gv, gl));   // honest record (v18.6, D175)
@@ -448,10 +456,12 @@ public final class GeoIntegrator {
                         FVDIntegrator.rollSlopeAt(kfs, st.s())) * v
                     : Double.NaN);
             gv = -om.dot(R) * v / FVDIntegrator.G0 + U.y();
-            gl = om.dot(U) * v / FVDIntegrator.G0 + R.y();
+            gl = -(om.dot(U) * v / FVDIntegrator.G0 + R.y());   // +Gl = right (D184)
         } else {
             gv = Math.toRadians(kf.Gv() * rsF) * v / FVDIntegrator.G0 + U.y();
-            gl = Math.toRadians(kf.Gl() * rsF) * v / FVDIntegrator.G0 + R.y();
+            // internal omega_U = the NEGATED yaw lane (D185): the
+            // D184 record -(omega*v/g + R.y) unfolds to lane*v/g - R.y
+            gl = Math.toRadians(kf.Gl() * rsF) * v / FVDIntegrator.G0 - R.y();
         }
         samples.add(new FVDIntegrator.Sample(t, st.s(), st.pos(), T, U, R,
             v, gv, gl));   // honest record (v18.6, D175)

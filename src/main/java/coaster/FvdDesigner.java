@@ -441,10 +441,28 @@ public class FvdDesigner extends Application {
 
     /** Install the numeric-only rule on a spinner's editor — signed
      *  for values that can go negative. Every numeric spinner in the
-     *  app routes through here (v18.1 sweep). */
+     *  app routes through here (v18.1 sweep). Since v18.20 (D191) it
+     *  also COMMITS TYPED TEXT ON FOCUS LOSS — JavaFX only commits
+     *  on ENTER, so typing then clicking away silently reverted. */
     static void numericEditor(Spinner<?> sp, boolean signed) {
         sp.getEditor().setTextFormatter(
             signed ? signedNumFormatter() : numFormatter());
+        sp.focusedProperty().addListener((o, was, is) -> {
+            if (!is && sp.isEditable()) {
+                try {
+                    sp.commitValue();
+                } catch (RuntimeException ex) {
+                    sp.getEditor().setText(String.valueOf(sp.getValue()));
+                }
+            }
+        });
+    }
+
+    /** TYPE-ANYWHERE spinner (v18.20, D191 — user spec: every
+     *  numeric box accepts typed input, not just its arrows). */
+    static void typable(Spinner<?> sp, boolean signed) {
+        sp.setEditable(true);
+        numericEditor(sp, signed);
     }
 
     /** One axis of the bridge target's manual x/y/z (mode: none). */
@@ -453,8 +471,7 @@ public class FvdDesigner extends Application {
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
                 -100000, 100000, 0, 1));
         sp.setPrefWidth(86);
-        sp.setEditable(true);
-        sp.getEditor().setTextFormatter(signedNumFormatter());
+        typable(sp, true);
         sp.valueProperty().addListener((obs, o, v) -> {
             if (!docApplying) editor.setBridgeTargetPos(axis, v);
         });
@@ -472,7 +489,7 @@ public class FvdDesigner extends Application {
         startXSpinner.getValueFactory().setValue(p.x);
         startYSpinner.getValueFactory().setValue(p.y);
         startZSpinner.getValueFactory().setValue(p.z);
-        yawSpinner.getValueFactory().setValue(p.yawDeg);
+        yawSpinner.getValueFactory().setValue(-p.yawDeg);   // reported yaw (D186)
         // a piece PLACED through a bridge grays whatever the bridge
         // owns (v16.13, user spec — the rows silently fought the
         // auto re-optimize before): position under any optimize
@@ -533,7 +550,6 @@ public class FvdDesigner extends Application {
     }
 
     // ---------- the 3D viewport (Viewport3D.java, D54) ----------
-    Viewport3D viewport;
     Dialogs dialogs;   // Help/Shortcuts/Rail-colors/Options (Dialogs.java, D54)
 
     /** The piece the editor is pointed at (placement spinners write
@@ -550,6 +566,14 @@ public class FvdDesigner extends Application {
      *  the bridge badge menu (v17.14, D155, user request: two spots,
      *  one panel). Anchors at the toolbar button either way. */
     void showPlacementPopup() {
+        showPlacementPopup(null);
+    }
+
+    /** forceBridge (v18.13, user spec — a gizmo's double-click must
+     *  open ITS settings, not the active section's): TRUE = the
+     *  bridge rows, FALSE = the piece rows, null = follow the active
+     *  section (the toolbar button's historic behavior). */
+    void showPlacementPopup(Boolean forceBridge) {
         if (placementPopup != null && placementPopup.isShowing()) {
             placementPopup.hide();
             placementPopup = null;
@@ -564,15 +588,15 @@ public class FvdDesigner extends Application {
             + " -fx-background-radius: 6;"
             + " -fx-border-color: rgb(95,102,120);"
             + " -fx-border-radius: 6;");
-        if (editor.activeBridgeWithTarget()) {
+        if (forceBridge != null ? forceBridge
+                : editor.activeBridgeWithTarget()) {
             updateBridgeControls();
             box.getChildren().addAll(bridgeModeRow, bridgeLenRow,
                 bridgeYawRow, bridgePitchRow, bridgeRollRow,
                 bridgePosRow);
         } else {
             syncPlacementSpinners();   // lock states follow the piece
-            Button rev = new Button(
-                "Reverse piece (rebuild backward)…");
+            Button rev = new Button("Reverse piece…");
             rev.setFocusTraversable(false);
             rev.setStyle("-fx-font-size: 11px;");
             rev.setOnAction(ev2 -> {
@@ -601,9 +625,17 @@ public class FvdDesigner extends Application {
             endMenuSession();
             if (placementPopup == pop) placementPopup = null;
         });
-        Bounds pb = placementBtn.localToScreen(
-            placementBtn.getBoundsInLocal());
-        pop.show(placementBtn, pb.getMinX(), pb.getMaxY() - 1);
+        if (popupAnchorX != null) {
+            // opened from a gizmo double-click: show near the click
+            // (v18.19, D190), offset so it clears the cursor
+            pop.show(placementBtn.getScene().getWindow(),
+                popupAnchorX + 14, popupAnchorY + 10);
+            popupAnchorX = popupAnchorY = null;
+        } else {
+            Bounds pb = placementBtn.localToScreen(
+                placementBtn.getBoundsInLocal());
+            pop.show(placementBtn, pb.getMinX(), pb.getMaxY() - 1);
+        }
         installViewKeys(pop.getScene());   // v18.1: keep riding
     }
 
@@ -625,7 +657,7 @@ public class FvdDesigner extends Application {
         boolean was = docApplying;
         docApplying = true;
         setIfOff(bridgeGapSpinner, Math.max(1, editor.requestedBridgeGap()), 0.05);
-        setIfOff(bridgeYawSpinner, editor.bridgeTargetOrient(0), 0.01);
+        setIfOff(bridgeYawSpinner, -editor.bridgeTargetOrient(0), 0.01);   // reported yaw (D186)
         setIfOff(bridgePitchSpinner, editor.bridgeTargetOrient(1), 0.01);
         setIfOff(bridgeRollSpinner, editor.bridgeTargetOrient(2), 0.01);
         setIfOff(bridgeXSpinner, editor.bridgeTargetPos(0), 0.005);
@@ -679,25 +711,18 @@ public class FvdDesigner extends Application {
         bridgePosRow.setDisable(m != BridgeSection.OPT_NONE);
     }
 
-    /** The gizmo axes toggle shows exactly while a gizmo does
-     *  (v16.11) — the viewport drives it from its rebuild. */
-    void syncGizmoAxesBtn(boolean visible) {
-        if (gizmoAxesBtn != null) gizmoAxesBtn.setVisible(visible);
-    }
-
-    /** ONE applier for the gizmo local/global choice (v16.13): the
-     *  overlay button and the View-menu check both call it and both
-     *  re-sync (programmatic setSelected fires no onAction). */
+    /** ONE applier for the gizmo local/global choice (v16.13; the
+     *  top-right overlay button is BACK since v18.16 D187 — per pane,
+     *  visible only while a rig is revealed; refreshGizmos re-syncs
+     *  every pane's button text). */
     void setGizmoAxesLocal(boolean loc) {
         settings.setGizmoLocal(loc);
-        if (gizmoAxesBtn != null) {
-            gizmoAxesBtn.setSelected(loc);
-            gizmoAxesBtn.setText(loc ? "Axes: local" : "Axes: global");
-        }
-        if (viewGizmoLocal != null) {
-            (loc ? viewGizmoLocal : viewGizmoGlobal).setSelected(true);
-        }
-        viewport.refreshGizmo(true);
+        refreshGizmos(true);
+    }
+
+    /** Gizmo refresh across every pane (v18.10). */
+    void refreshGizmos(boolean force) {
+        for (Viewport3D vp : viewports) vp.refreshGizmo(force);
     }
 
     /** Refresh the piece selector: label = the active piece, hidden
@@ -725,63 +750,119 @@ public class FvdDesigner extends Application {
         // exactly the keys the convert-UI lockout also keeps live.
         // Numeric-only entry boxes make the letters harmless; Space
         // never types into them either.
+        // key ROUTING (v18.10, D181): the captured or hovered pane
+        Viewport3D kv = keyViewport();
         if (pressed) {
             if (matches("pov", e)) {
                 togglePov();
                 e.consume();
                 return;
             }
-            if (matches("viewTop", e)) {
-                viewport.toggleOrthoView(true);
-                e.consume();
-                return;
-            }
-            if (matches("viewSide", e)) {
-                viewport.toggleOrthoView(false);
+            if (handleViewDigit(e)) {
                 e.consume();
                 return;
             }
         }
-        if (!(viewport.flyActive
-                || (viewport.povActive && viewport.povCaptured))) return;
+        if (!(kv.flyActive
+                || (kv.povActive && kv.povCaptured))) return;
         KeyCode c = e.getCode();
-        if (viewport.povActive && viewport.povCaptured
+        if (kv.povActive && kv.povCaptured
                 && (c == KeyCode.A || c == KeyCode.D)) {
             // the POV view-direction keys (v16.15) work from popup
             // scenes too, like the movement keys
             if (pressed) {
-                setPovReversed(c == KeyCode.A && !settings.povReversed());
+                setPovReversed(c == KeyCode.A && !keyViewport().povReversed);
             }
             e.consume();
             return;
         }
         boolean movement = c == KeyCode.W || c == KeyCode.S
             || c == KeyCode.SHIFT || c == KeyCode.CONTROL
-            || (viewport.flyActive && (c == KeyCode.A || c == KeyCode.D));
+            || (kv.flyActive && (c == KeyCode.A || c == KeyCode.D));
         if (!movement) return;
-        if (pressed) viewport.moveKeys.add(c);
-        else viewport.moveKeys.remove(c);
+        if (pressed) kv.moveKeys.add(c);
+        else kv.moveKeys.remove(c);
         e.consume();
     }
 
-    /** ONE applier for the POV view direction (v16.15): the View
-     *  check and the captured-ride A/D keys share it. */
+    /** The POV view direction is PER PANE since v18.11 (user
+     *  report: A flipped every pane): flip only the pane that owns
+     *  the keys. */
     void setPovReversed(boolean rev) {
-        settings.setPovReversed(rev);
-        viewport.applyPovNow();   // instant flip, even parked
-        viewport.syncPovLabel();  // the bottom-left indicator (v16.16)
+        Viewport3D vp = keyViewport();
+        vp.povReversed = rev;
+        vp.applyPovNow();    // instant flip, even parked
+        vp.syncPovLabel();   // the bottom-left indicator (v16.16)
     }
 
-    /** Delegates kept so the split moved no call sites: the pipeline
-     *  entry, the marker sync and the POV toggle live in Viewport3D. */
-    void rebuildTrack() { viewport.rebuildTrack(); }
+    /** THE pipeline entry (v18.10, D181 — the document phase moved
+     *  here from Viewport3D so every pane rebuilds from ONE compile):
+     *  three-pass compile + speed reconcile + auto re-optimize, the
+     *  shared arrays, the Coaster-menu stats, then per-pane meshes. */
+    void rebuildTrack() {
+        TrackCompiler.Result compiled =
+            TrackCompiler.compile(coaster, INTEGRATE_DT);
+        for (int pass = 0; pass < 3; pass++) {
+            boolean again = coaster.reconcileChainedSpeeds(compiled);
+            if (coaster.autoReoptimizeBridges(compiled)) again = true;
+            if (!again) break;
+            compiled = TrackCompiler.compile(coaster, INTEGRATE_DT);
+        }
+        List<FVDIntegrator.Sample> samples = compiled.samples();
+        if (samples.size() < 2) return;
+        lastSamples = samples;
+        resultRates = compiled.rates();
+        trueV = compiled.trueV();
+        trueFelt = compiled.trueFelt();
+        trueRates = compiled.trueRates();
+        sectionSpans = compiled.spans();
+        updateBridgeControls();   // gap spinner tracks live moves
+        double maxGv = -99, minGv = 99, maxY = -1e9, minY = 1e9, maxV = 0;
+        for (int i = 0; i < samples.size(); i++) {
+            FVDIntegrator.Sample sm = samples.get(i);
+            maxGv = Math.max(maxGv, sm.Gv());
+            minGv = Math.min(minGv, sm.Gv());
+            maxY = Math.max(maxY, sm.pos().y());
+            minY = Math.min(minY, sm.pos().y());
+            // top speed is the TRUE speed (round A, §5.1)
+            maxV = Math.max(maxV, trueV[i]);
+        }
+        FVDIntegrator.Sample last = samples.get(samples.size() - 1);
+        statRideTime = last.t();
+        statTrackLen = last.s();
+        statMinY = minY;
+        statMaxY = maxY;
+        statTopV = maxV;
+        statMinGv = minGv;
+        statMaxGv = maxGv;
+        for (Viewport3D vp : viewports) vp.rebuildMeshes();
+        updatePovStats();
+    }
+
+    /** The bottom stats line = the CURRENT (shared) POV position
+     *  (v17.11; pane-shared since v18.10): X/Y/Z, speed and
+     *  vertical/lateral G at povTime, TRUE values. */
+    void updatePovStats() {
+        if (lastSamples == null || lastSamples.isEmpty()
+                || trueV == null || trueFelt == null) return;
+        int idx = (int) clamp(povTime / INTEGRATE_DT, 0,
+            Math.min(lastSamples.size(),
+                Math.min(trueV.length, trueFelt.length)) - 1);
+        FVDIntegrator.Sample sm = lastSamples.get(idx);
+        statsLabel.setText(String.format(
+            "POV   X: %.3f   Y: %.3f   Z: %.3f   |   Speed: %.3f m/s   |   Vertical G: %.3f   |   Lateral G: %.3f",
+            sm.pos().x(), sm.pos().y(), sm.pos().z(),
+            trueV[idx], trueFelt[idx][0], trueFelt[idx][1]));
+    }
 
     void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx,
                              double[] nodeTimes) {
-        viewport.refreshTrackMarkers(lane, sel, selIdx, nodeTimes);
+        for (Viewport3D vp : viewports) {
+            vp.refreshTrackMarkers(lane, sel, selIdx, nodeTimes);
+        }
     }
 
-    void togglePov() { viewport.togglePov(); }
+    void togglePov() { keyViewport().togglePov(); }
     boolean railSolid = false; // false = vertical-G gradient, true = solid color
     Color railColor = Color.rgb(220, 60, 50);
     // G-force gradient stops (per-coaster, saved in .fvd): each stop is a
@@ -1020,6 +1101,7 @@ public class FvdDesigner extends Application {
             if (docApplying) return;
             editor.setBridgeLock(axis, !b.isSelected());
             refreshBridgeRows();
+            refreshGizmos(false);   // rings follow the locks live (D188)
         });
         Tooltip.install(b, new Tooltip(
             "Lock/unlock this orientation of the next piece.\n"
@@ -1069,6 +1151,7 @@ public class FvdDesigner extends Application {
                 else p.uiLockRoll = locked;
             }
             syncPlacementSpinners();
+            refreshGizmos(false);   // rings follow the locks live (D188)
         });
         Tooltip.install(b, new Tooltip(
             "Lock/unlock the pitch/roll at this piece's START.\n"
@@ -1078,11 +1161,225 @@ public class FvdDesigner extends Application {
         return b;
     }
     private SplitPane mainSplit;           // 3D view over graph panel
+    SplitPane viewSplit;                   // primary + extra view panes (v18.9)
     private double lastDividerPos = 0.6;   // restore point for the collapse toggle
-    private ToggleButton gizmoAxesBtn;     // gizmo local/global axes (v16.11)
-    RadioButton viewGizmoLocal, viewGizmoGlobal;   // the View menu's
-                                           // axis dots (v17.10 — were
-                                           // one CheckBox twin, v16.13)
+
+    // FULL-PARITY VIEW PANES (v18.10, D181 — user spec: "every view
+    // works exactly like the main pane"): each pane is a COMPLETE
+    // Viewport3D (own meshes/cameras/gizmos/markers/combs/compass/
+    // POV/fly). Equal importance — ANY pane can be removed except
+    // the last. Keys route to keyViewport(); the POV ride position
+    // is SHARED (one graph marker, one stats line).
+    final List<Viewport3D> viewports = new ArrayList<>();
+    Viewport3D hoverViewport;   // last pane under the mouse
+    double povTime;             // shared ride position (s)
+    int povFollowPiece = -1;    // shared POV piece-follow anchor
+
+    boolean mouseOverView;    // cursor currently over a 3D pane
+    boolean mouseOverGraph;   // cursor currently over the graph canvas
+
+    /** One-shot screen anchor for the NEXT settings popup (v18.19,
+     *  D190 — a ball/rig double-click opens its panel near the click
+     *  instead of under the toolbar button); consumed on show. */
+    Double popupAnchorX, popupAnchorY;
+
+    void nextPopupAnchor(double x, double y) {
+        popupAnchorX = x;
+        popupAnchorY = y;
+    }
+
+    /** The pane holding a mouse capture (fly / captured POV), or
+     *  null — at most one (releaseOtherCaptures). */
+    Viewport3D capturedViewport() {
+        for (Viewport3D vp : viewports) {
+            if (vp.flyActive || (vp.povActive && vp.povCaptured)) return vp;
+        }
+        return null;
+    }
+
+    /** The pane that owns view keys: the CAPTURED pane first, else
+     *  the hovered / last-hovered pane. */
+    Viewport3D keyViewport() {
+        Viewport3D cap = capturedViewport();
+        if (cap != null) return cap;
+        if (hoverViewport != null && viewports.contains(hoverViewport)) {
+            return hoverViewport;
+        }
+        return viewports.get(0);
+    }
+
+    /** The 1-6 VIEW-DIRECTION keys (v18.11, user spec — FIXED digit
+     *  keys, the POV A/D precedent; they replace T/Shift+T):
+     *  1 Front, 2 Back, 3 Right, 4 Left, 5 Top, 6 Tangent to
+     *  Selection. 1-5 fire only while a pane is CAPTURED or the
+     *  mouse is over a view — over the graph, 1/2/3 stay lane
+     *  switches. 6 fires from the graph too, aimed at the
+     *  last-hovered pane. Returns true when handled. */
+    boolean handleViewDigit(KeyEvent e) {
+        if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown()
+                || e.isMetaDown()) {
+            return false;
+        }
+        int d = switch (e.getCode()) {
+            case DIGIT1 -> 1;
+            case DIGIT2 -> 2;
+            case DIGIT3 -> 3;
+            case DIGIT4 -> 4;
+            case DIGIT5 -> 5;
+            case DIGIT6 -> 6;
+            default -> 0;
+        };
+        if (d == 0 || viewports.isEmpty()) return false;
+        Viewport3D cap = capturedViewport();
+        boolean overView = mouseOverView && hoverViewport != null
+            && viewports.contains(hoverViewport);
+        Viewport3D target;
+        if (cap != null) {
+            target = cap;
+        } else if (overView) {
+            target = hoverViewport;
+        } else if (d == 6 && mouseOverGraph) {
+            // 6 from the graph switches the LAST-hovered pane
+            target = keyViewport();
+        } else {
+            return false;   // the graph keeps 1/2/3 as lane switches
+        }
+        target.exitRideModes();
+        if (d == 5) {
+            if (!(target.orthoView && target.orthoTop)) {
+                target.orthoEnterTop();
+            }
+        } else {
+            target.setOrthoSideMode(d == 6 ? 4 : d - 1);
+        }
+        return true;
+    }
+
+    /** Entering fly/captured-POV in one pane releases every other
+     *  pane's capture (two Robots would fight over one cursor). */
+    void releaseOtherCaptures(Viewport3D except) {
+        for (Viewport3D vp : viewports) {
+            if (vp != except) vp.releaseCapture();
+        }
+    }
+
+    /** "Add View" (v18.9; full-parity v18.10): a new complete pane
+     *  on the right, dividers re-spread evenly. The pane arrives in
+     *  FLY/ORBIT at the SPAWNING pane's perspective pose (v18.11,
+     *  user spec — an ortho spawner hands over its saved
+     *  perspective pose instead). */
+    void addViewPane(Viewport3D from) {
+        Viewport3D vp = new Viewport3D(this);
+        if (from != null) {
+            vp.camPivot.setX(from.camPivot.getX());
+            vp.camPivot.setY(from.camPivot.getY());
+            vp.camPivot.setZ(from.camPivot.getZ());
+            vp.camYaw.setAngle(from.orthoView ? from.savedYaw
+                : from.camYaw.getAngle());
+            vp.camPitch.setAngle(from.orthoView ? from.savedPitch
+                : from.camPitch.getAngle());
+            vp.camZoom.setZ(from.orthoView ? from.savedZoom
+                : from.camZoom.getZ());
+        }
+        viewports.add(vp);
+        viewSplit.getItems().add(vp.buildPane());
+        vp.rebuildMeshes();
+        vp.startAxesRef();
+        int n = viewSplit.getItems().size();
+        double[] pos = new double[n - 1];
+        for (int i = 1; i < n; i++) pos[i - 1] = (double) i / n;
+        viewSplit.setDividerPositions(pos);
+        placeCollapseBtn();
+    }
+
+    /** "Remove View": drops THAT pane (any of them — the last one
+     *  stays); the SplitPane reflows the rest into the gap. */
+    void removeViewPane(Viewport3D vp) {
+        if (viewports.size() <= 1) return;
+        vp.releaseCapture();
+        vp.shutdown();
+        int idx = viewports.indexOf(vp);
+        if (idx < 0) return;
+        viewports.remove(idx);
+        viewSplit.getItems().remove(idx);
+        if (hoverViewport == vp) hoverViewport = null;
+        placeCollapseBtn();
+    }
+
+    /** A drawn circle-arrow icon replacing the ↺/↻ FONT glyphs
+     *  (v18.11, user report: the glyphs render with a FLAT-bottomed
+     *  circle): a fully round arc with only the arrowhead gap at the
+     *  top, centered in a size×size canvas. cw = the ↻ direction. */
+    static javafx.scene.canvas.Canvas circleArrowIcon(double size,
+            boolean cw, Color col) {
+        javafx.scene.canvas.Canvas c =
+            new javafx.scene.canvas.Canvas(size, size);
+        javafx.scene.canvas.GraphicsContext g = c.getGraphicsContext2D();
+        if (cw) {   // mirror the CCW drawing
+            g.translate(size, 0);
+            g.scale(-1, 1);
+        }
+        double cx = size / 2, cy = size / 2, r = size * 0.32;
+        double gap = 70;   // degrees, centered at 12 o'clock
+        g.setStroke(col);
+        g.setLineWidth(Math.max(1.0, size * 0.075));   // thinner (v18.11b)
+        g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90 + gap / 2,
+            360 - gap, javafx.scene.shape.ArcType.OPEN);
+        // arrowhead at the CCW arc's end (right edge of the gap),
+        // pointing along the counterclockwise tangent
+        double th = Math.toRadians(90 - gap / 2);
+        double px = cx + r * Math.cos(th), py = cy - r * Math.sin(th);
+        double tx = -Math.sin(th), ty = -Math.cos(th);
+        double nx = Math.cos(th), ny = -Math.sin(th);
+        double ah = size * 0.26, aw = size * 0.24;
+        g.setFill(col);
+        g.fillPolygon(
+            new double[]{ px + tx * ah, px + nx * aw / 2, px - nx * aw / 2 },
+            new double[]{ py + ty * ah, py + ny * aw / 2, py - ny * aw / 2 },
+            3);
+        return c;
+    }
+
+    /** The standard dark-on-light reset icon most dialogs use. */
+    static javafx.scene.canvas.Canvas resetIcon() {
+        return circleArrowIcon(13, false, Color.rgb(55, 58, 66));
+    }
+
+    /** A horizontal double-headed arrow in the circle-arrow icons'
+     *  style (v18.11 — the tangent Reverse View button's ↔ glyph
+     *  clashed with the drawn refresh icon beside it). */
+    static javafx.scene.canvas.Canvas doubleArrowIcon(double size,
+            Color col) {
+        javafx.scene.canvas.Canvas c =
+            new javafx.scene.canvas.Canvas(size, size);
+        javafx.scene.canvas.GraphicsContext g = c.getGraphicsContext2D();
+        double cy = size / 2, x0 = size * 0.12, x1 = size * 0.88;
+        double ah = size * 0.24, aw = size * 0.22;
+        g.setStroke(col);
+        g.setLineWidth(Math.max(1.0, size * 0.075));
+        g.strokeLine(x0 + ah * 0.6, cy, x1 - ah * 0.6, cy);
+        g.setFill(col);
+        g.fillPolygon(new double[]{ x0, x0 + ah, x0 + ah },
+                      new double[]{ cy, cy - aw / 2, cy + aw / 2 }, 3);
+        g.fillPolygon(new double[]{ x1, x1 - ah, x1 - ah },
+                      new double[]{ cy, cy - aw / 2, cy + aw / 2 }, 3);
+        return c;
+    }
+
+    /** The graph collapse arrow always lives in the RIGHTMOST pane
+     *  (v18.10, user spec). */
+    private Button collapseBtn;
+
+    void placeCollapseBtn() {
+        if (collapseBtn == null || viewports.isEmpty()) return;
+        for (Viewport3D vp : viewports) {
+            if (vp.pane != null) vp.pane.getChildren().remove(collapseBtn);
+        }
+        StackPane right = viewports.get(viewports.size() - 1).pane;
+        if (right != null) right.getChildren().add(collapseBtn);
+    }
+    // (the View menu's gizmo axis dots are GONE, v18.16 D187 — the
+    // per-pane top-right button is the whole surface)
     // (viewPovRevCheck is GONE, v17.11 — the View menu row was
     // removed on user spec; A/D in captured POV + the bottom-left
     // "Backwards POV (A)" tag are the whole surface)
@@ -1095,6 +1392,20 @@ public class FvdDesigner extends Application {
     // builds and assigns them; setRailMode/loads re-sync as ever)
     RadioButton gradientModeItem, solidModeItem;
     private CheckBox resPitchCheck, resYawCheck, resRollCheck;   // retitled per mode
+
+    /** Every file OPEN (New / Load / the startup Untitled) begins
+     *  with the Resulting overlays OFF (v18.10, user spec) — the
+     *  picks still stick for the session once re-checked. */
+    void clearResultingPicks() {
+        settings.setResPitch(false);
+        settings.setResYaw(false);
+        settings.setResRoll(false);
+        if (resPitchCheck != null) resPitchCheck.setSelected(false);
+        if (resYawCheck != null) resYawCheck.setSelected(false);
+        if (resRollCheck != null) resRollCheck.setSelected(false);
+        tintResChecks();
+        if (editor != null) editor.refresh();
+    }
 
     // app-wide settings persisted across runs (shortcuts, FOV)
     final AppSettings settings = new AppSettings();
@@ -1121,16 +1432,12 @@ public class FvdDesigner extends Application {
         // returns focus like any other dialog in the app.)
 
         // 3D viewport (cameras, meshes, grid, markers): Viewport3D.java
-        viewport = new Viewport3D(this);
+        // the FIRST view pane (v18.10: panes are full Viewport3D
+        // instances in `viewports`; buildPane() assembles each pane's
+        // SubScene + overlays with min sizes zeroed — the old
+        // subHolder rules live there now)
+        viewports.add(new Viewport3D(this));
         dialogs = new Dialogs(this);
-
-        StackPane subHolder = new StackPane(viewport.sub);
-        viewport.sub.widthProperty().bind(subHolder.widthProperty());
-        viewport.sub.heightProperty().bind(subHolder.heightProperty());
-        // the SubScene reports its current size as its minimum, which stops
-        // the SplitPane/window from shrinking the 3D area — and pushed the
-        // divider + collapse button off-screen on non-maximized windows
-        subHolder.setMinSize(0, 0);
 
         // ----- editor + toolbar -----
         editor = new GraphEditor(this);
@@ -1213,6 +1520,9 @@ public class FvdDesigner extends Application {
         resSet.setFocusTraversable(false);
         resSet.setStyle("-fx-font-size: 11px;");
         resSet.setOnAction(e -> editor.showResultingSettings());
+        // opening any file starts with NO overlays (v18.10, user
+        // spec) — the startup document counts as an open too
+        clearResultingPicks();
         VBox resBox = new VBox(8, resPitchCheck, resYawCheck,
             resRollCheck, resSet);
         resBox.setPadding(new Insets(10, 16, 10, 12));
@@ -1276,12 +1586,8 @@ public class FvdDesigner extends Application {
         resBox.setOnMouseEntered(e -> resHide.stop());
         resBox.setOnMouseMoved(e -> resHide.stop());   // covers a missed enter
         resBox.setOnMouseExited(e -> resHide.playFromStart());
-        Tooltip.install(resBtn, new Tooltip(
-            "Overlay read-only RESULTING curves for the section being\n"
-            + "edited (thin dashed, on the right-edge axis): force\n"
-            + "sections show pitch/yaw rates (°/s, geo colors); geo\n"
-            + "sections show felt vertical/lateral G (force colors).\n"
-            + "Hover a curve for its value. Picks persist per-user."));
+        // (no tooltip — the toolbar dropdowns dropped their hover
+        // descriptions in v18.8, user spec)
 
         // piece selector (v12.0): hidden while the ride is one piece;
         // lists every piece, click to make it the graph's piece
@@ -1303,10 +1609,6 @@ public class FvdDesigner extends Application {
             }
             cm.show(pieceBtn, javafx.geometry.Side.BOTTOM, 0, 0);
         });
-        Tooltip.install(pieceBtn, new Tooltip(
-            "The graph edits ONE piece at a time; pick which.\n"
-            + "Split a piece from a section badge; attach a floating\n"
-            + "piece from the ⊕ menu at the ride end."));
         updatePieceButton();
 
         // piece placement/reverse dropdown (v13.2 — moved here from the
@@ -1319,13 +1621,6 @@ public class FvdDesigner extends Application {
         placementBtn.setFocusTraversable(false);
         placementBtn.setStyle(btnStyle);
         placementBtn.setOnAction(e -> showPlacementPopup());
-        Tooltip.install(placementBtn, new Tooltip(
-            "The ACTIVE piece's placement: x/y/z, yaw (a delta on its\n"
-            + "natural orientation — 0 reverts), and Reverse piece\n"
-            + "(rebuilds the piece backward through the convert popup).\n"
-            + "With a BRIDGE active it places the NEXT piece instead:\n"
-            + "optimize position+yaw (default), position only (you\n"
-            + "set the yaw), or fully manual."));
 
         // (the panel body lives in showPlacementPopup — the bridge
         // badge menu opens the same panel since v17.14, user request)
@@ -1338,14 +1633,12 @@ public class FvdDesigner extends Application {
         bridgeGapSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 1000, 20, 1));
         bridgeGapSpinner.setPrefWidth(80);
-        bridgeGapSpinner.setEditable(true);
         bridgeGapSpinner.setFocusTraversable(false);
         // numeric-only editor (v13.4): ride/fly movement keys are handled
         // by scene FILTERS, but the focused editor still received their
-        // KEY_TYPED characters — letters kept appearing in the box
-        bridgeGapSpinner.getEditor().setTextFormatter(
-            new javafx.scene.control.TextFormatter<String>(ch ->
-                ch.getControlNewText().matches("\\d*\\.?\\d*") ? ch : null));
+        // KEY_TYPED characters — letters kept appearing in the box.
+        // typable = the same rule + focus-loss commit (v18.20, D191)
+        typable(bridgeGapSpinner, false);
         bridgeGapSpinner.valueProperty().addListener((obs, o, v) -> {
             if (docApplying) return;
             editor.setBridgeGap(v);
@@ -1397,53 +1690,27 @@ public class FvdDesigner extends Application {
         bottom.setMinHeight(0);       // allow the divider to crush it fully
         editor.setMinHeight(0);
 
-        // collapse/restore toggle lives ON the 3D view so it stays reachable
-        // when the graph panel is fully minimized
-        Button collapseBtn = new Button("▼");
+        // collapse/restore toggle lives ON the 3D view so it stays
+        // reachable when the graph panel is fully minimized — in the
+        // RIGHTMOST pane since v18.10 (placeCollapseBtn)
+        collapseBtn = new Button("▼");
         collapseBtn.setFocusTraversable(false);
         collapseBtn.setStyle("-fx-background-color: rgba(45,50,62,0.75); -fx-text-fill: rgb(210,215,225);");
         StackPane.setAlignment(collapseBtn, Pos.BOTTOM_RIGHT);
         StackPane.setMargin(collapseBtn, new Insets(8));
         collapseBtn.setOnAction(e -> toggleGraphPanel());
-        subHolder.getChildren().add(collapseBtn);
+        // (the top-right gizmo-AXES overlay toggle is GONE, v18.10
+        // D181 — the View menu's inline Local/Global dots remain)
 
-        // gizmo AXES toggle (v16.11): overlaid on the 3D view like the
-        // collapse button, visible only while a gizmo shows; flips the
-        // translation arrows between world X/Y/Z and the piece's entry
-        // frame — a pure view choice, switching never moves the track
-        gizmoAxesBtn = new ToggleButton(settings.gizmoLocal()
-            ? "Axes: local" : "Axes: global");
-        gizmoAxesBtn.setFocusTraversable(false);
-        gizmoAxesBtn.setStyle("-fx-background-color: rgba(45,50,62,0.75); -fx-text-fill: rgb(210,215,225);");
-        gizmoAxesBtn.setSelected(settings.gizmoLocal());
-        StackPane.setAlignment(gizmoAxesBtn, Pos.TOP_RIGHT);
-        StackPane.setMargin(gizmoAxesBtn, new Insets(8));
-        gizmoAxesBtn.setVisible(false);
-        gizmoAxesBtn.setOnAction(e ->
-            setGizmoAxesLocal(gizmoAxesBtn.isSelected()));
-        Tooltip.install(gizmoAxesBtn, new Tooltip(
-            "Gizmo arrows: world X/Y/Z (global) or the piece entry\n"
-            + "frame's right/up/forward (local). Rotation rings always\n"
-            + "turn the placement quantities themselves. Switching\n"
-            + "never moves the track."));
-        subHolder.getChildren().add(gizmoAxesBtn);
-        // comb hover readout (v16.13; FIXED bottom-left + managed
-        // since v16.14 — an unmanaged Label never got laid out to a
-        // size, so the old cursor-following version rendered 0×0)
-        StackPane.setAlignment(viewport.combLabel, Pos.BOTTOM_LEFT);
-        StackPane.setMargin(viewport.combLabel, new Insets(8));
-        subHolder.getChildren().add(viewport.combLabel);
-        StackPane.setAlignment(viewport.povLabel, Pos.BOTTOM_LEFT);
-        StackPane.setMargin(viewport.povLabel, new Insets(8));
-        subHolder.getChildren().add(viewport.povLabel);
-        // AXES REFERENCE (v18.7, D176): world-XYZ compass, bottom
-        // right, live with every camera move
-        StackPane.setAlignment(viewport.axesCanvas, Pos.BOTTOM_RIGHT);
-        StackPane.setMargin(viewport.axesCanvas, new Insets(6));
-        subHolder.getChildren().add(viewport.axesCanvas);
-        viewport.startAxesRef();
-
-        mainSplit = new SplitPane(subHolder, bottom);
+        // VIEW PANES (v18.9; FULL PARITY v18.10, D181): the 3D area
+        // is a horizontal SplitPane of complete Viewport3D panes —
+        // each assembles its own overlays in buildPane()
+        viewSplit = new SplitPane(viewports.get(0).buildPane());
+        viewports.get(0).startAxesRef();
+        viewSplit.setOrientation(Orientation.HORIZONTAL);
+        viewSplit.setMinSize(0, 0);
+        placeCollapseBtn();
+        mainSplit = new SplitPane(viewSplit, bottom);
         mainSplit.setOrientation(Orientation.VERTICAL);
         mainSplit.setDividerPositions(lastDividerPos);
         mainSplit.getDividers().get(0).positionProperty().addListener(
@@ -1462,7 +1729,9 @@ public class FvdDesigner extends Application {
         Scene scene = new Scene(layout, w, h, true);
         scene.addEventFilter(KeyEvent.KEY_PRESSED, this::handleKey);
         scene.addEventFilter(KeyEvent.KEY_RELEASED, e -> {
-            if (viewport.flyActive || viewport.povActive) viewport.moveKeys.remove(e.getCode());
+            for (Viewport3D vp : viewports) {
+                if (vp.flyActive || vp.povActive) vp.moveKeys.remove(e.getCode());
+            }
             if (e.getCode() == KeyCode.S) slideKey = false;
             if (e.getCode() == KeyCode.C) cKey = false;
             if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(false);
@@ -1479,37 +1748,38 @@ public class FvdDesigner extends Application {
         // never while a camera mode owns WASD (uncaptured POV does not).
         // MID-DRAG the modifier check is waived: Ctrl is already held for
         // snapping, and pressing S then means snap+slide, not Ctrl+S.
-        if (e.getCode() == KeyCode.S && !viewport.flyActive
-                && !(viewport.povActive && viewport.povCaptured)
+        Viewport3D kv = keyViewport();
+        if (e.getCode() == KeyCode.S && !kv.flyActive
+                && !(kv.povActive && kv.povCaptured)
                 && (!e.isShortcutDown() || editor.isDragging())) {
             slideKey = true;   // not consumed: bound actions still fire
         }
         // C held = click-the-track-recenters (FVD++ muscle memory; the
         // Shift+click gesture stays too). Tracked like the S slide key.
-        if (e.getCode() == KeyCode.C && !viewport.flyActive
-                && !(viewport.povActive && viewport.povCaptured)
+        if (e.getCode() == KeyCode.C && !kv.flyActive
+                && !(kv.povActive && kv.povCaptured)
                 && !e.isShortcutDown()) {
             cKey = true;
         }
         if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(true);
         if (e.getCode() == KeyCode.CONTROL) editor.ctrlHover(true);
-        if (viewport.flyActive || (viewport.povActive && viewport.povCaptured)) {   // camera owns movement keys
+        if (kv.flyActive || (kv.povActive && kv.povCaptured)) {   // camera owns movement keys
             KeyCode c = e.getCode();
             // A/D in CAPTURED POV = view direction (v16.15, user
             // spec): A toggles the BACKWARD view, A again or D
             // returns forward; W/S keep their track direction, so
             // reversed W reads as riding backward
-            if (viewport.povActive && viewport.povCaptured
+            if (kv.povActive && kv.povCaptured
                     && (c == KeyCode.A || c == KeyCode.D)) {
-                setPovReversed(c == KeyCode.A && !settings.povReversed());
+                setPovReversed(c == KeyCode.A && !keyViewport().povReversed);
                 e.consume();
                 return;
             }
             boolean movement = c == KeyCode.W || c == KeyCode.S
                     || c == KeyCode.SHIFT || c == KeyCode.CONTROL
-                    || (viewport.flyActive && (c == KeyCode.A || c == KeyCode.D));
+                    || (kv.flyActive && (c == KeyCode.A || c == KeyCode.D));
             if (movement) {
-                viewport.moveKeys.add(c);
+                kv.moveKeys.add(c);
                 e.consume();
                 return;
             }
@@ -1532,8 +1802,7 @@ public class FvdDesigner extends Application {
         // like POV/ortho stay live below)
         if (editor.convertUiActive()) {
             if (matches("pov", e)) togglePov();
-            else if (matches("viewTop", e)) viewport.toggleOrthoView(true);
-            else if (matches("viewSide", e)) viewport.toggleOrthoView(false);
+            else if (handleViewDigit(e)) { /* view keys stay live */ }
             // lane SWITCHING stays live while the density preview is
             // up (v16.7, user spec — inspect the fitted carpet on
             // every lane before Apply; still read-only, like the
@@ -1558,10 +1827,13 @@ public class FvdDesigner extends Application {
         else if (matches("lockv", e))   editor.toggleAxisLock(true);
         else if (matches("lockh", e))   editor.toggleAxisLock(false);
         else if (matches("delNode", e)) editor.deleteSelected();
-        else if (matches("append", e))  editor.appendAction();
+        else if (matches("append", e)) {
+            // A over a 3D view must NOT append (v18.19, D190 — the
+            // user spec; the graph keeps its shortcut)
+            if (!mouseOverView) editor.appendAction();
+        }
         else if (matches("pov", e))     togglePov();
-        else if (matches("viewTop", e))  viewport.toggleOrthoView(true);
-        else if (matches("viewSide", e)) viewport.toggleOrthoView(false);
+        else if (handleViewDigit(e)) { /* 1-6 view directions */ }
         else if (matches("lane1", e))   editor.setActiveLane(0);
         else if (matches("lane2", e))   editor.setActiveLane(1);
         else if (matches("lane3", e))   editor.setActiveLane(2);
@@ -1791,31 +2063,43 @@ public class FvdDesigner extends Application {
 
         // --- Coaster: per-coaster settings, saved in the .fvd file ---
         heartSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-3.0, 3.0, heartOffset, 0.1));
-        heartSpinner.setPrefWidth(70);
+        heartSpinner.setPrefWidth(82);
+        typable(heartSpinner, true);
         wireDocSpinner(heartSpinner, v -> heartOffset = v);
         gaugeSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(0.3, 2.5, railGauge, 0.1));
-        gaugeSpinner.setPrefWidth(70);
+        gaugeSpinner.setPrefWidth(82);
+        typable(gaugeSpinner, false);
         wireDocSpinner(gaugeSpinner, v -> railGauge = v);
         tieSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(0.2, 10.0, tieSpacing, 0.1));
-        tieSpinner.setPrefWidth(70);
+        tieSpinner.setPrefWidth(82);
+        typable(tieSpinner, false);
         wireMenuSpinner(tieSpinner, v -> tieSpacing = v);
         // placement spinners edit the ACTIVE piece (v12.0) — piece 0
         // for a single-piece document, exactly the old "Start" behavior
         TrackPiece piece0 = coaster.pieces.get(0);
         startXSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.x, 1));
-        startXSpinner.setPrefWidth(70);
+        startXSpinner.setPrefWidth(82);
+        typable(startXSpinner, true);
         wireDocSpinner(startXSpinner, v -> activePieceRef().x = v);
         startYSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.y, 1));
-        startYSpinner.setPrefWidth(70);
+        startYSpinner.setPrefWidth(82);
+        typable(startYSpinner, true);
         wireDocSpinner(startYSpinner, v -> activePieceRef().y = v);
         startZSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.z, 1));
-        startZSpinner.setPrefWidth(70);
+        startZSpinner.setPrefWidth(82);
+        typable(startZSpinner, true);
         wireDocSpinner(startZSpinner, v -> activePieceRef().z = v);
-        yawSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, piece0.yawDeg, 5));
-        yawSpinner.setPrefWidth(70);
-        wireDocSpinner(yawSpinner, v -> activePieceRef().yawDeg = v);
+        // yaw ANGLES read/type LEFT-positive since v18.15 (D186,
+        // pairing with the D185 rates): the UI negates at this
+        // boundary — the stored yawDeg (and the file) keep the
+        // historic internal sense, so nothing ever moves
+        yawSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, -piece0.yawDeg, 5));
+        yawSpinner.setPrefWidth(82);   // the clipped-"3" report (D191)
+        typable(yawSpinner, true);
+        wireDocSpinner(yawSpinner, v -> activePieceRef().yawDeg = -v);
         startSpeedSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 100, coaster.v0, 1));
-        startSpeedSpinner.setPrefWidth(70);
+        startSpeedSpinner.setPrefWidth(82);
+        typable(startSpeedSpinner, false);
         // the spinner is v0 AND the sole section's design speed — they
         // stay coupled until Phase 3 gives dynamics its own controls
         wireDocSpinner(startSpeedSpinner, v -> {
@@ -1831,7 +2115,8 @@ public class FvdDesigner extends Application {
         fricRollSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
                 0, 0.2, coaster.fricRoll, 0.001));
-        fricRollSpinner.setPrefWidth(80);
+        fricRollSpinner.setPrefWidth(82);
+        typable(fricRollSpinner, false);
         ((SpinnerValueFactory.DoubleSpinnerValueFactory)
             fricRollSpinner.getValueFactory()).setConverter(
                 fixedDecimalConverter(3));
@@ -1840,6 +2125,7 @@ public class FvdDesigner extends Application {
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
                 0, 0.02, coaster.fricAir, 0.00001));
         fricAirSpinner.setPrefWidth(90);
+        typable(fricAirSpinner, false);
         ((SpinnerValueFactory.DoubleSpinnerValueFactory)
             fricAirSpinner.getValueFactory()).setConverter(
                 fixedDecimalConverter(5));
@@ -1892,15 +2178,13 @@ public class FvdDesigner extends Application {
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-85, 85,
                 piece0.pitchDeg, 1));
         piecePitchSpinner.setPrefWidth(80);
-        piecePitchSpinner.setEditable(true);
-        piecePitchSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        typable(piecePitchSpinner, true);
         wireDocSpinner(piecePitchSpinner, v -> activePieceRef().pitchDeg = v);
         pieceRollSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360,
                 piece0.rollDeg, 1));
         pieceRollSpinner.setPrefWidth(80);
-        pieceRollSpinner.setEditable(true);
-        pieceRollSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        typable(pieceRollSpinner, true);
         wireDocSpinner(pieceRollSpinner, v -> activePieceRef().rollDeg = v);
         pieceLockPitchBtn = placementLockBtn(1);
         pieceLockRollBtn = placementLockBtn(2);
@@ -1978,10 +2262,10 @@ public class FvdDesigner extends Application {
             // Ctrl-snap is 1° to match)
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, 0, 1));
         bridgeYawSpinner.setPrefWidth(90);
-        bridgeYawSpinner.setEditable(true);
-        bridgeYawSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        typable(bridgeYawSpinner, true);
         bridgeYawSpinner.valueProperty().addListener((obs, o, v) -> {
-            if (!docApplying) editor.setBridgeTargetOrient(0, v);
+            // typed yaw is REPORTED (+ = left, D186): internal negates
+            if (!docApplying) editor.setBridgeTargetOrient(0, -v);
         });
         // orientation LOCKS (v13.13, D87): a locked axis is frozen —
         // no edits — and the optimization MEETS it; an unlocked axis
@@ -1999,8 +2283,7 @@ public class FvdDesigner extends Application {
         bridgePitchSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-85, 85, 0, 1));
         bridgePitchSpinner.setPrefWidth(90);
-        bridgePitchSpinner.setEditable(true);
-        bridgePitchSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        typable(bridgePitchSpinner, true);
         bridgePitchSpinner.valueProperty().addListener((obs, o, v) -> {
             if (!docApplying) editor.setBridgeTargetOrient(1, v);
         });
@@ -2012,8 +2295,7 @@ public class FvdDesigner extends Application {
         bridgeRollSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, 0, 1));
         bridgeRollSpinner.setPrefWidth(90);
-        bridgeRollSpinner.setEditable(true);
-        bridgeRollSpinner.getEditor().setTextFormatter(signedNumFormatter());
+        typable(bridgeRollSpinner, true);
         bridgeRollSpinner.valueProperty().addListener((obs, o, v) -> {
             if (!docApplying) editor.setBridgeTargetOrient(2, v);
         });
@@ -2227,6 +2509,7 @@ public class FvdDesigner extends Application {
         currentFile = null;
         dirty = false;
         updateTitle();
+        clearResultingPicks();   // opens start overlay-free (v18.10)
         rebuildTrack();      // spans first (stale ones belong to the
         editor.refresh();    // discarded document)
         statsLabel.setText("New design");
@@ -2297,6 +2580,7 @@ public class FvdDesigner extends Application {
             updatePieceButton();
             (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
             editor.clearSelection();
+            clearResultingPicks();   // opens start overlay-free (v18.10)
             rebuildTrack();      // spans before the first graph layout:
             editor.refresh();    // s/c strip widths come from the compile
             currentFile = f;

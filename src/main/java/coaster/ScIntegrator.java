@@ -15,8 +15,9 @@ import java.util.List;
  * (kappa = sign(angle)/radius; straights are the zero vector). Rotating
  * about that axis leaves the axis itself invariant, so each element is
  * an EXACT circle/line — validated analytically in the gate. dir 0 =
- * flat turn (positive angle = rider-right, since +Omega about U turns T
- * toward R), dir 90 = positive angle pulls up.
+ * flat turn (positive angle = rider-LEFT since v18.16 D187 — the
+ * profile negates the U component, the D185 yaw boundary), dir 90 =
+ * positive angle pulls up.
  *
  * TRANSITION SMOOTHING: at each internal element boundary the two
  * component pairs (cU, cR) blend with a sine ease over the entry
@@ -109,7 +110,10 @@ public final class ScIntegrator {
                 s += e.arcLen();
                 double k = e.kappa();
                 double d = Math.toRadians(e.dirDeg);
-                cU[i] = k * Math.cos(d);
+                // yaw component NEGATED (v18.16, D187 — the D185
+                // boundary applied to s/c: dir 0 + positive angle =
+                // rider-LEFT now; dir 90 pull-up untouched)
+                cU[i] = -k * Math.cos(d);
                 cR[i] = -k * Math.sin(d);
                 half[i] = i == 0 ? 0 : Math.max(0, e.smoothIn / 2);
                 boolean glob = e.rollMode == StraightCurveSection.RollMode.GLOBAL;
@@ -410,7 +414,7 @@ public final class ScIntegrator {
         prof.componentsAt(Math.min(st.s(), prof.totalLen), scratch);
         // felt forces at design speed (readout, not a division)
         double gv = -scratch[1] * v * v / FVDIntegrator.G0 + U.y();
-        double gl = scratch[0] * v * v / FVDIntegrator.G0 + R.y();
+        double gl = -(scratch[0] * v * v / FVDIntegrator.G0 + R.y());   // +Gl = right (D184)
         samples.add(new FVDIntegrator.Sample(t, st.s(), st.pos(), T, U, R,
             v, gv, gl));   // honest record (v18.6, D175)
     }

@@ -558,7 +558,7 @@ public final class BridgeSection implements Section {
         double v = blendedV(s, total, geo, dv, y0, loss);
         Vec3 accel = kappa.scale(v * v);   // centripetal at design speed
         double gv = accel.dot(U) / FVDIntegrator.G0 + U.y();
-        double gl = accel.dot(R) / FVDIntegrator.G0 + R.y();
+        double gl = -(accel.dot(R) / FVDIntegrator.G0 + R.y());   // +Gl = right (D184)
         return new FVDIntegrator.Sample(t, s, pos, T, U, R, Math.max(0.1, v), gv, gl);
     }
 

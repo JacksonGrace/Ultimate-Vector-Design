@@ -453,7 +453,7 @@ public final class TrackCompiler {
             tilt.rotate(sm.pos().sub(anchor)).add(anchor),
             tilt.rotate(sm.T()), U, R, sm.v(),
             sm.Gv() - sm.U().y() + U.y(),
-            sm.Gl() - sm.R().y() + R.y());
+            sm.Gl() + sm.R().y() - R.y());   // lateral mirrored (D184)
     }
 
     static TrackPose tiltPose(TrackPose p, Quat tilt, Vec3 anchor) {
@@ -656,7 +656,7 @@ public final class TrackCompiler {
             all.set(i, new FVDIntegrator.Sample(sm.t(), sm.s(), pos[j],
                 T, U, R, v,
                 -kap.dot(R) * v * v / FVDIntegrator.G0 + U.y(),
-                kap.dot(U) * v * v / FVDIntegrator.G0 + R.y()));
+                -(kap.dot(U) * v * v / FVDIntegrator.G0 + R.y())));   // D184
         }
         // the follower's remainder translates rigidly; its span exit
         // moves with it (orientation untouched). The UPSTREAM span's
@@ -1117,7 +1117,8 @@ public final class TrackCompiler {
             double pitB = Math.toDegrees(FVDIntegrator.G0
                 * (sm.Gv() - sm.U().y()) / vSafe);
             double yawB = Math.toDegrees(FVDIntegrator.G0
-                * (sm.Gl() - sm.R().y()) / vSafe);
+                * (sm.Gl() + sm.R().y()) / vSafe);   // REPORTED yaw
+                    // (+ = left, D185; the D184/D185 signs cancel)
             // the roll lane in BOTH representations (only the needed
             // conversion runs; ψ' is roll-independent — Ω's T part
             // drops out of Ω×T)
@@ -1125,8 +1126,10 @@ public final class TrackCompiler {
             if (ls.rollGlobal) {
                 bankR = rollLane;
                 double psi = Coaster.worldRates(sm, pitB, yawB, 0)[1];
+                // transport uses the INTERNAL heading rate = the
+                // negated reported one (D185)
                 rollB = bankR + (Double.isNaN(psi) ? 0
-                    : psi * sm.T().y());
+                    : -psi * sm.T().y());
             } else {
                 rollB = rollLane;
                 bankR = ls.inflRollGlobal
@@ -1140,7 +1143,7 @@ public final class TrackCompiler {
                 double fScale = vStar == null ? 1 : vStar[i] / vd;
                 double r2 = fScale * fScale;
                 base[i][1] = r2 * (sm.Gv() - sm.U().y()) + sm.U().y();
-                base[i][2] = r2 * (sm.Gl() - sm.R().y()) + sm.R().y();
+                base[i][2] = r2 * (sm.Gl() + sm.R().y()) - sm.R().y();
             } else if (ls.inflYawPitchGlobal) {
                 // force section, GLOBAL-axis influence: elevation +
                 // heading rates
@@ -1375,7 +1378,7 @@ public final class TrackCompiler {
             double vd = Math.max(0.1, sm.v());
             double r2 = (trueV[i] * trueV[i]) / (vd * vd);
             out[i][0] = r2 * (sm.Gv() - sm.U().y()) + sm.U().y();
-            out[i][1] = r2 * (sm.Gl() - sm.R().y()) + sm.R().y();
+            out[i][1] = r2 * (sm.Gl() + sm.R().y()) - sm.R().y();   // D184
         }
         return out;
     }

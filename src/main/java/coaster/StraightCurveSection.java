@@ -45,8 +45,8 @@ public final class StraightCurveSection implements Section {
 
     /** One element. STRAIGHT uses {@code length}; CURVE uses radius +
      *  signed angle (arc length derived) + direction:
-     *    dirDeg 0 = flat turn (positive angle = rider-RIGHT),
-     *    90 = positive angle pulls UP, 180 = left, 270 = drops.
+     *    dirDeg 0 = flat turn (positive angle = rider-LEFT, v18.16
+     *    D187), 90 = positive angle pulls UP, 180 = right, 270 = drops.
      *  (The curve plane tilts about the track axis with dir; angle sign
      *  mirrors within that plane — same redundancy NL2 has.)
      *  smoothIn = entry-transition smoothing length, m (0 = sharp).

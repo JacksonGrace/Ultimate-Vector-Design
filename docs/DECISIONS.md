@@ -6766,5 +6766,695 @@ normal-force-scaled μ toggle is dropped, not deferred).
   (screen-right = axis·camX column, screen-down = axis·camY, world
   +Y entering as scene −Y per the Y-flip discipline).
 
+
+## D177. v18.8: B/Shift+B at yaw-pitch-global seams — EFFECTIVE roll semantics (user bug report, 2026-07-28)
+
+His file ("B Shortcut not working 7.28.26.fvd"): a TIME force section
+carrying a complex launch control into a DISTANCE geo section with
+yawPitchGlobal + °/m, then back to force. B/Shift+B on the geo's
+first node "doesn't line the real graphs up" at the force→geo seam;
+the geo→force seam after it "seems okay".
+
+- ROOT CAUSE (headless BProbe replicating boundaryStatePerSec on the
+  file): lanes 0/1 were FINE — the world-rate path's targets land and
+  the compiled elevation'/heading' flow smoothly through the seam
+  (finite-difference off the frames; the apparent ±2-6 °/s "jumps"
+  in a 3-8-samples-inside linear extrapolation are the sampled
+  path's documented curvature bias, not a discontinuity). The REAL
+  step was BODY ROLL: 0 → −35.4 °/s across the seam. On a
+  yaw-pitch-GLOBAL geo section the world-Y heading rotation itself
+  twists the body — Ω·T = ψ'·T.y + p — so its "local" roll lane is
+  effectively a BANK RATE (φ' = p − ψ'·sinθ + ψ'·T.y = p exactly,
+  T.y = sinθ). The roll matcher compared RAW rollGlobal flags (both
+  "local"), took the direct authored path, and copied the force
+  side's body roll 0 verbatim — missing the ψ'·T.y transport term
+  (35 °/s here). The geo→force direction read fine only because his
+  geo section's heading rate is ~0 at that seam (transport ≈ 0) —
+  exactly matching his "could just not be looking close enough".
+- FIX: GraphEditor.effRollGlobal(ls) = rollGlobal || (GeoSection &&
+  yawPitchGlobal) — the quantity a roll lane actually holds — used
+  by the rollAcrossSeam gate (fires on effective mismatch, passes
+  the effective want), rollConverted (the neighbor's effective
+  semantics pick the ± transport direction), the direct
+  authored-path equality, and laneWorld's lane-2 test (real-split
+  seams match bank rate through worldRates). D114's local|global
+  machinery already had the exact conversion — it was gated on the
+  wrong flag. Raw-flag comparisons stay where they belong:
+  mergeSections/likeSections (merging needs identical AUTHORING
+  semantics), the ABS-roll gates (absolute is defined rollGlobal-
+  only).
+- PROBE RESULT: after one Shift+B the roll target reads +0.669 °/m
+  (= +34.0 °/s bank rate) instead of 0 and the true body-roll step
+  collapses 35.4 → 1.2 °/s (the shipped one-sample-in read of the
+  D114 path; re-presses are stable to 1e-5). Elevation/heading and
+  the felt lanes were and remain continuous.
+
+## D178. v18.8: TRUE orthographic views + viewport/graph polish round (user, 2026-07-28)
+
+- TRUE ORTHO Top/Side (reverses D48's "ParallelCamera is unusable"
+  — that verdict is OBSOLETE on JavaFX 26, established by offscreen
+  snapshot probes): a ParallelCamera MIRRORS the orbit rig —
+  transforms [pivot][yaw][pitch][Scale(s,s,ORTHO_DEPTH)]
+  [Translate(−w/2,−h/2,0)] with s = the world-units-per-pixel the
+  camZoom/1°-lens bookkeeping implies (2·d·tan(FOV/2)/h) — and is
+  swapped in as the SubScene camera while orthoView. ALL existing
+  state machinery is untouched (camZoom still IS the zoom, pan/
+  restore/handoffs unchanged); syncOrthoCam (signature-guarded,
+  riding the axes-compass AnimationTimer) keeps it glued through
+  zoom/pan/resize. PROBED FACTS the design leans on: ParallelCamera
+  honors translate+rotate+scale in JavaFX 26; near/farClip setters
+  are IGNORED and the depth window is a fixed ±(viewport w/2) in
+  CAMERA units around the projection plane; a larger Z-scale widens
+  it proportionally (ORTHO_DEPTH 10 ⇒ ±(w/2)·10 ≈ ±7 km at app
+  sizes) and depth ordering survives the non-uniform scale.
+  Adaptations: effEye backs the pick/projection filters' eye off
+  the projection plane by the window depth (parallel projection
+  renders BEHIND the plane; the old dot-test would cull visible
+  geometry); ringHit's ortho branch shoots the pixel ray from the
+  plane point along fwd (allowing t<0) instead of the perspective
+  fan; positionGizmo's ortho scale is depth-INDEPENDENT (10% of
+  visible height); the axes compass normalizes the camera matrix
+  columns (the Scale would shrink them).
+- VIEW-MODE LABEL (top-left overlay): names the live camera —
+  Fly/Orbit | POV | Top | Side — and clicking opens a switcher
+  list (● marks current). Switches route through the SAME toggles
+  the keys use; leaving captured POV via the list releases capture
+  to plain orbit. syncViewMode called from togglePov /
+  toggleOrthoView / exitOrthoLens (fly shares the orbit label).
+- POV NODE MARKERS FIX (his report: "don't go back to the track in
+  POV, always at the heartline"): D176's height flip was correct
+  but its sync rode editor.refresh() → redraw(), which
+  early-returns while the GRAPH PANEL IS COLLAPSED (plot height 0)
+  — riding POV with the panel down kept the orbit-time heartline
+  markers forever. togglePov now calls editor.refreshMarkers()
+  DIRECTLY (canvas-independent, sig-guarded = free when redraw also
+  ran). Verified live: povActive=true rebuilds at spine Y.
+- XYZ COMPASS moved to the BOTTOM-LEFT (user spec — D176 had it
+  bottom-right, where it also collided with the collapse button);
+  when a readout occupies that corner (comb hover label, "Backwards
+  POV (A)") the compass rides just ABOVE it — visibility listeners
+  bump the StackPane margin by the label height, so the two never
+  overlap in any camera mode.
+- Toolbar DROPDOWNS lost their hover tooltips (Resulting, piece
+  selector, Track Piece/Bridge properties — user: no hover
+  descriptions on the dropdown row).
+- The graph's MAX/MIN scale labels go INVISIBLE when the rotated
+  y-axis title's vertical footprint would cross them (short plots;
+  measured via a throwaway Text at the title font ± 4 px pad).
+- EVERY hover readout clamps INTO the plot like the node-drag
+  readout (clampHover: resulting-overlay, derived-strip, lane/insert
+  — the shared surface path also covers the speed strip's complex
+  graphs — and the strip's true-speed/long-G readout width fix).
+- Speed Control popup: the Start/End speed readouts share ONE row,
+  Start first (user spec — D176 stacked them).
+
+## D179. v18.9: derived strips speak the ACTIVE section's axis semantics + strip/readout round (user, 2026-07-28)
+
+- INACTIVE-STRIP DERIVED CURVES (his screenshot: a verified-smooth
+  force→ypG-geo seam still read as a big visual step): derivedAt/
+  trueAt drew BODY rates whatever the active section authored, so a
+  yaw-pitch-global (or effective-global-roll) view never lined up
+  with its neighbors' grayed curves. Both helpers now route through
+  Coaster.worldRates when the active lane authors world quantities
+  (new activeLaneWorldAxis: geo view lanes 0/1 under ypG, lane 2
+  under EFFECTIVE roll semantics in both views; off on the strip/
+  influence surfaces; NaN near vertical draws 0 — the abs-bank
+  precedent), then apply the °/m per-sample speed division as
+  before. The authored-direct fast path for inactive same-mode
+  strips now requires the strip's axis flags to EQUAL the active
+  section's (was a blanket !globalAxes(): two same-flag global
+  strips fell to derived body rates — same false step). The
+  RESULTING-dropdown overlays keep their own persisted settings
+  (deliberately user-configured presentation). Probe on his edited
+  file: the force strip's derived world rates land at (1.348,
+  −3.692, −2.506) °/m at the seam vs the geo's authored (1.353,
+  −3.689, −2.474) — joined; body rates read 75 °/s there.
+- SPEED-CONTROL BODY DRAG: click+dragging a control's segment MOVES
+  it exactly like its start diamond (spGrabOff anchors the grabbed
+  spot under the cursor, applied before the Ctrl snap; 3 px deadband
+  keeps a plain click a selection; end diamond still resizes).
+- +V always opens the strip COLLAPSED (tall re-arms via the arrow/
+  divider/Edit button; the persisted tall flag is overwritten on
+  open).
+- The strip's true-speed/long-G hover clamps INTO the strip's clip
+  rect (his screenshot: the readout drew half outside and was cut);
+  the remaining cursor readouts (element resize, bridge length, seam
+  smoothing, split-line %) were audited — all already clamped or at
+  fixed safe heights.
+
+## D180. v18.9: viewport round — ground line, side sub-modes, ONE FOV, extra view panes (user, 2026-07-28)
+
+- SIDE-VIEW GROUND LINE: true ortho sees the y=0 plane exactly
+  edge-on (zero pixels — the pseudo-ortho's faint slice is gone), so
+  side views draw a subtle full-width horizontal overlay line where
+  the ground is (world y=0 == scene y=0, the centering translate is
+  XZ-only; positioned per frame off the compass timer via
+  root3D.localToScreen — pitch is always 0 in side views so the
+  plane IS a horizontal line).
+- SIDE SUB-MODES: while Side is live, a second dropdown under the
+  view label picks Front (looking along world +Z), Back, Right
+  (−X), Left (+X) or Tangent to Selection (the D53 behavior, still
+  the Shift+T default). orthoSideMode rides toggleOrthoView's split
+  into orthoEnter/applySideMode; the view label's own "Side" pick
+  keeps the last sub-mode.
+- ONE FOV (was "POV camera FOV" + "Fly & orbit FOV"): a single
+  "FOV" slider drives povCam/flyCam/orbitCam (and the extra panes);
+  povCam reads flyFov at startup and the legacy povFov key is
+  written alongside but no longer read (the D84 stale-key
+  precedent).
+- EXTRA VIEW PANES ("Add View"/"Remove View" at the bottom of every
+  view label's list): the 3D area is a horizontal SplitPane —
+  dividers drag like the graph divider; Remove reflows the rest.
+  Each added pane (Viewport3D.MiniView) is a PASSIVE VIEWER: its
+  own orbit rig + true-ortho mirror + view/side labels + ground
+  line, middle-drag orbit / scroll zoom / ortho right-drag pan,
+  over a shared-mesh CLONE of the world (new MeshView/Sphere/
+  Cylinder/Box/Group nodes wrapping the SAME Mesh + Material
+  objects, transforms flattened to Affine copies; gizmos/markers/
+  POV holder skipped). Content re-clones on every rebuild and tie
+  re-tint. DELIBERATE SCOPE (flagged): no POV/fly/picking/editing
+  in extra panes — the primary keeps those (a JavaFX node tree
+  lives in ONE scene, so true sharing is impossible; the clone is
+  the honest cheap mirror); the primary pane cannot remove itself —
+  its Remove View drops the LAST added pane; panes are session-only
+  (not persisted); pure visibility toggles (heartline check) reach
+  clones on the next rebuild.
+
+## D181. v18.10: FULL-PARITY view panes + ortho grids + polish round (user, 2026-07-28)
+
+- FULL-PARITY MULTI-VIEW (his re-spec REJECTING D180's passive-clone
+  scope: "every view should have the same functionality... equal
+  importance"): every pane IS a complete Viewport3D instance — own
+  meshes/ties/combs/markers/gizmos/compass/labels/ground line, own
+  orbit/fly/POV/ortho cameras. The class was already ~95%
+  instance-encapsulated; the restructure: (1) the DOCUMENT phase of
+  rebuildTrack (compile + reconcile + auto-reoptimize + shared
+  arrays + Coaster-menu stats) moved to FvdDesigner.rebuildTrack,
+  which loops every pane through the remaining per-pane
+  rebuildMeshes(); (2) povTime/povFollowPiece are SHARED on
+  FvdDesigner (one ride position, one graph marker, one stats line
+  — two POV panes deliberately show the same spot; updatePovStats
+  lives shell-side now); (3) KEY ROUTING (his sorting-out note):
+  Space/T/Shift+T and the ride keys go to keyViewport() — a
+  CAPTURED pane first (fly or right-clicked POV; captures are
+  exclusive via releaseOtherCaptures, two Robots would fight), else
+  the hovered/last-hovered pane (MOUSE_ENTERED/MOVED track it);
+  (4) each pane assembles its own overlays in buildPane(); panes
+  live in the horizontal viewSplit, Add View appends a full pane,
+  Remove View removes THAT pane (any but the last), shutdown()
+  stops its timers. The D180 MiniView clone machinery is DELETED.
+  Cost per edit: ONE compile, N mesh builds (mesh building is the
+  cheap half; drag-responsiveness holds at 2-3 panes).
+- The top-right "Axes: global/local" overlay toggle is REMOVED
+  (user spec) — the View menu's inline Local/Global dots are the
+  whole surface. The graph COLLAPSE arrow re-parents into the
+  RIGHTMOST pane on every add/remove (placeCollapseBtn).
+- NL2-STYLE ORTHO GRID OVERLAYS (Top + Side): a per-pane 2D canvas
+  draws world-aligned adaptive 1-2-5 lines (minors ≥ ~28 px apart,
+  majors every 5th) — top = world X/Z, side = height + the view
+  plane's horizontal axis. The TANGENT side's horizontal origin
+  anchors at the selection point CAPTURED AT VIEW ENTRY
+  (tangAnchor; moving the node later doesn't slide the grid — his
+  spec) while heights stay absolute; sig-guarded redraw on the
+  compass timer.
+- Side picked from the view list defaults to FRONT (user spec);
+  Shift+T remains the tangent gesture. TANGENT TOOLS under the
+  sub-mode dropdown: ↻ "Refresh" re-tangents to the CURRENT
+  selection (re-centers + re-anchors the grid); ↔ "Reverse View"
+  spins 180° in place (same pivot, same grid, other side) — both
+  with tooltips per spec.
+- Every file OPEN (New / Load / the startup Untitled) begins with
+  the RESULTING overlays OFF (clearResultingPicks — the picks still
+  stick within the session once re-checked).
+- worldRates' near-vertical hold-off TIGHTENED 0.15 → 0.05 cosθ
+  (~81° → ~87°, user: "a lot closer to vertical") — display zeros,
+  bake hold-offs and matcher refusals all start later; the 42-series
+  gates stay green (the 3600 °/s cap still bounds spikes).
+- The speed-control LINE is PINNED under strip scaling (user
+  report: expanding moved it up): outside a selected COMPLEX
+  control nothing lives below the line, so the tall view keeps it
+  at the collapsed height and the value scale grows UP from it
+  (zero stays ON the line); complex editing keeps the historic 72%
+  split for below-line room (negative accel, long-G).
+
+## D182. v18.11: multi-view feedback + round icons + strip-arrow priority (user, 2026-07-28)
+
+- NEW PANES arrive in FLY/ORBIT at the SPAWNING pane's perspective
+  pose (Add View passes `this`; an ortho spawner hands its saved
+  perspective pose). (His "EXCEPT when the original view…" clause
+  arrived truncated — revisit when he finishes the sentence.)
+- POV DIRECTION IS PER-PANE (his report: A flipped EVERY POV pane
+  through the shared AppSettings.povReversed): Viewport3D.povReversed
+  is an instance field now, A/D flip only keyViewport(), each pane's
+  backwards tag tracks its own state. The settings key is written no
+  more and ignored on read (the D84 stale-key precedent).
+- View menu renames: "Show Node Markers", "Show Heartline".
+- ORTHO ZOOM: twice the v18.8 rate (pow base 1.0015 → 1.003), and
+  zooming IN anchors the point under the CURSOR — the pivot slides
+  by (screen offset)·(upp_before − upp_after) along the view plane's
+  right/down axes (post-clamp honest); zooming OUT stays
+  center-anchored (his spec).
+- GRID OVERLAY spacing = POWERS OF TEN with 1 m squares as the
+  floor (was 1-2-5): minors step ×10 whenever they'd crowd under
+  ~7 px, majors every 10th line.
+- The XYZ COMPASS STAYS PUT (the v18.8 dodge is gone): bottom-left
+  readouts simply draw over it (z-order — labels added after the
+  canvas).
+- ROUND CIRCLE-ARROW ICONS (his screenshots: every font ↺/↻ glyph
+  renders with a FLAT-BOTTOMED circle): FvdDesigner.circleArrowIcon
+  draws a fully-round arc with only the arrowhead gap (top), CW
+  mirrored from the CCW drawing, centered. Used by Dialogs.
+  optionReset, GraphEditor's resetBtn + the seam-settings ↺, the
+  tangent ↻ (light variant for the dark overlay), and the s/c
+  chip's rate marker (strokeMiniCircleArrow paints it into the
+  glyph's slot in the centered canvas text).
+- VIEW-DIRECTION DIGITS (his follow-up in the same round): 1-6 =
+  Front / Back / Right / Left / Top / Tangent to Selection, FIXED
+  keys REPLACING T/Shift+T (the rebindable viewTop/viewSide actions
+  are gone; stale bindings ignored, D84). Context rules per his
+  spec: 1-5 fire only while a pane is CAPTURED or the mouse is over
+  a VIEW (mouseOverView, tracked by pane enter/move/exit) — over
+  the GRAPH, 1/2/3 stay lane switches (mouseOverGraph); 6 fires
+  from the graph too, aimed at the last-hovered pane. All exit
+  POV/fly first (exitRideModes; captures release).
+- STRIP EXPAND/COLLAPSE ARROW OUTRANKS the control line (his
+  report: rapid clicks created a speed control — the arrow MOVES on
+  toggle, so the second click fell past it): spArrowHit is now the
+  whole left-gutter column of the strip (stable across states), and
+  gutter presses inside the strip are consumed before the line/
+  segment/diamond paths (xToTPlain happily mapped x left of the
+  plot into a diamond-add).
+
+## D183. v18.12: gizmo center-ball round + icon/strip polish (user, 2026-07-28)
+
+- (His truncated bullets resolved: the "I've noticed that all of
+  the…" fragment was the icon item's false start — disregarded.)
+- GIZMO SCALE STALE after fly→side (his report): mode transitions
+  only repositioned; orthoEnter/exitOrthoLens/setOrthoSideMode now
+  run refreshGizmo(false) — the sig also carries orthoPlaneAxis so
+  arrow sets rebuild per view.
+- "Backwards POV (A)": the key hint shows only while CAPTURED
+  (syncPovLabel reads povCaptured; A does nothing hands-off).
+- CENTER-BALL round (user spec): in a FIXED ortho view with GLOBAL
+  axes the OUT-OF-PLANE arrow doesn't build (useless there; fully
+  reveals the ball) — Front/Back hide Z, Right/Left hide X, Top
+  hides Y, tangent keeps all three. The WHITE BALL: dragging moves
+  its owner in the VIEW PLANE (any view; POV has no gizmos), the
+  screen right/down axes mapped to world at the anchor's depth,
+  absolute from the press with a 3 px deadband so clicks stay
+  clicks; the ENTRY ball moves the piece (unless a bridge owns the
+  placement), the BRIDGE-END ball moves the next piece in manual
+  mode only, the seam ball stays position-locked. DOUBLE-CLICK on
+  any ball opens its owner's settings (Track Piece panel / bridge
+  properties / the seam pop-out — which panel the placement popup
+  shows still follows the active section, the shared-popup
+  contract). The ball SCALES with the rig (apparent size; BALL_KEEP
+  8.5 keeps the historic size at the default view; gizmos-off =
+  historic fixed size). CTRL SNAP is now semantic everywhere:
+  GLOBAL axes = the absolute world grid (arrows snap the coordinate
+  along their axis, the ball snaps all three coords), LOCAL = step
+  increments from the press (the historic feel).
+- ICONS: stroke thinned (0.10→0.075 of size, smaller heads — "a
+  little more like the old style"); the SHORTCUTS dialog's binding
+  reset was the missed glyph site (a `// circle-and-arrow` comment
+  made the sweep's comment-filter skip the line — the lesson:
+  filters that exclude comments also exclude CODE lines carrying
+  one); the tangent Reverse View button wears a matching drawn
+  double-arrow (doubleArrowIcon) instead of the ↔ glyph.
+- COLOR SWATCH fill overflow (his report): modena's default button
+  background carries a layer with -1 px BOTTOM inset (the subtle
+  drop edge) — overriding -fx-background-color alone kept that
+  geometry, so the fill poked below the border. -fx-background-
+  insets: 0 aligns fill and outline exactly.
+- STRIP ARROW, second pass (his re-report — the v18.11 guard sat in
+  spPress but the DOUBLE-click promote routes through spDoubleClick
+  → spPromoteOrOptions): the same arrow/gutter guard now leads
+  spDoubleClick, so rapid arrow clicks can never promote a control.
+
+## D184. v18.13: LATERAL SIGN FLIP (+Gl = body-RIGHT) + strip/gizmo round (user, 2026-07-28)
+
+- LATERAL G SIGN, EVERYWHERE (user spec: "rightward laterals are
+  positive"): the convention is the BODY-FORCE sense — a flat RIGHT
+  turn pushes the body LEFT, so it reads NEGATIVE now; +Gl authors/
+  reads a LEFT-visual turn (body pushed right). Implemented as a
+  paired flip of every felt↔rate site — the historic internal
+  relations gain a minus and mirrored gravity term:
+  consume ω = g(Gl − R.y)/v → −g(Gl + R.y)/v (FVDIntegrator time +
+  dist); record Gl = ω·v/g + R.y → −(ω·v/g + R.y) (Geo ×4, Sc,
+  Bridge analytic felt, s/c compiler felt, convert extraction);
+  κ-rescale Gl_t = r²(Gl_d − R.y) + R.y → r²(Gl_d + R.y) − R.y
+  (passA trueFelt, influence base, editor guides, custom-speed
+  hold); tilt re-projection mirrors its R.y pair; the matcher
+  entries flip their yaw reconstruction and the force-view exits
+  negate val+slope for lane 1. Roll/yaw/pitch rates, geometry, and
+  reversal ("Gl negates") are untouched. The lateral COMB draws
+  along +R now — with the negated values this keeps every tooth on
+  the SAME visual side as before (his note: he'd flipped the comb
+  earlier to compensate; the source fix makes that compensation
+  cancel out — the comb code changed, the picture didn't).
+  OLD FILES MIRROR their force-section laterals (and ΔGl influence)
+  — accepted by the user explicitly; geo and s/c geometry are
+  unaffected (they author rates/curvature, not felt). FOUR gate
+  fixtures re-baselined (they encoded the old direction pairing):
+  Phase2 chirality (+yaw now turns OPPOSITE to +Gl), s/c flat R20
+  right turn = −v²/Rg, influence (e) sign, DomainGate 40b circle
+  center side. All suites green — every invariance-style check
+  (converts, influence exactness, friction, seams) held through
+  the flip untouched, which is the consistency proof.
+- STRIP DOUBLE-CLICK CREATES (user spec: "same as right-clicking"):
+  a fast second click on the just-added mark (< 600 ms,
+  spMarkAddedAt) REMOVES it and creates a control spanning its
+  former neighbors via spCreateControlAt (no second undo push — the
+  add's snapshot covers the pair); an old diamond keeps its historic
+  promote. spCreateControlAt gained the push flag.
+- GIZMO: double-click ANYWHERE on a rig (arrows/rings too, via the
+  drag-release hooks; a pushed drag never counts) opens ITS OWN
+  settings — Rig.onDouble: entry rig/ball = the Track Piece rows,
+  bridge rig/ball = the bridge rows, seam rig = the seam pop-out —
+  showPlacementPopup(Boolean forceBridge) overrides the
+  active-section branch (his nuance report). FIXED ortho views keep
+  only the IN-PLANE ring (axis ∥ view direction, |dot| > 0.9;
+  built-time test, the sig rebuilds per view/pose). The center ball
+  idles WHITE (hover warms it) and REPLACES the node-0 marker
+  wherever it covers it (entry of the active piece, section 0 —
+  they z-fought; the marker sig carries the state). Ctrl+arrow
+  drags in GLOBAL land the whole position ON the world grid (all
+  three coordinates; LOCAL keeps increments).
+
+## D185 (v18.14) — YAW SIGN FLIP: +yaw = a LEFT turn everywhere
+
+The same-day companion to D184 ("reverse the sign of Yaw everywhere,
+just like for laterals... give this a major deep dive, and feel free
+to double check your work on flipping the lateral g sign"): a
+positive yaw RATE now authors/reads a LEFT turn, restoring the
+chirality pairing with +Gl = body-pushed-right (both "positive"
+senses describe the same left-visual turn again — D184 alone had
+made them opposites).
+
+Implemented as a REPORTED-vs-INTERNAL boundary contract, not a math
+rewrite: the internal Ω algebra (Ω = yaw·U − pitch·R + roll·T, the
+quaternion step, RMF, every integrator's core) is UNTOUCHED; the
+negation lives at every point where an AUTHORED lane enters Ω or a
+measured rate is REPORTED back out:
+- GeoIntegrator.omegaFor: all FOUR local-base builds negate the yaw
+  slot (fast path, rateScale path, the ypGlobal heading base, and
+  the else-of-ypGlobal base used by global-roll + local-yaw — the
+  one gate 51a caught missing); the two lane-based felt-record
+  shortcuts re-derive as lane·v/g − R.y (they had equated the lane
+  with internal ω).
+- FVDIntegrator.bodyRates reports out[i][2] = −dT·R (pitch and roll
+  unchanged).
+- Coaster.worldRates speaks REPORTED on both faces: yaw input
+  negates into Ω, heading' ψ' negates on return — while every
+  TRANSPORT term (φ' = p − ψ'·sinθ) keeps the INTERNAL ψ'
+  (= −reported). Callers all pass reported-sense arrays already.
+- Convert extraction: the yaw curvature κR = +G0·(Gl + R.y)/v²
+  (the D184 and D185 negations CANCEL — the expression returns to
+  its pre-D184 form, now meaning "reported left-positive") and the
+  force-lane decode val[1] = ω·v/g − R.y; influence base yawB and
+  the editor's absRollTarget/rollConverted/crossModeFromLanes/
+  forceTargetFromRates/omegaAt all rewritten to the reported
+  contract (transport sites use −ψ'_reported).
+- Seam spike carets: component 1 negates — an audit find OWED BY
+  D184 (the felt-Gl caret pointed against the flipped lane), now
+  correct for both views.
+
+WHAT DID NOT CHANGE (deliberate): yaw ANGLES — piece yaw placement,
+strict-seam held angles, gizmo rings, the compass — keep their
+world-Y sense (an angle is a pose, not a rate; flipping those would
+re-place every saved piece). The GEOMETRIC comb is curvature-based
+(frames, not lanes) and untouched. Roll and pitch rates untouched.
+
+OLD FILES with geo-yaw content CHANGE SHAPE — and unlike D184's
+lateral mirror, yaw+roll coupling means it is NOT a pure mirror
+when roll is present (a mirrored yaw under unmirrored roll is a
+different curve; the 48g stall analysis below is the concrete
+case). User pre-accepted file breakage in D184's round.
+
+Gate re-baselines (direction-encoding fixtures only — every
+invariance gate passed unchanged, the consistency proof):
+Phase2 chirality back to SAME-sign (+yaw and +Gl both LEFT);
+influence (e) expGl positive; Phase3 twoSecPiece authors yaw −12
+(the SAME physical shape as the historic +12 — with +12 kept, the
+flipped shape genuinely STALLED at entry 15: worstSplit 0.026 in
+the creep zone, span inflated to 20282 samples — evidence of the
+non-mirror point above, found via Rev48gProbe); DomainGate 41c
+spiral authors −15 (headTurn stays +120). All three suites green.
+
+## D186 (v18.15) — yaw ANGLES read left-positive; ball proportion; world-aligned overlay grid
+
+Round 8, three items.
+
+- YAW ANGLE SIGN ("change the sign of the yaw angles everywhere,
+  just like the yaw rates... consistent with each other without
+  changing any behavior"): every user-facing yaw-angle NUMBER now
+  reads/types LEFT-positive, via the same reported-vs-internal
+  boundary as D185 — the UI negates, storage keeps the historic
+  internal sense. Exactly three surfaces exist: the Track Piece
+  panel's "Piece yaw (°)" spinner (init/apply/sync), the bridge
+  panel's "Next piece yaw (°)" spinner (setIfOff read + listener
+  write), and the strict-seam pop-out's yaw row (the sync display —
+  held angle AND the live continuous followerEuler readout — plus
+  the value-listener write; the Discontinuous-toggle seed, ↺ reset
+  and Cancel restore all traffic internal-to-internal and re-display
+  through the sync). NOTHING ELSE changes: TrackPiece.yawDeg/
+  sYawDeg, the file format, gizmo ring drags (never displayed,
+  behavior identical), undo snapshots, eulerOf/followerEuler
+  internals, the optimizer march, ortho yaw snapping. Zero pose
+  change anywhere — old files load bit-identically; typing +30 now
+  aims the piece LEFT, and a value shown before the flip shows
+  negated after (the display convention, not a move). DELIBERATE
+  EXCLUSION: the s/c arc element's signed angle keeps its own
+  documented "+angle = rider-right with direction arrow" spec —
+  it is a turn description, not a placement yaw; flag if he wants
+  it too.
+- CENTER BALL SCALING (his two screenshots): BALL_KEEP 8.5 made
+  the ball's world size ≈ constant (historic marker size), so it
+  vanished against the depth-scaled gizmo far away; only CLOSE UP,
+  where the bsc 0.4 and rig 0.5 floors both bit, did the ratio
+  look right — which is precisely the screenshot he called
+  correct. BALL_PROP 0.8 (= that floored ratio 0.4/0.5) now
+  multiplies the rig scale at every depth and in ortho, so the
+  ball keeps the endorsed proportion everywhere; gizmos-off keeps
+  the historic fixed size.
+- OVERLAY GRID WORLD ALIGNMENT ("aligned vertically, but not
+  horizontally... it does align with the grid of the ground"): the
+  world group carries an XZ centering translate (scene +
+  gridCamX0/Z0 = world) and drawOrthoGrid measured its families
+  from SCENE zero — X/Z lines sat off the ground grid by the
+  translate while height lines were exact (Y never translates),
+  and Ctrl-snap (which rounds WORLD coords, agreeing with the
+  ground grid) missed the overlay. Each family's origin scalar now
+  sits on the WORLD origin (top X/Z families + the fixed side
+  views' horizontal family; the TANGENT side keeps its anchored-
+  node origin — a scene point, deliberately not the world grid);
+  gridCamX0/Z0 join the redraw signature. Overlay lines, ground
+  grid and global snapping now agree in every fixed ortho view.
+
+## D187 (v18.16) — ball-click gizmo reveal; flat view list; s/c +angle = left
+
+Round 9, three items.
+
+- GIZMO REVEAL RETURNS (user spec — reversing v17.7 D144's
+  always-on): rigs are HIDDEN until the WHITE BALL is clicked
+  (entry/seam ball = the piece/seam rig, bridge-end ball = the
+  bridge rig; clicking the same ball again, clicking the other
+  ball, any primary press off the gizmo, or switching pieces hides/
+  switches — Viewport3D.gizmoReveal, per pane, in the rebuild sig).
+  The View menu's "Show Gizmos" row + inline axis dots are GONE
+  (AppSettings.showGizmos deleted; stale properties keys ignored,
+  the D84 precedent); the TOP-RIGHT Local/Global button is BACK
+  (per pane, v18.10 D181 reversed) but only while a rig is revealed
+  — and gizmoLocal is SESSION-ONLY now: every launch starts GLOBAL
+  (the field never touches the properties file). Gizmos draw
+  THROUGH everything: gizmoGroup gets DepthTest.DISABLE + a
+  toFront() per rebuild (painter's order wins; picking is
+  unaffected — a buried ball renders on top but the nearer surface
+  still takes the click, an accepted JavaFX quirk). Balls are
+  always bright + proportionally scaled now (the gizmos-off muted/
+  fixed-size branch died with the setting). Ball planar drag,
+  node-0 select and double-click settings are unchanged.
+- ONE FLAT VIEW LIST (user spec): the "Side" entry + sub-dropdown
+  are GONE — the view label's list is Fly/Orbit, POV, Top, Front,
+  Back, Right, Left, Tangent to Selection (switchViewMode 0-7 →
+  setOrthoSideMode for 3-7; the label wears the short "Tangent";
+  the ↻/↔ tangent tools move up under the label). The 1-6 digits
+  are unchanged. Also fixed in passing: the Help "View label" row
+  still said T/Shift+T (stale since v18.11's digits).
+- S/C ARC ANGLE +LEFT (his answer to D186's flag): the profile
+  negates the U component — cU = −κ·cos(dir) — so dir 0 + positive
+  angle turns rider-LEFT (the D185 yaw boundary applied to s/c);
+  dir 90 pull-up is untouched (the R component keeps its sign) and
+  negative angles mirror as before. The chip's turn arrow table
+  mirrors horizontally (vertical octants unchanged); dialog/Help/
+  doc texts updated. OLD FILES with flat/tilted arc content MIRROR
+  those arcs (the D184 acceptance); vertical loops are unaffected.
+  Phase2's five s/c direction fixtures re-baselined by authoring
+  the mirrored angle (same physical shapes — right turns author
+  −90 now); the convert/reversal/smoothing invariance gates and
+  the other two suites passed untouched.
+
+LESSON RE-LEARNED this round: "BUILD-OK" via `ls` of a class file
+is worthless — a failed mvn compile leaves STALE classes behind
+(the smoke run threw "Unresolved compilation problem"). Wipe
+target/classes/coaster and check the compiler's own output.
+
+## D188 (v18.17) — gizmo OVERLAY SUBSCENE; ball split; lock-live rings; marker index fix
+
+Round 10 — his test of the D187 reveal rework, four items.
+
+- OVERLAY SUBSCENE (his screenshot: "normals inverted or
+  something?", rings drawn fully over arrows): D187's
+  DepthTest.DISABLE renders in SUBMISSION order — a torus's far
+  side paints over its near side (the inverted-normal look) and
+  later-added parts paint over earlier ones regardless of depth.
+  The rigs now render in their OWN transparent SubScene
+  (gizmoSub) stacked right above the main one: real depth buffer =
+  proper self-occlusion ("exactly like before"), still drawn over
+  the whole world. gizmoWorld mirrors the world group's XZ
+  centering translate; gizmoPCam/gizmoOCam mirror the active
+  camera's full localToScene transform + lens every frame
+  (syncGizmoCam on the axes timer); pickOnBounds(false) + a
+  mouseTransparent-when-empty guard pass events through wherever
+  no gizmo geometry is hit. All drag math is screen-space +
+  camera-basis (no PickResult dependence), so every handler works
+  unchanged; ringHit builds its own ray. The 2D overlays (grid
+  canvas, labels) still draw above the gizmos, as they always did.
+- BALL SPLIT (his clarification of "originally not scaling"): the
+  un-revealed white ball is FIXED SIZE again (0.34, part of the
+  track layer — trackBallGroup in `world`, occludable like
+  geometry, positionGizmo translates only); clicking it reveals,
+  and a DRAG both moves the owner AND reveals mid-gesture
+  (revealDuringDrag: a rig-only build — rebuilding the pressed
+  ball would kill the mouse capture, the D124 lesson). The
+  SCALING white ball is now a rig PART (addRigCenterBall, radius
+  0.272 = 0.34 × the D186 0.8 ratio, riding rig.scaleT): proper
+  depth among arrows/rings (it used to hide behind them), click =
+  hide, planar drag = move owner, double-click = settings. One
+  wireBall helper wires both.
+- LOCK-LIVE RINGS: the bridge-panel lock buttons and the
+  Placement pitch/roll padlocks now call refreshGizmos(false) —
+  the sig carries the locks, so rings appear/disappear the moment
+  an axis is un/locked (before: only on the next unrelated
+  rebuild).
+- MARKER INDEX FIX (his exact guess — "the first node was removed
+  but the indices weren't updated"): D187's entry ball replaces
+  node 0's marker, so markerGroup's child list starts at node 1 —
+  but pickMarkerIndex returned the CHILD index as the NODE index,
+  selecting the node BEFORE the one clicked. Each marker sphere
+  now carries its node index (setUserData), and the pick reads it.
+
+## D189 (v18.18) — fly-over-gizmo input fix; ball hides when revealed; NL2 local rings; button label
+
+Round 11 — his D188 test, four items.
+
+- FLY-OVER-GIZMO BUG (root cause found): in fly mode the cursor is
+  hidden and Robot-warped to the subscene center — but the D188
+  overlay SubScene sits ON TOP of `sub`, so whenever the warped
+  cursor crossed gizmo geometry, hover went to the OVERLAY: its
+  default cursor showed (the "mouse reappears") and `sub`'s
+  mouse-moved handler stopped receiving those events, starving the
+  fly look of deltas (the "bit shaky" view — deltas lost each time
+  the center crossed a rig part). syncGizmoSubMouse() now makes
+  the overlay fully mouse-transparent during FLY and POV (and when
+  empty — the D188 guard, now centralized); refreshGizmo calls it
+  at the top, and both mode toggles already route through
+  refreshGizmo. Gizmos stay VISIBLE in fly (the v16.12 rule) —
+  they are simply not hover/click targets there, matching the
+  pre-D188 practical reality (the mouse is warped and hidden).
+- BALL HIDES WHEN REVEALED: the fixed track ball sets
+  visible(false) at build time while ITS rig is up (the rig's
+  scaling center ball is the visible white); the OTHER handle ball
+  stays. Set at build time only — reveal-by-drag keeps the pressed
+  ball alive until the release rebuild (invisible nodes get no
+  events, which would have killed the drag).
+- NL2-STYLE LOCAL RINGS ("the entire gizmo rotates with the
+  object"): with Gizmos: Local, ring AXES ride the entry frame —
+  yaw about U, pitch about R (= U×T, new rightOf helper; Quat has
+  no R() accessor), roll already about T — for the piece rig, the
+  bridge rig (next piece's frame) and the seam rig (follow-contract
+  frame). The aim suppliers re-run per drag event, so the whole
+  rig rotates RIGIDLY with the object mid-drag, the NL2 look.
+  Global keeps the historic model-Euler axes. Each ring still
+  WRITES its one Euler quantity by linear mouse distance (the
+  delta model, D87) — under a strong compound tilt the object
+  follows its Euler axis rather than the drawn plane; visually
+  rigid, semantics unchanged, locks unchanged.
+- The top-right button reads "Gizmos: Local" / "Gizmos: Global".
+
+## D190 (v18.19) — TRUE local ring rotation; A-key viewport gate; viewport deselect; popups at the ball
+
+Round 12 — four items.
+
+- TRUE ROTATE-ABOUT-THE-DRAWN-AXIS (his request, upgrading D189's
+  aim-only local rings): a LOCAL ring drag now rotates the OBJECT
+  about the drawn axis exactly. Machinery:
+  TrackPiece.decomposeEntry(base, target) inverts entryPose()'s
+  orientation composition in closed form — the composition
+  preserves heading through its pitch/roll steps and elevation
+  through roll, so yaw extracts from the heading gap, pitch from
+  the elevation gap, roll as the U-vs-U twist about the shared T;
+  null where a heading is undefined (near-vertical T). The ring
+  plumbing gains a RingLocal sink (begin captures the press-time
+  frame + drawn axis; rotate(deltaDeg) composes
+  aboutAxis(axis, delta)·q0 and writes the decomposed deltas —
+  the SAME mouse mapping as the classic path, so the aligned case
+  is identical). Piece rig writes unlocked deltas directly;
+  bridge rig through the new combined
+  GraphEditor.gizmoSetBridgeOrientAll (locks + the OPT_POS
+  re-place tail in one apply); seam rig through
+  gizmoSetSeamOrientAll (eulerOf decomposition — the held angles
+  ARE euler quantities; discontinuous axes take values, following
+  axes follow). LOCKED axes hold their value — the object then
+  follows the ring as closely as the model allows (exact when all
+  drawn-axis components are writable). Absolute-from-press: the
+  pitch clamp (±85) can bite mid-drag without accumulating error.
+  VERIFIED headlessly (DecompProbe, 20k random trials): in-range
+  delta inversion exact to 1.3e-12°, frame reproduction ≤ 1.1e-5°
+  worst-case at near-vertical poles (the ±85 clamp keeps real
+  drags away), compose→decompose→recompose ring loop the same.
+  Global mode keeps the classic one-Euler-per-ring writes bitwise.
+- A KEY over any 3D view no longer appends (the graph keeps its
+  shortcut; gated on mouseOverView at the dispatch).
+- VIEWPORT DESELECT (graph parity): a clean primary click that
+  does not hit a node marker clears the selection
+  (GraphEditor.deselectFromViewport) — then the track-activate
+  pick proceeds as before.
+- POPUPS AT THE BALL: a double-click on any ball or rig part
+  passes its screen point (FvdDesigner.nextPopupAnchor, one-shot)
+  and the Track Piece / bridge / seam panels open there (+14,+10
+  off the cursor) instead of under the toolbar button; the
+  toolbar button and the seam line keep their historic anchors.
+
+## D191 (v18.20) — gesture-end graph redraw; typable spinners everywhere; widths; label
+
+Round 13 — four items.
+
+- GRAPHS FOLLOW GIZMO GESTURES ("update as soon as the click is
+  lifted"): rebuildTrack deliberately never redraws the graph
+  canvas (the hot path), and the gizmo drags relied on the next
+  graph hover to repaint — piece moves left stale resulting/true
+  curves (≠v badges included). endGizmoDrag now calls the new
+  GraphEditor.redrawFromViewport (refreshOffset + redraw), so
+  every ball/arrow/ring gesture repaints the strips on release.
+- TYPE-ANYWHERE SPINNERS: ten spinners were arrow-only (heart,
+  gauge, tie, piece x/y/z, piece yaw, start speed, both friction
+  rows) — all editable now via the new typable() helper. Bigger:
+  numericEditor (the v18.1 one-choke formatter) now COMMITS TYPED
+  TEXT ON FOCUS LOSS — JavaFX only commits on ENTER, so typing a
+  number and clicking away silently reverted on EVERY editable
+  spinner in the app (unparsable text falls back to the current
+  value). The remaining direct-formatter sites (piece pitch/roll,
+  bridge yaw/pitch/roll, bridge x/y/z, bridge length, seam
+  spinner) all route through typable/numericEditor now, so the
+  commit covers the whole program.
+- CLIPPED DIGITS (his "3" screenshot): the eight 70 px spinners
+  (Track Piece x/y/z + yaw, heart/gauge/tie, start speed) widen
+  to 82 px; friction rolls to 82/90. No other spinner sits under
+  75 px.
+- The Track Piece popup's reverse button reads "Reverse piece…"
+  (the "(rebuild backward)" parenthetical is gone).
+
+
 NEXT SESSION (his note): straight/curve sections — interactive in
 the viewport, etc.

@@ -165,6 +165,24 @@ class GraphEditor extends Region {
      *  select that node of the active lane and bring it into the
      *  graph view — a manual zoom window re-centers on the node when
      *  it sits outside; auto-fit already shows everything. */
+    /** Gizmo gesture-end refresh (v18.20, D191 — user report: the
+     *  resulting/derived graph curves lagged behind piece moves until
+     *  the next graph hover): recompute strip offsets and redraw. */
+    void redrawFromViewport() {
+        refreshOffset();
+        redraw();
+    }
+
+    /** Viewport empty-click deselect (v18.19, D190 — graph-editor
+     *  parity: a clean click not on a marker clears the selection). */
+    void deselectFromViewport() {
+        if (selIdx < 0 && selSet.isEmpty()) return;
+        selIdx = -1;
+        selSet.clear();
+        refreshMarkers();
+        redraw();
+    }
+
     void selectNodeFromViewport(int idx) {
         List<BezierBaker.Node> ln = active();
         if (idx < 0 || idx >= ln.size()) return;
@@ -556,6 +574,26 @@ class GraphEditor extends Region {
         redraw();
     }
 
+    /** The local ring's COMBINED seam write (v18.19, D190): all
+     *  three euler values in one apply — only DISCONTINUOUS axes
+     *  take theirs (following axes hold no number), one rebuild. */
+    void gizmoSetSeamOrientAll(int pieceIdx, double yaw, double pitch,
+                               double roll) {
+        if (pieceIdx < 0 || pieceIdx >= app.coaster.pieces.size()) {
+            return;
+        }
+        TrackPiece f = app.coaster.pieces.get(pieceIdx);
+        if (!f.followPrev) return;
+        if (f.sLockYaw) f.sYawDeg = FvdDesigner.clamp(yaw, -360, 360);
+        if (f.sLockPitch) {
+            f.sPitchDeg = FvdDesigner.clamp(pitch, -360, 360);
+        }
+        if (f.sLockRoll) f.sRollDeg = FvdDesigner.clamp(roll, -360, 360);
+        app.markDirty();
+        app.rebuildTrack();
+        redraw();
+    }
+
     /** The follower's CURRENT effective entry orientation as
      *  {heading, elevation, bank} (deg). Read ANALYTICALLY from the
      *  follow contract (previous piece's exit through strictEntry)
@@ -653,11 +691,9 @@ class GraphEditor extends Region {
                         .DoubleSpinnerValueFactory(-360, 360, 0, 1));
             sp.setPrefWidth(86);
             sp.setEditable(true);
-            sp.getEditor().setTextFormatter(
-                new javafx.scene.control.TextFormatter<String>(ch ->
-                    ch.getControlNewText().matches("-?\\d*\\.?\\d*")
-                        ? ch : null));
-            Button rst = new Button("↺");
+            FvdDesigner.numericEditor(sp, true);   // + focus commit (D191)
+            Button rst = new Button();
+            rst.setGraphic(FvdDesigner.resetIcon());   // v18.11 round icon
             rst.setFocusTraversable(false);
             Tooltip.install(rst, new Tooltip(
                 "Back to the value the seam was created with"));
@@ -671,10 +707,13 @@ class GraphEditor extends Region {
                     + (on ? " -fx-border-color: rgb(220,70,70);"
                           : " -fx-border-color: transparent;"));
                 seamSyncing = true;
-                sp.getValueFactory().setValue(on
+                // yaw DISPLAYS left-positive (v18.15, D186): the UI
+                // negates at this boundary; sYawDeg stays internal
+                double dv = on
                     ? (axis == 0 ? f.sYawDeg
                         : axis == 1 ? f.sPitchDeg : f.sRollDeg)
-                    : followerEuler(followerIdx)[axis]);
+                    : followerEuler(followerIdx)[axis];
+                sp.getValueFactory().setValue(axis == 0 ? -dv : dv);
                 seamSyncing = false;
                 sp.setDisable(!on);
                 rst.setDisable(!on);
@@ -718,7 +757,7 @@ class GraphEditor extends Region {
                     : axis == 1 ? f.sLockPitch : f.sLockRoll;
                 if (!on) return;
                 pushUndoSnapshot();
-                if (axis == 0) f.sYawDeg = val;
+                if (axis == 0) f.sYawDeg = -val;   // typed = reported (D186)
                 else if (axis == 1) f.sPitchDeg = val;
                 else f.sRollDeg = val;
                 app.markDirty();
@@ -783,6 +822,14 @@ class GraphEditor extends Region {
         foot.setAlignment(Pos.CENTER_RIGHT);
         grid.add(foot, 0, 4, 4, 1);
         pop.getContent().add(grid);
+        if (app.popupAnchorX != null) {
+            // opened from the seam gizmo: show near the click
+            // (v18.19, D190)
+            pop.show(canvas.getScene().getWindow(),
+                app.popupAnchorX + 14, app.popupAnchorY + 10);
+            app.popupAnchorX = app.popupAnchorY = null;
+            return;
+        }
         // anchor at the seam's on-screen x (the follower's first strip)
         double sx = -1;
         for (RunSec rs : runLayout()) {
@@ -1889,7 +1936,7 @@ class GraphEditor extends Region {
         TrackCompiler.Span sp = spanOf(activeSection);
         if (sp == null) return false;
         int i1 = Math.min(sp.i1(), app.lastSamples.size() - 1);
-        double t = app.viewport.povTime;
+        double t = app.povTime;
         return t >= app.lastSamples.get(sp.i0()).t() - 1e-9
             && t <= app.lastSamples.get(i1).t() + 1e-9;
     }
@@ -1908,10 +1955,10 @@ class GraphEditor extends Region {
         int i1 = Math.min(sp.i1(), app.lastSamples.size() - 1);
         double t0 = app.lastSamples.get(sp.i0()).t();
         double t1 = app.lastSamples.get(i1).t();
-        double t = app.viewport.povTime;
+        double t = app.povTime;
         if (t < t0 || t > t1) {
-            app.viewport.povTime = Math.max(t0, Math.min(t1 - 1e-6, t));
-            app.viewport.updatePovStats();
+            app.povTime = Math.max(t0, Math.min(t1 - 1e-6, t));
+            app.updatePovStats();
         }
     }
 
@@ -2239,6 +2286,33 @@ class GraphEditor extends Region {
             // re-place at the current (or freshly kneed) length —
             // NEVER applyOptimalLength here: its zero-distance attach
             // PROMPT must not pop mid-drag
+            double d = bs.optLen
+                ? Math.max(1, app.coaster.optimalBridgeLength(bs, false))
+                : Math.max(1, gizmoBridgeGap());
+            applyBridgeGap(bs, d);
+        } else {
+            app.rebuildTrack();
+            refreshOffset();
+            redraw();
+        }
+        app.updateBridgeControls();
+    }
+
+    /** The local ring's COMBINED bridge write (v18.19, D190): all
+     *  three next-piece deltas in one apply (locked axes hold),
+     *  same re-place tail as the per-axis path. */
+    void gizmoSetBridgeOrientAll(double yaw, double pitch, double roll) {
+        BridgeSection bs = trailingBridge();
+        if (bs == null || bs.optMode == BridgeSection.OPT_POS_YAW) return;
+        if (activePiece + 1 >= app.coaster.pieces.size()) return;
+        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+        if (!bs.lockYaw) t.yawDeg = yaw;
+        if (!bs.lockPitch) {
+            t.pitchDeg = Math.max(-85, Math.min(85, pitch));
+        }
+        if (!bs.lockRoll) t.rollDeg = roll;
+        app.markDirty();
+        if (bs.optMode == BridgeSection.OPT_POS) {
             double d = bs.optLen
                 ? Math.max(1, app.coaster.optimalBridgeLength(bs, false))
                 : Math.max(1, gizmoBridgeGap());
@@ -3270,7 +3344,7 @@ class GraphEditor extends Region {
             } else {
                 double r2 = ratio * ratio;
                 ref[i][1] = r2 * (sm.Gv() - sm.U().y()) + sm.U().y();
-                ref[i][2] = r2 * (sm.Gl() - sm.R().y()) + sm.R().y();
+                ref[i][2] = r2 * (sm.Gl() + sm.R().y()) - sm.R().y();   // D184
                 ref[i][3] = pvRevRates[q][3] * ratio;
             }
         }
@@ -4107,7 +4181,8 @@ class GraphEditor extends Region {
 
     /** A small ↺ button running the given row reset (v16.6). */
     private static Button resetBtn(Runnable r) {
-        Button b = new Button("↺");
+        Button b = new Button();
+        b.setGraphic(FvdDesigner.resetIcon());   // v18.11 round icon
         b.setFocusTraversable(false);
         b.setOnAction(ev -> r.run());
         return b;
@@ -4578,7 +4653,7 @@ class GraphEditor extends Region {
                 double uy = end != null ? end.U().y() : 1;
                 double ry = end != null ? end.R().y() : 0;
                 v0h = (v0h - uy) * rH * rH + uy;
-                v1h = (v1h - ry) * rH * rH + ry;
+                v1h = (v1h + ry) * rH * rH - ry;   // lateral mirrored (D184)
             }
             if (rollFromRates) rollEnd *= rH;
         }
@@ -4638,6 +4713,11 @@ class GraphEditor extends Region {
     private void drawInactiveSections(GraphicsContext gc) {
         List<RunSec> rl = runLayout();   // the whole bridged run (v13.4)
         boolean actGeo = activeGeo();
+        LaneSection actAx = sections().get(activeSection)
+            instanceof LaneSection a2 ? a2 : null;
+        boolean actRollG = actAx != null && actAx.rollGlobal;
+        boolean actYpG = actAx != null && actAx.yawPitchGlobal;
+        boolean actPM = actAx != null && actAx.ratePerMeter;
         for (int i = 0; i < rl.size(); i++) {
             RunSec rs = rl.get(i);
             if (rs.piece() != activePiece || rs.section() != activeSection) {
@@ -4650,14 +4730,18 @@ class GraphEditor extends Region {
                 if (rs.sec() instanceof LaneSection ls
                         && (ls instanceof GeoSection) == actGeo
                         && !ls.reversed && !ls.influenced()
-                        // global-axis lanes are not the plot's body
-                        // quantities — derived, like reversed (v16.1)
-                        && !ls.globalAxes()
+                        // authored lanes ARE the plot's quantities only
+                        // when the strip's AXIS flags match the active
+                        // section's (v18.9 — was a blanket
+                        // !globalAxes(): two same-flag global strips
+                        // fell to derived body rates and read as a
+                        // false step)
+                        && ls.rollGlobal == actRollG
+                        && ls.yawPitchGlobal == actYpG
                         // per-meter values only overlay an axis in the
                         // same units (v16.6) — derived otherwise; same
                         // for the absolute-roll representation (v16.7)
-                        && ls.ratePerMeter == (sections().get(activeSection)
-                            instanceof LaneSection als && als.ratePerMeter)
+                        && ls.ratePerMeter == actPM
                         && (ls.rollAbsolute && ls.rollGlobal)
                             == activeRollAbs()
                         // authored lanes draw directly only when their
@@ -4753,7 +4837,10 @@ class GraphEditor extends Region {
         Vec3 dphi = TrackCompiler.axisAngle(qr.mul(ql.conjugate()));
         Vec3 t = ql.T(), u = ql.U();
         Vec3 r = u.cross(t);
-        return new double[]{ -dphi.dot(r), dphi.dot(u), dphi.dot(t) };
+        // component 1 NEGATED (v18.14 — owed since D184 and doubled
+        // by D185: both the felt-Gl and the yaw-rate graphs spike
+        // opposite the internal U-rotation now, in both views)
+        return new double[]{ -dphi.dot(r), -dphi.dot(u), dphi.dot(t) };
     }
 
     /** Per-lane SPIKE CARETS on a strict seam (v17.2 D138, re-spec'd
@@ -5227,6 +5314,19 @@ class GraphEditor extends Region {
             double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
             return Double.isNaN(b) ? 0 : Math.toDegrees(b);
         }
+        // a WORLD-axis active lane shows every strip in ITS quantity
+        // (v18.9, user report: a smooth ypG seam read as a visual
+        // step against derived BODY rates): elevation'/heading' for
+        // yaw-pitch-global lanes 0/1, bank rate for effective-global
+        // roll — NaN near vertical draws 0, the abs precedent
+        if (activeLaneWorldAxis(L)) {
+            double[] wr = Coaster.worldRates(app.lastSamples.get(i),
+                app.resultRates[i][1], app.resultRates[i][2],
+                app.resultRates[i][3]);
+            double sc = activeRatePM(L)
+                ? 1 / Math.max(0.5, app.lastSamples.get(i).v()) : 1;
+            return (Double.isNaN(wr[L]) ? 0 : wr[L]) * sc;
+        }
         // ACTIVE per-meter lanes show every strip in °/m (v16.6): the
         // compiled rates are °/s — divide by that sample's own speed
         double sc = activeRatePM(L)
@@ -5262,12 +5362,40 @@ class GraphEditor extends Region {
             double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
             return Double.isNaN(b) ? 0 : Math.toDegrees(b);
         }
+        // world-axis active lanes: the TRUE curve in the same world
+        // quantities (v18.9 — derivedAt's sibling branch)
+        if (activeLaneWorldAxis(L)) {
+            double[] wr = Coaster.worldRates(app.lastSamples.get(i),
+                app.trueRates[i][1], app.trueRates[i][2],
+                app.trueRates[i][3]);
+            double sc = activeRatePM(L) && app.trueV != null
+                ? 1 / Math.max(0.5, app.trueV[i]) : 1;
+            return (Double.isNaN(wr[L]) ? 0 : wr[L]) * sc;
+        }
         double sc = activeRatePM(L) && app.trueV != null
             ? 1 / Math.max(0.5, app.trueV[i]) : 1;
         if (activeGeo()) return app.trueRates[i][L + 1] * sc;
         if (L == 0) return app.trueFelt[i][0];
         if (L == 1) return app.trueFelt[i][1];
         return app.trueRates[i][3] * sc;
+    }
+
+    /** Does the ACTIVE editing surface author lane L in WORLD-axis
+     *  semantics (v18.9)? Drives derivedAt/trueAt so inactive strips
+     *  draw the quantity the active lane authors. Off on the strip
+     *  and influence surfaces (their lanes aren't the section's) and
+     *  for the abs-bank case (handled first — it shows the ANGLE). */
+    private boolean activeLaneWorldAxis(int L) {
+        if (surfStrip || activeInfl() != null) return false;
+        List<Section> secs = sections();
+        if (!(activeSection < secs.size()
+                && secs.get(activeSection) instanceof LaneSection ls)) {
+            return false;
+        }
+        // lanes 0/1 are world only in the GEO view; roll is the two
+        // modes' shared lane — its effective semantics apply in both
+        if (L < 2 && !activeGeo()) return false;
+        return laneWorld(ls, L);
     }
 
     /** derivedAt/trueAt's sibling for the SAMPLED boundary path, in
@@ -5812,10 +5940,32 @@ class GraphEditor extends Region {
         return base;
     }
 
+    /** A tiny CLOCKWISE circle-arrow stroked straight onto a canvas
+     *  (v18.11 — the chip's ↻ replacement; round bottom, gap only at
+     *  the arrowhead). */
+    private static void strokeMiniCircleArrow(GraphicsContext gc,
+            double cx, double cy, double r, Color colr) {
+        gc.setStroke(colr);
+        gc.setLineWidth(1.1);
+        double gap = 80;
+        gc.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90 + gap / 2,
+            360 - gap, javafx.scene.shape.ArcType.OPEN);
+        double th = Math.toRadians(90 + gap / 2);
+        double px = cx + r * Math.cos(th), py = cy - r * Math.sin(th);
+        double tx = Math.sin(th), ty = Math.cos(th);   // CW tangent
+        double nx = Math.cos(th), ny = -Math.sin(th);
+        gc.setFill(colr);
+        gc.fillPolygon(
+            new double[]{ px + tx * 2.6, px + nx * 1.3, px - nx * 1.3 },
+            new double[]{ py + ty * 2.6, py + ny * 1.3, py - ny * 1.3 }, 3);
+    }
+
     /** Turn-plane arrow for a curve chip: the effective direction
-     *  (angle sign folds into dir ± 180) rounded to the nearest 45°. */
+     *  (angle sign folds into dir ± 180) rounded to the nearest 45°.
+     *  Horizontal sense MIRRORED since v18.16 (D187: dir 0 + positive
+     *  angle pulls LEFT; the vertical octants are unchanged). */
     private static String dirArrow(StraightCurveSection.Element e) {
-        String[] arrows = { "→", "↗", "↑", "↖", "←", "↙", "↓", "↘" };
+        String[] arrows = { "←", "↖", "↑", "↗", "→", "↘", "↓", "↙" };
         double eff = e.angleDeg >= 0 ? e.dirDeg : e.dirDeg + 180;
         int oct = (int) Math.round(((eff % 360) + 360) % 360 / 45.0) % 8;
         return arrows[oct];
@@ -5864,8 +6014,22 @@ class GraphEditor extends Region {
                 gc.setStroke(i == elSel ? Color.WHITE : col.deriveColor(0, 1, 1, 0.7));
                 gc.setLineWidth(1);
                 gc.strokeRoundRect(bx, by, bw, 15, 7, 7);
-                gc.setFill(col.brighter());
-                gc.fillText(label, bx + bw / 2, by + 8);
+                Color tcol = col.brighter();
+                gc.setFill(tcol);
+                int gi = label.indexOf('↻');
+                if (gi < 0) {
+                    gc.fillText(label, bx + bw / 2, by + 8);
+                } else {
+                    // the rate marker draws as a ROUND mini
+                    // circle-arrow (v18.11 — the font glyph's circle
+                    // is flat-bottomed); a space holds its slot in
+                    // the centered layout
+                    gc.fillText(label.substring(0, gi) + " "
+                        + label.substring(gi + 1), bx + bw / 2, by + 8);
+                    double slotX = bx + bw / 2
+                        + (gi + 0.5 - label.length() / 2.0) * 6;
+                    strokeMiniCircleArrow(gc, slotX, by + 7.5, 3.4, tcol);
+                }
                 gc.setGlobalAlpha(1.0);
             }
         }
@@ -6205,7 +6369,7 @@ class GraphEditor extends Region {
         TextField dirF = new TextField(String.format(Locale.US, "%.3f", el.dirDeg));
         TextField smF = new TextField(String.format(Locale.US, "%.3f", el.smoothIn));
         dirF.setTooltip(new Tooltip(
-            "Curve plane: 0 = flat turn (positive angle = right), 90 = pull up,"
+            "Curve plane: 0 = flat turn (positive angle = left), 90 = pull up,"
             + " 180 = left, 270 = drop; negative angle mirrors"));
 
         // roll (v11.1): body rate like the roll lane, or a bank held
@@ -6564,6 +6728,15 @@ class GraphEditor extends Region {
         setPrefHeight(260);
         setStyle("-fx-background-color: rgb(20,22,28);");
         getChildren().add(canvas);
+
+        // the 1-6 view keys' hover context (v18.11): over the GRAPH,
+        // 1/2/3 stay lane switches and 6 aims at the last-hovered pane
+        canvas.addEventHandler(javafx.scene.input.MouseEvent.MOUSE_ENTERED,
+            e -> { app.mouseOverGraph = true; app.mouseOverView = false; });
+        canvas.addEventHandler(javafx.scene.input.MouseEvent.MOUSE_MOVED,
+            e -> { app.mouseOverGraph = true; app.mouseOverView = false; });
+        canvas.addEventHandler(javafx.scene.input.MouseEvent.MOUSE_EXITED,
+            e -> app.mouseOverGraph = false);
 
         canvas.setOnMousePressed(e -> {
             canvas.requestFocus();   // pull focus off toolbar editors
@@ -7538,6 +7711,13 @@ class GraphEditor extends Region {
     // diamond/mark drags: 1 = control start (move), 2 = control end
     // (resize), 3 = mark
     private int spDragKind = 0;
+    // native-x offset between the grab point and c.x0 for a MOVE —
+    // 0 from the start diamond, the grabbed spot from a BODY drag
+    // (v18.9, user spec)
+    private double spGrabOff = 0;
+    // when the last plain diamond was click-added — a fast second
+    // click REPLACES it with a control over its neighbors (v18.13)
+    private long spMarkAddedAt = 0;
     private double spPressX, spPressY;
     private boolean spPendingAdd = false;   // clean click on empty line
     private int spRClick = 0;               // right-press target
@@ -7639,12 +7819,21 @@ class GraphEditor extends Region {
 
     /** The speed-control LINE: the tall view's ZERO line (graphs grow
      *  up from it, negative accel dips below — v18.2, user spec);
-     *  mid-strip when collapsed. */
+     *  mid-strip when collapsed. PINNED under scaling since v18.10
+     *  (user spec): outside a selected COMPLEX control nothing lives
+     *  below the line, so growing the strip keeps the line at its
+     *  collapsed height and the value scale grows UP from it; only
+     *  complex editing takes the historic 72% split (below-line room
+     *  for negative accel and the long-G curve). */
     private double spLineY() {
         if (!app.settings.speedStripTall()) {
             return (spTop() + spBottom()) / 2;
         }
-        return spTop() + (spBottom() - spTop()) * 0.72;
+        SpeedControl c = spSel();
+        if (c != null && c.complex) {
+            return spTop() + (spBottom() - spTop()) * 0.72;
+        }
+        return spBottom() - SP_H_THIN / 2;
     }
 
     /** The strip-height DIVIDER band: the strip's top edge (v18.2 —
@@ -7665,8 +7854,12 @@ class GraphEditor extends Region {
     /** The expand/collapse arrow at the strip's left gutter. */
     private boolean spArrowHit(double x, double y) {
         if (!spVisible()) return false;
+        // STABLE zone (v18.11, user report: the arrow MOVES on a
+        // toggle, so a rapid second click fell past it into the
+        // strip and created a control): the whole left-gutter column
+        // of the strip hits, wherever the arrow currently sits
         return x >= MARGIN_LEFT - 18 && x <= MARGIN_LEFT - 2
-            && y >= spLineY() - 9 && y <= spLineY() + 9;
+            && y >= spTop() - 6 && y <= spBottom() + 2;
     }
 
     private boolean spInStrip(double y) {
@@ -8216,8 +8409,12 @@ class GraphEditor extends Region {
                 txt = String.format("v = %.2f m/s", spHoverVal);
             }
             double tx = FvdDesigner.clamp(spHoverX + 8,
-                MARGIN_LEFT + 2, plotRight - 70);
-            gc.fillText(txt, tx, spHoverY - 5);
+                MARGIN_LEFT + 2, plotRight - txt.length() * 6.0 - 4);
+            // clamp INTO the strip's clip rect (v18.9, his screenshot:
+            // the true-speed curve hugs the top edge and the readout
+            // drew half outside the clip)
+            double ty = FvdDesigner.clamp(spHoverY - 5, top + 12, bot - 2);
+            gc.fillText(txt, tx, ty);
             gc.setGlobalAlpha(1);
         }
         gc.restore();
@@ -8522,7 +8719,13 @@ class GraphEditor extends Region {
     private boolean spPress(javafx.scene.input.MouseEvent e) {
         double x = e.getX(), y = e.getY();
         if (e.getButton() == MouseButton.PRIMARY && spBoxHit(x, y)) {
-            app.settings.setShowSpeedStrip(!spVisible());
+            boolean opening = !spVisible();
+            app.settings.setShowSpeedStrip(opening);
+            // +V always opens COLLAPSED (v18.9, user spec) — the ▲
+            // arrow / divider / Edit button re-expand
+            if (opening && app.settings.speedStripTall()) {
+                app.settings.setSpeedStripTall(false);
+            }
             if (!spVisible()) spClearSel();
             redraw();
             return true;
@@ -8540,6 +8743,12 @@ class GraphEditor extends Region {
             return true;
         }
         if (!spInStrip(y)) return false;
+        // GUTTER presses never reach the strip's line/segments
+        // (v18.11 — xToTPlain happily maps x left of the plot, so a
+        // gutter click could add a diamond): consume and stand down
+        if (x < MARGIN_LEFT || x > canvas.getWidth() - marginRight()) {
+            return true;
+        }
         // an open density preview / partial-convert mode owns the doc
         if (pvBefore != null || pcSec >= 0) return true;
         if (!spFocus) {
@@ -8592,6 +8801,7 @@ class GraphEditor extends Region {
             spFocus = true;
             beginGesture();
             spDragKind = dia[2];
+            spGrabOff = 0;
             redraw();
             return true;
         }
@@ -8604,6 +8814,15 @@ class GraphEditor extends Region {
             spSelMark = -1;
             spDropNodeSel();
             spFocus = true;
+            // dragging the BODY MOVES the control like its start
+            // diamond (v18.9, user spec), anchored where it was
+            // grabbed — the 3 px deadband keeps a plain click a
+            // selection; end-diamond resize is untouched
+            beginGesture();
+            spDragKind = 1;
+            SpeedControl bodyC = spSel();
+            spGrabOff = bodyC != null
+                ? spNativeAt(rs, x) - bodyC.x0 : 0;
             redraw();
             return true;
         }
@@ -8744,6 +8963,10 @@ class GraphEditor extends Region {
         RunSec rs = spSelRunSec();
         if (s == null || rs == null) return;
         double nx = spNativeAt(rs, x);
+        // body-grab anchor (v18.9): a MOVE holds the grabbed spot
+        // under the cursor; the offset applies BEFORE the snap so
+        // Ctrl still lands x0 on the grid
+        if (spDragKind == 1) nx -= spGrabOff;
         if (snap) {
             double st = spSnapStep(s);
             nx = Math.round(nx / st) * st;
@@ -8934,6 +9157,7 @@ class GraphEditor extends Region {
                         spSelCtl = -1;
                         spDropNodeSel();
                         spFocus = true;
+                        spMarkAddedAt = System.currentTimeMillis();
                         redraw();
                     }
                 }
@@ -8956,6 +9180,14 @@ class GraphEditor extends Region {
      *  true = consumed. */
     private boolean spDoubleClick(javafx.scene.input.MouseEvent e) {
         if (!spVisible() || !spInStrip(e.getY())) return false;
+        // the expand/collapse arrow + gutters own their columns
+        // (v18.11 second pass — the guard sat in spPress, but the
+        // DOUBLE-click's promote routes through THIS handler, so
+        // rapid arrow clicks still created a control, his re-report)
+        if (spArrowHit(e.getX(), e.getY()) || e.getX() < MARGIN_LEFT
+                || e.getX() > canvas.getWidth() - marginRight()) {
+            return true;
+        }
         SpeedControl dc = spSel();
         if (app.settings.speedStripTall() && dc != null && dc.complex
                 && spSelRunSec() != null) {
@@ -8968,6 +9200,25 @@ class GraphEditor extends Region {
                 selSet.clear();
                 selSet.add(hn);
                 withSurf(() -> showNodeEditor(hn));
+                return true;
+            }
+        }
+        // DOUBLE-CLICK CREATES on the free line (v18.13, user spec —
+        // "same as right-clicking"): the FIRST click just dropped a
+        // mark there, so that mark is removed and the control spans
+        // its former neighbors (or the section ends)
+        int[] jm = spFindDiamond(e.getX(), e.getY());
+        if (jm != null && jm[2] == 3
+                && System.currentTimeMillis() - spMarkAddedAt < 600) {
+            RunSec jrs = runLayout().get(jm[0]);
+            List<Double> jmarks = jrs.sec().speedMarks();
+            if (jm[1] < jmarks.size()) {
+                double mx = jmarks.get(jm[1]);
+                jmarks.remove(jm[1]);
+                spSelMark = -1;
+                spCreateControlAt(jrs, mx, e.getScreenX(),
+                    e.getScreenY(), false);   // the add's snapshot
+                                              // already covers this
                 return true;
             }
         }
@@ -9020,6 +9271,11 @@ class GraphEditor extends Region {
      *  diamonds. Opens the options popup. */
     private void spCreateControlAt(RunSec rs, double nx, double sx,
                                    double sy) {
+        spCreateControlAt(rs, nx, sx, sy, true);
+    }
+
+    private void spCreateControlAt(RunSec rs, double nx, double sx,
+                                   double sy, boolean push) {
         Section s = rs.sec();
         double end = spSecEnd(s);
         if (end < 0.05) return;
@@ -9048,7 +9304,7 @@ class GraphEditor extends Region {
             if (m > nx && m < hi) { hi = m; hiMark = i; }
         }
         if (hi - lo < minGapOf(s) * 2) return;
-        pushUndoSnapshot();
+        if (push) pushUndoSnapshot();
         SpeedControl c = new SpeedControl(lo, hi - lo);
         // target defaults to the design speed arriving at the control
         c.speed = Math.max(0.5, Math.round(spDesignSpeedAt(rs, lo)));
@@ -9418,6 +9674,10 @@ class GraphEditor extends Region {
         Label endLbl = new Label();
         endLbl.setTextFill(Color.rgb(160, 220, 170));
         endLbl.setStyle("-fx-font-size: 11px;");
+        // Start + End on ONE line, Start first (v18.8, user spec —
+        // they were stacked rows in v18.7)
+        HBox refRow = new HBox(14, startSpdLbl, endLbl);
+        refRow.setAlignment(Pos.CENTER_LEFT);
 
         Runnable relayout = () -> {
             speedRow.getChildren().clear();
@@ -9558,10 +9818,10 @@ class GraphEditor extends Region {
             changed.run();
         });
 
-        // End speed reads directly UNDER the target-speed row (v18.1,
-        // user spec — it is that row's reference)
+        // the Start/End reference line sits directly UNDER the
+        // target-speed row (v18.1's placement, inlined v18.8)
         box.getChildren().addAll(titleRow, rSpeed, rAccel, complex,
-            speedRow, startSpdLbl, endLbl, accelRow, posRow);
+            speedRow, refRow, accelRow, posRow);
         double[] grab = new double[2];
         box.setOnMousePressed(ev -> {
             grab[0] = ev.getScreenX() - pop.getX();
@@ -10047,7 +10307,7 @@ class GraphEditor extends Region {
         double pitB = Math.toDegrees(FVDIntegrator.G0
             * (ss.Gv() - ss.U().y()) / vSafe);
         double yawB = Math.toDegrees(FVDIntegrator.G0
-            * (ss.Gl() - ss.R().y()) / vSafe);
+            * (ss.Gl() + ss.R().y()) / vSafe);   // REPORTED (D184+D185)
         double phi = Coaster.worldRates(ss, pitB, yawB,
             app.resultRates[is][3])[2];
         double slope = Double.isNaN(phi) ? 0
@@ -10117,18 +10377,21 @@ class GraphEditor extends Region {
         double auth = authoredValAt(nb.lanes.get(2), x);
         // a per-meter neighbor authors °/m (v16.6): × that sample's v
         if (nb.ratePerMeter) auth *= Math.max(0.5, sm.v());
-        if (nb.rollGlobal == wantGlobal) return auth;   // same semantics
+        if (effRollGlobal(nb) == wantGlobal) return auth;   // same semantics
         double vSafe = Math.max(0.5, sm.v());
         double pit = Math.toDegrees(FVDIntegrator.G0
             * (sm.Gv() - sm.U().y()) / vSafe);
         double yaw = Math.toDegrees(FVDIntegrator.G0
-            * (sm.Gl() - sm.R().y()) / vSafe);
+            * (sm.Gl() + sm.R().y()) / vSafe);   // REPORTED (D184+D185)
         double psi = Coaster.worldRates(sm, pit, yaw, 0)[1];
         if (Double.isNaN(psi)) return Double.NaN;
-        double transport = psi * sm.T().y();
+        // internal heading rate = the negated reported one (D185)
+        double transport = -psi * sm.T().y();
         // neighbor authors bank rate φ' → body roll p = φ' + ψ'·sinθ;
         // neighbor authors body roll p → bank rate φ' = p − ψ'·sinθ
-        return nb.rollGlobal ? auth + transport : auth - transport;
+        // (EFFECTIVE semantics — a ypG geo neighbor's roll is a bank
+        // rate too, v18.8)
+        return effRollGlobal(nb) ? auth + transport : auth - transport;
     }
 
     /** Authored-lane value at local x (drawn-curve fidelity: the
@@ -10299,11 +10562,11 @@ class GraphEditor extends Region {
         if (!real && laneIdx == 2 && actLs != null
                 && nbSec instanceof LaneSection nbr
                 && !nbr.reversed() && !nbr.influenced()
-                && nbr.rollGlobal != actLs.rollGlobal
+                && effRollGlobal(nbr) != effRollGlobal(actLs)
                 // an ABSOLUTE neighbor's roll lane is a BANK, not a
                 // rate — its compiled curves say what it does (v16.8)
                 && !(nbr.rollAbsolute && nbr.rollGlobal)) {
-            double[] rr = rollAcrossSeam(nbr, atStart, actLs.rollGlobal);
+            double[] rr = rollAcrossSeam(nbr, atStart, effRollGlobal(actLs));
             if (rr != null || matchHint != null) return rr;
         }
         // a REVERSED neighbor's authored lanes run against the chain
@@ -10318,7 +10581,8 @@ class GraphEditor extends Region {
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
                 && !nb.reversed && !nb.influenced()
                 && (laneIdx == 2
-                    ? actLs != null && nb.rollGlobal == actLs.rollGlobal
+                    ? actLs != null
+                        && effRollGlobal(nb) == effRollGlobal(actLs)
                         // rate vs ABSOLUTE mismatch: the two lanes
                         // hold different quantities (°/s-or-°/m vs
                         // bank °) — sampled path below (v16.8)
@@ -10553,14 +10817,22 @@ class GraphEditor extends Region {
             vNb = Math.max(0.5, vNb);
             pitchDeg = Math.toDegrees(
                 FVDIntegrator.G0 * (edge[0][0] - U.y()) / vNb);
+            // REPORTED yaw (+ = left; D184's and D185's negations
+            // cancel in the Gl-sourced reconstruction)
             yawDeg = Math.toDegrees(
-                FVDIntegrator.G0 * (edge[1][0] - R.y()) / vNb);
+                FVDIntegrator.G0 * (edge[1][0] + R.y()) / vNb);
             double rateRad = Math.toRadians(laneIdx == 0 ? pitchDeg : yawDeg);
             Vec3 omega = omegaAt(T, U, R, pitchDeg, yawDeg, edge[2][0]);
             Vec3 axis = laneIdx == 0 ? U : R;
-            double slopeRad = FVDIntegrator.G0 / vNb
-                * (edge[laneIdx][1] - omega.cross(axis).y())
-                + rateRad * FVDIntegrator.G0 * T.y() / vNb;
+            // the reported-yaw derivative carries a FLIPPED gravity-
+            // transport term: y' = g(Gl' + (Ω×R)·ŷ)/v + y·g·T.y/v
+            double slopeRad = laneIdx == 1
+                ? FVDIntegrator.G0 / vNb
+                    * (edge[1][1] + omega.cross(axis).y())
+                    + rateRad * FVDIntegrator.G0 * T.y() / vNb
+                : FVDIntegrator.G0 / vNb
+                    * (edge[0][1] - omega.cross(axis).y())
+                    + rateRad * FVDIntegrator.G0 * T.y() / vNb;
             rate = Math.toDegrees(rateRad);
             rateSlope = Math.toDegrees(slopeRad);
         }
@@ -10578,9 +10850,18 @@ class GraphEditor extends Region {
         double w = Math.toRadians(rate);
         Vec3 axis = laneIdx == 0 ? U : R;
         Vec3 omega = omegaAt(T, U, R, pitchDeg, yawDeg, edge[2][0]);
-        double val = w * vAct / FVDIntegrator.G0 + axis.y();
-        double slope = Math.toRadians(rateSlope) * vAct / FVDIntegrator.G0
-            - w * T.y() + omega.cross(axis).y();
+        double val, slope;
+        if (laneIdx == 1) {
+            // D184+D185: Gl = y_rep·v/g − R.y with y_rep the REPORTED
+            // (left-positive) yaw — slope differentiates exactly that
+            val = w * vAct / FVDIntegrator.G0 - R.y();
+            slope = Math.toRadians(rateSlope) * vAct / FVDIntegrator.G0
+                - w * T.y() - omega.cross(R).y();
+        } else {
+            val = w * vAct / FVDIntegrator.G0 + axis.y();
+            slope = Math.toRadians(rateSlope) * vAct / FVDIntegrator.G0
+                - w * T.y() + omega.cross(axis).y();
+        }
         return new double[]{ val,
             domSlope(slope, false, activeDistNative(), vAct) };
     }
@@ -10589,7 +10870,8 @@ class GraphEditor extends Region {
      *  integrator convention Ω = yaw·U − pitch·R + roll·T. */
     private static Vec3 omegaAt(Vec3 T, Vec3 U, Vec3 R,
                                 double pitchDeg, double yawDeg, double rollDeg) {
-        return U.scale(Math.toRadians(yawDeg))
+        // yawDeg is REPORTED (+ = left, D185): internal negates
+        return U.scale(-Math.toRadians(yawDeg))
             .add(R.scale(-Math.toRadians(pitchDeg)))
             .add(T.scale(Math.toRadians(rollDeg)));
     }
@@ -10645,14 +10927,23 @@ class GraphEditor extends Region {
         Vec3 T = seam.T(), U = seam.U();
         Vec3 R = U.cross(T);
         double w = Math.toRadians(rateDeg);
-        double val = w * vSeam / FVDIntegrator.G0
-            + (laneIdx == 0 ? U.y() : R.y());
-        Vec3 omega = U.scale(Math.toRadians(rr[at][2]))
+        // internal Ω from the REPORTED rows: the yaw slot negates
+        // (D185)
+        Vec3 omega = U.scale(-Math.toRadians(rr[at][2]))
             .add(R.scale(-Math.toRadians(rr[at][1])))
             .add(T.scale(Math.toRadians(rr[at][3])));
         Vec3 axis = laneIdx == 0 ? U : R;
-        double slope = Math.toRadians(slopeR) * vSeam / FVDIntegrator.G0
-            - w * T.y() + omega.cross(axis).y();
+        double val, slope;
+        if (laneIdx == 1) {
+            // D184+D185: Gl = y_rep·v/g − R.y (y_rep = reported yaw)
+            val = w * vSeam / FVDIntegrator.G0 - R.y();
+            slope = Math.toRadians(slopeR) * vSeam / FVDIntegrator.G0
+                - w * T.y() - omega.cross(R).y();
+        } else {
+            val = w * vSeam / FVDIntegrator.G0 + U.y();
+            slope = Math.toRadians(slopeR) * vSeam / FVDIntegrator.G0
+                - w * T.y() + omega.cross(axis).y();
+        }
         // per-second slope → OUR native x units (v16.0, D103)
         return new double[]{ val,
             domSlope(slope, false, activeDistNative(), vSeam) };
@@ -10680,11 +10971,25 @@ class GraphEditor extends Region {
     }
 
     /** Does lane laneIdx of a section author WORLD rates (v16.3)?
-     *  Lane 2 follows rollGlobal; lanes 0/1 follow yawPitchGlobal on
-     *  geo sections (a force section's Gv/Gl are always felt). */
+     *  Lane 2 follows the EFFECTIVE roll semantics; lanes 0/1 follow
+     *  yawPitchGlobal on geo sections (a force section's Gv/Gl are
+     *  always felt). */
     private static boolean laneWorld(LaneSection ls, int laneIdx) {
-        return laneIdx == 2 ? ls.rollGlobal
+        return laneIdx == 2 ? effRollGlobal(ls)
             : ls instanceof GeoSection && ls.yawPitchGlobal;
+    }
+
+    /** EFFECTIVE roll semantics of a section's roll lane (v18.8, the
+     *  user's force→geo B report): on a yaw-pitch-GLOBAL geo section
+     *  the world-Y heading rotation itself twists the body
+     *  (Ω·T = ψ'·T.y + p), so its "local" roll lane IS a bank rate —
+     *  φ' = p − ψ'·sinθ + ψ'·T.y = p exactly. Roll matching across a
+     *  seam must compare THIS, not the raw flag: copying a local
+     *  neighbor's body roll verbatim left the resulting roll graph
+     *  stepping by the transport term (35 °/s on his file). */
+    private static boolean effRollGlobal(LaneSection ls) {
+        return ls.rollGlobal
+            || (ls instanceof GeoSection && ls.yawPitchGlobal);
     }
 
     /** Lane value at compiled sample i in the ACTIVE section's axis
@@ -12503,6 +12808,17 @@ class GraphEditor extends Region {
                             : FvdDesigner.GEO_LANE_COLORS)[comp - 1];
     }
 
+    /** Clamp a hover readout's anchor so the text stays inside the
+     *  given rect (v18.8, user spec — the node-drag readout's
+     *  stay-in-view rule applied to every hover readout; left-aligned
+     *  VPos.BOTTOM text, ~6 px/char at the 10 px font). */
+    private static double[] clampHover(String txt, double x, double y,
+            double l, double r, double t, double b) {
+        double tw = txt.length() * 6.0;
+        return new double[]{ FvdDesigner.clamp(x, l + 4, r - tw - 4),
+                             FvdDesigner.clamp(y, t + 14, b - 2) };
+    }
+
     private static String fmtVal(double v) {
         return v == Math.rint(v) || Math.abs(v) >= 10
             ? String.format("%.0f", v) : String.format("%.1f", v);
@@ -12739,7 +13055,9 @@ class GraphEditor extends Region {
             } else {
                 txt = String.format("%s %.2f %s", name, hoverResVal, unit);
             }
-            gc.fillText(txt, hx + 8, hy - 6);
+            double[] hp = clampHover(txt, hx + 8, hy - 6, MARGIN_LEFT,
+                w - marginRight(), MARGIN_TOP, MARGIN_TOP + plotHeight());
+            gc.fillText(txt, hp[0], hp[1]);
             gc.setGlobalAlpha(1.0);
         }
 
@@ -12774,7 +13092,9 @@ class GraphEditor extends Region {
                     laneUnit(hoverDerLane))
                     + trueSuffix(ic, hoverDerLane, false);
             }
-            gc.fillText(txt, hx + 8, hy - 6);
+            double[] hp = clampHover(txt, hx + 8, hy - 6, MARGIN_LEFT,
+                w - marginRight(), MARGIN_TOP, MARGIN_TOP + plotHeight());
+            gc.fillText(txt, hp[0], hp[1]);
             gc.setGlobalAlpha(1.0);
         }
 
@@ -12782,7 +13102,7 @@ class GraphEditor extends Region {
         // (user spec: the POV position persists outside POV view and
         // the bottom stats line tracks it; the line is its marker)
         {
-            double px2 = tToX(axisOfTime(app.viewport.povTime));
+            double px2 = tToX(axisOfTime(app.povTime));
             if (px2 >= MARGIN_LEFT - 1 && px2 <= w - marginRight() + 1) {
                 gc.setGlobalAlpha(0.4);
                 gc.setStroke(FvdDesigner.TIME_COLOR);   // purple = time
@@ -12820,10 +13140,25 @@ class GraphEditor extends Region {
         gc.setFont(Font.font(11));
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setFill(laneColor(activeLane));
-        gc.setTextBaseline(VPos.TOP);
-        gc.fillText(fmtVal(curMax[activeLane]), 6, MARGIN_TOP);
-        gc.setTextBaseline(VPos.BOTTOM);
-        gc.fillText(fmtVal(curMin[activeLane]), 6, MARGIN_TOP + plotHeight());
+        // the rotated y-axis title runs along the same left edge — on
+        // a SHORT plot its vertical footprint reaches the corners, so
+        // a max/min scale label it would cross goes INVISIBLE (v18.8,
+        // user spec)
+        String yTitle = laneName(activeLane) + " ("
+            + laneUnit(activeLane).trim() + ")";
+        javafx.scene.text.Text meas = new javafx.scene.text.Text(yTitle);
+        meas.setFont(Font.font(11));
+        double tHalf = meas.getLayoutBounds().getWidth() / 2 + 4;
+        double tCy = MARGIN_TOP + plotHeight() / 2;
+        if (tCy - tHalf > MARGIN_TOP + 12) {
+            gc.setTextBaseline(VPos.TOP);
+            gc.fillText(fmtVal(curMax[activeLane]), 6, MARGIN_TOP);
+        }
+        if (tCy + tHalf < MARGIN_TOP + plotHeight() - 12) {
+            gc.setTextBaseline(VPos.BOTTOM);
+            gc.fillText(fmtVal(curMin[activeLane]), 6,
+                MARGIN_TOP + plotHeight());
+        }
 
         // y-axis label, rotated along the left edge (tracks the edit mode)
         gc.save();
@@ -12833,8 +13168,7 @@ class GraphEditor extends Region {
         gc.setTextBaseline(VPos.CENTER);
         // the unit rides the title (v16.7 — a °/m lane's 15 lined up
         // with a °/s 15 with nothing on the axis saying which)
-        gc.fillText(laneName(activeLane) + " (" + laneUnit(activeLane).trim()
-            + ")", 0, 0);
+        gc.fillText(yTitle, 0, 0);
         gc.restore();
 
         // CROSS-RATE right axis (v16.8, D120/D121): the main scale
@@ -13296,7 +13630,9 @@ class GraphEditor extends Region {
                     axisDist() ? "s" : "t",
                     tOff + warpFwd(hovT), xUnit()) + hovTxt;
             }
-            gc.fillText(hovTxt, hx + 8, hy - 6);
+            double[] hp = clampHover(hovTxt, hx + 8, hy - 6,
+                editL(), editR(), editT(), editB());
+            gc.fillText(hovTxt, hp[0], hp[1]);
             gc.setGlobalAlpha(1.0);
         }
 

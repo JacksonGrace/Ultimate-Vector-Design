@@ -151,7 +151,10 @@ class Dialogs {
         helpText(box, "You design FORCES, not shapes: the lanes — vertical G, "
             + "lateral G and roll rate (or pitch/yaw/roll rates on a geometric "
             + "section) — integrate into the 3D track, so the graphs say what "
-            + "the rider feels and the geometry follows. Pick a lane with the "
+            + "the rider feels and the geometry follows. Signs: +Gl is the "
+            + "body pushed RIGHT and +yaw turns LEFT — the same left turn, "
+            + "two viewpoints; yaw ANGLES (piece, next-piece, seam) read "
+            + "left-positive the same way. Pick a lane with the "
             + "colored buttons, keys 1/2/3, or by clicking a dimmed curve; "
             + "every edit rebuilds the track live.");
         helpText(box, "Ctrl+Z / Ctrl+Shift+Z undo and redo document edits — the "
@@ -164,7 +167,7 @@ class Dialogs {
         helpHead(box, "Graph editor");
         helpKey(box, "View", "scroll = zoom the axis around the cursor (fully out resumes auto-fit) · right-drag = pan · the divider resizes the graph, and the corner button on the 3D view collapses it.");
         helpKey(box, "Hover", "on a curve: the value there (Shift = slope; with Ctrl the insert dot snaps in time and the readout leads with that spot). On a node: a grey ring + its Δt and value (Shift = absolute position + Δ). Wherever a thin TRUE stroke exists, readouts append the true value in parentheses.");
-        helpKey(box, "Resulting ▾", "read-only derived curves across the whole connected run: over a force section, the resulting pitch/yaw rates (plus an optional roll/bank pick); over a geo section, the felt Gs. They fit their own right-edge axis, and hovering one reads its value (Shift = slope). \"Resulting graph settings…\" picks how they present: °/s or °/m, roll axis local/global, rate vs absolute bank (bank draws in red-orange). A checked box fills with its curve's color.");
+        helpKey(box, "Resulting ▾", "read-only derived curves across the whole connected run: over a force section, the resulting pitch/yaw rates (plus an optional roll/bank pick); over a geo section, the felt Gs. They fit their own right-edge axis, and hovering one reads its value (Shift = slope). \"Resulting graph settings…\" picks how they present: °/s or °/m, roll axis local/global, rate vs absolute bank (bank draws in red-orange). A checked box fills with its curve's color. Every file opens with all picks OFF.");
         helpKey(box, "True strokes", "a THIN solid line splitting off a lane is the REAL ride where it differs from the design curve — see Speed & conflicts below.");
         helpText(box, "Value axes auto-fit to the visible curves (frozen during "
             + "drags). The dotted tail after a lane's last node holds its "
@@ -201,7 +204,7 @@ class Dialogs {
             + "section integrates from the previous one's end at its own "
             + "design speed. The plot always shows ONE mode's quantities — "
             + "the active section's — so curves join across boundaries.");
-        helpKey(box, "Kinds", "FORCE = the classic FVD lanes (vertical G, lateral G, roll rate). GEOMETRIC = pitch (teal), yaw (yellow) and roll rates integrated directly — gravity never bends the shape; felt forces are recorded at design speed. STRAIGHT/CURVE = an element list instead of lanes (its own section below). BRIDGES connect pieces (see Bridges).");
+        helpKey(box, "Kinds", "FORCE = the classic FVD lanes (vertical G, lateral G — positive = the body pushed RIGHT, so a right turn reads negative — and roll rate). GEOMETRIC = pitch (teal), yaw (yellow) and roll rates integrated directly — gravity never bends the shape; felt forces are recorded at design speed. STRAIGHT/CURVE = an element list instead of lanes (its own section below). BRIDGES connect pieces (see Bridges).");
         helpKey(box, "Type badge", "the force/geo/s/c tag atop each strip. Click it for the section's menu: info line (design speed, domain, axes, ≠v), the view toggles, Orientation settings…, Resolve speed conflict, Influence, Convert…, Delete section. An inactive badge's first click just activates the section. A ◀ marks a legacy reversed-flag section from old files — modern reversal rebuilds forward sections instead.");
         helpKey(box, "Domain", "each force/geo section authors over TIME or DISTANCE (the badge wears ·m for meters; lanes keep their units — G, °/s — over the other axis). \"View in time/distance domain\" is a pure VIEW and the exact-shape tool: the axis flips, the strip warps, and you edit straight through it — snaps and readouts in the units you see. The Convert… dialog's Domain row instead REFITS the lanes into the other unit through the density preview.");
         helpKey(box, "Axes & units", "\"Orientation settings…\" sets what the lanes rotate about. Roll: LOCAL (classic — bank rides along with pitched turns) or GLOBAL (the lane drives bank-vs-horizon; with ABSOLUTE behavior the lane IS the bank angle in degrees, unwrapped past ±180°). Geo yaw/pitch: LOCAL body rates or GLOBAL heading/elevation rates. Then \"Switch to This Orientation\" (same graphs, the shape changes) or \"Bake This Orientation\" (graphs convert, the shape stays). RATE UNITS make rate lanes °/s or °/m — a °/m profile turns the same angles into the same meters at any speed (force G lanes are targets and stay G). \"View rates in °/m|°/s\" edits in the other units through the warp, native axis on the right. B/Shift+B match across every combination of all of these; only vertical track refuses (no defined heading/bank — the stats bar says so).");
@@ -212,7 +215,7 @@ class Dialogs {
         helpHead(box, "Straight/curve sections");
         helpText(box, "Elements instead of lanes: straights (length) and arcs "
             + "(radius, angle, direction — 0 = flat turn with positive angle "
-            + "to the right, 90 = pull-up; negative mirrors), authored per "
+            + "to the LEFT, 90 = pull-up; negative mirrors), authored per "
             + "METER — the shape ignores speed entirely. The strip shows a "
             + "band per element with a measurement chip; the felt-G curves "
             + "draw faintly behind (lane buttons disable).");
@@ -230,7 +233,7 @@ class Dialogs {
         helpKey(box, "≠v & true strokes", "a drifted section's badge wears ≠v (its info line shows the arriving speed) and thin TRUE strokes split off its curves — the same quantities at the speed the train really arrives with. POV, the stats line and the top-speed stat already ride true values. Inside a smoothed strict seam's window the strokes also show the real blended transition on both sides.");
         helpKey(box, "Resolving", "badge > Resolve speed conflict, left to right, one section at a time: \"Make graphs real (keep shape)…\" refits the lanes at the true entry speed — the track stays put and the strokes vanish; \"Set Design Speed to Real (keep graphs, reshape)\" keeps your curves and re-derives the geometry at the real speed (a tilted piece folds its tilt in first). Then Shift+B on the first node lines the seam up. Only a live bridge DIRECTLY before a section blocks resolving — convert the bridge first. Deliberate (pinned) speeds are matched around, never silently closed. Badge > \"Set initial design speed…\" types a starting speed directly any time (a custom value pins as a deliberate conflict; on the ride entry it writes the Start-speed spinner).");
         helpKey(box, "Friction", "Coaster menu: FRICTION (m/m) decelerates by μ·g per meter; AIR RESISTANCE (m⁻¹) by k·v². New coasters start at 0.03 and 1.0e-4 — about NoLimits 2; zero both for the loss-free classic model. On, they shape every design profile and the true ride, and losses are paid BOTH ways (see Reverse).");
-        helpKey(box, "+V speed strip", "the +V box (bottom-left) opens the SPEED CONTROL LINE above the time axis. Click the line = a diamond; double- or right-click a diamond (or the line after it) = the stretch to the next diamond becomes a SPEED CONTROL and its options open (the same clicks reopen them). Constant Speed holds/clips to a target — Max = ceiling (snaps down), Min = floor (snaps up), both = hold exactly. Constant Acceleration approaches the target at a FELT longitudinal G instead (launches/brakes). Complex swaps the constant for an editable graph (green = speed, blue = accel). Controls act on design AND real speed alike, so a control inside a conflicted stretch closes the ≠v split at its clamp.");
+        helpKey(box, "+V speed strip", "the +V box (bottom-left) opens the SPEED CONTROL LINE above the time axis (always collapsed at first — the ▲ arrow, top-edge divider or Edit button expand it). Click the line = a diamond; double- or right-click a diamond (or the line after it) = the stretch to the next diamond becomes a SPEED CONTROL and its options open (the same clicks reopen them). Drag a control's BODY to move it, its end diamond to resize. A quick double-click on the line replaces the fresh diamond with a control spanning its neighbors (the right-click create). Constant Speed holds/clips to a target — Max = ceiling (snaps down), Min = floor (snaps up), both = hold exactly. Constant Acceleration approaches the target at a FELT longitudinal G instead (launches/brakes). Complex swaps the constant for an editable graph (green = speed, blue = accel). Controls act on design AND real speed alike, so a control inside a conflicted stretch closes the ≠v split at its clamp.");
         helpKey(box, "Strip editing", "click-DRAG on a free stretch of the line to create a control from press to release (Ctrl snaps; a plain click drops a diamond instead); drag the START diamond to move a control, the END diamond to resize (its graph stretches along); ripple time/distance shifts later diamonds; Ctrl snaps; click selects, Delete removes. The strip's TOP EDGE is a grabbable divider — drag it to any height (small enough collapses to the line; drag the thin edge up to expand; the ▲ arrow still toggles). The tall view shows the resulting TRUE speed (green dotted, hover reads it — hidden inside COMPLEX speed controls, whose graph IS the speed) with ZERO on the control line itself; a control graph ending early holds its value to the control's end (dotted, clickable to append); with time ripple on, a control's LAST node never moves horizontally — controls are a hard box; a complex constant-speed control shows its resulting LONGITUDINAL G inside its span (blue dotted, hover for the value / Shift for slope; the instant boundary snaps are trimmed), and complex graphs run the REAL editor — every gesture, snap, lock, readout, the typed node dialog (double-click a node) and the Ripple checks work exactly like the main plot, at smaller nodes: click the curve to insert (Ctrl pre-snaps the white dot), box-drag or Shift+click selects several nodes and the group drags/deletes together, arrows nudge, S slides / Z/X lock an axis (with the guide lines), H levels, F straightens ahead (Shift+F/Shift+H lock), handles slide on S and snap to ease presets on Ctrl, off-screen handles show a dashed stub whose edge marker expands the scale. B on a constant-speed graph's END node snaps its value AND slope onto the real speed outside the control. Controls can never leave their section; bridges take none. In 3D every control wears a colored plate down the tie centers.");
         helpKey(box, "Stalls", "where the true ride bottoms out at the crawl floor, everything after turns TRANSPARENT — the train never really gets there — and the POV treats that point like the END of the track: riding on jumps to the next piece (or back to the start when it is the last one); riding backward lands on the last solid sample. A Min-flag speed control (a lift) over the climb is the fix.");
 
@@ -268,18 +271,19 @@ class Dialogs {
 
         helpHead(box, "3D viewport");
         helpKey(box, "Orbit", "middle-drag = orbit · scroll = zoom · Shift+middle-click (or C+middle-click) the track = re-center the pivot there · plain LEFT-click the track = edit that piece + section · double-click the track = insert a node there (the graph scrolls to it). The active section's ties glow white; View > Visualize Selection turns the white ties and piece desaturation off.");
-        helpKey(box, "T / Shift+T", "TOP / SIDE view with a near-orthographic lens for judging alignments — top snaps square to the grid; side centers on the selected node, tangent to the track there. Right-drag pans in-plane, scroll zooms, the same key (or orbiting away) returns to perspective.");
+        helpKey(box, "1-6 views", "digit keys jump to TRUE-orthographic views (parallel projection, world-aligned GRID overlay): 1 Front, 2 Back, 3 Right, 4 Left (all with the ground line), 5 Top (grid-square), 6 Tangent to Selection — centered on the selected node, tangent to the track, the grid's horizontal origin anchored there, with two buttons: ↻ re-tangents to the current selection, ↔ flips 180° in place. 1-5 work while hovering (or captured in) a view — over the graph, 1/2/3 switch lanes as ever; 6 works from the graph too, aimed at the last-hovered view. Right-drag pans in-plane, scroll zooms toward the cursor, orbiting away returns to perspective.");
+        helpKey(box, "View label", "top-left of each view pane names its camera and clicking it opens ONE flat list — Fly/Orbit, POV, Top, Front, Back, Right, Left, Tangent to Selection — to switch views directly. \"Add View\" at the bottom opens another FULL view pane to the right (draggable divider): every pane rides, flies, edits, picks and drags gizmos exactly like any other. \"Remove View\" closes that pane (the last one stays). Space and the view digits 1-6 act on the pane under the mouse — or the captured (right-clicked) one.");
         helpKey(box, "Fly", "right-click the view: WASD + mouse look, Shift fast, Ctrl slow, scroll bursts; right-click exits keeping the view.");
-        helpKey(box, "POV", "Space rides the track. Hands-off at first — the mouse and W/S stay with the editor; right-click CAPTURES: W/S ride at TRUE speed (Shift ×4, Ctrl slow), A reverses the view (\"Backwards POV\" tag shows; A again or D = forward), Space flips fly/POV, scroll jumps along the track, right-click releases. Riding across a piece boundary follows in the editor. The light-purple graph line and the BOTTOM STATS LINE track the POV position at all times — X/Y/Z, speed, vertical and lateral G, true values.");
-        helpKey(box, "Gizmos", "always on for the active piece (View > Show Gizmos; the inline Local/Global dots aim the arrows at world or piece axes): translation arrows X green / Y blue / Z red (double-ended — grab either side), rotation rings yaw yellow / pitch teal / roll orange — locked or bridge-owned axes build no part. Rings turn by straight-line mouse travel (~57° per radius); Ctrl snaps translation by the element-length step and rings to 1°; one undo step per drag. The sphere at the piece entry selects node 0; the seam ball opens seam settings on double-click.");
-        helpKey(box, "Node markers", "small spheres at the active lane's nodes (View > Node Markers; selection in white) — click one to select that node in the graph, scrolling it into view. They sit ON the heartline in orbit/fly and drop to track level in POV. The bottom-right compass shows the world X/Y/Z directions under the current view, always live.");
+        helpKey(box, "POV", "Space rides the track. Hands-off at first — the mouse and W/S stay with the editor; right-click CAPTURES: W/S ride at TRUE speed (Shift ×4, Ctrl slow), A reverses the view — per PANE (\"Backwards POV\" tag shows; A again or D = forward), Space flips fly/POV, scroll jumps along the track, right-click releases. Riding across a piece boundary follows in the editor. The light-purple graph line and the BOTTOM STATS LINE track the POV position at all times — X/Y/Z, speed, vertical and lateral G, true values.");
+        helpKey(box, "Gizmos", "click a WHITE BALL (piece entry, bridge end, or strict seam) to reveal its gizmo; click anywhere off it to hide it. A revealed gizmo draws THROUGH the track and shows the top-right \"Gizmos: Local/Global\" button (Local aims the arrows AND rings at the piece's own frame, and dragging a ring rotates the piece EXACTLY about the drawn axis — the whole rig rides along rigidly; every launch starts Global): translation arrows X green / Y blue / Z red (double-ended — grab either side), rotation rings yaw yellow / pitch teal / roll orange — locked or bridge-owned axes build no part; fixed ortho views with Global axes hide the useless out-of-plane arrow. The idle ball keeps one size at any distance; dragging it moves its owner in the view plane (any view) and reveals the gizmo, whose own scaling center ball takes over — click it to hide, drag to move, and double-click into its settings — Track Piece panel, bridge properties, or seam settings (double-clicking ANY part of a gizmo does the same, always for THAT gizmo); a plain click on the entry ball still selects node 0. The white ball IS the first node's marker at a piece entry. In fixed ortho views only the in-plane ring builds. Rings turn by straight-line mouse travel (~57° per radius); Ctrl snaps translation onto the world grid with Global axes (step increments with Local) and rings to 1°; one undo step per drag.");
+        helpKey(box, "Node markers", "small spheres at the active lane's nodes (View > Node Markers; selection in white) — click one to select that node in the graph, scrolling it into view. They sit ON the heartline in orbit/fly and drop to track level in POV. The bottom-left compass shows the world X/Y/Z directions under the current view, always live (it hops above any readout sharing that corner).");
         helpKey(box, "Combs", "FVD++-style teeth along the track — five exclusive View-menu modes: G-FORCE (vertical felt G outward on the rail gradient + lateral felt G rider-left on the absolute stops), SPEED (true speed, upward, green), GEOMETRIC (curvature per meter, teeth pointing OUTWARD from the curve — pitch/elevation teeth orange, yaw/heading teeth red, the combined tooth red-orange; its inline dots pick Local = body pitch + yaw teeth, Global = elevation + heading rates, Combined = one tooth along the curve normal — the default), and TIME (whole seconds DEEP BLUE at 1.5× height, every 5th second RED, with light-blue fillers spaced evenly between the seconds at roughly the other combs' density). Teeth grow from the heartline at exact spacing, scale with \"Comb size (%)\", never block clicks, and hide during POV. Hover any tooth for its exact value bottom-left — every curvature tooth reads °/m plus its radius (a zero component reads r=∞); time reads the ride time.");
-        helpKey(box, "Heartline", "View > Show heartline: a thin yellow strand on the integrated path, one per piece (hides during POV — the camera sits on it).");
+        helpKey(box, "Heartline", "View > Show Heartline: a thin yellow strand on the integrated path, one per piece (hides during POV — the camera sits on it).");
 
         helpHead(box, "Menus & settings");
         helpKey(box, "File", "New / Save / Save As with an unsaved-changes guard · Export NL2 CSV (Ctrl+E): heartline or rail-center spline plus point spacing, both remembered per-user.");
         helpKey(box, "Edit", "SHORTCUTS — click a binding, press the new combo, ↺ resets; grouped by category; per-user. SNAPPING — the Ctrl-snap steps (time, value, roll °/s, rate °/m, element length) and each axis's snap reference: LOCAL (Δ from the previous node) or GLOBAL (absolute grid).");
-        helpKey(box, "View", "Show Gizmos + axis dots · Show heartline · Node Markers · Visualize Selection · the five comb modes with the Geometric dots + Comb size · G-Force Colors… (the SIX vertical stops shared by the rail gradient and vertical comb, plus the lateral comb's three absolute stops; per-coaster) · POV FOV · fly & orbit FOV · mouse sensitivity. Rows keep the menu open; sliders wear ↺; Ctrl+Z inside a menu undoes its edits. Every tool window is MODELESS: with any dialog or panel open you can still right-click the viewport, fly and ride — WASD always reaches the camera, and every numeric box only ever accepts digits and a period.");
+        helpKey(box, "View", "Show Heartline · Show Node Markers · Visualize Selection · the five comb modes with the Geometric dots + Comb size · G-Force Colors… (the SIX vertical stops shared by the rail gradient and vertical comb, plus the lateral comb's three absolute stops; per-coaster) · ONE FOV slider (all cameras) · mouse sensitivity. Rows keep the menu open; sliders wear ↺; Ctrl+Z inside a menu undoes its edits. Every tool window is MODELESS: with any dialog or panel open you can still right-click the viewport, fly and ride — WASD always reaches the camera, and every numeric box only ever accepts digits and a period.");
         helpKey(box, "Coaster", "heart offset · gauge · tie spacing · the two FRICTION coefficients · RAIL COLOR: Solid (pick via its swatch) or Normal Force — the rails colored by the TRUE felt vertical G on the same gradient as the comb, with G-Force Colors… right below · COASTER STATISTICS: ride time, track length, height range, top speed, vertical-G range. Per-coaster, saved in the .fvd.");
         helpKey(box, "Colors", "every color control is a swatch button opening the app's picker: quick palette, your last ten, a hue/saturation plane with a brightness slider, typed RGB and hex, live preview — OK keeps, Cancel restores.");
 
@@ -351,7 +355,8 @@ class Dialogs {
             });
             Button combo = new Button();
             combo.setPrefWidth(110);
-            Button reset = new Button("↺");   // circle-and-arrow: back to default
+            Button reset = new Button();   // drawn round icon (v18.11)
+            reset.setGraphic(FvdDesigner.resetIcon());
             reset.setTooltip(new Tooltip("Reset to default (" + a[2] + ")"));
 
             rowRefreshers.add(() -> {
@@ -469,7 +474,9 @@ class Dialogs {
     /** Little ↺ that restores one Options row to its default (the change
      *  goes through the control, so it persists and is menu-undoable). */
     Button optionReset(Runnable restore) {
-        Button b = new Button("↺");
+        Button b = new Button();
+        // drawn icon, not the flat-bottomed font glyph (v18.11)
+        b.setGraphic(FvdDesigner.resetIcon());
         b.setTooltip(new Tooltip("Reset to default"));
         b.setOnAction(e -> restore.run());
         return b;
@@ -533,43 +540,10 @@ class Dialogs {
      *  live-apply exactly as before; menu-local Ctrl+Z works while
      *  the menu shows. */
     Menu buildViewMenu() {
-        // "Show Gizmos" + inline Local/Global axis dots (v17.10, user
-        // spec): one row at the very top; the dots gray out while the
-        // gizmos are hidden. The dots share app.setGizmoAxesLocal with
-        // the viewport's overlay button (one applier, both re-sync).
-        CheckBox gizmoShow = new CheckBox("Show Gizmos");
-        gizmoShow.setStyle("-fx-text-fill: black;");
-        gizmoShow.setSelected(app.settings.showGizmos());
-        ToggleGroup axGrp = new ToggleGroup();
-        RadioButton axLocal = new RadioButton("Local");
-        RadioButton axGlobal = new RadioButton("Global");
-        for (RadioButton rb : new RadioButton[]{ axLocal, axGlobal }) {
-            rb.setToggleGroup(axGrp);
-            rb.setStyle("-fx-text-fill: black;");
-            rb.setDisable(!gizmoShow.isSelected());
-        }
-        (app.settings.gizmoLocal() ? axLocal : axGlobal).setSelected(true);
-        axLocal.setOnAction(e -> app.setGizmoAxesLocal(true));
-        axGlobal.setOnAction(e -> app.setGizmoAxesLocal(false));
-        app.viewGizmoLocal = axLocal;
-        app.viewGizmoGlobal = axGlobal;
-        gizmoShow.setOnAction(ev -> {
-            boolean on = gizmoShow.isSelected();
-            Runnable sync = () -> {
-                axLocal.setDisable(!gizmoShow.isSelected());
-                axGlobal.setDisable(!gizmoShow.isSelected());
-            };
-            app.pushMenuEdit(
-                () -> { gizmoShow.setSelected(!on); app.settings.setShowGizmos(!on); sync.run(); app.viewport.refreshGizmo(true); },
-                () -> { gizmoShow.setSelected(on); app.settings.setShowGizmos(on); sync.run(); app.viewport.refreshGizmo(true); });
-            app.settings.setShowGizmos(on);
-            sync.run();
-            app.viewport.refreshGizmo(true);
-        });
-        HBox gizmoRow = new HBox(10, gizmoShow, axLocal, axGlobal);
-        gizmoRow.setAlignment(Pos.CENTER_LEFT);
-
-        CheckBox heartCheck = new CheckBox("Show heartline");
+        // (the "Show Gizmos" row + inline Local/Global dots are GONE,
+        // v18.16 D187 — clicking a gizmo's white ball reveals its rig,
+        // and the top-right viewport button owns the axes choice)
+        CheckBox heartCheck = new CheckBox("Show Heartline");
         heartCheck.setStyle("-fx-text-fill: black;");
         heartCheck.setSelected(app.settings.showHeartline());
         heartCheck.setOnAction(ev -> {
@@ -581,7 +555,7 @@ class Dialogs {
             app.rebuildTrack();
         });
 
-        CheckBox markCheck = new CheckBox("Node Markers");
+        CheckBox markCheck = new CheckBox("Show Node Markers");
         markCheck.setStyle("-fx-text-fill: black;");
         markCheck.setSelected(app.settings.trackMarkers());
         markCheck.setOnAction(ev -> {
@@ -706,35 +680,32 @@ class Dialogs {
         // (the RAIL COLOR radios + swatch moved to the COASTER menu's
         // "Rail Color" section in v17.10, user spec — railColorItems)
 
-        Slider fovTrack = optionSlider(30, 110, app.settings.fov(), 20);
-        Label fovTrackVal = viewMenuLabel(String.format("%.0f°", app.settings.fov()));
-        wireOptionSlider(fovTrack, fovTrackVal, "%.0f°",
-            v -> app.viewport.povCam.setFieldOfView(v),
-            app.settings::setFov);
-
+        // ONE FOV since v18.9 (user spec — was a POV + fly/orbit
+        // pair): every camera reads it; the legacy povFov key is
+        // written along so old builds stay consistent
         Slider fovFly = optionSlider(30, 110, app.settings.flyFov(), 20);
         Label fovFlyVal = viewMenuLabel(String.format("%.0f°", app.settings.flyFov()));
         wireOptionSlider(fovFly, fovFlyVal, "%.0f°",
             v -> {
-                app.viewport.flyCam.setFieldOfView(v);
-                // never stomp the 1° ortho lens; it re-reads the setting on exit
-                if (!app.viewport.orthoView) app.viewport.orbitCam.setFieldOfView(v);
+                for (Viewport3D vp : app.viewports) {
+                    vp.povCam.setFieldOfView(v);
+                    vp.flyCam.setFieldOfView(v);
+                    // never stomp the 1° ortho lens; it re-reads the
+                    // setting on exit
+                    if (!vp.orthoView) vp.orbitCam.setFieldOfView(v);
+                }
             },
-            app.settings::setFlyFov);
+            v -> {
+                app.settings.setFlyFov(v);
+                app.settings.setFov(v);
+            });
 
         Slider sens = optionSlider(0.03, 0.40, app.settings.flySens(), 0.1);
         Label sensVal = viewMenuLabel(String.format("%.2f", app.settings.flySens()));
         wireOptionSlider(sens, sensVal, "%.2f",
             v -> { }, app.settings::setFlySens);   // fly + orbit read it live
 
-        HBox fovTrackRow = new HBox(8, viewMenuLabel("POV camera FOV"),
-            fovTrack, fovTrackVal,
-            optionReset(() -> fovTrack.setValue(AppSettings.FOV_DEFAULT),
-                fovTrack.valueProperty(),
-                () -> Math.abs(fovTrack.getValue()
-                    - AppSettings.FOV_DEFAULT) < 1e-9));
-        fovTrackRow.setAlignment(Pos.CENTER_LEFT);
-        HBox fovFlyRow = new HBox(8, viewMenuLabel("Fly & orbit FOV"),
+        HBox fovFlyRow = new HBox(8, viewMenuLabel("FOV"),
             fovFly, fovFlyVal,
             optionReset(() -> fovFly.setValue(AppSettings.FOV_DEFAULT),
                 fovFly.valueProperty(),
@@ -754,7 +725,6 @@ class Dialogs {
         // adaptive tessellation IS the behavior, D167)
 
         Menu m = new Menu("View", null,
-            new CustomMenuItem(gizmoRow, false),
             new CustomMenuItem(heartCheck, false),
             new CustomMenuItem(markCheck, false),
             new CustomMenuItem(vizSel, false),
@@ -767,12 +737,11 @@ class Dialogs {
             new CustomMenuItem(combScRow, false),
             combColors,
             new SeparatorMenuItem(),
-            new CustomMenuItem(fovTrackRow, false),
             new CustomMenuItem(fovFlyRow, false),
             new CustomMenuItem(sensRow, false));
         m.setOnShown(e -> {
             app.beginMenuSession();
-            app.installMenuUndoKeys(gizmoShow.getScene());
+            app.installMenuUndoKeys(heartCheck.getScene());
             // color edits re-tint the item's letters (v16.15)
             combColors.setGraphic(gforceColorsLabel());
         });
@@ -975,9 +944,13 @@ class Dialogs {
         b.setPrefSize(22, 22);
         b.setMinSize(22, 22);
         b.setFocusTraversable(false);
+        // -fx-background-insets: 0 kills modena's default layer that
+        // extends 1 px BELOW the button (v18.11, user report: the
+        // fill "overflowed" past the outline at the bottom)
         Runnable paint = () -> b.setStyle("-fx-background-color: "
             + toHex(prop.get())
-            + "; -fx-border-color: rgba(120,125,135,0.85);"
+            + "; -fx-background-insets: 0;"
+            + " -fx-border-color: rgba(120,125,135,0.85);"
             + " -fx-border-radius: 3; -fx-background-radius: 3;");
         prop.addListener((o, a, c) -> paint.run());
         paint.run();
