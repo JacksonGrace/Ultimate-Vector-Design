@@ -3158,7 +3158,7 @@ class GraphEditor extends Region {
         if (k <= 0 || k >= sections().size()) return;
         TrackCompiler.Span sp = spanOf(k - 1);
         if (sp == null) return;
-        int np = app.coaster.splitPiece(activePiece, k, sp.exit());
+        int np = app.coaster.splitPiece(activePiece, k, sp);
         if (np >= 0 && activeSection >= k) {
             activePiece = np;         // follow the section being edited
             activeSection -= k;

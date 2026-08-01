@@ -49,27 +49,145 @@ public final class TrackCompiler {
      *  section's EXACT exit pose (v12.1 — the chain's own quaternion,
      *  not a frame round-trip: splitting a piece at this boundary
      *  copies it into the new piece's baseOrient, which is what makes
-     *  splits bitwise at ANY boundary). The graph
+     *  splits bitwise at ANY boundary). exitPsi/exitCanon (v18.27,
+     *  D199) are the CANONICAL chain state at the same boundary —
+     *  splitPiece stores them on the new piece so a split generates
+     *  with bitwise the parent chain's arithmetic; exitCanon is null
+     *  where the chain state doesn't equal the world pose (tilted /
+     *  follow-tilted pieces, D100 corner). The graph
      *  editor lays out DISTANCE-domain strips from these (a
      *  straight/curve section's DURATION exists only after compilation)
      *  and maps element arc lengths onto the shared time axis. Order
      *  matches the flattened piece/section iteration. */
     public record Span(int i0, int i1, double t0, double t1,
-                       double s0, double sLen, TrackPose exit) {}
+                       double s0, double sLen, TrackPose exit,
+                       double exitPsi, Quat exitCanon) {
+        public Span(int i0, int i1, double t0, double t1,
+                    double s0, double sLen, TrackPose exit) {
+            this(i0, i1, t0, t1, s0, sLen, exit, 0, null);
+        }
+    }
 
     /** One section's geometry + the pose it hands the next section. */
     public record Centerline(List<FVDIntegrator.Sample> samples, TrackPose exit) {}
+
+    // -----------------------------------------------------------------
+    // CANONICAL-FRAME GENERATION (v18.27, D199): every non-bridge
+    // section integrates at position ZERO with its entry HEADING
+    // stripped (only the gravity-relevant pitch/roll of the entry
+    // remain — rotation about world Y and translation commute with
+    // gravity exactly), and the result is placed by one rigid
+    // heading-rotation + translation. The chain's heading accumulates
+    // ADDITIVELY (psi + the local exit's own azimuth) and the canonical
+    // orientation is NEVER re-extracted from a composed world
+    // orientation — that is what makes placement moves (x/y/z, piece
+    // yaw) BITWISE-rigid: the generation arithmetic literally does not
+    // contain the placement, so even a chaotic stall knot re-renders
+    // identically and only its placement moves.
+    // -----------------------------------------------------------------
+
+    /** The chain's placement state: world position + heading (deg) +
+     *  the heading-stripped canonical orientation the NEXT section
+     *  generates at. */
+    record CanonPose(Vec3 pos, double psiDeg, Quat canon) {}
+
+    /** Heading (deg) of an orientation's T over the ground —
+     *  atan2(−T.z, T.x), the decomposeEntry convention. Deterministic
+     *  for every input incl. vertical T (atan2 of the signed-zero
+     *  projections); any exact value works here — canon keeps the
+     *  full orientation and place() re-applies psi. */
+    static double headingDeg(Quat q) {
+        Vec3 t = q.T();
+        return Math.toDegrees(Math.atan2(-t.z(), t.x()));
+    }
+
+    /** Decompose a WORLD pose into a canonical state. Used at chain
+     *  re-anchors (bridge exits) and for one-shot external passG
+     *  calls — the piece-entry path uses pieceCanon instead, whose
+     *  bits don't move under placement edits. */
+    static CanonPose canonOf(TrackPose world) {
+        double psi = headingDeg(world.orient());
+        return new CanonPose(world.pos(), psi,
+            Quat.aboutY(-psi).mul(world.orient()));
+    }
+
+    /** A piece's entry canonical state: from the STORED pair when a
+     *  split recorded one (bitwise the parent chain, D199), else by
+     *  decomposing baseOrient — and the yaw DELTA adds to psi
+     *  ADDITIVELY either way, so the yaw spinner never changes the
+     *  generation arithmetic. */
+    private static CanonPose pieceCanon(TrackPiece piece, Vec3 pos) {
+        if (piece.canonOrient != null) {
+            return new CanonPose(pos, piece.canonPsiDeg + piece.yawDeg,
+                piece.canonOrient);
+        }
+        double psiB = headingDeg(piece.baseOrient);
+        return new CanonPose(pos, psiB + piece.yawDeg,
+            Quat.aboutY(-psiB).mul(piece.baseOrient));
+    }
+
+    /** Rotation about world Y matching aboutY's action on vectors:
+     *  x' = c·x + s·z, y' = y (BITWISE — the y column is untouched,
+     *  which is what keeps heights and every .y-based gravity read
+     *  placement-exact), z' = −s·x + c·z. */
+    private static Vec3 rotY(Vec3 v, double c, double s) {
+        return new Vec3(c * v.x() + s * v.z(), v.y(),
+                        -s * v.x() + c * v.z());
+    }
+
+    /** Rigidly place a canonically-generated centerline into the
+     *  world: rotate by psi about Y, translate to pos. Speeds, times,
+     *  arcs, felt G and every sample's y-height ride through with
+     *  their generation bits. */
+    private static Centerline placeLine(Centerline local, CanonPose cp) {
+        double rad = Math.toRadians(cp.psiDeg());
+        double c = Math.cos(rad), s = Math.sin(rad);
+        List<FVDIntegrator.Sample> out =
+            new ArrayList<>(local.samples().size());
+        for (FVDIntegrator.Sample sm : local.samples()) {
+            out.add(new FVDIntegrator.Sample(sm.t(), sm.s(),
+                cp.pos().add(rotY(sm.pos(), c, s)),
+                rotY(sm.T(), c, s), rotY(sm.U(), c, s), rotY(sm.R(), c, s),
+                sm.v(), sm.Gv(), sm.Gl()));
+        }
+        TrackPose e = local.exit();
+        return new Centerline(out, new TrackPose(
+            cp.pos().add(rotY(e.pos(), c, s)),
+            Quat.aboutY(cp.psiDeg()).mul(e.orient()), e.s0(), e.t0()));
+    }
+
+    /** Advance the chain past a canonically-generated section: heading
+     *  grows by the LOCAL exit's own azimuth (placement-independent
+     *  bits), the canonical orientation re-strips from the LOCAL exit
+     *  — never from the composed world orientation. */
+    private static CanonPose chainNext(CanonPose cp, Centerline local,
+                                       Vec3 worldExitPos) {
+        double dpsi = headingDeg(local.exit().orient());
+        return new CanonPose(worldExitPos, cp.psiDeg() + dpsi,
+            Quat.aboutY(-dpsi).mul(local.exit().orient()));
+    }
 
     public static Result compile(Coaster c, double dt) {
         FVDIntegrator.Friction fric = c.fric();   // Phase 3 (v17.0)
         List<FVDIntegrator.Sample> all = new ArrayList<>();
         List<Span> spans = new ArrayList<>();
+        // ENERGY HEIGHTS (v18.27, D199): a run-relative height per
+        // sample, chained from the LOCAL generation bits wherever the
+        // chain is plain (no tilt/shift/bridge), so Pass D's energy
+        // arithmetic never contains the placement — a speed control
+        // snapped EXACTLY onto its target is a knife-edge comparison
+        // every sample, and world-height dust under a Y move flipped
+        // its engage pattern (trueV moved 0.4 m/s at the user's
+        // seam 12, flipping the reconcile's anchor). World-delta
+        // fallback where the world genuinely is the reference.
+        List<Double> hyAcc = new ArrayList<>();
         // Pass D's run table (§5.1, round A): a RUN starts at every
         // piece not preceded by a trailing bridge; rows are
         // {first sample index, entry speed = first section's vDesign}
         // (run 0's equals v0 through the Start-speed coupling).
         List<double[]> runs = new ArrayList<>();
         boolean prevEndsBridge = false;
+        double hNext = 0;   // energy height of the next section's entry
         for (int p = 0; p < c.pieces.size(); p++) {
             TrackPiece piece = c.pieces.get(p);
             // RIGID TILT placement (v15.2, D100): sections integrate
@@ -82,6 +200,7 @@ public final class TrackCompiler {
             TrackPose pose = tilt == Quat.IDENTITY
                 ? piece.entryPose() : piece.genPose();
             Vec3 anchor = pose.pos();
+            CanonPose cp = pieceCanon(piece, pose.pos());
             int pieceStart = all.size();
             boolean bridgedIn = prevEndsBridge;
             // STRICT SEAM (v17.1, D135): a FOLLOWING piece's entry
@@ -110,10 +229,16 @@ public final class TrackCompiler {
                 tilt = Math.abs(tq.w()) > 1 - 1e-14 ? Quat.IDENTITY : tq;
                 pose = new TrackPose(eff.pos(), gen);
                 anchor = eff.pos();
+                // follower generation stays at the STORED orientation
+                // (shape frozen); only the position comes from the
+                // upstream exit — placement-side, so upstream moves
+                // keep the follower's generation bits (D199)
+                cp = pieceCanon(piece, eff.pos());
             }
             if (!piece.sections.isEmpty() && !bridgedIn && !followed) {
                 runs.add(new double[]{ pieceStart,
                     piece.sections.get(0).vDesign() });
+                hNext = 0;   // each run's energy references its own entry
             }
             if (!piece.sections.isEmpty()) {
                 prevEndsBridge = piece.sections
@@ -233,41 +358,97 @@ public final class TrackCompiler {
                         }
                     }
                 }
-                Centerline line = passG(section, pose, dt, fric);
-                // chain the NEXT section in design space; the world
-                // gets the rigidly tilted copy (identity = no-op).
-                // Bridges are world-anchored already and never tilt.
-                pose = line.exit();
-                if (tilt != Quat.IDENTITY
-                        && !(section instanceof BridgeSection)) {
-                    line = tiltLine(line, tilt, anchor);
-                }
-                // a smoothed seam's window-end delta translates the
-                // rest of the piece (v17.2 — the design-space chain
-                // stays untouched; only the world output shifts).
-                // Bridges skip: their entry already shifted above.
-                if (postShift != null
-                        && !(section instanceof BridgeSection)) {
-                    line = shiftLine(line, postShift);
+                Centerline line;
+                Centerline local = null;
+                if (section instanceof BridgeSection) {
+                    // bridges are world-anchored (their endpoints ARE
+                    // world data) and never tilt; the chain re-anchors
+                    // from the world exit — placement-bitwise rigidity
+                    // deliberately ends at a bridge (it re-solves to
+                    // its endpoints by design, D199)
+                    line = passGRaw(section, pose, dt, fric);
+                    pose = line.exit();
+                    cp = canonOf(pose);
+                } else {
+                    // CANONICAL generation (D199): integrate at the
+                    // heading-stripped entry from position zero, place
+                    // rigidly; chain heading additively in design
+                    // space; the world gets the rigidly tilted copy
+                    // (identity = no-op)
+                    local = passGRaw(section,
+                        new TrackPose(Vec3.ZERO, cp.canon(),
+                            pose.s0(), pose.t0()), dt, fric);
+                    line = placeLine(local, cp);
+                    pose = line.exit();
+                    cp = chainNext(cp, local, pose.pos());
+                    if (tilt != Quat.IDENTITY) {
+                        line = tiltLine(line, tilt, anchor);
+                    }
+                    // a smoothed seam's window-end delta translates
+                    // the rest of the piece (v17.2 — the design-space
+                    // chain stays untouched; only the world output
+                    // shifts). A bridge's entry shifted above already.
+                    if (postShift != null) {
+                        line = shiftLine(line, postShift);
+                    }
                 }
                 int i0 = all.size();
                 double t0 = all.isEmpty() ? 0 : all.get(all.size() - 1).t();
                 double s0 = all.isEmpty() ? 0 : all.get(all.size() - 1).s();
+                boolean contAtAppend = continuation;
                 appendRebased(all, line.samples(), continuation);
                 FVDIntegrator.Sample end = all.get(all.size() - 1);
+                // ENERGY HEIGHTS (D199): plain sections chain from the
+                // LOCAL generation bits (placement-free); tilted /
+                // shifted / bridge stretches fall back to world deltas
+                // anchored on the chain (the world IS their reference)
+                double hEntry = hNext;
+                boolean worldH = local == null || tilt != Quat.IDENTITY
+                    || postShift != null;
+                if (worldH) {
+                    double yRef, hRef;
+                    if (contAtAppend && i0 > 0) {
+                        yRef = all.get(i0 - 1).pos().y();
+                        hRef = hyAcc.get(i0 - 1);
+                    } else {
+                        yRef = all.get(i0).pos().y();
+                        hRef = hEntry;
+                    }
+                    for (int i = i0; i < all.size(); i++) {
+                        hyAcc.add(hRef + (all.get(i).pos().y() - yRef));
+                    }
+                } else {
+                    int off = contAtAppend ? 1 : 0;   // dropped seam sample
+                    for (int i = i0; i < all.size(); i++) {
+                        hyAcc.add(hEntry
+                            + local.samples().get(i - i0 + off).pos().y());
+                    }
+                }
+                hNext = hyAcc.get(all.size() - 1);
+                // the span's canonical pair is valid only where the
+                // WORLD chain equals the design chain (untilted,
+                // un-follow-tilted pieces) — splits elsewhere bake and
+                // re-solve anyway (the D100 corner)
                 spans.add(new Span(i0, all.size() - 1, t0, end.t(),
-                    s0, end.s() - s0, line.exit()));
+                    s0, end.s() - s0, line.exit(),
+                    cp.psiDeg(), tilt == Quat.IDENTITY ? cp.canon() : null));
                 continuation = true;
                 if (smoothSeam && secIdx == 0
                         && !(section instanceof BridgeSection)) {
                     postShift = smoothStrictSeam(all, spans,
-                        piece.sSmoothLen);
+                        piece.sSmoothLen, hyAcc);
+                    // the blend re-stamped heights up to the span end
+                    if (postShift != null) {
+                        hNext = hyAcc.get(all.size() - 1);
+                    }
                 }
                 secIdx++;
             }
         }
+        double[] hy = new double[hyAcc.size()];
+        for (int i = 0; i < hy.length; i++) hy[i] = hyAcc.get(i);
         double[] trueV = passD(all, runs, c.fricRoll, c.fricAir,
-            ctlSampleRows(all, spans, c));
+            ctlSampleRows(all, spans, c), hy);
         double[][] rates = passA(all, runs);
         return new Result(all, trueV, rates,
             trueFelt(all, trueV), trueRates(all, rates, trueV), spans);
@@ -381,13 +562,30 @@ public final class TrackCompiler {
      *  sections (Phase 2, D67) generate the authored shape in the
      *  CANONICAL frame and hand it to reverseAndPlace. Loss-free
      *  delegate (probes/gates); compile() threads the document
-     *  friction. */
+     *  friction. Since v18.27 (D199) the public entry canonicalizes:
+     *  generation runs at position zero with the heading stripped and
+     *  the result places rigidly — one-shot callers get the same
+     *  placement-equivariant geometry the compile chain produces
+     *  (compile() itself chains CanonPose additively and calls
+     *  passGRaw directly). */
     public static Centerline passG(Section section, TrackPose entry, double dt) {
         return passG(section, entry, dt, FVDIntegrator.Friction.NONE);
     }
 
     public static Centerline passG(Section section, TrackPose entry, double dt,
                                    FVDIntegrator.Friction fric) {
+        if (section instanceof BridgeSection) {
+            return passGRaw(section, entry, dt, fric);
+        }
+        CanonPose cp = canonOf(entry);
+        Centerline local = passGRaw(section,
+            new TrackPose(Vec3.ZERO, cp.canon(), entry.s0(), entry.t0()),
+            dt, fric);
+        return placeLine(local, cp);
+    }
+
+    static Centerline passGRaw(Section section, TrackPose entry, double dt,
+                               FVDIntegrator.Friction fric) {
         if (section instanceof ForceSection fs) {
             if (fs.influenced()) return influencedLane(fs, entry, dt, false, fric);
             return forceLane(fs, entry, dt, fric);
@@ -473,12 +671,15 @@ public final class TrackCompiler {
     static List<FVDIntegrator.Sample> pieceHead(TrackPiece piece, double dt,
                                                 FVDIntegrator.Friction fric) {
         Quat tilt = piece.tilt();
-        if (tilt == Quat.IDENTITY) {
-            return passG(piece.sections.get(0), piece.entryPose(), dt, fric)
-                .samples();
-        }
+        // the SAME canonical entry the compile chain uses (pieceCanon
+        // honors a split's stored pair, D199) so the captured head
+        // matches the piece's actual compiled samples bit-for-bit
         TrackPose gen = piece.genPose();
-        Centerline line = passG(piece.sections.get(0), gen, dt, fric);
+        CanonPose cp = pieceCanon(piece, gen.pos());
+        Centerline local = passGRaw(piece.sections.get(0),
+            new TrackPose(Vec3.ZERO, cp.canon()), dt, fric);
+        Centerline line = placeLine(local, cp);
+        if (tilt == Quat.IDENTITY) return line.samples();
         return tiltLine(line, tilt, gen.pos()).samples();
     }
 
@@ -507,7 +708,8 @@ public final class TrackCompiler {
      *  adjacent section's arc, so windows never reach a second seam.
      *  Returns null (blend skipped) when the window is too tight. */
     static Vec3 smoothStrictSeam(List<FVDIntegrator.Sample> all,
-                                 List<Span> spans, double len) {
+                                 List<Span> spans, double len,
+                                 List<Double> hy) {
         int nsp = spans.size();
         if (nsp < 2) return null;
         Span sa = spans.get(nsp - 2);   // upstream piece's last section
@@ -677,7 +879,18 @@ public final class TrackCompiler {
         TrackPose xb = sb.exit();
         spans.set(nsp - 1, new Span(sb.i0(), sb.i1(), sb.t0(), sb.t1(),
             sb.s0(), sb.sLen(), new TrackPose(xb.pos().add(dp),
-                xb.orient(), xb.s0(), xb.t0())));
+                xb.orient(), xb.s0(), xb.t0()),
+            sb.exitPsi(), sb.exitCanon()));
+        // re-stamp the ENERGY heights the blend/translation moved
+        // (D199): world deltas anchored on the untouched window start
+        // — the window is world geometry by definition
+        if (hy != null) {
+            double yRef = all.get(iA).pos().y();
+            double hRef = hy.get(iA);
+            for (int i = iA + 1; i <= sb.i1(); i++) {
+                hy.set(i, hRef + (all.get(i).pos().y() - yRef));
+            }
+        }
         return dp;
     }
 
@@ -1285,6 +1498,21 @@ public final class TrackCompiler {
                                  List<double[]> runs,
                                  double fricRoll, double fricAir,
                                  double[][] ctl) {
+        return passD(samples, runs, fricRoll, fricAir, ctl, null);
+    }
+
+    /** ENERGY-HEIGHT variant (v18.27, D199): hy = compile's
+     *  run-relative heights chained from the LOCAL generation bits,
+     *  so the real march's arithmetic never contains the placement —
+     *  a min/max speed control snapped EXACTLY on its target is a
+     *  knife-edge comparison at every sample, and world-height dust
+     *  under a translation flipped its engage pattern (0.4 m/s of
+     *  trueV at the user's seam, flipping the reconcile's anchor).
+     *  null = read the world heights (the historic path, bitwise). */
+    public static double[] passD(List<FVDIntegrator.Sample> samples,
+                                 List<double[]> runs,
+                                 double fricRoll, double fricAir,
+                                 double[][] ctl, double[] hy) {
         double[] v = new double[samples.size()];
         boolean fOn = fricRoll != 0 || fricAir != 0;
         for (int r = 0; r < runs.size(); r++) {
@@ -1293,11 +1521,12 @@ public final class TrackCompiler {
                 ? (int) runs.get(r + 1)[0] : samples.size();
             if (i0 >= i1) continue;
             double v0 = runs.get(r)[1];
-            double y0 = samples.get(i0).pos().y();
+            double y0 = hy != null ? hy[i0] : samples.get(i0).pos().y();
             double loss = 0;
             for (int i = i0; i < i1; i++) {
                 double vh = Math.sqrt(Math.max(v0 * v0
-                    + 2 * FVDIntegrator.G0 * (y0 - samples.get(i).pos().y())
+                    + 2 * FVDIntegrator.G0 * (y0
+                        - (hy != null ? hy[i] : samples.get(i).pos().y()))
                     - loss, 0));
                 // recorded HONEST since v18.6 (D175 — the user's
                 // "speed becomes piecewise near zero"): the old
@@ -1320,7 +1549,8 @@ public final class TrackCompiler {
                     double f0 = 2 * (fricRoll * FVDIntegrator.G0
                         + fricAir * vh * vh);
                     double vp2 = Math.max(v0 * v0 + 2 * FVDIntegrator.G0
-                        * (y0 - samples.get(i + 1).pos().y())
+                        * (y0 - (hy != null ? hy[i + 1]
+                                 : samples.get(i + 1).pos().y()))
                         - (loss + f0 * ds), 0);
                     double f1 = 2 * (fricRoll * FVDIntegrator.G0
                         + fricAir * vp2);
@@ -1329,7 +1559,9 @@ public final class TrackCompiler {
                 if (row != null && i + 1 < i1) {
                     double vA = Math.sqrt(Math.max(v0 * v0
                         + 2 * FVDIntegrator.G0
-                        * (y0 - samples.get(i + 1).pos().y()) - loss, 0));
+                        * (y0 - (hy != null ? hy[i + 1]
+                                 : samples.get(i + 1).pos().y()))
+                        - loss, 0));
                     double dl = SpeedControl.snapRow(row, vh, vA,
                         !Double.isNaN(drv));
                     if (dl != 0) loss += dl;

@@ -78,15 +78,26 @@ public final class DesignIO {
 
     public static void save(Coaster c, Cosmetics cos, PrintWriter out) {
         out.println("FVDD3");
-        out.printf(Locale.US, "v0 %.4f%n", c.v0);
+        // GEOMETRY-FEEDING numbers write BIT-EXACTLY since v18.26
+        // (D198, superseding D197's %.10f): Double.toString is the
+        // shortest decimal that parses back to the SAME double, so
+        // the loaded document IS the session document and a reload
+        // compiles bitwise-identically — even inside a stalled
+        // design-speed knot, where curvature ~ 1/v² makes the
+        // geometry chaotic and ANY finite fixed precision
+        // decorrelates it (the user's 2026-07-31 "identical up to
+        // exactly one point" report; %.10f's 5e-11 dust was enough).
+        // Colors stay %.4f; old files load unchanged (the parser
+        // always read full doubles, E-notation included)
+        out.printf(Locale.US, "v0 %s%n", d(c.v0));
         // PHASE 3 friction (v17.0, D133): rolling coefficient
         // (decel = roll·g) + air drag (1/m, decel = air·v²);
         // missing = 0 0 = the historic loss-free model, and old
         // readers ignore the unknown line
-        out.printf(Locale.US, "friction %.6f %.8f%n", c.fricRoll, c.fricAir);
-        out.printf(Locale.US, "heart %.4f%n", cos.heart());
-        out.printf(Locale.US, "gauge %.4f%n", cos.gauge());
-        out.printf(Locale.US, "tiespace %.4f%n", cos.tiespace());
+        out.printf(Locale.US, "friction %s %s%n", d(c.fricRoll), d(c.fricAir));
+        out.printf(Locale.US, "heart %s%n", d(cos.heart()));
+        out.printf(Locale.US, "gauge %s%n", d(cos.gauge()));
+        out.printf(Locale.US, "tiespace %s%n", d(cos.tiespace()));
         out.printf(Locale.US, "railmode %s%n", cos.railSolid() ? "solid" : "gradient");
         out.printf(Locale.US, "railcolor %.4f %.4f %.4f%n",
             cos.railColor()[0], cos.railColor()[1], cos.railColor()[2]);
@@ -108,9 +119,10 @@ public final class DesignIO {
             // 5th-8th fields (v12.1): the piece's BASE ORIENTATION
             // quaternion (split/reversal anchor); missing = identity,
             // riding the ignore-extra-fields rule for old readers.
-            // %.10f keeps the quantized quat unit to ~4e-10, under the
-            // loader's re-normalize threshold — round-trips stay byte-
-            // identical
+            // Bit-exact writes keep the stored norm² within ulps of 1
+            // (in-app quats are normalized), so the loader's 1e-9
+            // re-normalize threshold never fires — round-trips stay
+            // byte-identical AND bit-exact (D198)
             // fields 9-10: pitch/roll deltas (v13.13; missing = 0)
             // fields 11-14 (v17.1, D135): STRICT SEAM — followPrev +
             // the three orientation locks; missing = detached.
@@ -119,34 +131,45 @@ public final class DesignIO {
             // field 18 (v17.2, D139): seam SMOOTHING length (m);
             // missing = 0 = off
             out.printf(Locale.US,
-                "piece %.4f %.4f %.4f %.4f %.10f %.10f %.10f %.10f %.4f %.4f"
-                + " %d %d %d %d %.6f %.6f %.6f %.4f%n",
-                piece.x, piece.y, piece.z, piece.yawDeg,
-                piece.baseOrient.w(), piece.baseOrient.x(),
-                piece.baseOrient.y(), piece.baseOrient.z(),
-                piece.pitchDeg, piece.rollDeg,
+                "piece %s %s %s %s %s %s %s %s %s %s"
+                + " %d %d %d %d %s %s %s %s",
+                d(piece.x), d(piece.y), d(piece.z), d(piece.yawDeg),
+                d(piece.baseOrient.w()), d(piece.baseOrient.x()),
+                d(piece.baseOrient.y()), d(piece.baseOrient.z()),
+                d(piece.pitchDeg), d(piece.rollDeg),
                 piece.followPrev ? 1 : 0, piece.sLockYaw ? 1 : 0,
                 piece.sLockPitch ? 1 : 0, piece.sLockRoll ? 1 : 0,
-                piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg,
-                piece.sSmoothLen);
+                d(piece.sYawDeg), d(piece.sPitchDeg), d(piece.sRollDeg),
+                d(piece.sSmoothLen));
+            // fields 19-23 (v18.27, D199): the canonical generation
+            // pair a split stored — heading + heading-stripped quat;
+            // absent = derive from baseOrient (old readers ignore
+            // extra fields)
+            if (piece.canonOrient != null) {
+                out.printf(Locale.US, " %s %s %s %s %s",
+                    d(piece.canonPsiDeg),
+                    d(piece.canonOrient.w()), d(piece.canonOrient.x()),
+                    d(piece.canonOrient.y()), d(piece.canonOrient.z()));
+            }
+            out.println();
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
-                    // bridge (v13.0): the FROZEN solve inputs — poses at
-                    // %.10f (world-anchored geometry re-derives from
-                    // them deterministically) + tangent lengths
-                    out.printf(Locale.US, "section bridge %.4f distance %d%n",
-                        bs.vDesign, bs.reversed ? 1 : 0);
+                    // bridge (v13.0): the FROZEN solve inputs — poses
+                    // bit-exact (world-anchored geometry re-derives
+                    // from them deterministically) + tangent lengths
+                    out.printf(Locale.US, "section bridge %s distance %d%n",
+                        d(bs.vDesign), bs.reversed ? 1 : 0);
                     out.printf(Locale.US, "bpose"
-                        + " %.10f %.10f %.10f %.10f %.10f %.10f %.10f"
-                        + " %.10f %.10f %.10f %.10f %.10f %.10f %.10f%n",
-                        bs.solvedEntry.pos().x(), bs.solvedEntry.pos().y(),
-                        bs.solvedEntry.pos().z(),
-                        bs.solvedEntry.orient().w(), bs.solvedEntry.orient().x(),
-                        bs.solvedEntry.orient().y(), bs.solvedEntry.orient().z(),
-                        bs.solvedTarget.pos().x(), bs.solvedTarget.pos().y(),
-                        bs.solvedTarget.pos().z(),
-                        bs.solvedTarget.orient().w(), bs.solvedTarget.orient().x(),
-                        bs.solvedTarget.orient().y(), bs.solvedTarget.orient().z());
+                        + " %s %s %s %s %s %s %s"
+                        + " %s %s %s %s %s %s %s%n",
+                        d(bs.solvedEntry.pos().x()), d(bs.solvedEntry.pos().y()),
+                        d(bs.solvedEntry.pos().z()),
+                        d(bs.solvedEntry.orient().w()), d(bs.solvedEntry.orient().x()),
+                        d(bs.solvedEntry.orient().y()), d(bs.solvedEntry.orient().z()),
+                        d(bs.solvedTarget.pos().x()), d(bs.solvedTarget.pos().y()),
+                        d(bs.solvedTarget.pos().z()),
+                        d(bs.solvedTarget.orient().w()), d(bs.solvedTarget.orient().x()),
+                        d(bs.solvedTarget.orient().y()), d(bs.solvedTarget.orient().z()));
                     // 3rd field: placement-optimization mode (v13.5;
                     // missing = 0, optimize position + yaw); 4th:
                     // optimize-length check (v13.8; missing = off);
@@ -156,25 +179,25 @@ public final class DesignIO {
                     // fields 6-8: yaw/pitch/roll locks (v13.13;
                     // missing = yaw unlocked, pitch+roll locked)
                     out.printf(Locale.US,
-                        "blen %.4f %.4f %d %d %.4f %d %d %d%n",
-                        bs.lenA, bs.lenB, bs.optMode, bs.optLen ? 1 : 0,
-                        bs.lastOptDist, bs.lockYaw ? 1 : 0,
+                        "blen %s %s %d %d %s %d %d %d%n",
+                        d(bs.lenA), d(bs.lenB), bs.optMode, bs.optLen ? 1 : 0,
+                        d(bs.lastOptDist), bs.lockYaw ? 1 : 0,
                         bs.lockPitch ? 1 : 0, bs.lockRoll ? 1 : 0);
                     // seam curvature vectors (v13.1 — G² ends; only the
                     // orphaned-bridge fallback ever reads them back,
                     // live compiles re-capture)
-                    out.printf(Locale.US, "bacc %.10f %.10f %.10f %.10f %.10f %.10f%n",
-                        bs.accA.x(), bs.accA.y(), bs.accA.z(),
-                        bs.accB.x(), bs.accB.y(), bs.accB.z());
+                    out.printf(Locale.US, "bacc %s %s %s %s %s %s%n",
+                        d(bs.accA.x()), d(bs.accA.y()), d(bs.accA.z()),
+                        d(bs.accB.x()), d(bs.accB.y()), d(bs.accB.z()));
                     // seam jerk vectors + roll rates + target entry
                     // speed (v13.2 — rate-slope/speed continuity) +
                     // roll accelerations (v13.4 — roll-rate slope)
-                    out.printf(Locale.US, "bdyn %.10f %.10f %.10f %.10f %.10f %.10f"
-                        + " %.10f %.10f %.10f %.10f %.10f%n",
-                        bs.jerkA.x(), bs.jerkA.y(), bs.jerkA.z(),
-                        bs.jerkB.x(), bs.jerkB.y(), bs.jerkB.z(),
-                        bs.rollA, bs.rollB, bs.vB,
-                        bs.rollAccA, bs.rollAccB);
+                    out.printf(Locale.US, "bdyn %s %s %s %s %s %s"
+                        + " %s %s %s %s %s%n",
+                        d(bs.jerkA.x()), d(bs.jerkA.y()), d(bs.jerkA.z()),
+                        d(bs.jerkB.x()), d(bs.jerkB.y()), d(bs.jerkB.z()),
+                        d(bs.rollA), d(bs.rollB), d(bs.vB),
+                        d(bs.rollAccA), d(bs.rollAccB));
                     out.println("endsection");
                     continue;
                 }
@@ -186,20 +209,20 @@ public final class DesignIO {
                     // to rate 0 so v11.0 saves keep their geometry.
                     // 5th field: pinned design speed (v14.5 D97;
                     // missing = off — old readers ignore it)
-                    out.printf(Locale.US, "section sc %.4f distance %d %d%n",
-                        sc.vDesign, sc.reversed ? 1 : 0,
+                    out.printf(Locale.US, "section sc %s distance %d %d%n",
+                        d(sc.vDesign), sc.reversed ? 1 : 0,
                         sc.vPinned ? 1 : 0);
                     for (StraightCurveSection.Element e : sc.elements) {
                         int rm = e.rollMode == StraightCurveSection.RollMode.GLOBAL
                             ? 1 : 0;
                         if (e.kind == StraightCurveSection.Kind.STRAIGHT) {
-                            out.printf(Locale.US, "elem straight %.4f %.4f %d %.4f%n",
-                                e.length, e.smoothIn, rm, e.rollVal);
+                            out.printf(Locale.US, "elem straight %s %s %d %s%n",
+                                d(e.length), d(e.smoothIn), rm, d(e.rollVal));
                         } else {
                             out.printf(Locale.US,
-                                "elem curve %.4f %.4f %.4f %.4f %d %.4f%n",
-                                e.radius, e.angleDeg, e.dirDeg, e.smoothIn,
-                                rm, e.rollVal);
+                                "elem curve %s %s %s %s %d %s%n",
+                                d(e.radius), d(e.angleDeg), d(e.dirDeg),
+                                d(e.smoothIn), rm, d(e.rollVal));
                         }
                     }
                     writeSpeedCtls(out, sc.speedCtls, sc.speedMarks);
@@ -219,9 +242,9 @@ public final class DesignIO {
                 // ignore the extra fields)
                 // field 8 (v16.6, D115): per-meter rate units;
                 // field 9 (v16.7, D118): absolute roll; missing = 0
-                out.printf(Locale.US, "section %s %.4f %s %d %d %d %d %d %d%n",
+                out.printf(Locale.US, "section %s %s %s %d %d %d %d %d %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
-                    fs.influenced() ? fs.vAuthored : fs.vDesign,
+                    d(fs.influenced() ? fs.vAuthored : fs.vDesign),
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
                     fs.reversed ? 1 : 0,
                     fs.vPinned ? 1 : 0,
@@ -245,7 +268,7 @@ public final class DesignIO {
                     // Fields 2-3 (v16.5, D112): the influence axis
                     // flags — missing = local (historic), old readers
                     // ignore extra fields on known lines.
-                    out.printf(Locale.US, "infl %.4f %d %d%n", fs.vDesign,
+                    out.printf(Locale.US, "infl %s %d %d%n", d(fs.vDesign),
                         fs.inflRollGlobal ? 1 : 0,
                         fs.inflYawPitchGlobal ? 1 : 0);
                     for (int lane = 0; lane < 3; lane++) {
@@ -360,10 +383,15 @@ public final class DesignIO {
                         lats[k] = clamp(Double.parseDouble(parts[k + 1]), 0, GRAD_G_MAX);
                 }
                 case "piece" -> {
+                    // ±1e6, not the spinners' ±500 (D198): the bridge
+                    // optimizer MARCHES next-piece placements wherever
+                    // the geometry lands — a long layout legally puts
+                    // pieces past ±500, and the old clamp teleported
+                    // them on reload
                     curPiece = new TrackPiece(
-                        clamp(Double.parseDouble(parts[1]), -500, 500),
-                        clamp(Double.parseDouble(parts[2]), -500, 500),
-                        clamp(Double.parseDouble(parts[3]), -500, 500),
+                        clamp(Double.parseDouble(parts[1]), -1e6, 1e6),
+                        clamp(Double.parseDouble(parts[2]), -1e6, 1e6),
+                        clamp(Double.parseDouble(parts[3]), -1e6, 1e6),
                         parts.length > 4 ? Double.parseDouble(parts[4]) : 0);
                     if (parts.length > 8) {   // base orientation (v12.1)
                         curPiece.baseOrient = loadQuat(parts, 5);
@@ -390,14 +418,29 @@ public final class DesignIO {
                                 curPiece.entryPose().orient());
                         }
                     }
+                    if (parts.length > 23) {   // canonical generation
+                        // pair (v18.27, D199 — split pieces keep the
+                        // parent chain's exact state); missing = null
+                        // = decompose baseOrient
+                        curPiece.canonPsiDeg = Double.parseDouble(parts[19]);
+                        curPiece.canonOrient = loadQuat(parts, 20);
+                    }
                     c.pieces.add(curPiece);
                     curSection = null;
                     curLane = -1;
                 }
                 case "section" -> {
                     if (curPiece == null) throw new IOException("section outside piece");
+                    // the load clamp must ADMIT every value the app
+                    // itself writes (D198 — save/load asymmetries
+                    // silently rewrite the document): the reconcile
+                    // floors vDesign at 0.1 (a stalled seam saves
+                    // exactly 0.1, and the old [1,100] turned it into
+                    // 1.0 — 10x the knot curvature, the user's
+                    // "changes at exactly one point" reload), and
+                    // speed controls can push design speeds past 100
                     double vd = parts.length > 2
-                        ? clamp(Double.parseDouble(parts[2]), 1, 100) : v0;
+                        ? clamp(Double.parseDouble(parts[2]), 0.1, 1000) : v0;
                     curSection = switch (parts[1]) {
                         case "force" -> ForceSection.empty(vd);
                         case "geo"   -> GeoSection.empty(vd);
@@ -489,7 +532,10 @@ public final class DesignIO {
                     // the section line carried the AUTHORED speed; the
                     // operating speed rides this line (§5.6 mapping)
                     ls.vAuthored = ls.vDesign;
-                    ls.vDesign = clamp(Double.parseDouble(parts[1]), 0.5, 100);
+                    // same admit-what-the-app-writes rule as the
+                    // section line (D198): influenced sections join
+                    // the reconcile, whose floor is 0.1
+                    ls.vDesign = clamp(Double.parseDouble(parts[1]), 0.1, 1000);
                     // v16.5 influence axis flags; missing = local
                     ls.inflRollGlobal = parts.length > 2
                         && parts[2].equals("1");
@@ -624,8 +670,13 @@ public final class DesignIO {
                 }
                 LaneSection fs = (LaneSection) s;
                 for (List<BezierBaker.Node> lane : fs.lanes) {
-                    if (lane.size() < 2)
-                        throw new IOException("each lane needs at least 2 nodes");
+                    // a single node is a LEGAL lane (a held constant —
+                    // splitLanes' hold branch emits one whenever a cut
+                    // lands past a lane's last node, v14.0/v16.18, and
+                    // bakeLane/exactAt hold its value); only an EMPTY
+                    // block is corruption (D196)
+                    if (lane.isEmpty())
+                        throw new IOException("each lane needs at least 1 node");
                 }
                 if (fs.influenced()) {
                     // delta lanes need only ONE node (flat zero is a
@@ -662,23 +713,32 @@ public final class DesignIO {
                                        List<SpeedControl> ctls,
                                        List<Double> marks) {
         for (SpeedControl c : ctls) {
-            out.printf(Locale.US, "sctl %d %d %.4f %.4f %.4f %.4f %d %d%n",
-                c.type, c.complex ? 1 : 0, c.x0, c.len, c.speed, c.accel,
-                c.minLimit ? 1 : 0, c.maxLimit ? 1 : 0);
+            out.printf(Locale.US, "sctl %d %d %s %s %s %s %d %d%n",
+                c.type, c.complex ? 1 : 0, d(c.x0), d(c.len), d(c.speed),
+                d(c.accel), c.minLimit ? 1 : 0, c.maxLimit ? 1 : 0);
             for (BezierBaker.Node n : c.lane) writeNode(out, "cn", n);
         }
         for (double m : marks) {
-            out.printf(Locale.US, "smark %.4f%n", m);
+            out.printf(Locale.US, "smark %s%n", d(m));
         }
     }
 
     /** One node line in the shared `n`/`dn` grammar (9 fields; the
      *  8th/9th lock fields ride the ignore-extra-fields rule). */
     private static void writeNode(PrintWriter out, String tag, BezierBaker.Node n) {
-        out.printf(Locale.US, "%s %.4f %.4f %.4f %.4f %.4f %.4f %d %d %d%n",
-            tag, n.t, n.val, n.outFrac, n.outDv, n.inFrac, n.inDv,
-            n.smooth ? 1 : 0, n.straightOut ? 1 : 0,
+        out.printf(Locale.US, "%s %s %s %s %s %s %s %d %d %d%n",
+            tag, d(n.t), d(n.val), d(n.outFrac), d(n.outDv), d(n.inFrac),
+            d(n.inDv), n.smooth ? 1 : 0, n.straightOut ? 1 : 0,
             n.levelOut ? 1 : 0);
+    }
+
+    /** BIT-EXACT double serialization (v18.26, D198): the shortest
+     *  decimal that parses back to the SAME double bits, so a loaded
+     *  document compiles bitwise-identically to the session that
+     *  saved it — the determinism contract's save/load leg. Locale-
+     *  independent ('.' always); E-notation parses fine everywhere. */
+    private static String d(double v) {
+        return Double.toString(v);
     }
 
     /** Parse a node from an `n`/`dn` line's fields (writeNode's dual;

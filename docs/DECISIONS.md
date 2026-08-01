@@ -7559,6 +7559,250 @@ User decisions, 2026-07-29, closing the phase:
 The next arc: (1), straight/curve sections in the viewport.
 
 
+## D196 (v18.24) — 1-node lanes must LOAD (the split-hold save refusal)
+
+His 2026-07-31 report: the full test coaster built the previous
+day refused to reopen — "Load failed: each lane needs at least
+2 nodes".
+
+Root cause — a save/load ASYMMETRY, latent since v14.0. The
+loader has refused lanes under 2 nodes since its birth (v9.1,
+when nothing could produce fewer), but Coaster.splitLanes' hold
+branch (partial convert v14.0; the v16.18 node-anchored section
+split reuses it) deliberately emits a SINGLE held-value node for
+the right half whenever the cut lands past a lane's last node —
+its own javadoc says so. The runtime embraces 1-node lanes
+(bakeLane special-cases size 1 as the constant, exactAt holds
+ends, both Delete paths guard at 2 so hand-editing can't go
+below), so the editor ran his file all day and saved it
+happily; only reopening failed. His file: a geo section's yaw
+lane held 0 past two successive splits — sections 3 and 4 each
+carried `lane 1` with one `n 0 0` line.
+
+Fix — LOADER-side only: refuse only an EMPTY lane block ("each
+lane needs at least 1 node"); a single node loads as the held
+constant it already is in memory. splitLanes is UNTOUCHED — the
+1-node hold half is the model's honest representation, not a
+bug (delta lanes already live as 1-node by design, D98). No
+heal/rewrite either: the lane round-trips as 1 node, and his
+file re-saves byte-identical to its on-disk bytes.
+
+Gate (LoadGate196, session scratchpad): his real file loads /
+compiles (7 sections, 201.94 m) / round-trips save→load→save
+byte-identically; a scratch split past a lane end emits the
+1-node half, saves, and LOADS (refused pre-fix); an empty lane
+block still throws.
+
+
+## D197 (v18.25) — DETERMINISM: the reconcile cascade + save precision
+
+His 2026-07-31 report, the shakedown's second find, flagged
+"critical": the reopened full coaster didn't match the saved
+shape; clicking a section (editing NOTHING) changed it again;
+moving the piece XYZ/yaw "dramatically" reshaped the track. His
+requirement, now explicit: unchanged graphs = identical shape,
+at any length.
+
+Diagnosis (ReconProbe/ReconProbe2 on his 1150 m file): ONE
+compile is bit-deterministic, and placement is honest — X/Z
+translation rigid to 6e-13 m; Y-translation and yaw invariant to
+float-roundoff growth (µm over a km) plus isolated mm-level
+blips where a speed-control landing's sub-step branch flips; NO
+frame bug anywhere. The churn was the DOCUMENT WRITE-BACK:
+reconcileChainedSpeeds re-freezes every continuation vDesign
+from the spans of a compile taken BEFORE that same pass's
+earlier writes, so a speed change CASCADES one section per
+compile — his 17-section chain needed 9 compile+reconcile
+rounds — while rebuildTrack capped the loop at 3. Every rebuild
+(open, click, spinner tick) advanced the unfinished cascade and
+moved the track 60-140 m; the file had been SAVED mid-cascade,
+so his remembered shape was a transient. On top, the save wrote
+graph numbers at %.4f: 5e-5 quantization amplified through
+1150 m of chained integration into a 0.5 m reload shift even at
+the fixed point.
+
+Fixes:
+- CASCADE CARRY in reconcileChainedSpeeds: when this pass just
+  rewrote section k−1 (vOld→vNew), section k's entry speed reads
+  the frozen-energy prediction sqrt(vNew² + vEndStale² − vOld²)
+  instead of the stale end sample — one pass walks the whole
+  chain; saturating speed controls and speed-dependent shapes
+  mispredict second-order and the verify compile corrects them.
+  An untouched predecessor keeps the stale read BITWISE (a
+  converged doc's pass writes nothing — gated).
+- rebuildTrack iterates to QUIESCENCE, cap 12 (was a hard 3):
+  the displayed track is always the fixed point, so a click can
+  never "edit" the document again.
+- DesignIO writes GEOMETRY-FEEDING numbers at %.10f (v0,
+  friction, piece placement incl. held seam angles, section
+  design speeds, lane/control/delta nodes, sctl/smark, elem,
+  blen; cosmetics stay %.4f). Old files load unchanged; the
+  byte-identical round-trip gate still holds.
+
+Gates: DetermGate197 (6 checks — quiesces in 6 passes; a SECOND
+rebuild is a bitwise no-op; save→load→rebuild reproduces the
+shape to 6.7e-7 m with ZERO reload passes, was 0.5 m; X/Z
+translate rigid 7e-13 m; converged-doc reconcile silent;
+independent runs bitwise-equal) + Phase2Gate/Phase3Gate/
+DomainGate/LoadGate196 all green.
+
+Accepted corners: HIS file settles ONCE on first open under the
+fix — the honest converged shape (end ~44 m off the remembered
+mid-cascade transient; the graphs are untouched) — and never
+moves again. Placement invariance is float-exact only: µm-level
+roundoff divergence under Y/yaw moves (with occasional mm-level
+control-crossing blips) is arithmetic, not state — bitwise
+placement invariance does not exist in floating point.
+
+
+## D198 (v18.26) — BIT-EXACT saves + the load-clamp audit (the knot round)
+
+His 2026-07-31 follow-up with before/after screenshots: a reload
+matched the session EXACTLY up to the ghost-track stall knot,
+then diverged; Y-translation and piece-yaw moves still reshaped
+dramatically while X/Z and pitch/roll tilts stayed clean; and a
+STANDING DIRECTIVE: every future update must preserve absolute
+determinism — save/reopen may change NOTHING.
+
+Diagnosis (DiagProbe198 on his file):
+- PRIMARY: the loader CLAMPED section design speeds to [1, 100]
+  while the reconcile legitimately writes its 0.1 stall floor —
+  his knot section saved 0.1 and LOADED as 1.0, a silent 10×
+  curvature change at the one section generating at the floor
+  (curvature ~ 1/v²). Same bug class as D196: the saver writes
+  states the loader refuses/rewrites.
+- SECONDARY: %.10f's 5e-11 dust flips KNIFE EDGES — the section
+  before the knot grazes a design-profile stall, and which side
+  it lands on decides the whole downstream shape. No finite
+  fixed precision reproduces a chaotic regime.
+- PLACEMENT: verified DETERMINISTIC and X/Z rigid to 1.5e-12 m,
+  pitch/roll tilts rigid by construction (post-rotation). Y/yaw
+  moves perturb the integration ARITHMETIC (energy bits / frame
+  bits), the knot re-rolls (its exit pose is chaotic), piece 2
+  hanging off that seam relocates wholesale (~560 m), and the
+  changed speeds trigger ~9 legitimate reconcile rewrites — the
+  "dramatic differences" he reported. His observations were all
+  exactly right.
+
+Fixes:
+- BIT-EXACT serialization (DesignIO.d = Double.toString, the
+  shortest decimal that reparses to the same bits) for every
+  geometry-feeding number — nodes, speeds, placements incl.
+  quats/held angles, controls, friction, elems, bridge solve
+  inputs. The loaded document IS the session document: reload
+  compiles BITWISE-identically, chaotic knots included. Colors
+  keep %.4f; loader-side nothing changed (it always parsed full
+  doubles); save→load→save stays byte-identical.
+- LOAD-CLAMP RULE — a clamp must ADMIT every value the app
+  itself writes: section vDesign [1,100] → [0.1, 1000] (the
+  reconcile floor / controls past 100), infl operating speed
+  [0.5,100] → [0.1, 1000], piece x/y/z ±500 → ±1e6 (the bridge
+  optimizer marches placements past ±500 on long layouts —
+  reloads teleported them). v0 [1,100] stays: symmetric with its
+  spinner, the only writer.
+
+THE DETERMINISM CONTRACT (his directive, now standing for every
+future change): (a) compile(doc) is bit-deterministic; (b) a
+rebuild at the fixed point is a bitwise no-op; (c) save→load→
+rebuild reproduces the session bitwise. DetermGate197 +
+DetermGate198 (settled doc AND a pinned live 0.1-knot both
+round-trip BITWISE; byte-identical re-save) are the permanent
+gates; run them for ANY change touching compile, reconcile, or
+IO.
+
+OPEN (his "still an issue", needs his verdict — the cost is a
+bitwise re-baseline of every compile): CANONICAL-FRAME
+GENERATION — strip heading+position from each section's entry,
+integrate canonically, rigid-transform back — would make Y/yaw
+placement moves bitwise-rigid even across stall knots, closing
+the last placement sensitivity. Until then: X/Z and tilts are
+exact; Y/yaw moves on a layout with a live stall knot re-roll
+the knot (deterministically). A layout that doesn't stall shows
+only µm-level placement sensitivity.
+
+Accepted: files saved by PRE-v18.26 builds around a stall still
+settle ONCE on first open (their 0.1 now survives load, but
+their lanes carry the old %.10f quantization, so the knife edge
+may land differently than the session that wrote them); files
+saved from v18.26 on reproduce bitwise forever.
+
+
+## D199 (v18.27) — CANONICAL-FRAME GENERATION: placement moves are BITWISE-rigid
+
+His go-ahead on D198's proposal ("please implement the complete
+fix"), plus the explicit re-statement that this fix must sustain
+the determinism contract.
+
+THE MODEL: rotation about world Y and translation commute with
+gravity EXACTLY, so every non-bridge section now integrates in a
+CANONICAL frame — position ZERO, entry HEADING stripped, only the
+gravity-relevant pitch/roll kept — and the result is placed by one
+rigid heading-rotation + translation (TrackCompiler.placeLine;
+rotY leaves the y column untouched, so heights carry generation
+bits). The chain's heading accumulates ADDITIVELY (CanonPose:
+psi + the LOCAL exit's own azimuth, headingDeg = the
+decomposeEntry convention) and the canonical orientation is NEVER
+re-extracted from a composed world orientation — re-extraction
+costs ~1e-16 rad, which a stall knot amplifies to O(100 m).
+Piece entry: psi = heading(baseOrient) + yawDeg, canon from
+baseOrient alone — the yaw spinner and x/y/z never touch the
+generation arithmetic at all.
+
+PASS D joined the same discipline (the second half of the fix):
+compile chains a per-sample ENERGY-HEIGHT array from the LOCAL
+generation bits (hy; run starts reset to 0 — energy references
+the run entry as before) and the real march reads it instead of
+world heights. Without this, a min-lift SNAPPED exactly onto its
+target made "v < target?" a knife-edge at EVERY sample, and
+world-height dust under a Y move flipped the engage pattern —
+0.4 m/s of trueV at his seam 12, flipping the reconcile's
+real-anchor and rewriting 9 design speeds (the "dramatic
+differences with every additional change"). World-delta fallback
+where the world genuinely is the reference: bridges, tilted /
+follow-tilted pieces, smoothed-seam windows, post-shift stretches.
+
+SPLITS stay bitwise (the D71 user rule) via a stored CANONICAL
+PAIR: Span carries the chain's exact (psi, canon) at each
+boundary; splitPiece(…, Span) copies it onto the new piece
+(TrackPiece.canonPsiDeg/canonOrient — piece fields 19-23, undo
+snapshots included; missing/other baseOrient writers null it and
+fall back to deterministic decomposition; bakeTilt keeps it
+across pure-yaw bakes, psi += yaw exact).
+
+GATED (DetermGate199, 10 checks, on his live knot file with the
+floor-speed section pinned): Y+50 → speeds BITWISE, heights
+exactly +50 (1.3e-12), ZERO rewrites (was 9 rewrites + 561 m);
+yaw+37 → piece-1 speeds/heights BITWISE outside the ±5 m seam
+blend window, heading rotates exactly +37, zero rewrites; X/Z
+1.3e-13; piece split BITWISE (+1 duplicated boundary sample —
+the D71 "0.0 m" was always geometric); the pair survives
+save→load→rebuild BITWISE. DetermGate196-198 + Phase3/Domain
+suites green unchanged; Phase2Gate's two PASS-THROUGH contracts
+re-baselined (compile == direct-at-ORIGIN + placement, still
+bitwise; trueV pass-through likewise) and its splitPiece calls
+take the Span.
+
+Deliberate limits (documented, not bugs): placement rigidity ends
+at a BRIDGE (it re-solves to world endpoints by design); a piece
+across a strict seam with HELD absolute angles legitimately
+re-aims under upstream yaw (his "okay and expected"), and the
+±len/2 smoothing window re-blends toward it; TILTED pieces' trueV
+keeps world-delta dust (their real speeds ARE world physics,
+D100). Every compile's arithmetic changed once — old saved files
+re-settle ONCE on first open under v18.27, then reproduce bitwise
+forever.
+
+REVERT SEMANTICS (his question): Ctrl+Z is bitwise always
+(snapshot restore + pure compile). Hand-editing values back to
+identical doubles restores the geometry bitwise; placement
+move-and-revert is now trivially bitwise (the shape never varied
+and the reconcile never fires). The one residue: reconciled
+design speeds re-settle within the reconcile's ±1e-3 write tube
+rather than exactly on their previous bits after a graph-edit
+round-trip — OPEN as a polish item (snap-to-derived at
+quiescence) if he wants it closed.
+
+
 NEXT SESSION: Phase 4 item 1 — the STRAIGHT/CURVE OVERHAUL
 (advanced turns, roll customization, closure, viewport
 interactivity with neighbor re-solve).

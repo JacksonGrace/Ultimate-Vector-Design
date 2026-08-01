@@ -157,12 +157,22 @@ public class Coaster {
      *  the track (bitwise, gated — user rule). Section objects move
      *  BY REFERENCE — lanes/elements stay the same objects the editor
      *  holds. Returns the new piece's index. */
-    public int splitPiece(int pieceIdx, int sectionIdx, TrackPose boundary) {
+    public int splitPiece(int pieceIdx, int sectionIdx,
+                          TrackCompiler.Span boundarySpan) {
         TrackPiece src = pieces.get(pieceIdx);
         if (sectionIdx <= 0 || sectionIdx >= src.sections.size()) return -1;
+        TrackPose boundary = boundarySpan.exit();
         TrackPiece cut = new TrackPiece(boundary.pos().x(), boundary.pos().y(),
             boundary.pos().z(), 0);
         cut.baseOrient = boundary.orient();
+        // CANONICAL pair (v18.27, D199): the new piece generates with
+        // bitwise the parent chain's arithmetic — without this, the
+        // decomposition of the composed world orientation costs
+        // ~1e-16 rad, enough to re-roll a stall knot on split
+        if (boundarySpan.exitCanon() != null) {
+            cut.canonPsiDeg = boundarySpan.exitPsi();
+            cut.canonOrient = boundarySpan.exitCanon();
+        }
         List<Section> tail = src.sections.subList(sectionIdx, src.sections.size());
         cut.sections.addAll(tail);
         tail.clear();
@@ -271,6 +281,7 @@ public class Coaster {
         piece.pitchDeg = 0;
         piece.rollDeg = 0;
         piece.baseOrient = Quat.fromFrame(end.T().scale(-1), end.U());
+        piece.canonOrient = null;   // reversal = a new natural frame (D199)
         piece.followPrev = false;   // v17.1: the entry moved to the old
                                     // exit — a strict follow-link would
                                     // point at the wrong end now
@@ -453,7 +464,7 @@ public class Coaster {
             spanIdx += pieces.get(p).sections.size();
         }
         if (spanIdx >= r.spans().size()) return -1;
-        int np = splitPiece(pieceIdx, secIdx, r.spans().get(spanIdx).exit());
+        int np = splitPiece(pieceIdx, secIdx, r.spans().get(spanIdx));
         if (np < 0) return -1;
         TrackPiece f = pieces.get(np);
         f.followPrev = true;
@@ -497,6 +508,7 @@ public class Coaster {
         f.y = eff.pos().y();
         f.z = eff.pos().z();
         f.baseOrient = eff.orient();
+        f.canonOrient = null;   // baked follow = a new natural frame (D199)
         f.yawDeg = 0;
         f.pitchDeg = 0;
         f.rollDeg = 0;
@@ -1744,7 +1756,22 @@ public class Coaster {
         boolean changed = false;
         int spanIdx = 0;
         for (TrackPiece piece : pieces) {
+            // CASCADE CARRY (v18.25, D197): when THIS pass just moved
+            // a section's design speed, the stale compile's end sample
+            // for it is one rewrite behind — prevEnd carries the move
+            // through the frozen energy profile (end² − entry² is a
+            // property of the old geometry+losses), so ONE pass walks
+            // the WHOLE chain instead of advancing one section per
+            // compile (the user's 17-section file needed 9 compiles
+            // and the old 3-pass rebuild cap froze it mid-cascade —
+            // the "track changes on every click" report). NaN =
+            // previous section untouched: the stale sample is exact
+            // and the historic path stays bitwise.
+            double prevEnd = Double.NaN;
             for (int k = 0; k < piece.sections.size(); k++, spanIdx++) {
+                double nextPrev = Double.NaN;
+                double carryIn = prevEnd;
+                prevEnd = Double.NaN;
                 if (k == 0 || spanIdx >= r.spans().size()) continue;
                 Section sec = piece.sections.get(k);
                 if (sec instanceof BridgeSection || sec.reversed()
@@ -1759,7 +1786,9 @@ public class Coaster {
                 int ip = r.spans().get(spanIdx - 1).i1();
                 // floored where the record was historically clamped
                 // (v18.6, D175 — samples carry honest speeds now)
-                double vIn = Math.max(0.1, r.samples().get(ip).v());
+                double vIn = Double.isNaN(carryIn)
+                    ? Math.max(0.1, r.samples().get(ip).v())
+                    : carryIn;
                 // REAL-ANCHORED continuation (v15.2, D101): a section
                 // lined up with a drifted neighbor's TRUE curves (the
                 // transition-to-real state) keeps chasing the REAL
@@ -1779,9 +1808,23 @@ public class Coaster {
                     }
                 }
                 if (Math.abs(sec.vDesign() - vIn) > 1e-3) {
+                    double vOld = sec.vDesign();
                     sec.vDesign(vIn);
                     changed = true;
+                    // predict THIS section's design end for the next
+                    // one: same heights/losses, new entry energy —
+                    // second-order wrong where a speed control
+                    // saturates or the shape is speed-dependent; the
+                    // rebuild loop's verify compile corrects those
+                    if (spanIdx < r.spans().size()) {
+                        double endStale = Math.max(0.1, r.samples()
+                            .get(r.spans().get(spanIdx).i1()).v());
+                        nextPrev = Math.max(0.1, Math.sqrt(Math.max(0,
+                            vIn * vIn + endStale * endStale
+                            - vOld * vOld)));
+                    }
                 }
+                prevEnd = nextPrev;
             }
         }
         return changed;
@@ -3056,6 +3099,7 @@ public class Coaster {
                 tp.pitchDeg = 0;
                 tp.rollDeg = 0;
                 tp.baseOrient = cq;
+                tp.canonOrient = null;   // interpolated cut pose (D199)
                 // PIN the old first section's design speed (v14.5,
                 // D97): the split must survive the conversion — the
                 // D95 reconcile would otherwise re-freeze it to the

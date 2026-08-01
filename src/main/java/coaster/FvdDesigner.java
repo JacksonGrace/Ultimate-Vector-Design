@@ -286,7 +286,11 @@ public class FvdDesigner extends Application {
                       boolean followPrev, boolean sLockYaw,
                       boolean sLockPitch, boolean sLockRoll,
                       double sYaw, double sPitch, double sRoll,
-                      double sSmooth) {}
+                      double sSmooth,
+                      // canonical generation pair (v18.27, D199 —
+                      // undo of a split must restore it or the split
+                      // piece loses its bitwise chain state)
+                      double canonPsi, Quat canonOrient) {}
 
     record DocState(List<PieceState> pieces, int activePiece, int active,
                     double heart, double gauge, double v0,
@@ -338,7 +342,7 @@ public class FvdDesigner extends Application {
                 piece.followPrev, piece.sLockYaw,
                 piece.sLockPitch, piece.sLockRoll,
                 piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg,
-                piece.sSmoothLen));
+                piece.sSmoothLen, piece.canonPsiDeg, piece.canonOrient));
         }
         return new DocState(ps,
             editor != null ? editor.activePiece() : 0,
@@ -369,6 +373,8 @@ public class FvdDesigner extends Application {
             piece.sPitchDeg = pst.sPitch();
             piece.sRollDeg = pst.sRoll();
             piece.sSmoothLen = pst.sSmooth();
+            piece.canonPsiDeg = pst.canonPsi();
+            piece.canonOrient = pst.canonOrient();
             for (SecState st : pst.sections()) {
                 Section sec = switch (st.mode()) {
                     case 3  -> st.bridge();   // deep copy, adopted
@@ -839,7 +845,14 @@ public class FvdDesigner extends Application {
     void rebuildTrack() {
         TrackCompiler.Result compiled =
             TrackCompiler.compile(coaster, INTEGRATE_DT);
-        for (int pass = 0; pass < 3; pass++) {
+        // iterate to QUIESCENCE (v18.25, D197 — was a 3-pass cap):
+        // the reconcile/re-optimize write-backs must reach their
+        // fixed point INSIDE one rebuild, or the displayed track is
+        // mid-cascade and the next click "edits" it — the user's
+        // reopened-file-keeps-changing report. With the reconcile's
+        // cascade carry a pass walks the whole chain, so real docs
+        // settle in 2-4; the cap only guards a pathological cycle
+        for (int pass = 0; pass < 12; pass++) {
             boolean again = coaster.reconcileChainedSpeeds(compiled);
             if (coaster.autoReoptimizeBridges(compiled)) again = true;
             if (!again) break;

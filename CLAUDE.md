@@ -456,6 +456,15 @@ TrackPiece.java     placement (origin + BASE ORIENTATION quat + yaw
                     guards, not persisted; a bridged-in piece uses
                     the bridge's lock fields instead) + section
                     chain; editing one piece can never move another.
+                    CANONICAL PAIR canonPsiDeg/canonOrient (v18.27,
+                    D199, piece fields 19-23, missing = null =
+                    decompose baseOrient): the compile chain's exact
+                    heading + heading-stripped orientation, stored
+                    by splitPiece from the boundary Span so a split
+                    piece generates with bitwise the parent chain's
+                    arithmetic; rides undo snapshots; every OTHER
+                    baseOrient write NULLS it (bakeTilt keeps it
+                    across pure-yaw bakes — psi += yaw exact).
                     STRICT SEAMS (v17.1, D135): followPrev +
                     sLockYaw/sLockPitch/sLockRoll (piece fields
                     11-14) make a piece FOLLOW the previous piece's
@@ -633,6 +642,29 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     (heading/elevation/bank per arc, unwrapped,
                     capped 3600 °/s).
 TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1) + the
+                    CANONICAL-FRAME GENERATION contract (v18.27,
+                    D199): every non-bridge section integrates at
+                    position ZERO with its entry HEADING stripped
+                    (rotation about Y + translation commute with
+                    gravity exactly) and places rigidly (placeLine;
+                    rotY keeps the y column bitwise); the chain's
+                    heading accumulates ADDITIVELY (CanonPose —
+                    never re-extracted from composed world
+                    orientations) and Pass D reads run-relative
+                    ENERGY HEIGHTS chained from the local bits, so
+                    piece x/y/z + yaw moves are BITWISE-rigid even
+                    across a chaotic stall knot (gated DetermGate199
+                    on the user's knot file: Y+50 → 0 rewrites +
+                    heights exactly +50; was 9 rewrites + 561 m).
+                    Placement rigidity deliberately ends at BRIDGES
+                    (world-anchored re-solve), held-angle strict
+                    followers re-aim under upstream yaw (accepted),
+                    and tilted pieces / smoothing windows keep
+                    world-delta trueV dust. Spans carry the chain's
+                    exact (psi, canon) at each boundary; splitPiece
+                    copies the pair onto the new piece so splits
+                    stay bitwise (the D71 rule) — see TrackPiece.
+                    Also the
                     STRICT-SEAM SMOOTHING pass (v17.2, D139:
                     smoothStrictSeam runs right after a follower's
                     first section lands — orientations SLERP from
@@ -713,7 +745,19 @@ TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1) + the
                     headlessly).
 DesignIO.java       save/load: writes FVDD3, reads FVDD3/FVDD2/FVDD1
                     (legacy = one piece/one section). Headlessly
-                    round-trip tested at last.
+                    round-trip tested at last. 1-NODE lanes LOAD
+                    since v18.24 (D196 — splitLanes' hold half is a
+                    legal held constant, which the loader's v9.1
+                    ≥2-node check refused: split-then-saved files
+                    wouldn't reopen; only an EMPTY lane block
+                    throws now). BIT-EXACT saves since v18.26
+                    (D198): geometry-feeding numbers write
+                    Double.toString (helper d()) so reload
+                    compiles bitwise == the session; load clamps
+                    admit everything the app writes (vDesign
+                    ≥ 0.1 — the reconcile's stall floor — piece
+                    coords ±1e6). See the DETERMINISM CONTRACT
+                    in Known quirks.
 
 GraphEditor.java    JavaFX GRAPH EDITOR (split out v9.2, D52): the
                     force-curve canvas — lanes, selection, node/handle
@@ -1068,7 +1112,20 @@ source tree — they won't compile against the current time-domain API.
   text, `Locale.US` decimals (critical — default locale breaks parsing
   on comma-decimal systems), unknown lines ignored for forward
   compatibility, extra fields on known lines ignored (the straight-lock
-  8th and level-lock 9th `n` fields ride on this). Global lines (v0,
+  8th and level-lock 9th `n` fields ride on this). GEOMETRY-FEEDING
+  numbers write BIT-EXACTLY since v18.26 (D198, superseding
+  D197's %.10f: Double.toString via DesignIO.d — the shortest
+  decimal reparsing to the same double, so a reload compiles
+  BITWISE-identically even inside a chaotic stall knot, where
+  %.10f's 5e-11 dust flipped knife edges; cosmetics stay %.4f,
+  old files load unchanged, E-notation parses fine). LOAD CLAMPS
+  must ADMIT every value the app itself writes (D198): section
+  vDesign [0.1, 1000] (the reconcile's stall floor saved as
+  exactly 0.1 and the old [1,100] clamp silently made it 1.0 —
+  10× the knot curvature, the user's reload divergence), infl
+  same, piece x/y/z ±1e6 (the bridge optimizer marches
+  placements past ±500). Never add a load clamp tighter than
+  the writers' range. Global lines (v0,
   `friction mu kair` — the Phase 3 coefficients, v17.0 D133, missing =
   0 0 = loss-free; NEW documents write 0.03 / 1.0e-4 ≈ NL2 since
   v18.0 D161,
@@ -1082,11 +1139,14 @@ source tree — they won't compile against the current time-domain API.
   stops since v16.14 (9+3 values; the v16.13 4-stop shape never
   shipped), missing = defaults — speedregion), then
   `piece x y z yaw [qw qx qy qz]` blocks (fields 5-8 = the base
-  orientation, v12.1; missing = identity; %.10f so round-trips skip
-  the loader's re-normalize; fields 11-14 = the STRICT-SEAM follow
+  orientation, v12.1; missing = identity; bit-exact writes keep the
+  loader's re-normalize silent; fields 11-14 = the STRICT-SEAM follow
   flag + its three locks, v17.1 D135, missing = detached; fields
   15-17 = the discontinuous axis angles, D136; field 18 = the seam
-  SMOOTHING length (m), v17.2 D139, missing = 0) holding `section force|geo|sc|bridge
+  SMOOTHING length (m), v17.2 D139, missing = 0; fields 19-23 = the
+  CANONICAL generation pair — heading + heading-stripped quat,
+  v18.27 D199, written only when a split stored it, missing =
+  decompose baseOrient) holding `section force|geo|sc|bridge
   vDesign domain
   reversed` blocks (the domain field — written since Phase 1 — is
   HONORED for force/geo since v16.0 D103: "distance" = lane x in
@@ -1674,7 +1734,16 @@ actually reaches it — since v14.1 (D95, user rule) only ACROSS
 PIECE boundaries: same-piece continuation sections re-freeze
 vDesign to their real entry speed automatically after every
 compile (Coaster.reconcileChainedSpeeds, looped with the auto
-re-optimize pass in rebuildTrack; piece FIRST sections and
+re-optimize pass in rebuildTrack — to QUIESCENCE since v18.25
+D197, cap 12 was a hard 3, and the reconcile CARRIES a
+just-rewritten predecessor's speed change through the frozen
+energy profile sqrt(vNew² + vEndStale² − vOld²) so ONE pass
+walks the whole chain: the old stale read cascaded one section
+per compile, and on a 17-section layout the capped loop froze
+docs MID-CASCADE — every rebuild (open/click/spinner) then
+morphed the track tens of meters, the 2026-07-31 "reopened
+coaster keeps changing" report; an untouched predecessor keeps
+the stale read bitwise; piece FIRST sections and
 REVERSED sections excluded), so plain force/geo/s-c chains keep
 their graphs REAL and re-derive geometry instead of splitting — a THIN solid companion stroke in the lane color
 draws the TRUE felt/rate curve beside the design curve across the
@@ -2638,6 +2707,31 @@ lives in DECISIONS.md, not Help).
 
 ## Known quirks / accepted debts
 
+- DETERMINISM CONTRACT (v18.25-v18.26, D197/D198 — STANDING user
+  requirement for every future change): (a) compile(doc) is
+  bit-deterministic; (b) a rebuild at the fixed point is a
+  bitwise no-op (the rebuild loop settles the reconcile/
+  re-optimize write-backs, so interaction alone never changes
+  the track); (c) save→load→rebuild reproduces the session
+  BITWISE (Double.toString serialization + admit-what-the-app-
+  writes load clamps — chaotic stall knots included). Run
+  DetermGate197/198 for ANY change touching compile, reconcile,
+  or IO. PLACEMENT MOVES ARE BITWISE-RIGID since v18.27 (D199,
+  canonical-frame generation + energy-height Pass D): piece
+  x/y/z AND yaw never touch the generation or real-march
+  arithmetic — zero reconcile writes, shape bits identical,
+  chaotic stall knots included (DetermGate199). Pitch/roll
+  tilts stay rigid by construction. Deliberate limits: bridges
+  re-solve to world endpoints (rigidity ends there), held-angle
+  strict followers re-aim under upstream yaw (user-accepted),
+  tilted pieces/smoothing windows keep world-delta trueV dust.
+  Files saved by pre-v18.25 builds settle ONCE on first open
+  (mid-cascade saves / old quantization) and EVERY pre-v18.27
+  file re-settles once (the canonical arithmetic re-baseline),
+  then never again. Ctrl+Z is bitwise always; a hand-reverted
+  graph edit restores geometry bitwise but reconciled speeds
+  re-settle within the reconcile's ±1e-3 write tube (open
+  polish item, D199).
 - Extreme handle angles can fold a curve; the baker's monotonic-t guard
   flattens it, so drawn curve and baked result can differ at pathological
   settings.

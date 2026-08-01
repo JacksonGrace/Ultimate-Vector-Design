@@ -40,6 +40,19 @@ public final class TrackPiece {
     public boolean uiLockRoll = true;
     public Quat baseOrient = Quat.IDENTITY;   // natural orientation
 
+    /** CANONICAL GENERATION STATE (v18.27, D199): the compile chain's
+     *  exact heading + heading-stripped orientation at this piece's
+     *  entry, stored by SPLIT ops so a split piece generates with
+     *  bitwise the parent chain's arithmetic (the D71 "splitting
+     *  never changes the track" rule under canonical-frame
+     *  generation). Null = derive by decomposing baseOrient
+     *  (deterministic; every non-split path). INVARIANT:
+     *  aboutY(canonPsiDeg)·canonOrient ≈ baseOrient — any write to
+     *  baseOrient must update the pair or NULL it. Persisted (piece
+     *  fields 19-23); rides undo snapshots. */
+    public double canonPsiDeg;
+    public Quat canonOrient = null;
+
     /** STRICT SEAM (v17.1, D135): this piece FOLLOWS the previous
      *  piece's exit — its entry POSITION always sits on the seam, its
      *  entry orientation composes per the three locks (unlocked axes
@@ -188,6 +201,15 @@ public final class TrackPiece {
      *  convention: the natural orientation is redefined as the
      *  current one; zeroing the deltas afterwards changes nothing). */
     public void bakeTilt() {
+        if (pitchDeg == 0 && rollDeg == 0) {
+            // pure-yaw bake: the canonical pair survives EXACTLY —
+            // heading is additive (D199)
+            if (canonOrient != null) canonPsiDeg += yawDeg;
+        } else {
+            // a real tilt re-solves generation (the D100 corner):
+            // the stored chain state no longer describes it
+            canonOrient = null;
+        }
         baseOrient = entryPose().orient();
         yawDeg = 0;
         pitchDeg = 0;

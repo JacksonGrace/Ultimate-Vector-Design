@@ -3286,6 +3286,57 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     start wraps the same way. Riding BACKWARD still parks at the
     stall's first sample and rides out freely.
 
+135. v18.24 (D196): make a lane hold early (e.g. a geo section
+    whose yaw lane's last node sits mid-section), split the
+    section past that node (right-click a later node of another
+    lane > Split section here), save, reload: the file OPENS
+    (pre-fix: "Load failed: each lane needs at least 2 nodes" -
+    the split's right half holds ONE node in the short lane,
+    which the editor and saver always accepted). Re-saving
+    changes nothing (byte-identical). Headless: LoadGate196.
+
+136. v18.25 (D197): DETERMINISM on a long chained layout (the
+    FULL TEST COASTER class: 15+ sections, friction, speed
+    controls, time-domain tail). Open it, note the shape; click
+    every section, spam a piece X/Y/Z/yaw spinner up and back
+    down, re-select pieces: the track must NEVER change shape
+    from interaction alone (pre-fix each rebuild advanced a
+    half-finished speed-reconcile cascade 3 passes and moved
+    the track tens of meters). Save under a new name, reopen:
+    identical shape (pre-fix ~0.5 m of %.4f quantization
+    drift). A file saved by an OLD build settles ONCE on first
+    open (the honest fixed point), then never again. Headless:
+    DetermGate197 (6 checks).
+
+137. v18.26 (D198): BIT-EXACT reload, stall knot included. Make a
+    layout stall mid-ride (ghost track + a tiny high-curvature
+    knot where the design speed hits the 0.1 floor), save, quit,
+    reopen: the ENTIRE track - knot scribble included - must be
+    pixel-identical, and clicking around must not move it
+    (pre-fix: the loader clamped the knot section's saved 0.1
+    design speed to 1.0 and the 10-decimal node rounding flipped
+    a grazing-stall knife edge - the reload diverged exactly at
+    the knot). Piece X/Z moves and pitch/roll tilts stay exactly
+    rigid; Y/yaw moves on a STALLED layout still re-roll the
+    knot deterministically (documented, canonical-frame fix
+    pending user verdict). Headless: DetermGate198 (4 checks,
+    incl. a pinned live-knot bitwise round-trip).
+
+138. v18.27 (D199): CANONICAL-FRAME placement rigidity. On a
+    layout with a live stall knot (pin its floor design speed or
+    author one): move the piece in X, Y, Z and yaw - the track
+    must move/rotate as a PERFECTLY rigid body every time (no
+    knot re-roll, no downstream swing, no ghost-track change,
+    design speeds untouched), and moving it back restores the
+    original exactly. Split a piece at a section boundary: the
+    track must not change at all (D71), including near the knot,
+    and the split file must reopen identically. Expected limits:
+    a piece behind a BRIDGE still re-solves (live-follow), a
+    held-angle strict follower still re-aims under upstream yaw,
+    and the seam smoothing window re-blends with it. Headless:
+    DetermGate199 (10 checks); Phase2Gate's two pass-through
+    contracts re-baselined to compile == placed-direct-at-origin.
+
 ## Debugging heuristics learned the hard way
 
 - Wild 3D output after math edits → check the frame-rotation sign (`−ωU·R`)
