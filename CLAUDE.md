@@ -119,6 +119,27 @@ Nl2CsvExporter.java NL2 EXPORT. Pure Java, no JavaFX. Resamples samples
                     pos + front/left/up rows). Negates Z on the way out
                     (our rendered world is left-handed, NL2 right-handed
                     Y-up) — change signs only with DECISIONS.md D40 open.
+                    HOME of the SHARED export resampling (v18.30,
+                    D202, both writers): heartline = cubic Hermite on
+                    the exact sample T's, frame = per-segment SLERP,
+                    spine = heart − offset·U from that frame — the
+                    old per-exporter LERP left chord-sag aliasing
+                    that read as high-frequency jitter in NL2 (the
+                    classic FVD++ artifact; gated rms bound in
+                    Nl2ElemProbe). Never interpolate the offset spine
+                    with heartline tangents — probed WORSE (D202).
+
+Nl2ElemExporter.java NL2 ELEMENT export (.nl2elem, v18.29 D201) — the
+                    FVD++ "NoLimits 2 Exporter" format, structure taken
+                    from openFVD's source: root>element>description +
+                    vertex x/y/z/strict blocks + roll blocks (up,
+                    right = front×up == FVD++'s vLat, coord = k/nSeg),
+                    all %e. ELEMENT-LOCAL coords: D40 z-negation, then
+                    anchor-subtract + heading-about-Y onto forward=−Z
+                    (heights ride through). Endpoints strict. Shares
+                    the CSV exporter's line/resample construction;
+                    pure Java, gated by Nl2ElemProbe vs the CSV under
+                    the rigid transform.
 
 --- Phase 1 document model (D50) — all pure Java, no JavaFX ---
 
@@ -670,7 +691,12 @@ TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1) + the
                     first section lands — orientations SLERP from
                     the upstream curve onto the follower's across a
                     ±sSmoothLen/2 arc window, sides extrapolated at
-                    their measured rates, quintic weight; positions
+                    their measured per-ARC rates (v18.31, D203 —
+                    per-INDEX exponents stepped the blended field's
+                    per-arc rate by the design-speed ratio at ≠v
+                    seams: an instant TRUE-felt jump no window
+                    length touched; equal cadence = old to dust),
+                    quintic weight; positions
                     re-march at the ORIGINAL per-step arc; interior
                     felt re-derives from the blended rotation PER
                     ARC (κ — time-based Ω mixed the sides' design
@@ -1744,7 +1770,14 @@ docs MID-CASCADE — every rebuild (open/click/spinner) then
 morphed the track tens of meters, the 2026-07-31 "reopened
 coaster keeps changing" report; an untouched predecessor keeps
 the stale read bitwise; piece FIRST sections and
-REVERSED sections excluded), so plain force/geo/s-c chains keep
+REVERSED sections excluded. TWO MODES since v18.28, D200: the
+fast tube pass above runs per live-gesture event; every AT-REST
+rebuild then runs the EXACT pass — bit-difference writes, carry
+off, terminating in ≤ chain-depth passes by the chain's
+triangular structure — so settled speeds are a pure function of
+the graphs and a hand-reverted edit returns bitwise;
+gestureHot/settleIfPending own the split, saveFile settles
+pre-write), so plain force/geo/s-c chains keep
 their graphs REAL and re-derive geometry instead of splitting — a THIN solid companion stroke in the lane color
 draws the TRUE felt/rate curve beside the design curve across the
 whole run (GraphEditor.drawTrueStrokes; TRUE_SPLIT_PX 1.5 px on the
@@ -2361,11 +2394,13 @@ unsaved-changes gate (Save / Don't Save / Cancel, also guarding Load),
 fresh 1 s force/time doc, empty history, "Untitled"; Save Ctrl+S writes
 straight to the OPEN file, Save As… re-targets; the WINDOW TITLE is the
 open file name with * while dirty; +
-Export NL2 CSV — rebindable "export" action Ctrl+E; modal dialog with
-rail-center-vs-heartline radios and a segment-length spinner, both persisted
-per-user in AppSettings; spacing rounds to a whole number of equal segments;
-the CSV negates Z for NL2's right-handed world — see D40 before touching
-signs), Edit
+Export… — rebindable "export" action Ctrl+E; ONE dialog since v18.29
+(D201) with FORMAT radios (Spline (CSV) | NL2 Element .nl2elem — the
+FVD++ exporter format), rail-center-vs-heartline radios and a
+segment-length spinner, all persisted per-user in AppSettings; the
+explanation paragraph is GONE (user ask); spacing rounds to a whole
+number of equal segments; both formats negate Z for NL2's right-handed
+world — see D40/D201 before touching signs), Edit
 (Shortcuts dialog — TWO titled category columns since v10.3 (Graph
 editor | View/File/History, ACTIONS carries the category as its 4th
 field); rebind by clicking + pressing a key, ↺ resets an edited
@@ -2728,10 +2763,15 @@ lives in DECISIONS.md, not Help).
   Files saved by pre-v18.25 builds settle ONCE on first open
   (mid-cascade saves / old quantization) and EVERY pre-v18.27
   file re-settles once (the canonical arithmetic re-baseline),
-  then never again. Ctrl+Z is bitwise always; a hand-reverted
-  graph edit restores geometry bitwise but reconciled speeds
-  re-settle within the reconcile's ±1e-3 write tube (open
-  polish item, D199).
+  then never again. Ctrl+Z is bitwise always; HAND-reverted
+  graph edits return bitwise too since v18.28 (D200 — the
+  reconcile's ±1e-3 tube is CLOSED: rebuildTrack's at-rest
+  EXACT settle writes vDesign on BIT difference, carry off, so
+  the settled speeds are a pure function of the graphs; live
+  gestures keep the fast tube and settle on release/KEY_RELEASED
+  via gestureHot/settleIfPending, and saveFile settles first —
+  the doc can never rest or save inside the tube. The one kept
+  memory is the D101 design/true anchor choice.)
 - Extreme handle angles can fold a curve; the baker's monotonic-t guard
   flattens it, so drawn curve and baked result can differ at pathological
   settings.

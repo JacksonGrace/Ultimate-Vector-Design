@@ -40,7 +40,7 @@ public class AppSettings {
         { "save",   "Save design",                "Ctrl+S", "File" },
         { "load",   "Load design",                "Ctrl+O", "File" },
         { "newfile", "New design",                "Ctrl+N", "File" },
-        { "export", "Export NL2 CSV",             "Ctrl+E", "File" },
+        { "export", "Export",                     "Ctrl+E", "File" },
         { "undo",   "Undo",                       "Ctrl+Z", "History" },
         { "redo",   "Redo",                       "Ctrl+Shift+Z", "History" },
     };
@@ -183,6 +183,17 @@ public class AppSettings {
     /** NL2 CSV export: requested vertex spacing in meters. */
     public double nl2SegLen() { return getD("nl2SegLen", NL2_SEGLEN_DEFAULT); }
     public void setNl2SegLen(double v) { setD("nl2SegLen", v); }
+
+    /** Export format (v18.29, D201): false = spline CSV (historic),
+     *  true = .nl2elem element (the FVD++ "NoLimits 2 Exporter"). */
+    public boolean nl2Elem() {
+        return Boolean.parseBoolean(props.getProperty("nl2Elem", "false"));
+    }
+
+    public void setNl2Elem(boolean on) {
+        props.setProperty("nl2Elem", String.valueOf(on));
+        save();
+    }
 
     /** Resulting-graph overlay picks (toolbar "Resulting" dropdown).
      *  Roll rate is deliberately absent: the resulting roll IS the

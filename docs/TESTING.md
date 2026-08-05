@@ -3322,6 +3322,61 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     pending user verdict). Headless: DetermGate198 (4 checks,
     incl. a pinned live-knot bitwise round-trip).
 
+138. v18.28 (D200): the HAND-REVERT test — note an early node's
+    exact value (double-click dialog), type something else, click
+    away, then retype the ORIGINAL value exactly: the whole track
+    (Resulting curves included) must return pixel-identical, and
+    a save right after must byte-match a save from before the
+    excursion. Drags/nudge-glides must FEEL unchanged (the exact
+    settle runs on release, not per event) — a brief pause on
+    releasing a big early-chain edit on a long layout is the
+    settle and is expected; spinner arrow-HOLDS on friction/start
+    speed may lag on very long docs (accepted, D200). Headless:
+    DetermGate200 (7 checks: bitwise hand-revert on the plain
+    file AND through a pinned chaotic knot, settled idempotence)
+    + Nl2Probe (20 checks: NL2 CSV export verified on the full
+    layout with friction — spacing, frames, handedness, D40
+    Z-negation both ends).
+
+139. v18.29 (D201): File > Export... — the dialog opens with
+    Format radios (Spline (CSV) | NL2 Element), Track points
+    radios, spacing; NO explanation paragraph; picks persist
+    across runs. Export an .nl2elem and INSERT it in the NL2
+    editor (right-click a track vertex > insert element): the
+    element must arrive heading away from the insert point,
+    right-side-up, banked the same way as in the designer, and
+    at the designer's scale (the in-NL2 insert is the one step
+    headless checks can't cover). Spline (CSV) must behave
+    exactly as before. Headless: Nl2ElemProbe (21 checks:
+    DOM-parsed FVD++ structure, vertices == the verified CSV
+    under the rigid anchor transform, heights/chords/strict
+    flags, roll coords k/nSeg, up/right frames, the up=+Y
+    right=+X handedness witness at the flat start).
+
+140. v18.30 (D202): export JITTER — export the full test coaster
+    as .nl2elem at 0.2 m and ride/inspect it in NL2 around the
+    fast banked stretch (~935 m): the high-frequency shimmy is
+    GONE (was ~0.14 g of 18 Hz curvature ripple from the old
+    lerp resampling's chord-sag aliasing). Any remaining
+    roughness there is authored content (e.g. the abs-bank
+    section's 0.3676 s node carries a real bank-slope kink at
+    ~367 m — visible in the designer's combs too). Headless:
+    Nl2ElemProbe's jitter bound (rms < 0.0035, @935 < 0.002 —
+    lerp measured 0.0053/0.0051) + both export probes on the
+    shared resampler (42 checks).
+
+141. v18.31 (D203): the smoothed CONFLICTED strict seam — on the
+    full test coaster (or any ≠v strict seam with smoothing on),
+    watch the TRUE curves (thin strokes / Resulting overlays /
+    combs) through the seam: NO instantaneous jump (pre-fix the
+    true felt stepped ~2 g at any smoothing length — the blend
+    extrapolated per-INDEX across design-spaced samples), and
+    WIDENING the smoothing diamond now genuinely smooths further
+    (10 m -> 0.31 g residual, 30 m -> 0.075 g on the test file).
+    The DESIGN curves still step at the seam (the honest ≠v
+    display, unchanged) and smoothing OFF keeps the hard kink.
+    Headless: SeamJumpProbe (4 checks).
+
 138. v18.27 (D199): CANONICAL-FRAME placement rigidity. On a
     layout with a live stall knot (pin its floor design speed or
     author one): move the piece in X, Y, Z and yaw - the track

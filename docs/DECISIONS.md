@@ -7803,6 +7803,255 @@ round-trip — OPEN as a polish item (snap-to-derived at
 quiescence) if he wants it closed.
 
 
-NEXT SESSION: Phase 4 item 1 — the STRAIGHT/CURVE OVERHAUL
+## D200 (v18.28) — the reconcile tube CLOSED (exact settle) + NL2 export verified
+
+His request, closing the determinism arc's last open item: a
+hand-reverted graph edit (retype the value — Ctrl+Z was always
+exact) must return the track to its ORIGINAL BITS, not within
+±1e-3 of them.
+
+THE FIX — a second reconcile mode. reconcileChainedSpeeds(r,
+exact): the FAST pass (live gestures) keeps the 1e-3 write tube +
+the D197 cascade carry; the EXACT pass writes vDesign on BIT
+difference with the carry DISABLED. Without predictions each
+exact pass finalizes the next section of the TRIANGULAR chain (a
+section's derived entry — design sample OR the D101 trueV
+redirect — depends only on sections before it, and Pass D marches
+forward), so the settle terminates in at most chain-depth passes
+and the settled speeds are a PURE FUNCTION of the graphs — no
+path memory except the D101 design/true anchor choice, which is
+deliberate resolution state. rebuildTrack runs fast passes (cap
+12) then, when no gesture is live, exact passes (cap 40).
+
+THE HOT/SETTLED SPLIT (the exact settle costs one compile per
+chain-depth section — measured 1.2 s worst-case after an
+early-chain edit on the 2.3 km test doc, 27 ms at rest — too much
+per pointer event, invisible once per gesture): gestureHot is set
+on graph-canvas press, gizmo drag start and arrow-key nudges;
+cleared + settleIfPending() on canvas release, endGizmoDrag and
+the arrow's KEY_RELEASED. saveFile settles BEFORE DesignIO.save —
+the document can never rest or be saved inside the tube, keeping
+the D198 reload-bitwise contract. Placement moves stay cheap in
+the exact tail by construction: D199 makes them write nothing.
+
+Gates: DetermGate200 — the hand-revert returns EVERY vDesign and
+EVERY sample bitwise on the plain full-test file AND with the
+chaotic 0.1-knot pinned alive (any tube residue would re-roll the
+knot); settled idempotence stays a bitwise no-op at 0 passes.
+DetermGate197's quiescence bound widened for the exact tail
+(first-open of a pre-D200 file walks fast + chain-depth exact
+passes once, 19 on the test doc).
+
+NL2 EXPORT PRE-VERIFIED headlessly the same round (the shakedown
+item): Nl2Probe on the 1217 m FULL TEST file with the friction
+defaults — spine + heartline modes at 0.5/1/2 m: table shape,
+sequential indices, all-finite, uniform chords, frames unit +
+orthogonal + NL2's up = front × left, and the D40 Z-negation
+anchored at both ends (20 checks green). Max frame bend ~10.8°
+per 1 m vertex is the file's own tight-radius geometry, halving
+at 0.5 m — real curvature, not an export artifact.
+
+ADVERSARIAL VERIFY ROUND (three independent skeptic passes over
+the change — hot-path coverage, settle leaks, exact-mode
+correctness) found and fixed six real holes before ship:
+- settleIfPending FORCES now (clears gestureHot first): it used
+  to defer to the flag, making the save-path settle ADVISORY —
+  Ctrl+S during an arrow-hold, or any stuck flag, wrote the tube
+  state, the exact violation D200 exists to close.
+- gestureHot could STICK forever when an edit-key's release
+  landed in another window (Alt+Tab, a modeless panel — only the
+  main scene's KEY_RELEASED cleared it): every later rebuild ran
+  fast-only. Backstop: the stage's focus-loss edge clears + settles.
+- The key-burst end is UNIVERSAL now (any key release while an
+  edit-key gesture is hot), guarded by pointerDown so a stray
+  arrow release can neither settle mid-mouse-drag nor un-hot the
+  rest of the drag; A-append and B/Shift+B joined the arrows as
+  hot key-burst gestures (held keys repeat at OS rate).
+- The density-preview slider re-applies its convert per DRAG
+  EVENT — now a gesture (pvRerun rebuilds hot; Apply settles via
+  commitDensityPreview, Cancel via its applySnapshot rebuild;
+  bound keys are dead while the preview is up, so no save can
+  observe the interim).
+- saveFile settles BEFORE the PrintWriter truncates the target
+  (the settle's compile surface must never be able to destroy the
+  user's file on an exception).
+- docSettled is HONEST at the cap (a cap-exhausted exact loop
+  reports unsettled and keeps retrying via settleIfPending) and
+  the exact write NaN-guards vIn (the fast tube's |diff| test was
+  structurally NaN-immune; the bit test wasn't).
+Analyzed and deliberately NOT changed: held Ctrl+Z/redo repeats
+are cheap (undo restores SETTLED snapshots — the exact loop finds
+nothing to write); Delete/H/F/locks are idempotent after the
+first repeat.
+
+Accepted corners: spinner arrow-HOLD bursts (friction / speed-
+control / bridge length + next-piece rows / strict-seam angles on
+a long doc) run the exact settle per tick — correct but
+potentially laggy; wiring them as gestures needs a burst-end
+event spinners don't emit (revisit if felt). An excursion that
+FLIPS a section's D101 anchor keeps the flip after a hand-revert
+— that memory is the feature's spec. A focus-blip mid-mouse-drag
+degrades the REST of that drag to settled-per-event (harmless,
+exotic).
+
+
+## D201 (v18.29) — NL2 ELEMENT export (.nl2elem) + the generic Export dialog
+
+His request: the FVD++ "NoLimits 2 Exporter" equivalent — an
+.nl2elem ELEMENT file — plus File > "Export…" (generic name)
+opening the existing window with a Format choice (Spline (CSV) |
+NL2 Element) and the heartline explanation paragraph removed.
+
+THE FORMAT — taken from FVD++'s actual source (openFVD
+ui/exportui.cpp + core/track.cpp::exportNL2Track), not from
+memory: root > element > description, per-vertex x/y/z/strict
+blocks, then per-point roll blocks (ux..uz up, rx..rz right,
+coord, strict false), every value C "%e" scientific notation.
+Coordinates are ELEMENT-LOCAL: subtract the anchor (first point)
+and rotate about Y so the entry's horizontal heading lands on
+NL2's forward = −Z, heights untouched (FVD++'s anchorBase, a
+transpose whose rows we apply verbatim); our left-handed render
+world first maps to NL2's right-handed Y-up by negating Z — the
+SAME D40 convention the CSV gates. FVD++'s roll "right" is its
+vLat = (−dir.z, 0, dir.x) = rider-RIGHT, and right = front × up
+reproduces it identically (verified algebraically: up = −vNorm,
+vNorm = dir × vLat). Endpoint vertices strict, interior not
+(FVD++'s extra section-boundary stricts are its bezier-segment
+bookkeeping; our uniform resample has none); roll coords are
+k/nSeg (its normalized-arc form under equal spacing).
+Nl2ElemExporter.java, pure Java, sharing the CSV exporter's
+line-choice/resample/orthonormalize construction.
+
+THE DIALOG: File > "Export…" (menu + the rebindable "export"
+action's label; Ctrl+E unchanged), Format radios at the top
+(persisted, AppSettings.nl2Elem, default CSV, menu-undo wired
+like the line radios), the explanation Label REMOVED (user ask),
+FileChooser filter/name per format (*.csv / *.nl2elem), same
+heartline|rail-center radios + spacing spinner feeding both.
+
+VERIFIED headlessly (Nl2ElemProbe, 21 checks): JDK-DOM-parsed
+structure; vertices equal the ALREADY-VERIFIED CSV export's
+points under an independently recomputed rigid anchor transform
+(≤1.5e-5, the %e rounding floor); heights preserved, chords
+rigid, origin start; strict flags; roll coords exactly k/nSeg;
+up/right unit + orthogonal, up matches the CSV up, right =
+front × up; and the flat station start reads up=+Y, right=+X —
+the handedness witness (facing −Z, rider-right is +X). Spine +
+heartline at 0.5/1 m. The in-NL2 element insert is the one step
+only he can run.
+
+
+## D202 (v18.30) — the export JITTER fix (heart-Hermite + frame-slerp resampling)
+
+His report: the classic FVD++ .nl2elem artifact — small
+high-frequency jitter in NL2 at steeply banked track, on his file
+at 0.2 m spacing around 935 m.
+
+ROOT CAUSE (measured, not guessed): both exporters LERPED
+positions and frames between the integration samples, so every
+export vertex sat on a CHORD of the true curve — an alternating
+radial sag of κ·d²/8 (≈0.42 mm at 935 m: κ 0.124, sample spacing
+0.164 m at 16.4 m/s) that BEATS against the 0.2 m export grid
+(alias wavelength ≈0.9 m) and reads as ~0.14 g of 18 Hz curvature
+ripple once NL2 splines through the vertices. FVD++ exports its
+own node polyline the same way — the shared heritage of the bug.
+Measured red herrings: the %e 7-digit format contributes ~1e-4 of
+the noise (kept, FVD++-faithful), and a dt/4 "ground truth"
+compile diverges MACROSCOPICALLY from the displayed track (31 cm
+at 935 m, meters past the strict seam — dt-convergence of a long
+layout), so denser integration is neither a valid reference nor a
+valid export source.
+
+THE FIX — Nl2CsvExporter.resample, shared by BOTH writers: the
+HEARTLINE interpolates as a cubic Hermite whose tangents are the
+samples' exact unit T (error O(d⁴)); the FRAME interpolates as a
+SLERP of each segment's relative rotation (within one 0.01 s step
+the motion is near-constant-Ω, so the slerp IS the step's true
+rotation); a spine vertex derives as heart − offset·U from that
+frame. Position and bank leave the sag regime together, frames
+arrive orthonormal by construction (the old per-point
+re-orthonormalization is gone). A naive Hermite on the SPINE with
+T tangents was probed and REJECTED — the offset line's tangent is
+T − heart·dU/ds, and the wrong tangents made the noise WORSE
+(rms 0.0053 → 0.019).
+
+Measured on his file at 0.2 m: hi-freq curvature noise rms
+0.0053 → 0.0024, and at his 935 m spot 0.0051 → 0.0008 (0.14 g →
+0.02 g of ripple — below visibility). The residual IS the track:
+the global max at 367.2 m is a real two-sample curvature/twist
+transient at his abs-bank section's 0.3676 s lane node (the bake
+knot lands off the 0.01 grid there — a runt integration step with
+a genuine bank-slope kink), which the export must carry
+faithfully. The twist channel's rms (0.026 °/m) is identical
+before/after — sample-borne content, not export noise.
+Nl2ElemProbe grows the jitter regression bound (rms < 0.0035,
+@935 < 0.002); all export probes re-verified on the shared
+resampler (42 checks).
+
+SAME ROUND — the strict-seam roughness DIAGNOSIS (his question:
+old-file artifact, speed conflict, or other?): it is the SPEED
+CONFLICT. The seam arrives at 29.64 m/s TRUE against piece 2's
+18.17 m/s design — an 11.5 m/s split scaling the felt about
+gravity by (v_t/v_d)² ≈ 2.7×: the seam's designed 37°-over-10 m
+turn pulls ~2.1 g at design speed but ~5.6 g at the true speed,
+and the surrounding end-of-layout true felt peaks ~10 g. The
+smoothing blend itself only adds a modest design-rate bump
+(107 vs 90 °/s neighborhood) — the D139/D140 machinery is
+healthy, and the pre-D199 save re-baseline contributes only dust.
+Levers (his choice): resolve the conflict (badge menu > Set
+Design Speed to Real / make-real on piece 2's first section),
+brake before the seam, or widen the smoothing window.
+
+
+## D203 (v18.31) — the smoothed conflicted seam's INSTANT TRUE-FELT JUMP (arc-true extrapolation)
+
+His sharpened report on the strict-seam roughness: an
+INSTANTANEOUS jump in value at the seam that no smoothing length
+touched — "the smoothing not quite dealing with the speed
+conflict correctly". Exactly right, and against D139's intent
+(the DESIGN felt legitimately steps at a ≠v seam; the TRUE
+curves are supposed to smooth).
+
+ROOT CAUSE: smoothStrictSeam extrapolates each side's frame
+field across the seam "at its own measured per-sample rate" —
+with the exponent in SAMPLE INDEX. At a conflicted seam the two
+sides' samples are design-spaced differently (v_d·dt each:
+0.297 m vs 0.181 m on the test coaster), so the upstream field
+extrapolated past the seam turned at its per-sample rotation
+applied every FOLLOWER-spaced step — 1.64× its true per-arc
+rate — and the follower's field mirrored at 0.61×. The blended
+field's per-arc rotation therefore STEPPED at the seam by
+exactly the design-speed ratio (measured: true rates stepped
+1.55×, TRUE felt jumped 1.9-3.5 g), at ANY window length — the
+cadence mismatch is scale-free, which is why his length lever
+did nothing. Unconflicted seams have equal cadence, so every
+D139-era gate passed over it.
+
+FIX: the extrapolation exponents advance by ARC over each
+side's own measured per-sample arc (quatPow already takes real
+exponents; dsUp/dsDn measured over the same mU/mD windows as
+the step rotations). At an unconflicted seam this is the old
+integer exponent to float dust. Measured on the test coaster's
+seam (29.6 true vs 18.2 design): TRUE Gv seam-step 1.86 → 0.31 g
+at 10 m (the residual is the honest blend slope over one sample
+pair) and 2.09 → 0.075 g at 30 m — the window length lever
+WORKS again (wider = smoother, as designed). Smoothing OFF
+keeps the honest hard kink; the design felt still steps (the ≠v
+speaking — unchanged, documented). SeamJumpProbe is the gate
+(4 checks incl. both honest-step guards); all suites green
+(unconflicted strict-seam fixtures bit-level unaffected).
+
+Remaining known display corner: the seam SAMPLE itself carries
+a one-sample true-rate dip (the bodyRates differencing straddles
+the landing runt interval) — rate-sourced graph draws already
+trim SEAM_TRIM there; felt strokes run monotone through.
+
+
+NEXT SESSION (his 2026-08-02 announcement): FIRST the list of
+improvements and optimizations he collected while building the
+full test coaster (a session-feedback round), THEN the four
+Phase 4 items in the adopted order (1: the STRAIGHT/CURVE
+OVERHAUL, 2: train approximation graphs, 3: imports & content,
+4: 3D nodal track influence).
 (advanced turns, roll customization, closure, viewport
 interactivity with neighbor re-solve).

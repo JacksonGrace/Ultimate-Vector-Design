@@ -1751,8 +1751,27 @@ public class Coaster {
      *  authored-direction entry, not the train's). Returns true when
      *  anything changed — the caller recompiles (rebuildTrack loops
      *  with the auto-reoptimize pass; heights shift speeds
-     *  second-order, so a couple of passes settle). */
+     *  second-order, so a couple of passes settle).
+     *
+     *  TWO MODES since v18.28 (D200): the FAST pass (exact=false —
+     *  the live-gesture path) keeps the 1e-3 write tube + the D197
+     *  cascade carry, cheap but path-dependent inside the tube; the
+     *  EXACT pass (exact=true — every at-rest rebuild) writes on BIT
+     *  difference and disables the carry, so each pass finalizes the
+     *  next section of the TRIANGULAR chain (a section's derived
+     *  entry depends only on sections before it) and the settled
+     *  speeds are a pure function of the graphs — a hand-reverted
+     *  edit lands back on its original bits, not within ±1e-3 of
+     *  them. Terminates in at most chain-depth passes by the
+     *  triangular structure; the intended D101 anchor memory (which
+     *  of design/true a resolved section chases) is the one
+     *  deliberate piece of history that stays. */
     public boolean reconcileChainedSpeeds(TrackCompiler.Result r) {
+        return reconcileChainedSpeeds(r, false);
+    }
+
+    public boolean reconcileChainedSpeeds(TrackCompiler.Result r,
+                                          boolean exact) {
         boolean changed = false;
         int spanIdx = 0;
         for (TrackPiece piece : pieces) {
@@ -1807,7 +1826,21 @@ public class Coaster {
                         vIn = vTrue;
                     }
                 }
-                if (Math.abs(sec.vDesign() - vIn) > 1e-3) {
+                if (exact) {
+                    // EXACT mode (D200): land ON the derived bits; no
+                    // carry — a prediction is never bit-final, and
+                    // without it each pass finalizes the next section
+                    // of the triangular chain, which is the
+                    // termination proof. NaN guard: the fast tube's
+                    // |diff| test is structurally NaN-immune, the bit
+                    // test is not — never launder a NaN into the doc
+                    if (!Double.isNaN(vIn)
+                            && Double.doubleToLongBits(sec.vDesign())
+                               != Double.doubleToLongBits(vIn)) {
+                        sec.vDesign(vIn);
+                        changed = true;
+                    }
+                } else if (Math.abs(sec.vDesign() - vIn) > 1e-3) {
                     double vOld = sec.vDesign();
                     sec.vDesign(vIn);
                     changed = true;

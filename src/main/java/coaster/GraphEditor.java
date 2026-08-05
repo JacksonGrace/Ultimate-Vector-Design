@@ -2548,7 +2548,14 @@ class GraphEditor extends Region {
         axisLock = 0;
         handleViewExpand = false;
         syncLaneButtons();
+        // the preview slider re-applies the convert per DRAG EVENT —
+        // a gesture (D200 verify round): rebuild fast; Apply/Cancel
+        // settle exactly (bound keys are dead while the preview is
+        // up, so no save can observe the tube state)
+        boolean wasHot = app.gestureHot;
+        app.gestureHot = true;
         app.rebuildTrack();
+        app.gestureHot = wasHot;
         app.updatePieceButton();
         refreshOffset();
         if (pvCount != null) pvCount.setText(pvCountText());
@@ -2578,6 +2585,10 @@ class GraphEditor extends Region {
         if (pvBefore == null) return;
         pushUndo(pvBefore);
         clearPv(false);
+        // the last pvRerun rebuilt HOT — the committed doc must not
+        // rest inside the tube (D200; cancel settles via its
+        // applySnapshot rebuild)
+        app.settleIfPending();
         redraw();
     }
 
@@ -6740,6 +6751,10 @@ class GraphEditor extends Region {
 
         canvas.setOnMousePressed(e -> {
             canvas.requestFocus();   // pull focus off toolbar editors
+            // per-event rebuilds inside this gesture run the FAST
+            // reconcile only; the release settles exactly (D200)
+            app.gestureHot = true;
+            app.pointerDown = true;
             hoverT = Double.NaN;   // no hover previews while interacting
             hoverRawT = Double.NaN;
             hoverResComp = 0;
@@ -7218,6 +7233,12 @@ class GraphEditor extends Region {
 
         canvas.setOnMouseReleased(e -> {
             dragGrowTimer.stop();
+            // the gesture is over BEFORE any release logic runs (some
+            // paths return early below): land the document on its
+            // exact reconciled bits if the drag rebuilt hot (D200)
+            app.pointerDown = false;
+            app.gestureHot = false;
+            app.settleIfPending();
             if (spRelease(e)) return;   // strip releases (v18.0)
             if (e.getButton() == MouseButton.SECONDARY && rClickElem >= 0
                     && Math.hypot(e.getX() - rPressX, e.getY() - rPressY) <= 3) {

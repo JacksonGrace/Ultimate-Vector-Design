@@ -160,7 +160,7 @@ class Dialogs {
         helpText(box, "Ctrl+Z / Ctrl+Shift+Z undo and redo document edits — the "
             + "curves plus everything that shapes the path (heart, gauge, "
             + "start point, start speed). File > New/Save/Save As manage the "
-            + ".fvd (the title wears * while unsaved); File > Export NL2 CSV "
+            + ".fvd (the title wears * while unsaved); File > Export "
             + "(Ctrl+E) hands the track to NoLimits 2. Keys shown here are "
             + "defaults — rebind anything in Edit > Shortcuts.");
 
@@ -281,7 +281,7 @@ class Dialogs {
         helpKey(box, "Heartline", "View > Show Heartline: a thin yellow strand on the integrated path, one per piece (hides during POV — the camera sits on it).");
 
         helpHead(box, "Menus & settings");
-        helpKey(box, "File", "New / Save / Save As with an unsaved-changes guard · Export NL2 CSV (Ctrl+E): heartline or rail-center spline plus point spacing, both remembered per-user.");
+        helpKey(box, "File", "New / Save / Save As with an unsaved-changes guard · Export (Ctrl+E): Spline (CSV) for NL2's external-track import or NL2 Element (.nl2elem) for the editor's element insert; heartline or rail-center, point spacing — all remembered per-user.");
         helpKey(box, "Edit", "SHORTCUTS — click a binding, press the new combo, ↺ resets; grouped by category; per-user. SNAPPING — the Ctrl-snap steps (time, value, roll °/s, rate °/m, element length) and each axis's snap reference: LOCAL (Δ from the previous node) or GLOBAL (absolute grid).");
         helpKey(box, "View", "Show Heartline · Show Node Markers · Visualize Selection · the five comb modes with the Geometric dots + Comb size · G-Force Colors… (the SIX vertical stops shared by the rail gradient and vertical comb, plus the lateral comb's three absolute stops; per-coaster) · ONE FOV slider (all cameras) · mouse sensitivity. Rows keep the menu open; sliders wear ↺; Ctrl+Z inside a menu undoes its edits. Every tool window is MODELESS: with any dialog or panel open you can still right-click the viewport, fly and ride — WASD always reaches the camera, and every numeric box only ever accepts digits and a period.");
         helpKey(box, "Coaster", "heart offset · gauge · tie spacing · the two FRICTION coefficients · RAIL COLOR: Solid (pick via its swatch) or Normal Force — the rails colored by the TRUE felt vertical G on the same gradient as the comb, with G-Force Colors… right below · COASTER STATISTICS: ride time, track length, height range, top speed, vertical-G range. Per-coaster, saved in the .fvd.");

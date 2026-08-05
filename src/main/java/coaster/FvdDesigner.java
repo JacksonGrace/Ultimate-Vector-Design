@@ -842,6 +842,20 @@ public class FvdDesigner extends Application {
      *  here from Viewport3D so every pane rebuilds from ONE compile):
      *  three-pass compile + speed reconcile + auto re-optimize, the
      *  shared arrays, the Coaster-menu stats, then per-pane meshes. */
+    /** TRUE while a pointer gesture (graph canvas or 3D gizmo drag)
+     *  is live: per-event rebuilds run the FAST reconcile only and
+     *  the EXACT settle waits for the release (v18.28, D200 — the
+     *  exact cascade costs one compile per chain-depth section, too
+     *  much per mouse event, invisible once per gesture). */
+    boolean gestureHot = false;
+    /** TRUE while a pointer button is down on the graph canvas or a
+     *  gizmo — the universal key-burst end must not settle (or
+     *  un-hot) a live mouse gesture (D200 verify round). */
+    boolean pointerDown = false;
+    /** false = the document may sit inside the fast pass's ±1e-3
+     *  tube; the release/save paths call settleIfPending(). */
+    private boolean docSettled = false;
+
     void rebuildTrack() {
         TrackCompiler.Result compiled =
             TrackCompiler.compile(coaster, INTEGRATE_DT);
@@ -858,6 +872,25 @@ public class FvdDesigner extends Application {
             if (!again) break;
             compiled = TrackCompiler.compile(coaster, INTEGRATE_DT);
         }
+        // EXACT settle (v18.28, D200 — closes the fast pass's ±1e-3
+        // tube): at rest, land every reconciled speed ON its derived
+        // bits so the settled document is a pure function of the
+        // graphs — a hand-reverted edit returns to its original bits.
+        // Terminates in at most chain-depth passes (triangular chain;
+        // the cap is a pathological-cycle guard, same idea as above).
+        boolean quiesced = false;
+        if (!gestureHot) {
+            for (int pass = 0; pass < 40; pass++) {
+                boolean again = coaster.reconcileChainedSpeeds(compiled, true);
+                if (coaster.autoReoptimizeBridges(compiled)) again = true;
+                if (!again) { quiesced = true; break; }
+                compiled = TrackCompiler.compile(coaster, INTEGRATE_DT);
+            }
+        }
+        // HONEST flag (D200 verify round): a cap-exhausted exact loop
+        // must NOT report settled — settleIfPending would no-op and a
+        // save could write a mid-cascade document
+        docSettled = quiesced;
         List<FVDIntegrator.Sample> samples = compiled.samples();
         if (samples.size() < 2) return;
         lastSamples = samples;
@@ -887,6 +920,21 @@ public class FvdDesigner extends Application {
         statMaxGv = maxGv;
         for (Viewport3D vp : viewports) vp.rebuildMeshes();
         updatePovStats();
+    }
+
+    /** Gesture-end / pre-save hook (v18.28, D200): if the last
+     *  rebuild ran while a gesture was hot (fast reconcile only),
+     *  run one settled rebuild now — the document must never REST,
+     *  and can never be SAVED, inside the fast pass's ±1e-3 tube.
+     *  FORCES the settle (D200 verify round): a stale/stuck
+     *  gestureHot must never make the save-path settle advisory —
+     *  when this runs, whatever gesture set the flag is over (or the
+     *  caller outranks it; a still-held key burst simply re-sets the
+     *  flag on its next repeat). */
+    void settleIfPending() {
+        if (docSettled) return;
+        gestureHot = false;
+        rebuildTrack();
     }
 
     /** Bracketing sample pair {i, j, frac} for an exact ride time —
@@ -1828,6 +1876,27 @@ public class FvdDesigner extends Application {
             if (e.getCode() == KeyCode.C) cKey = false;
             if (e.getCode() == KeyCode.SHIFT) editor.shiftHover(false);
             if (e.getCode() == KeyCode.CONTROL) editor.ctrlHover(false);
+            // UNIVERSAL key-burst end (D200 + its verify round): any
+            // key release while an edit-key gesture is hot settles
+            // the document — UNLESS a pointer gesture is still live
+            // (a stray arrow release mid-drag must neither settle
+            // mid-gesture nor un-hot the rest of the drag)
+            if (gestureHot && !pointerDown) {
+                gestureHot = false;
+                settleIfPending();
+            }
+        });
+        // an edit-key burst whose release lands in another window
+        // (Alt+Tab, a modeless panel) never reaches the filter above
+        // — the focus edge is the backstop, or gestureHot would stay
+        // stuck and every later rebuild would run fast-only (D200
+        // verify round)
+        stage.focusedProperty().addListener((o, was, is) -> {
+            if (!is) {
+                pointerDown = false;
+                gestureHot = false;
+                settleIfPending();
+            }
         });
         updateTitle();   // "Untitled — FVD Coaster Designer" until saved/loaded
         stage.setScene(scene);
@@ -1909,9 +1978,9 @@ public class FvdDesigner extends Application {
         else if (matches("save", e))    saveDesign(false);
         else if (matches("load", e))    loadDesign();
         else if (matches("newfile", e)) newDesign();
-        else if (matches("export", e))  exportNl2Csv();
-        else if (matches("smooth", e))  editor.toggleSmooth();
-        else if (matches("matchAll", e)) editor.matchBoundaryAll();
+        else if (matches("export", e))  exportDialog();
+        else if (matches("smooth", e))  { gestureHot = true; editor.toggleSmooth(); }
+        else if (matches("matchAll", e)) { gestureHot = true; editor.matchBoundaryAll(); }
         else if (matches("flath", e))   editor.levelSelected();
         else if (matches("levelSel", e)) editor.toggleLevelLock();
         else if (matches("align", e))   editor.straightenSelected();
@@ -1921,8 +1990,10 @@ public class FvdDesigner extends Application {
         else if (matches("delNode", e)) editor.deleteSelected();
         else if (matches("append", e)) {
             // A over a 3D view must NOT append (v18.19, D190 — the
-            // user spec; the graph keeps its shortcut)
-            if (!mouseOverView) editor.appendAction();
+            // user spec; the graph keeps its shortcut). Held-key
+            // repeats are a GESTURE like the arrows (D200 verify
+            // round) — the KEY_RELEASED burst-end settles.
+            if (!mouseOverView) { gestureHot = true; editor.appendAction(); }
         }
         else if (matches("pov", e))     togglePov();
         else if (handleViewDigit(e)) { /* 1-6 view directions */ }
@@ -1935,6 +2006,10 @@ public class FvdDesigner extends Application {
             KeyCode a = e.getCode();
             int dt = a == KeyCode.LEFT ? -1 : a == KeyCode.RIGHT ? 1 : 0;
             int dv = a == KeyCode.UP ? 1 : a == KeyCode.DOWN ? -1 : 0;
+            // a nudge burst is a GESTURE (D200): rebuilds run the
+            // fast reconcile per keystroke, the arrow's KEY_RELEASED
+            // settles exactly — key-repeat glides stay fluid
+            gestureHot = true;
             if (!editor.nudgeSelected(dt, dv, e.isControlDown())) return;
         }
         else return;
@@ -2139,8 +2214,8 @@ public class FvdDesigner extends Application {
         saveAsItem.setOnAction(e -> saveDesign(true));
         MenuItem loadItem = new MenuItem("Load…");
         loadItem.setOnAction(e -> loadDesign());
-        MenuItem exportItem = new MenuItem("Export NL2 CSV…");
-        exportItem.setOnAction(e -> exportNl2Csv());
+        MenuItem exportItem = new MenuItem("Export…");
+        exportItem.setOnAction(e -> exportDialog());
         Menu fileMenu = new Menu("File", null, newItem, saveItem, saveAsItem,
             loadItem, new SeparatorMenuItem(), exportItem);
 
@@ -2514,6 +2589,13 @@ public class FvdDesigner extends Application {
             f = fc.showSaveDialog(stage);
             if (f == null) return false;
         }
+        // never save inside the fast pass's ±1e-3 tube (D200): the
+        // file must be the exactly-settled session so a reload
+        // reproduces it bitwise (the D198 contract). BEFORE the
+        // PrintWriter — it truncates the target, and the settle runs
+        // whole compiles whose exception surface must not be able to
+        // destroy the user's file (D200 verify round)
+        settleIfPending();
         try (PrintWriter out = new PrintWriter(f, "UTF-8")) {
             // FVDD3 via DesignIO (Phase 1, D50) — cosmetics travel as
             // plain doubles so the writer stays JavaFX-free
@@ -2684,16 +2766,34 @@ public class FvdDesigner extends Application {
         }
     }
 
-    /** File > Export NL2 CSV (or Ctrl+E): resample the current track for
-     *  NoLimits 2's CSV import. The two settings (which line, spacing) are
-     *  app-wide and persist across runs; the math lives in Nl2CsvExporter. */
-    private void exportNl2Csv() {
+    /** File > Export… (or Ctrl+E): resample the current track for
+     *  NoLimits 2 — the spline CSV or an .nl2elem ELEMENT (v18.29,
+     *  D201, the FVD++ "NoLimits 2 Exporter" format). The settings
+     *  (format, which line, spacing) are app-wide and persist across
+     *  runs; the math lives in Nl2CsvExporter / Nl2ElemExporter. */
+    private void exportDialog() {
+        // the export is a derived artifact of REST — never snapshot a
+        // fast-only compile (D200 verify round)
+        settleIfPending();
         if (lastSamples == null || lastSamples.size() < 2) return;
 
         Stage dlg = new Stage();
         dlg.initOwner(stage);
         // modeless since v18.1 (D166): the viewport stays reachable
-        dlg.setTitle("Export NL2 CSV");
+        dlg.setTitle("Export");
+
+        ToggleGroup fmtGroup = new ToggleGroup();
+        RadioButton csvBtn = new RadioButton("Spline (CSV)");
+        csvBtn.setToggleGroup(fmtGroup);
+        RadioButton elemBtn = new RadioButton("NL2 Element");
+        elemBtn.setToggleGroup(fmtGroup);
+        (settings.nl2Elem() ? elemBtn : csvBtn).setSelected(true);
+        fmtGroup.selectedToggleProperty().addListener((obs, o, sel) -> {
+            boolean elem = sel == elemBtn;
+            pushMenuEdit(() -> { (elem ? csvBtn : elemBtn).setSelected(true); settings.setNl2Elem(!elem); },
+                         () -> { (elem ? elemBtn : csvBtn).setSelected(true); settings.setNl2Elem(elem); });
+            settings.setNl2Elem(elem);
+        });
 
         ToggleGroup lineGroup = new ToggleGroup();
         RadioButton heartBtn = new RadioButton("Heartline (rider path)");
@@ -2715,30 +2815,39 @@ public class FvdDesigner extends Application {
         segSp.setPrefWidth(80);
         dialogs.wireOptionSpinner(segSp, settings::setNl2SegLen);
 
-        Label note = new Label("Heartline exports the integrated force path (for "
-            + "NL2 heartlining workflows); rail center exports the spline NL2 "
-            + "builds its track around, matching the rails drawn here. Spacing is "
-            + "rounded so the ride divides into equal segments.");
-        note.setWrapText(true);
-        note.setMaxWidth(340);
-        note.setStyle("-fx-text-fill: #666;");
-
         Button exportBtn = new Button("Export…");
         exportBtn.setDefaultButton(true);
         exportBtn.setOnAction(e -> {
+            boolean elem = elemBtn.isSelected();
             FileChooser fc = new FileChooser();
-            fc.setTitle("Export NL2 CSV");
-            fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("NL2 track (*.csv)", "*.csv"));
-            fc.setInitialFileName("coaster.csv");
+            fc.setTitle("Export");
+            fc.getExtensionFilters().add(elem
+                ? new FileChooser.ExtensionFilter("NL2 element (*.nl2elem)", "*.nl2elem")
+                : new FileChooser.ExtensionFilter("NL2 track (*.csv)", "*.csv"));
+            fc.setInitialFileName(elem ? "coaster.nl2elem" : "coaster.csv");
             File f = fc.showSaveDialog(dlg);
             if (f == null) return;
             try (PrintWriter out = new PrintWriter(f, "UTF-8")) {
-                Nl2CsvExporter.Result r = Nl2CsvExporter.export(
-                    lastSamples, heartBtn.isSelected(), heartOffset, segSp.getValue());
-                out.print(r.csv());
+                int points;
+                double stepUsed, lenUsed;
+                if (elem) {
+                    Nl2ElemExporter.Result r = Nl2ElemExporter.export(
+                        lastSamples, heartBtn.isSelected(), heartOffset, segSp.getValue());
+                    out.print(r.xml());
+                    points = r.points();
+                    stepUsed = r.step();
+                    lenUsed = r.length();
+                } else {
+                    Nl2CsvExporter.Result r = Nl2CsvExporter.export(
+                        lastSamples, heartBtn.isSelected(), heartOffset, segSp.getValue());
+                    out.print(r.csv());
+                    points = r.points();
+                    stepUsed = r.step();
+                    lenUsed = r.length();
+                }
                 statsLabel.setText(String.format(Locale.US,
                     "Exported: %s (%d points, %.2f m spacing, %.0f m)",
-                    f.getName(), r.points(), r.step(), r.length()));
+                    f.getName(), points, stepUsed, lenUsed));
                 dlg.close();
             } catch (Exception ex) {
                 statsLabel.setText("Export failed: " + ex.getMessage());
@@ -2754,8 +2863,9 @@ public class FvdDesigner extends Application {
             dialogs.optionReset(() -> segSp.getValueFactory().setValue(AppSettings.NL2_SEGLEN_DEFAULT)));
         segRow.setAlignment(Pos.CENTER_LEFT);
 
-        VBox box = new VBox(8, new Label("Track points:"), heartBtn, spineBtn,
-            segRow, note, buttons);
+        VBox box = new VBox(8, new Label("Format:"), csvBtn, elemBtn,
+            new Label("Track points:"), heartBtn, spineBtn,
+            segRow, buttons);
         box.setPadding(new Insets(14));
 
         Scene sc = new Scene(box);

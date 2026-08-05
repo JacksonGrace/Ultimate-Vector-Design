@@ -35,6 +35,101 @@ public final class Nl2CsvExporter {
      *  of the exported line (m); step = actual spacing used (m). */
     public record Result(String csv, int points, double length, double step) {}
 
+    /** The SHARED export resampling (v18.30, D202 — the jitter fix,
+     *  used by the CSV and .nl2elem writers alike): positions and
+     *  frames at uniform arc steps of the CHOSEN line.
+     *
+     *  The old construction lerped positions and frames between the
+     *  integration samples, leaving every export vertex on a CHORD of
+     *  the true curve — an alternating radial sag of k*d^2/8 (~0.4 mm
+     *  at 3 g / 16 m/s) that BEATS against the export spacing and
+     *  reads as high-frequency curvature jitter once NL2 splines
+     *  through the vertices (the user's 0.2 m report at ~935 m; the
+     *  same classic FVD++ artifact). Now: the HEARTLINE interpolates
+     *  as a cubic Hermite whose tangents are the samples' EXACT unit
+     *  T (error O(d^4)), the frame interpolates as a SLERP of each
+     *  segment's relative rotation — within one 0.01 s step the
+     *  motion is near-constant-omega, so a slerp IS the step's true
+     *  rotation — and a spine vertex derives as heart − offset*U
+     *  from that frame. Position AND bank leave the sag regime
+     *  together; frames arrive orthonormal by construction. */
+    record Resampled(Vec3[] pos, Vec3[] front, Vec3[] up,
+                     double length, double step) {}
+
+    static Resampled resample(List<FVDIntegrator.Sample> samples,
+                              boolean heartline, double heartOffset,
+                              double segmentLength) {
+        if (samples == null || samples.size() < 2)
+            throw new IllegalArgumentException("need at least 2 samples to export");
+        double segLen = Math.max(0.01, segmentLength);
+
+        int n = samples.size();
+        Vec3[] hp = new Vec3[n];      // heartline positions
+        Vec3[] lp = new Vec3[n];      // the CHOSEN line (arc targeting)
+        Quat[] q = new Quat[n];
+        double[] harc = new double[n];
+        double[] arc = new double[n];
+        for (int i = 0; i < n; i++) {
+            FVDIntegrator.Sample sm = samples.get(i);
+            hp[i] = sm.pos();
+            lp[i] = heartline ? sm.pos() : sm.pos().sub(sm.U().scale(heartOffset));
+            q[i] = Quat.fromFrame(sm.T(), sm.U());
+            if (i > 0) {
+                harc[i] = harc[i - 1] + hp[i].sub(hp[i - 1]).length();
+                arc[i] = arc[i - 1] + lp[i].sub(lp[i - 1]).length();
+            }
+        }
+        double total = arc[n - 1];
+        if (total < 1e-9)
+            throw new IllegalArgumentException("track has zero length");
+
+        int nSeg = Math.max(1, (int) Math.round(total / segLen));
+        double step = total / nSeg;
+        Vec3[] pos = new Vec3[nSeg + 1];
+        Vec3[] front = new Vec3[nSeg + 1];
+        Vec3[] up = new Vec3[nSeg + 1];
+        int idx = 0;
+        for (int k = 0; k <= nSeg; k++) {
+            double target = Math.min(k * step, total);
+            while (idx < n - 2 && arc[idx + 1] < target) idx++;
+            double span = arc[idx + 1] - arc[idx];
+            double a = span < 1e-12 ? 0 : (target - arc[idx]) / span;
+            // frame: slerp of the segment's relative rotation
+            Quat qa = slerpSeg(q[idx], q[idx + 1], a);
+            Vec3 T = qa.T(), U = qa.U();
+            // heartline: cubic Hermite, tangents = the exact unit T
+            // scaled by the segment's heart arc
+            double hs = harc[idx + 1] - harc[idx];
+            double h00 = (1 + 2 * a) * (1 - a) * (1 - a);
+            double h10 = a * (1 - a) * (1 - a);
+            double h01 = a * a * (3 - 2 * a);
+            double h11 = a * a * (a - 1);
+            Vec3 heart = hp[idx].scale(h00)
+                .add(q[idx].T().scale(h10 * hs))
+                .add(hp[idx + 1].scale(h01))
+                .add(q[idx + 1].T().scale(h11 * hs));
+            pos[k] = heartline ? heart : heart.sub(U.scale(heartOffset));
+            front[k] = T;
+            up[k] = U;
+        }
+        return new Resampled(pos, front, up, total, step);
+    }
+
+    /** slerp from qa toward qb by fraction a of their relative
+     *  rotation (shortest way), staying exactly on qa/qb at 0/1. */
+    private static Quat slerpSeg(Quat qa, Quat qb, double a) {
+        if (a <= 0) return qa;
+        if (a >= 1) return qb;
+        Quat r = qb.mul(qa.conjugate());
+        double w = r.w();
+        Vec3 ax = new Vec3(r.x(), r.y(), r.z());
+        if (w < 0) { w = -w; ax = ax.scale(-1); }   // shortest arc
+        double s = ax.length();
+        if (s < 1e-12) return qa;                    // no rotation
+        double ang = 2 * Math.atan2(s, w);
+        return Quat.aboutAxis(ax.scale(1 / s), ang * a).mul(qa).normalize();
+    }
+
     /**
      * @param heartline     true = export the integrated heartline; false =
      *                      the rail-center spine (heart - U*heartOffset)
@@ -45,46 +140,17 @@ public final class Nl2CsvExporter {
     public static Result export(List<FVDIntegrator.Sample> samples,
                                 boolean heartline, double heartOffset,
                                 double segmentLength) {
-        if (samples == null || samples.size() < 2)
-            throw new IllegalArgumentException("need at least 2 samples to export");
-        double segLen = Math.max(0.01, segmentLength);
-
-        // the exported line + its frames, and its own cumulative arc length
-        int n = samples.size();
-        Vec3[] p = new Vec3[n];
-        Vec3[] t = new Vec3[n];
-        Vec3[] u = new Vec3[n];
-        double[] arc = new double[n];
-        for (int i = 0; i < n; i++) {
-            FVDIntegrator.Sample sm = samples.get(i);
-            p[i] = heartline ? sm.pos() : sm.pos().sub(sm.U().scale(heartOffset));
-            t[i] = sm.T();
-            u[i] = sm.U();
-            if (i > 0) arc[i] = arc[i - 1] + p[i].sub(p[i - 1]).length();
-        }
-        double total = arc[n - 1];
-        if (total < 1e-9)
-            throw new IllegalArgumentException("track has zero length");
-
-        int nSeg = Math.max(1, (int) Math.round(total / segLen));
-        double step = total / nSeg;
+        Resampled rs = resample(samples, heartline, heartOffset, segmentLength);
+        int nSeg = rs.pos().length - 1;
 
         StringBuilder sb = new StringBuilder(64 + nSeg * 160);
         sb.append("\"No.\"\t\"PosX\"\t\"PosY\"\t\"PosZ\"\t\"FrontX\"\t\"FrontY\"\t\"FrontZ\"\t")
           .append("\"LeftX\"\t\"LeftY\"\t\"LeftZ\"\t\"UpX\"\t\"UpY\"\t\"UpZ\"\n");
 
-        int idx = 0;
         for (int k = 0; k <= nSeg; k++) {
-            double target = Math.min(k * step, total);
-            while (idx < n - 2 && arc[idx + 1] < target) idx++;
-            double span = arc[idx + 1] - arc[idx];
-            double a = span < 1e-12 ? 0 : (target - arc[idx]) / span;
-
-            Vec3 pos = p[idx].add(p[idx + 1].sub(p[idx]).scale(a));
-            Vec3 front = t[idx].add(t[idx + 1].sub(t[idx]).scale(a)).normalize();
-            Vec3 upRaw = u[idx].add(u[idx + 1].sub(u[idx]).scale(a));
-            Vec3 up = upRaw.sub(front.scale(upRaw.dot(front))).normalize();
-            if (up.length() < 0.5) up = u[idx];   // degenerate lerp; can't happen at dt=0.01 spacing
+            Vec3 pos = rs.pos()[k];
+            Vec3 front = rs.front()[k];
+            Vec3 up = rs.up()[k];
 
             // left-handed view -> NL2's right-handed Y-up world: negate Z
             Vec3 fN = new Vec3(front.x(), front.y(), -front.z());
@@ -98,6 +164,6 @@ public final class Nl2CsvExporter {
                 lN.x(), lN.y(), lN.z(),
                 uN.x(), uN.y(), uN.z()));
         }
-        return new Result(sb.toString(), nSeg + 1, total, step);
+        return new Result(sb.toString(), nSeg + 1, rs.length(), rs.step());
     }
 }

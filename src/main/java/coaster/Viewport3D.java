@@ -3252,6 +3252,8 @@ class Viewport3D {
                 moved[0] = true;
             }
             gizmoDragging = true;
+            app.gestureHot = true;   // fast reconcile per event (D200)
+            app.pointerDown = true;
             double step = Math.max(0.01, app.settings.snapLen());
             double mx = ddx * st[6], my = ddy * st[6];
             if (e.isControlDown() && app.settings.gizmoLocal()) {
@@ -3834,6 +3836,8 @@ class Viewport3D {
             sv[2] = sv[0] * sv[0] + sv[1] * sv[1];
             if (sv[2] < 4) return;   // edge-on: ungrabbable anyway
             gizmoDragging = true;
+            app.gestureHot = true;   // fast reconcile per event (D200)
+            app.pointerDown = true;
             gizmoPushed = false;
             gDragX = e.getScreenX();
             gDragY = e.getScreenY();
@@ -3916,6 +3920,8 @@ class Viewport3D {
             st[3] = baseVal.getAsDouble();
             if (localSink != null) localSink.begin();
             gizmoDragging = true;
+            app.gestureHot = true;   // fast reconcile per event (D200)
+            app.pointerDown = true;
             gizmoPushed = false;
             gDragX = e.getScreenX();
             gDragY = e.getScreenY();
@@ -4046,6 +4052,11 @@ class Viewport3D {
     private void endGizmoDrag() {
         if (!gizmoDragging) return;
         gizmoDragging = false;
+        // gizmo move handlers rebuilt hot per event — settle the
+        // document on its exact reconciled bits now (D200)
+        app.pointerDown = false;
+        app.gestureHot = false;
+        app.settleIfPending();
         app.syncPlacementSpinners();
         app.updateBridgeControls();
         refreshGizmo(true);

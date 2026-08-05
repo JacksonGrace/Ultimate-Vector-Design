@@ -693,7 +693,13 @@ public final class TrackCompiler {
     /** Blend the strict seam between the LAST TWO spans across a
      *  ±len/2 arc window. Orientations SLERP from the upstream curve
      *  onto the follower's — each side extrapolated across the seam at
-     *  its own measured per-sample rate, quintic-smoothstep weight over
+     *  its own measured per-ARC rate (v18.31, D203: per-INDEX
+     *  exponents turned each side at the OTHER side's design-spaced
+     *  cadence at a ≠v seam — the blended field's per-arc rate then
+     *  STEPPED by the design-speed ratio at any window length, the
+     *  user's "instant jump however long the smoothing"; equal
+     *  cadence reduces to the old exponent to dust), quintic-
+     *  smoothstep weight over
      *  arc — so the window ends sit EXACTLY on the original frames and
      *  nothing outside reorients, ever. Positions re-march along the
      *  blended tangents with the ORIGINAL per-step arc (lengths kept);
@@ -739,15 +745,35 @@ public final class TrackCompiler {
             qSeam.mul(frameQ(all.get(iSeam - mU)).conjugate()), 1.0 / mU);
         Quat stepDn = quatPow(
             frameQ(all.get(iSeam + 1 + mD)).mul(qDn0.conjugate()), 1.0 / mD);
+        // ARC-TRUE extrapolation (v18.31, D203 — the user's "instant
+        // jump at the seam however long the smoothing"): stepUp/stepDn
+        // are per-SAMPLE rotations, but at a ≠v seam the two sides'
+        // samples are design-spaced DIFFERENTLY (v_d·dt each) — an
+        // index-exponent extrapolation therefore turned each side's
+        // field at the OTHER side's cadence, wrong by exactly the
+        // design-speed ratio, and the blended field's per-arc rate
+        // STEPPED at the seam at any window length (TRUE felt jumped
+        // ~2 g on the test coaster). The exponents now advance by
+        // ARC over each side's own measured per-sample arc — at an
+        // unconflicted seam (equal cadence) this is the old exponent
+        // to float dust.
+        double dsUp = Math.max(1e-9,
+            (all.get(iSeam).s() - all.get(iSeam - mU).s()) / mU);
+        double dsDn = Math.max(1e-9,
+            (all.get(iSeam + 1 + mD).s() - all.get(iSeam + 1).s()) / mD);
         double sA = all.get(iA).s(), sB = all.get(iB).s();
+        double sSeamUp = all.get(iSeam).s();
+        double sDn0 = all.get(iSeam + 1).s();
         int n = iB - iA + 1;
         Quat[] q = new Quat[n];
         double[] uu = new double[n];
         for (int i = iA; i <= iB; i++) {
             Quat up = i <= iSeam ? frameQ(all.get(i))
-                : quatPow(stepUp, i - iSeam).mul(qSeam);
+                : quatPow(stepUp,
+                    (all.get(i).s() - sSeamUp) / dsUp).mul(qSeam);
             Quat dn = i > iSeam ? frameQ(all.get(i))
-                : quatPow(stepDn, i - iSeam - 1).mul(qDn0);
+                : quatPow(stepDn,
+                    (all.get(i).s() - sDn0) / dsDn).mul(qDn0);
             double u = (all.get(i).s() - sA) / Math.max(1e-9, sB - sA);
             double w = u * u * u * (10 + u * (-15 + 6 * u));
             uu[i - iA] = u;
