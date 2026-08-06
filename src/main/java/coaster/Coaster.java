@@ -1650,6 +1650,16 @@ public class Coaster {
                     }
                     BezierBaker.rescaleDvToGaps(c.lane, gaps);
                 }
+                // the decel graph remaps identically (v18.45, D217)
+                if (c.complex && !c.decelLane.isEmpty()) {
+                    double[] gaps = BezierBaker.segGaps(c.decelLane);
+                    double cx0 = c.x0;
+                    for (BezierBaker.Node n : c.decelLane) {
+                        n.t = mapCol(map, fc, tc, lo + cx0 + n.t)
+                            - base - a;
+                    }
+                    BezierBaker.rescaleDvToGaps(c.decelLane, gaps);
+                }
                 c.x0 = a;
                 c.len = Math.max(0.01, b - a);
             }
@@ -2347,7 +2357,13 @@ public class Coaster {
         }
         // PER-METER targets (v16.6, D115): rate values divide by the
         // target profile's speed per sample — the integrator consumes
-        // value × v, so the round trip is exact where the fit is
+        // value × v, so the round trip is exact where the fit is.
+        // NEVER the ABSOLUTE-ROLL lane (v18.41, D213): a bank lane is
+        // DEGREES, not a rate — the integrators consume it verbatim
+        // under every flag (laneRatePM exempts it the same way), and
+        // dividing it here flattened every °/m + absolute convert's
+        // banking to angle/v (~1/25th at 25 m/s), the user's "always
+        // generated erroneous results".
         if (toRateM) {
             for (int i = 0; i < n; i++) {
                 double vG = Math.max(0.5, vGs[i]);
@@ -2355,7 +2371,7 @@ public class Coaster {
                     val[i][0] /= vG;
                     val[i][1] /= vG;
                 }
-                val[i][2] /= vG;
+                if (!toRollAbs) val[i][2] /= vG;
             }
         }
         // fit axis per target domain (v16.1, D104): TIME = the

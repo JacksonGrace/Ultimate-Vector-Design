@@ -624,14 +624,15 @@ class GraphEditor extends Region {
         return new double[]{ f.sYawDeg, f.sPitchDeg, f.sRollDeg };
     }
 
-    /** The strict seam SETTINGS pop-out (reworked D136, user spec):
-     *  one row per axis — a DISCONTINUOUS toggle (red outline while
-     *  on), a value spinner, and a ↺. Discontinuous OFF = the axis
-     *  follows the seam (the spinner grays and just shows the live
-     *  value); ON = the axis holds the spinner's angle — type or
-     *  arrow it, ↺ returns the value the seam was created with.
-     *  Toggling ON captures the CURRENT value (nothing jumps).
-     *  Apply closes (clicking off still works too). */
+    /** The strict seam SETTINGS pop-out (reworked D136; PADLOCK round
+     *  v18.32, D204 — user spec reverting the labeled "Discontinuous"
+     *  toggle to a plain LOCK button): one row per axis — a 🔒/🔓
+     *  toggle (red outline while locked), a value spinner, and a ↺.
+     *  UNLOCKED 🔓 = the axis follows the seam (the spinner grays and
+     *  just shows the live value); LOCKED 🔒 = the axis holds the
+     *  spinner's angle — type or arrow it, ↺ returns the value the
+     *  seam was created with. Locking captures the CURRENT value
+     *  (nothing jumps). Apply keeps, Cancel reverts. */
     void showStrictSeamSettings(int followerIdx) {
         if (followerIdx < 0 || followerIdx >= app.coaster.pieces.size()) {
             return;
@@ -643,7 +644,7 @@ class GraphEditor extends Region {
             seamPopup = null;
         }
         // FIRST open vs later (v17.8, D145 — user spec): only the
-        // first open seeds Discontinuous toggles with the creation
+        // first open seeds the lock toggles with the creation
         // angle; later opens capture the CURRENT angle ("it stays
         // where it is"). ↺ always returns to the creation angle.
         boolean firstOpen = !f.sSeenSettings;
@@ -682,9 +683,14 @@ class GraphEditor extends Region {
             final int axis = a;
             Label lbl = new Label(names[a]);
             lbl.setStyle("-fx-font-size: 11px;");
+            // a plain PADLOCK (v18.32, D204 — the "Discontinuous"
+            // label reverted on user spec): 🔒 = the axis holds an
+            // editable angle, 🔓 = it follows the seam
             javafx.scene.control.ToggleButton disc =
-                new javafx.scene.control.ToggleButton("Discontinuous");
+                new javafx.scene.control.ToggleButton("🔒");
             disc.setFocusTraversable(false);
+            Tooltip.install(disc, new Tooltip(
+                "Locked = hold the typed angle; unlocked = follow the seam"));
             javafx.scene.control.Spinner<Double> sp =
                 new javafx.scene.control.Spinner<>(
                     new javafx.scene.control.SpinnerValueFactory
@@ -701,6 +707,7 @@ class GraphEditor extends Region {
                 boolean on = axis == 0 ? f.sLockYaw
                     : axis == 1 ? f.sLockPitch : f.sLockRoll;
                 disc.setSelected(on);
+                disc.setText(on ? "🔒" : "🔓");
                 // the red outline IS the discontinuity telltale
                 disc.setStyle("-fx-font-size: 11px;"
                     + " -fx-border-width: 2; -fx-border-radius: 4;"
@@ -1266,8 +1273,9 @@ class GraphEditor extends Region {
 
     private String laneName(int lane) {
         if (surfStrip) {
-            return surfCtl.type == SpeedControl.ACCEL
-                ? "Acceleration" : "Speed";
+            return surfCtl.type != SpeedControl.ACCEL ? "Speed"
+                : !surfCtl.tied && surfCtl.showDecel
+                    ? "Deceleration" : "Acceleration";
         }
         // the influence surface labels its deltas honestly with Δ
         String base = activeGeo() ? GEO_LANE_NAMES[lane] : LANE_NAMES[lane];
@@ -2503,6 +2511,10 @@ class GraphEditor extends Region {
                                      boolean distTarget,
                                      ConvertOp op, Runnable activate) {
         cancelDensityPreview();          // one preview at a time
+        // EVERY open starts at "Optimal placement" (v18.32, D204 —
+        // user spec): the adaptive fit is the default whatever the
+        // last preview was left on; unchecking is per-open
+        pvAdaptive = true;
         pvDist = distTarget;
         captureReference(k, toGeo, useTrue);
         pvBefore = snapshot();
@@ -4768,7 +4780,8 @@ class GraphEditor extends Region {
                     // tell the truth — draw derived, like reversed
                     drawAuthoredStrip(gc, ls, rs.t0(), rs.dur());
                 } else {
-                    drawDerivedStrip(gc, rs.t0(), rs.dur());
+                    drawDerivedStrip(gc, rs.t0(), rs.dur(),
+                        spanAt(rs.piece(), rs.section()));
                     if (rs.sec() instanceof StraightCurveSection sc) {
                         drawScSeparators(gc, sc, spanAt(rs.piece(), rs.section()));
                     }
@@ -5263,30 +5276,195 @@ class GraphEditor extends Region {
     // bodyRates' central differences smear a section-boundary jump over
     // ±2 samples; derived curves trim that band off their ends so seams
     // read as direct connections, not tiny angled ramps (v10.2)
-    private static final double SEAM_TRIM = 2.5 * FvdDesigner.INTEGRATE_DT;
+    // 0.6·dt since v18.35 (D207 — was 2.5·dt): rates difference per
+    // SECTION SPAN now, so seam-adjacent samples are clean and the
+    // band only keeps hover readouts/scale fits off the boundary
+    // sample's edge. The DRAWN curves no longer trim at all — they
+    // run to the seam and break exactly ON it (seam-crossing breaks).
+    private static final double SEAM_TRIM = 0.6 * FvdDesigner.INTEGRATE_DT;
+
+    /** First/last compiled-sample indices whose axis coordinates can
+     *  fall inside [a0, a1], padded two samples past each edge so the
+     *  polyline still runs off the plot border (v18.36, D208 — the
+     *  draw loops used to walk the WHOLE sample array per curve). */
+    private int[] axisIdxRange(double a0, double a1) {
+        int n = app.resultRates.length;
+        return new int[]{ Math.max(0, sampleIdxAtAxis(a0) - 2),
+                          Math.min(n - 1, sampleIdxAtAxis(a1) + 2) };
+    }
+
+    /** Walks the seam list alongside an ascending-axis sample loop:
+     *  crossed(a) reports each boundary passed — the caller breaks
+     *  its path there, so curves end ON the seam sample and resume
+     *  at the next section's first sample with no trimmed band
+     *  (v18.35, D207). The 1e-6 slack keeps the boundary sample
+     *  itself (its coordinate IS the seam) on the LEFT side
+     *  whatever the last-bit dust says. */
+    private static final class SeamWalk {
+        private final List<Double> seams;
+        private int j;
+        SeamWalk(List<Double> seams, double a) {
+            this.seams = seams;
+            while (j < seams.size() && seams.get(j) < a - 1e-6) j++;
+        }
+        boolean crossed(double a) {
+            boolean c = false;
+            while (j < seams.size() && a > seams.get(j) + 1e-6) {
+                j++;
+                c = true;
+            }
+            return c;
+        }
+    }
+
+    /** Column-compacted polyline writer (v18.36, D208): consecutive
+     *  points landing in one ~pixel column collapse to enter/min/max/
+     *  exit, so the stroked coverage is identical while the path
+     *  stays O(pixels) however many samples the view holds — the
+     *  zoomed-out redraw lag. Points arrive in ascending x within a
+     *  run; endRun() breaks the polyline (next add() starts a new
+     *  moveTo). At normal zoom (≤1 point per column) every point
+     *  passes through verbatim. */
+    private static final class ColPath {
+        private final GraphicsContext gc;
+        private boolean run, pend;
+        private double col, x0, yEnter, yMin, yMax, yExit;
+        ColPath(GraphicsContext gc) {
+            this.gc = gc;
+            gc.beginPath();
+        }
+        void add(double x, double y) {
+            double c = Math.floor(x);
+            if (pend && c == col) {
+                if (y < yMin) yMin = y;
+                if (y > yMax) yMax = y;
+                yExit = y;
+                return;
+            }
+            flush();
+            col = c;
+            x0 = x;
+            yEnter = yMin = yMax = yExit = y;
+            pend = true;
+        }
+        private void flush() {
+            if (!pend) return;
+            if (!run) {
+                gc.moveTo(x0, yEnter);
+                run = true;
+            } else {
+                gc.lineTo(x0, yEnter);
+            }
+            if (yMax - yMin > 0.01) {
+                gc.lineTo(x0, yMin);
+                gc.lineTo(x0, yMax);
+            }
+            if (Math.abs(yExit - yMax) > 0.01) gc.lineTo(x0, yExit);
+            pend = false;
+        }
+        void endRun() {
+            flush();
+            run = false;
+        }
+        void stroke() {
+            flush();
+            gc.stroke();
+        }
+    }
+
+    /** compactCols: the ColPath bucketing for point LISTS that feed
+     *  a fill AND a stroke (drawDerivedStrip) — ≤4 points per pixel
+     *  column, coverage identical. */
+    private static List<double[]> compactCols(List<double[]> pts) {
+        if (pts.size() < 8) return pts;
+        List<double[]> out = new ArrayList<>();
+        int i = 0;
+        while (i < pts.size()) {
+            double col = Math.floor(pts.get(i)[0]);
+            double[] first = pts.get(i);
+            double[] last = first;
+            double minY = first[1], maxY = first[1];
+            int j = i;
+            while (j + 1 < pts.size()
+                    && Math.floor(pts.get(j + 1)[0]) == col) {
+                j++;
+                last = pts.get(j);
+                if (last[1] < minY) minY = last[1];
+                if (last[1] > maxY) maxY = last[1];
+            }
+            out.add(first);
+            if (j > i) {
+                if (maxY - minY > 0.01) {
+                    out.add(new double[]{ first[0], minY });
+                    out.add(new double[]{ first[0], maxY });
+                }
+                if (last != first) out.add(last);
+            }
+            i = j + 1;
+        }
+        return out;
+    }
+
+    /** [lo, hi] index window for slope differencing around sample
+     *  ic, clamped to ic's own section span (v18.35, D207 — rates
+     *  are span-clean now, and a ±radius window reaching across a
+     *  seam would difference two different sections' curves). */
+    private int[] slopeWin(int ic, int radius) {
+        int n = app.resultRates.length;
+        int lo = Math.max(0, ic - radius);
+        int hi = Math.min(n - 1, ic + radius);
+        if (app.sectionSpans != null) {
+            for (TrackCompiler.Span sp : app.sectionSpans) {
+                if (ic >= sp.i0() && ic <= sp.i1()) {
+                    lo = Math.max(lo, sp.i0());
+                    hi = Math.min(hi, Math.min(sp.i1(), n - 1));
+                    break;
+                }
+            }
+        }
+        return new int[]{ lo, hi };
+    }
 
     /** An other-mode (or other-domain, v16.0) inactive strip: the
      *  active mode's quantities over its stretch, straight off the
      *  compiled samples — plotted at each sample's AXIS coordinate, so
      *  the warp between domains falls out for free. off/dur are axis
      *  units. */
-    private void drawDerivedStrip(GraphicsContext gc, double off, double dur) {
+    private void drawDerivedStrip(GraphicsContext gc, double off, double dur,
+                                  TrackCompiler.Span sp) {
         if (app.resultRates == null || app.lastSamples == null
                 || app.lastSamples.isEmpty()) return;
+        // Off-screen strips skip outright, on-screen ones walk their
+        // OWN span's index range (v18.36, D208 — every strip used to
+        // scan the whole sample array per lane), and the curves run
+        // to the strip's seams with no trim band (v18.35, D207 —
+        // span-differenced rates are seam-clean).
+        double vt0 = viewStart(), vt1 = viewEnd();
+        if (off > vt1 || off + dur < vt0) return;
+        int n = app.resultRates.length;
+        int[] vr = axisIdxRange(Math.max(off, vt0), Math.min(off + dur, vt1));
+        int i0 = vr[0], i1 = vr[1];
+        if (sp != null) {
+            i0 = Math.max(i0, sp.i0());
+            i1 = Math.min(i1, Math.min(sp.i1(), n - 1));
+        }
         for (int L = 0; L < LANES; L++) {
             List<double[]> pts = new ArrayList<>();
-            for (int i = 0; i < app.resultRates.length; i++) {
+            for (int i = i0; i <= i1; i++) {
                 double a = gAxis(i);
-                double trim = axisTrim(i);
-                if (a < off + trim || a > off + dur - trim) continue;
+                // spanless callers keep the stretch filter (trim-free)
+                if (sp == null && (a < off - 1e-6 || a > off + dur + 1e-6)) {
+                    continue;
+                }
                 pts.add(new double[]{ tToX(a), valToY(L, derivedDisp(i, L)) });
             }
             if (pts.size() < 2) continue;
-            fillUnderSeries(gc, pts, L);
+            List<double[]> cp = compactCols(pts);
+            fillUnderSeries(gc, cp, L);
             gc.setStroke(laneColor(L));
             gc.beginPath();
-            for (int i = 0; i < pts.size(); i++) {
-                double[] p = pts.get(i);
+            for (int i = 0; i < cp.size(); i++) {
+                double[] p = cp.get(i);
                 if (i == 0) gc.moveTo(p[0], p[1]); else gc.lineTo(p[0], p[1]);
             }
             gc.stroke();
@@ -5559,6 +5737,10 @@ class GraphEditor extends Region {
         // the plot). No lane surface (s/c, bridge) = no active lane:
         // all three at the MIDDLE weight (v16.6, user spec).
         boolean laneSurface = activeSc() == null && activeBridge() == null;
+        // view-culled index range (v18.36, D208) — the loop used to
+        // walk the whole array per lane
+        if (app.resultRates.length == 0) return;
+        int[] ir = axisIdxRange(Math.max(vt0, rT0), Math.min(vt1, rT1));
         for (int L = 0; L < LANES; L++) {
             gc.setGlobalAlpha(!laneSurface
                 ? TRUE_STROKE_ALPHA * TRUE_STROKE_MID
@@ -5567,17 +5749,17 @@ class GraphEditor extends Region {
                     : TRUE_STROKE_ALPHA);
             boolean rateSrc = activeGeo() || L == 2;
             gc.setStroke(laneColor(L));
-            gc.beginPath();
-            boolean started = false;
-            for (int i = 0; i < app.resultRates.length; i++) {
+            ColPath path = new ColPath(gc);
+            SeamWalk sw = new SeamWalk(seams, gAxis(ir[0]));
+            for (int i = ir[0]; i <= ir[1]; i++) {
                 double t = app.resultRates[i][0];
                 double a = gAxis(i);          // axis coordinate (v16.0)
-                double trim = axisTrim(i);
-                if (a < vt0 || a > vt1 || a < rT0 || a > rT1
-                        || (rateSrc && (a < rT0 + trim
-                                        || a > rT1 - trim
-                                        || nearSeam(a, seams, trim)))) {
-                    started = false;
+                // rate-sourced strokes break exactly ON seams now
+                // (v18.35, D207 — span-clean rates, no trim band);
+                // felt components stay seamless by construction
+                if (rateSrc && sw.crossed(a)) path.endRun();
+                if (a < rT0 - 1e-6 || a > rT1 + 1e-6) {
+                    path.endRun();
                     continue;
                 }
                 double ref = inflSpan != null
@@ -5604,14 +5786,12 @@ class GraphEditor extends Region {
                 double dy = valToY(L, ref);
                 double ty = valToY(L, trueDisp(i, L));
                 if (Math.abs(ty - dy) <= TRUE_SPLIT_PX) {
-                    started = false;
+                    path.endRun();
                     continue;
                 }
-                double x = tToX(a);
-                if (!started) { gc.moveTo(x, ty); started = true; }
-                else gc.lineTo(x, ty);
+                path.add(tToX(a), ty);
             }
-            gc.stroke();
+            path.stroke();
         }
         gc.setGlobalAlpha(1.0);
         gc.setLineWidth(2);
@@ -5626,8 +5806,8 @@ class GraphEditor extends Region {
         double dv = derivedDisp(i, L), tv = trueDisp(i, L);
         if (Math.abs(valToY(L, tv) - valToY(L, dv)) <= TRUE_SPLIT_PX) return "";
         if (!slope) return String.format(" (true %.2f)", tv);
-        int i0 = Math.max(0, i - 2);
-        int i1 = Math.min(app.resultRates.length - 1, i + 2);
+        int[] w2 = slopeWin(i, 2);   // span-clamped (D207)
+        int i0 = w2[0], i1 = w2[1];
         double span = gAxis(i1) - gAxis(i0);
         double sl = span < 1e-9 ? 0 : (trueDisp(i1, L) - trueDisp(i0, L)) / span;
         return String.format(" (true %.2f)", sl);
@@ -5991,7 +6171,7 @@ class GraphEditor extends Region {
         double dur = sectionDur(activeSection);
         gc.setGlobalAlpha(SC_CURVE_ALPHA);
         gc.setLineWidth(1.5);
-        drawDerivedStrip(gc, tOff, dur);
+        drawDerivedStrip(gc, tOff, dur, spanOf(activeSection));
         gc.setGlobalAlpha(1.0);
 
         double[] b = scBoundsS(sc);
@@ -6117,7 +6297,7 @@ class GraphEditor extends Region {
         double dur = sectionDur(activeSection);
         gc.setGlobalAlpha(SC_CURVE_ALPHA);
         gc.setLineWidth(1.5);
-        drawDerivedStrip(gc, tOff, dur);
+        drawDerivedStrip(gc, tOff, dur, spanOf(activeSection));
         gc.setGlobalAlpha(1.0);
         if (pcSec == activeSection) {
             drawPartialConvert(gc, dur);   // split-line mode (v13.11)
@@ -6515,6 +6695,12 @@ class GraphEditor extends Region {
     // labeled on the RIGHT edge. resAxisOn also widens the margin.
     private boolean resAxisOn = false;
     private double resLo = -60, resHi = 60;
+    // the ROLL/BANK overlay's OWN normalization pair (v18.42, D214):
+    // whenever comp 3's units differ from comps 1/2 (geo view = g vs
+    // °/s; abs bank = ° vs rates) it fits itself instead of
+    // stretching the shared axis — a legit −112 °/s roll rate used
+    // to blow the felt axis to "−125 g" over geo sections
+    private double resLo3 = -60, resHi3 = 60;
 
     private double marginRight() {
         return resAxisOn || rateViewAxisOn() ? MARGIN_RIGHT_RES
@@ -6732,6 +6918,10 @@ class GraphEditor extends Region {
     private final Deque<FvdDesigner.DocState> redoStack = new ArrayDeque<>();
     private FvdDesigner.DocState pendingSnapshot = null;
     private boolean gestureMoved = false;
+    // press point of the current canvas gesture — the CLICKED
+    // handler's drag deadband (v18.34, D206: a dragged "second
+    // click" must not open the node dialog)
+    private double clkPressX = Double.NaN, clkPressY = Double.NaN;
     private static final int UNDO_LIMIT = 100;
 
     GraphEditor(FvdDesigner app) {
@@ -6755,6 +6945,8 @@ class GraphEditor extends Region {
             // reconcile only; the release settles exactly (D200)
             app.gestureHot = true;
             app.pointerDown = true;
+            clkPressX = e.getX();   // the clicked-handler's drag guard
+            clkPressY = e.getY();   // (v18.34, D206)
             hoverT = Double.NaN;   // no hover previews while interacting
             hoverRawT = Double.NaN;
             hoverResComp = 0;
@@ -7078,7 +7270,7 @@ class GraphEditor extends Region {
                     for (int comp = 1; comp <= 3; comp++) {
                         if (!resCompOn(comp)) continue;
                         double v = resValueAt(i, comp);
-                        double d = Math.abs(e.getY() - resToY(v));
+                        double d = Math.abs(e.getY() - resToY(comp, v));
                         if (d < best) { best = d; rc = comp; rt = gt; rv = v; }
                     }
                 }
@@ -7295,6 +7487,17 @@ class GraphEditor extends Region {
         canvas.setOnMouseClicked(e -> {
             if (e.getClickCount() == 2 && e.getButton() == MouseButton.PRIMARY) {
                 if (spDoubleClick(e)) return;   // strip (v18.0/v18.3)
+                // a DRAG is not a click (v18.34, D206): JavaFX counts
+                // a press toward the double-click pair even when the
+                // gesture then drags — after a lane-switch click, the
+                // very next click-AND-DRAG of that node arrived here
+                // with clickCount 2 and popped the node dialog on
+                // release. The 3 px press-to-release deadband is the
+                // seam-diamond convention (D158).
+                if (Math.hypot(e.getX() - clkPressX,
+                        e.getY() - clkPressY) > 3) {
+                    return;
+                }
                 StraightCurveSection sc = activeSc();
                 if (sc != null) {
                     double gt = xToT(e.getX());
@@ -7321,7 +7524,9 @@ class GraphEditor extends Region {
     private List<BezierBaker.Node> active() {
         // THE editing-surface choke (v18.3, D172): the strip surface
         // retargets the whole node pipeline at a control's graph
-        return surfStrip ? surfCtl.lane : app.lanes.get(activeLane);
+        // editLane(): the untied complex ACCEL control's displayed
+        // graph — accel or decel (v18.45, D217)
+        return surfStrip ? surfCtl.editLane() : app.lanes.get(activeLane);
     }
 
     void refresh() {
@@ -7958,6 +8163,37 @@ class GraphEditor extends Region {
         return 0;
     }
 
+    /** Stretch BOTH complex graphs with their control (v18.45, D217
+     *  — the fraction-semantics rescale, shared by spClampControls,
+     *  the end-diamond resize and the popup Length spinner). */
+    private static void spRescaleCtlLanes(SpeedControl c, double f) {
+        if (!c.lane.isEmpty()) {
+            double[] gaps = BezierBaker.segGaps(c.lane);
+            for (BezierBaker.Node nd : c.lane) nd.t *= f;
+            BezierBaker.rescaleDvToGaps(c.lane, gaps);
+        }
+        if (!c.decelLane.isEmpty()) {
+            double[] gaps = BezierBaker.segGaps(c.decelLane);
+            for (BezierBaker.Node nd : c.decelLane) nd.t *= f;
+            BezierBaker.rescaleDvToGaps(c.decelLane, gaps);
+        }
+    }
+
+    /** Max LENGTH the strip surface's control may take before its
+     *  section end or the next control (v18.43, D215 — the last-node
+     *  length drag's wall; matches the end-diamond resize bounds,
+     *  non-ripple flavor). */
+    private double surfCtlMaxLen() {
+        double cap = spSecEnd(surfRs.sec()) - surfCtl.x0;
+        for (SpeedControl c : surfRs.sec().speedControls()) {
+            if (c != surfCtl && c.x0 > surfCtl.x0 + 1e-9) {
+                cap = Math.min(cap, c.x0 - surfCtl.x0);
+                break;   // the list stays x-sorted (v18.1, D165)
+            }
+        }
+        return Math.max(cap, minGapOf(surfRs.sec()) * 2);
+    }
+
     /** The native Ctrl-snap step for a section's axis. */
     private double spSnapStep(Section s) {
         return s.domain() == Section.Domain.DISTANCE
@@ -8129,7 +8365,7 @@ class GraphEditor extends Region {
             return;
         }
         SpeedControl c = spSel();
-        int nMax = c == null ? 0 : c.lane.size();
+        int nMax = c == null ? 0 : c.editLane().size();
         if (spFocus) {
             selSet.removeIf(i -> i >= nMax);
             if (selIdx >= nMax) selIdx = -1;
@@ -8159,12 +8395,8 @@ class GraphEditor extends Region {
                 double nx = FvdDesigner.clamp(c.x0, 0,
                     Math.max(0, end - nl));
                 if (nl != c.len || nx != c.x0) {
-                    if (c.complex && !c.lane.isEmpty() && c.len > 1e-9
-                            && nl != c.len) {
-                        double f = nl / c.len;
-                        double[] gaps = BezierBaker.segGaps(c.lane);
-                        for (BezierBaker.Node nd : c.lane) nd.t *= f;
-                        BezierBaker.rescaleDvToGaps(c.lane, gaps);
+                    if (c.complex && c.len > 1e-9 && nl != c.len) {
+                        spRescaleCtlLanes(c, nl / c.len);
                     }
                     c.len = nl;
                     c.x0 = nx;
@@ -8240,34 +8472,6 @@ class GraphEditor extends Region {
         gc.clip();
 
         List<RunSec> rl = runLayout();
-        // resulting TRUE speed, green dotted, tall view only —
-        // HIDDEN inside SPEED-type controls since v18.4 (D173, user
-        // spec: it just overlapped the control's own line/graph)
-        if (tall && app.trueV != null && app.lastSamples != null
-                && app.trueV.length == app.lastSamples.size()) {
-            double rT0 = runT0(), rT1 = rT0 + runDur();
-            List<double[]> hideIv = spSpeedCtlAxisRanges();
-            gc.setStroke(SP_SPEED_COLOR);
-            gc.setLineWidth(1.2);
-            gc.setLineDashes(3, 4);
-            gc.setGlobalAlpha(0.85);
-            gc.beginPath();
-            boolean started = false;
-            for (int i = 0; i < app.trueV.length; i++) {
-                double a = gAxis(i);
-                if (a < rT0 || a > rT1 || spInRanges(hideIv, a)) {
-                    started = false;
-                    continue;
-                }
-                double px = tToX(a);
-                double py = spVToY(app.trueV[i]);
-                if (!started) { gc.moveTo(px, py); started = true; }
-                else gc.lineTo(px, py);
-            }
-            gc.stroke();
-            gc.setLineDashes((double[]) null);
-            gc.setGlobalAlpha(1);
-        }
 
         // STRIP VALUE AXIS (v18.3 — the main plot's grid/label
         // pattern on the selected control's scale; speed scale
@@ -8303,6 +8507,38 @@ class GraphEditor extends Region {
             gc.setTextBaseline(VPos.TOP);
         }
 
+        // resulting TRUE speed, green dotted, tall view only —
+        // HIDDEN inside SPEED-type controls since v18.4 (D173, user
+        // spec: it just overlapped the control's own line/graph).
+        // Drawn AFTER the axis grid since v18.48 (D220 — the strip
+        // layered it UNDER the gridlines, the main plot's inverse:
+        // a near-flat curve hugging a gridline read as DIM, the
+        // user's washed-out 5 m/s new-file graph) and at full alpha
+        // like every other curve.
+        if (tall && app.trueV != null && app.lastSamples != null
+                && app.trueV.length == app.lastSamples.size()) {
+            double rT0 = runT0(), rT1 = rT0 + runDur();
+            List<double[]> hideIv = spSpeedCtlAxisRanges();
+            gc.setStroke(SP_SPEED_COLOR);
+            gc.setLineWidth(1.2);
+            gc.setLineDashes(3, 4);
+            gc.beginPath();
+            boolean started = false;
+            for (int i = 0; i < app.trueV.length; i++) {
+                double a = gAxis(i);
+                if (a < rT0 || a > rT1 || spInRanges(hideIv, a)) {
+                    started = false;
+                    continue;
+                }
+                double px = tToX(a);
+                double py = spVToY(app.trueV[i]);
+                if (!started) { gc.moveTo(px, py); started = true; }
+                else gc.lineTo(px, py);
+            }
+            gc.stroke();
+            gc.setLineDashes((double[]) null);
+        }
+
         // the speed-control line per strip: solid where controls can
         // live, dashed where they can't (bridges, influenced, legacy-
         // reversed)
@@ -8336,8 +8572,10 @@ class GraphEditor extends Region {
                 gc.setStroke(col);
                 gc.setLineWidth(3.2);
                 gc.strokeLine(cx0, lineY, cx1, lineY);
-                // complex graph in the tall view
-                if (tall && c.complex && !c.lane.isEmpty()) {
+                // complex graph in the tall view (the DISPLAYED one;
+                // an untied ACCEL control's other graph draws dimmed
+                // behind it — v18.45, D217)
+                if (tall && c.complex && !c.editLane().isEmpty()) {
                     spStrokeCtlLane(gc, rs, c, sel);
                 }
                 // derived LONGITUDINAL G inside a complex const-
@@ -8377,11 +8615,15 @@ class GraphEditor extends Region {
                 gc.setFont(Font.font(10));
                 gc.setTextAlign(TextAlignment.LEFT);
                 gc.setTextBaseline(VPos.BOTTOM);
+                // COLLAPSED strip: lineY − 8 sits above the strip's
+                // clip rect and the glyphs were cut to slivers
+                // (v18.43, D215 — the user's covered hover message);
+                // drop the readout just under the line instead
                 gc.fillText(String.format("length %.2f %s",
                     Math.abs(spNewX1 - spNewX0),
                     nrs.sec().domain() == Section.Domain.DISTANCE
                         ? "m" : "s"),
-                    nx0 + 4, lineY - 8);
+                    nx0 + 4, tall ? lineY - 8 : bot - 2);
             }
         }
 
@@ -8482,8 +8724,13 @@ class GraphEditor extends Region {
                     }
                 } else {
                     aHi = Math.max(aHi, c.accel);
+                    if (!c.tied) aHi = Math.max(aHi, c.decel);   // D217
                     if (c.complex) {
                         for (BezierBaker.Node n : c.lane) {
+                            aHi = Math.max(aHi, n.val);
+                            aLo = Math.min(aLo, n.val);
+                        }
+                        for (BezierBaker.Node n : c.decelLane) {
                             aHi = Math.max(aHi, n.val);
                             aLo = Math.min(aLo, n.val);
                         }
@@ -8514,8 +8761,8 @@ class GraphEditor extends Region {
         // the expand click: bring the selected node's handles in view
         SpeedControl sc = spSel();
         if (handleViewExpand && spFocus && sc != null && sc.complex
-                && selIdx >= 0 && selIdx < sc.lane.size()) {
-            BezierBaker.Node n = sc.lane.get(selIdx);
+                && selIdx >= 0 && selIdx < sc.editLane().size()) {
+            BezierBaker.Node n = sc.editLane().get(selIdx);
             if (sc.type == SpeedControl.SPEED) {
                 vHi = Math.max(vHi, Math.max(n.val + n.outDv,
                     n.val + n.inDv));
@@ -8572,18 +8819,35 @@ class GraphEditor extends Region {
     /** Stroke a complex control's graph — curve + the zero-line fill
      *  shadow only (v18.3: nodes/rings/handles draw through the
      *  SHARED overlays — one editor, two surfaces; the strip keeps
-     *  its smaller line by design). */
+     *  its smaller line by design). An UNTIED complex ACCEL control
+     *  first draws its OTHER graph dimmed for context (v18.45,
+     *  D217), then the displayed one in full. */
     private void spStrokeCtlLane(GraphicsContext gc, RunSec rs,
                                  SpeedControl c, boolean sel) {
+        if (c.type == SpeedControl.ACCEL && c.complex && !c.tied) {
+            List<BezierBaker.Node> other =
+                c.showDecel ? c.lane : c.decelLane;
+            if (!other.isEmpty()) {
+                spStrokeCtlLane(gc, rs, c, false, other, false);
+            }
+        }
+        spStrokeCtlLane(gc, rs, c, sel, c.editLane(), true);
+    }
+
+    private void spStrokeCtlLane(GraphicsContext gc, RunSec rs,
+                                 SpeedControl c, boolean sel,
+                                 List<BezierBaker.Node> ln,
+                                 boolean primary) {
+        if (ln.isEmpty()) return;
         Color col = c.type == SpeedControl.ACCEL
             ? SP_ACCEL_COLOR : SP_SPEED_COLOR;
-        List<double[]> poly = BezierBaker.polyline(c.lane);
+        List<double[]> poly = BezierBaker.polyline(ln);
         List<double[]> pts = new ArrayList<>(poly.size() + 2);
-        double lx0 = c.lane.get(0).t;
-        double lx1 = c.lane.get(c.lane.size() - 1).t;
+        double lx0 = ln.get(0).t;
+        double lx1 = ln.get(ln.size() - 1).t;
         if (lx0 > 1e-9) {
             pts.add(new double[]{ spXOf(rs, c.x0),
-                spValToY(c, c.lane.get(0).val), 0 });
+                spValToY(c, ln.get(0).val), 0 });
         }
         for (double[] p : poly) {
             pts.add(new double[]{ spXOf(rs, c.x0 + p[0]),
@@ -8592,7 +8856,21 @@ class GraphEditor extends Region {
         boolean tail = lx1 < c.len - 1e-9;
         if (tail) {
             pts.add(new double[]{ spXOf(rs, c.x0 + c.len),
-                spValToY(c, c.lane.get(c.lane.size() - 1).val), c.len });
+                spValToY(c, ln.get(ln.size() - 1).val), c.len });
+        }
+        if (!primary) {
+            // the un-displayed twin: a faint context curve only
+            gc.setGlobalAlpha(0.35);
+            gc.setStroke(col);
+            gc.setLineWidth(1.0);
+            gc.beginPath();
+            gc.moveTo(pts.get(0)[0], pts.get(0)[1]);
+            for (int i = 1; i < pts.size(); i++) {
+                gc.lineTo(pts.get(i)[0], pts.get(i)[1]);
+            }
+            gc.stroke();
+            gc.setGlobalAlpha(1.0);
+            return;
         }
         double zy = spValToY(c, 0);
         gc.setFill(col.deriveColor(0, 1, 1, 0.13));
@@ -8611,7 +8889,7 @@ class GraphEditor extends Region {
             // locked segments drop the curve stroke (v18.4, D173):
             // they wear the MINI twin lines below, the main plot's
             // "pinned" look at strip size
-            if (spSegLocked(c.lane,
+            if (spSegLocked(ln,
                     (pts.get(i - 1)[2] + pts.get(i)[2]) / 2)) {
                 gc.moveTo(pts.get(i)[0], pts.get(i)[1]);
             } else {
@@ -8633,10 +8911,10 @@ class GraphEditor extends Region {
         // mini Shift+F / Shift+H visuals (v18.4): twin skinny lines
         // along the chord normal; LEVEL locks tint the band between
         gc.setLineWidth(0.8);
-        for (int i = 0; i < c.lane.size() - 1; i++) {
-            BezierBaker.Node a = c.lane.get(i);
+        for (int i = 0; i < ln.size() - 1; i++) {
+            BezierBaker.Node a = ln.get(i);
             if (!a.lockedOut()) continue;
-            BezierBaker.Node b = c.lane.get(i + 1);
+            BezierBaker.Node b = ln.get(i + 1);
             double ax = spXOf(rs, c.x0 + a.t), ay = spValToY(c, a.val);
             double bx = spXOf(rs, c.x0 + b.t), by = spValToY(c, b.val);
             double dx = bx - ax, dy = by - ay;
@@ -8722,10 +9000,11 @@ class GraphEditor extends Region {
             List<SpeedControl> ctls = rs.sec().speedControls();
             for (int ci = 0; ci < ctls.size(); ci++) {
                 SpeedControl c = ctls.get(ci);
-                if (!c.complex || c.lane.isEmpty()) continue;
+                if (!c.complex || c.editLane().isEmpty()) continue;
                 double lx = spNativeAt(rs, x) - c.x0;
                 if (lx < 0 || lx > c.len) continue;
-                double cv = BezierBaker.exactAt(c.lane, lx);
+                // the DISPLAYED graph owns the hit (v18.45, D217)
+                double cv = BezierBaker.exactAt(c.editLane(), lx);
                 if (Math.abs(y - spValToY(c, cv)) <= 6) {
                     return new int[]{ r, ci };
                 }
@@ -9045,13 +9324,11 @@ class GraphEditor extends Region {
             }
             double oldEnd = c.x0 + c.len;
             c.len = lenNew;
-            if (c.complex && !c.lane.isEmpty() && c.len > 1e-9) {
-                // the graph stretches with the control (fractions of
-                // the extent — the handle-fraction philosophy)
-                double f = c.len / Math.max(1e-9, oldEnd - c.x0);
-                double[] gaps = BezierBaker.segGaps(c.lane);
-                for (BezierBaker.Node nd : c.lane) nd.t *= f;
-                BezierBaker.rescaleDvToGaps(c.lane, gaps);
+            if (c.complex && c.len > 1e-9) {
+                // the graphs stretch with the control (fractions of
+                // the extent — the handle-fraction philosophy; BOTH
+                // lanes since v18.45, D217)
+                spRescaleCtlLanes(c, c.len / Math.max(1e-9, oldEnd - c.x0));
             }
             if (app.rippleT && dx != 0) spRipple(s, oldEnd, dx, end);
         }
@@ -9666,6 +9943,31 @@ class GraphEditor extends Region {
         HBox accelRow = new HBox(8);
         accelRow.setAlignment(Pos.CENTER_LEFT);
 
+        // ACCEL/DECEL on ONE line (v18.45 D217; chain-link round
+        // v18.47 D219 — user spec): Acceleration and Deceleration
+        // are ALWAYS visible with a 🔗 LINK button between them.
+        // Linked (default) = editing either spinner writes both —
+        // the classic one-magnitude behavior; unlink to brake at
+        // its own felt G. Complex swaps the spinners for Edit
+        // buttons in the same layout (▸ marks the displayed graph).
+        Label decelLbl = new Label("Deceleration (g)");
+        decelLbl.setTextFill(Color.WHITE);
+        decelLbl.setStyle("-fx-font-size: 11px;");
+        Spinner<Double> decelSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0, 20, c.decel, 0.05));
+        decelSp.setEditable(true);
+        decelSp.setPrefWidth(76);
+        FvdDesigner.numericEditor(decelSp, false);
+        javafx.scene.control.ToggleButton link =
+            new javafx.scene.control.ToggleButton("🔗");
+        link.setFocusTraversable(false);
+        Tooltip.install(link, new Tooltip(
+            "Link Acceleration and Deceleration"));
+        Button editDecel = new Button("Edit Deceleration");
+        editDecel.setFocusTraversable(false);
+        editDecel.setStyle("-fx-font-size: 11px;");
+
         Label startLbl = new Label("Start (" + unit + ")");
         startLbl.setTextFill(Color.WHITE);
         startLbl.setStyle("-fx-font-size: 11px;");
@@ -9713,11 +10015,19 @@ class GraphEditor extends Region {
             }
             speedRow.getChildren().add(limitRow);
             if (acc) {
+                // ONE line: accel · 🔗 · decel (v18.47, D219); the ▸
+                // marks the DISPLAYED graph — while linked the accel
+                // graph serves both directions and the decel side is
+                // grayed (v18.48, D220)
                 if (c.complex) {
-                    editGraph.setText("Edit Acceleration");
-                    accelRow.getChildren().addAll(accelLbl, editGraph);
+                    editGraph.setText((c.tied || !c.showDecel ? "▸ " : "")
+                        + "Edit Acceleration");
+                    editDecel.setText((!c.tied && c.showDecel ? "▸ " : "")
+                        + "Edit Deceleration");
+                    accelRow.getChildren().addAll(editGraph, link, editDecel);
                 } else {
-                    accelRow.getChildren().addAll(accelLbl, accelSp);
+                    accelRow.getChildren().addAll(accelLbl, accelSp,
+                        link, decelLbl, decelSp);
                 }
                 accelRow.setVisible(true);
                 accelRow.setManaged(true);
@@ -9734,6 +10044,23 @@ class GraphEditor extends Region {
             complex.setSelected(c.complex);
             speedSp.getValueFactory().setValue(c.speed);
             accelSp.getValueFactory().setValue(c.accel);
+            decelSp.getValueFactory().setValue(c.decel);
+            link.setSelected(c.tied);
+            // small button, glyph-size chain, NEON-YELLOW highlight
+            // while linked, no outline (v18.48, D220 — user spec;
+            // the chain glyph itself stays black either way)
+            link.setStyle("-fx-font-size: 11px; -fx-padding: 0 3 0 3;"
+                + " -fx-background-radius: 4; -fx-text-fill: black;"
+                + " -fx-background-color: "
+                // bright PURE yellow (v18.48 — the first pick's green
+                // cast came from G > R)
+                + (c.tied ? "rgb(255,235,0);" : "rgb(190,194,204);"));
+            // linked = the decel side is DISPLAY-ONLY (v18.48, D220
+            // — user spec: gray it out; the mirrored value still
+            // updates live as acceleration is edited)
+            decelSp.setDisable(c.tied);
+            decelLbl.setOpacity(c.tied ? 0.45 : 1.0);
+            editDecel.setDisable(c.tied);
             maxC.setSelected(c.maxLimit);
             minC.setSelected(c.minLimit);
             startSp.getValueFactory().setValue(c.x0);
@@ -9760,13 +10087,18 @@ class GraphEditor extends Region {
             pushUndoSnapshot();
             c.type = SpeedControl.SPEED;
             if (c.complex) c.freshLane(c.speed);
+            if (c.showDecel) spDropNodeSel();
+            c.showDecel = false;   // SPEED has one graph (D217)
             changed.run();
         });
         rAccel.setOnAction(ev -> {
             if (syncing[0]) return;
             pushUndoSnapshot();
             c.type = SpeedControl.ACCEL;
-            if (c.complex) c.freshLane(c.accel);
+            if (c.complex) {
+                c.freshLane(c.accel);
+                if (!c.tied) c.freshDecelLane(c.decel);
+            }
             changed.run();
         });
         complex.setOnAction(ev -> {
@@ -9777,15 +10109,69 @@ class GraphEditor extends Region {
                 c.freshLane(c.type == SpeedControl.ACCEL
                     ? c.accel : c.speed);
             }
+            if (c.complex && !c.tied && c.type == SpeedControl.ACCEL
+                    && c.decelLane.size() < 2) {
+                c.freshDecelLane(c.decel);   // D217
+            }
+            changed.run();
+        });
+        link.setOnAction(ev -> {
+            if (syncing[0]) return;
+            pushUndoSnapshot();
+            c.tied = link.isSelected();
+            // both directions leave the values EQUAL at the flip:
+            // re-linking snaps decel onto accel (the mirror resumes),
+            // unlinking seeds the decel side from the accel side so
+            // nothing changes at the split (v18.45, D217; the accel
+            // graph displays first — user spec)
+            c.decel = c.accel;
+            if (!c.tied && c.complex) {
+                c.decelLane.clear();
+                for (BezierBaker.Node n : c.lane) {
+                    c.decelLane.add(n.copy());
+                }
+            }
+            if (c.showDecel) spDropNodeSel();
+            c.showDecel = false;
             changed.run();
         });
         editGraph.setOnAction(ev -> {
+            // untied complex: this button also SELECTS the accel
+            // graph for display (v18.45, D217)
+            if (c.showDecel) {
+                spDropNodeSel();
+                c.showDecel = false;
+            }
             if (!app.settings.speedStripTall()) {
                 app.settings.setSpeedStripTall(true);
             }
             if (!spVisible()) app.settings.setShowSpeedStrip(true);
             redraw();
+            if (spPopupSync != null) spPopupSync.run();
             spMovePopupClear(pop);
+        });
+        editDecel.setOnAction(ev -> {
+            if (!c.complex) return;
+            // LINKED: one graph serves both directions — this button
+            // just opens it, exactly like Edit Acceleration (v18.47)
+            if (!c.tied && !c.showDecel) {
+                spDropNodeSel();
+                c.showDecel = true;
+            }
+            if (!app.settings.speedStripTall()) {
+                app.settings.setSpeedStripTall(true);
+            }
+            if (!spVisible()) app.settings.setShowSpeedStrip(true);
+            redraw();
+            if (spPopupSync != null) spPopupSync.run();
+            spMovePopupClear(pop);
+        });
+        decelSp.valueProperty().addListener((o, a, v) -> {
+            if (syncing[0] || v == null) return;
+            pushUndoSnapshot();
+            c.decel = v;
+            if (c.tied) c.accel = v;   // linked: mirror (v18.47, D219)
+            changed.run();
         });
         speedSp.valueProperty().addListener((o, a, v) -> {
             if (syncing[0] || v == null) return;
@@ -9797,6 +10183,7 @@ class GraphEditor extends Region {
             if (syncing[0] || v == null) return;
             pushUndoSnapshot();
             c.accel = v;
+            if (c.tied) c.decel = v;   // linked: mirror (v18.47, D219)
             changed.run();
         });
         maxC.setOnAction(ev -> {
@@ -9830,11 +10217,8 @@ class GraphEditor extends Region {
             double oldLen = c.len;
             c.len = FvdDesigner.clamp(v, minGapOf(s) * 2,
                 Math.max(minGapOf(s) * 2, spSecEnd(s) - c.x0));
-            if (c.complex && !c.lane.isEmpty() && oldLen > 1e-9) {
-                double f = c.len / oldLen;
-                double[] gaps = BezierBaker.segGaps(c.lane);
-                for (BezierBaker.Node nd : c.lane) nd.t *= f;
-                BezierBaker.rescaleDvToGaps(c.lane, gaps);
+            if (c.complex && oldLen > 1e-9) {
+                spRescaleCtlLanes(c, c.len / oldLen);   // both (D217)
             }
             changed.run();
         });
@@ -10116,8 +10500,10 @@ class GraphEditor extends Region {
     void matchBoundary(int idx) {
         List<BezierBaker.Node> lane = active();
         boolean infl = activeInfl() != null;
-        // on the INFLUENCE surface the edge "boundary" is simply NO
-        // influence (v15.5, D102) — no neighbor needed, no seam probe
+        // on the INFLUENCE surface edge nodes are actionable even
+        // without a neighbor (v18.37, D209: with one, B lines the
+        // RESULTING graphs up; without one — ride start/end — it
+        // returns the delta to zero, the old D102 rule)
         boolean start = idx == 0 && lane.size() >= 2
             && (infl || hasNeighborBefore());
         boolean end = idx == lane.size() - 1 && idx > 0
@@ -10264,16 +10650,12 @@ class GraphEditor extends Region {
     private boolean applyBoundaryMatch(int laneIdx, boolean startEdge) {
         List<BezierBaker.Node> ln = app.lanes.get(laneIdx);
         if (ln.size() < 2) return false;
-        // INFLUENCE surface (v15.5, D102 — user rule): B on a delta
-        // EDGE node returns it to NO INFLUENCE — value 0, FLAT facing
-        // handle. (The v15.0 neighbor-minus-base match nudged the node
-        // by the base sampling residual; the honest boundary default
-        // for a delta is simply zero.)
+        // INFLUENCE surface (v18.37, D209 — user re-spec reversing
+        // the v15.5/D102 zero rule): the edge delta node takes the
+        // value + slope that line the RESULTING graphs (base + delta)
+        // up with the neighbor's real curves at the seam.
         if (activeInfl() != null) {
-            BezierBaker.Node n = ln.get(startEdge ? 0 : ln.size() - 1);
-            n.val = 0;
-            if (startEdge) n.outDv = 0; else n.inDv = 0;
-            return true;
+            return applyInfluenceMatch(ln, laneIdx, startEdge);
         }
         if (startEdge) {
             if (!hasNeighborBefore()) return false;
@@ -10290,6 +10672,62 @@ class GraphEditor extends Region {
         BezierBaker.Node n = ln.get(ln.size() - 1);
         n.val = vs[0];
         n.inDv = vs[1] * BezierBaker.effInDt(ln.get(ln.size() - 2), n);
+        return true;
+    }
+
+    /** The influence-surface boundary return (v18.37, D209 — user
+     *  re-spec reversing D102's zero rule): resulting == base + delta
+     *  EXACTLY, so the delta that lines the resulting graphs up with
+     *  the neighbor at the seam is neighborTarget − base — value AND
+     *  slope, in the delta lanes' units on the lane's own axis. The
+     *  neighbor target rides the standard sampled machinery through
+     *  boundaryState (real-split κ conversion included — like every
+     *  B, it aims at the REAL curves; the influence-mode routing
+     *  skips the authored/analytic shortcuts, whose lane semantics
+     *  are the section's, not the surface's). Fallbacks keep the old
+     *  D102 rule — no neighbor on that side (ride start/end), no
+     *  compiled data yet, or the inert roll lane: ZERO influence
+     *  with a flat facing handle. No seam-speed re-freeze here:
+     *  an influenced section's operating speed moves only by
+     *  explicit action (the D95/D98 reconcile contract). */
+    private boolean applyInfluenceMatch(List<BezierBaker.Node> ln,
+                                        int laneIdx, boolean startEdge) {
+        LaneSection infl = activeInfl();
+        BezierBaker.Node n = ln.get(startEdge ? 0 : ln.size() - 1);
+        double[] tgt = null;
+        if (laneIdx < 2 && infl != null
+                && (startEdge ? hasNeighborBefore() : hasNeighborAfter())) {
+            matchHint = null;
+            tgt = boundaryState(startEdge ? activeSection - 1
+                : activeSection + 1, !startEdge, laneIdx);
+        }
+        if (tgt == null) {
+            n.val = 0;
+            if (startEdge) n.outDv = 0; else n.inDv = 0;
+            return true;
+        }
+        // base value/slope at the seam: the rows live on the
+        // section-local OPERATING clock in the delta lanes' units, so
+        // the edge reads are exact (t = 0 / the last row's t); a
+        // distance-native lane's handle slope is per METER — the
+        // per-second row slope converts at the seam speed
+        double bEnd = infl.baseCurves != null && infl.baseCurves.length > 0
+            ? infl.baseCurves[infl.baseCurves.length - 1][0] : 0;
+        double bt = startEdge ? 0 : bEnd;
+        double bv = infl.baseValAt(laneIdx, bt);
+        double bs = infl.baseSlopeAt(laneIdx, bt);
+        if (activeDistNative()) {
+            bs /= Math.max(0.5, seamDesignV(!startEdge));
+        }
+        n.val = tgt[0] - bv;
+        double ds = tgt[1] - bs;
+        if (startEdge) {
+            n.outDv = ln.size() >= 2
+                ? ds * BezierBaker.effOutDt(n, ln.get(1)) : 0;
+        } else {
+            n.inDv = ln.size() >= 2
+                ? ds * BezierBaker.effInDt(ln.get(ln.size() - 2), n) : 0;
+        }
         return true;
     }
 
@@ -10447,9 +10885,18 @@ class GraphEditor extends Region {
         // OUR lane in PER-METER units (v16.6, D115): the workhorse
         // below always speaks °/s for rate lanes — convert its
         // {value, slope} at the seam speed, with the product-rule
-        // term from v' = −g·T.y (value_s = v · value_m)
-        if (sections().get(activeSection) instanceof LaneSection act
-                && laneRatePM(act, laneIdx)) {
+        // term from v' = −g·T.y (value_s = v · value_m). On the
+        // INFLUENCE surface (v18.37, D209) the DELTA lanes' own
+        // rate-ness decides: a force section's Δpitch/Δyaw ARE rates
+        // (°/m when the section authors per-meter, D117); a geo
+        // section's ΔGv/ΔGl are felt targets, never per-meter.
+        boolean pm = activeInfl() != null
+            ? activeGeo()
+                && sections().get(activeSection) instanceof LaneSection ai
+                && ai.ratePerMeter
+            : sections().get(activeSection) instanceof LaneSection act
+                && laneRatePM(act, laneIdx);
+        if (pm) {
             double v = Math.max(0.5, seamDesignV(atStart));
             double aT = -FVDIntegrator.G0 * seamTy(atStart);
             double vm = vs[0] / v;
@@ -10553,10 +11000,16 @@ class GraphEditor extends Region {
         }
         // GLOBAL-axis lane on OUR side (v16.3 — B works there now):
         // targets come from the WORLD-rate matcher below, never the
-        // authored/analytic body-rate paths
+        // authored/analytic body-rate paths. On the INFLUENCE surface
+        // (v18.37, D209) the INFLUENCE integration's axes decide what
+        // the deltas MEAN: heading'/elevation' deltas take the world
+        // matcher, felt deltas (geo-section influence) never do.
+        boolean inflM = activeInfl() != null;
         LaneSection actLs = secs.get(activeSection) instanceof LaneSection al
             ? al : null;
-        boolean wg = actLs != null && laneWorld(actLs, laneIdx);
+        boolean wg = inflM
+            ? activeGeo() && actLs != null && actLs.inflYawPitchGlobal
+            : actLs != null && laneWorld(actLs, laneIdx);
         // ABSOLUTE ROLL lane (v16.7 D118, reworked v16.8 D120): the
         // target is the seam's measured BANK (°) read off the
         // NEIGHBOR's side — with the neighbor's bank RATE as the
@@ -10564,7 +11017,7 @@ class GraphEditor extends Region {
         // one derivative below the rate lanes B usually smooths).
         // Fires on real-split seams too — bank is a frame quantity,
         // invariant under the design/true speed split.
-        if (laneIdx == 2 && actLs != null
+        if (!inflM && laneIdx == 2 && actLs != null
                 && actLs.rollAbsolute && actLs.rollGlobal) {
             double[] ab = absRollTarget(atStart);
             if (ab != null || matchHint != null) return ab;
@@ -10580,7 +11033,7 @@ class GraphEditor extends Region {
         // few samples inside — the value at the seam stays exact, so
         // re-presses don't creep. Vertical seams refuse (no defined
         // heading/bank), reason on the stats bar.
-        if (!real && laneIdx == 2 && actLs != null
+        if (!inflM && !real && laneIdx == 2 && actLs != null
                 && nbSec instanceof LaneSection nbr
                 && !nbr.reversed() && !nbr.influenced()
                 && effRollGlobal(nbr) != effRollGlobal(actLs)
@@ -10598,7 +11051,14 @@ class GraphEditor extends Region {
         // sides SHARE roll semantics (v16.6 — global|global seams
         // used to take the sampled world-rate path for no reason:
         // both authored lanes are bank rates, direct is exact).
-        if (!real && nbSec instanceof LaneSection nb
+        // the authored/analytic shortcuts below speak the SECTION's
+        // own lane semantics — on the influence surface the deltas
+        // live in the OTHER mode, so targets come from the sampled
+        // resulting curves instead (v18.37, D209: uniform across
+        // every neighbor type, which is the point of the sampled
+        // path; the ~3-samples-inside extrapolation converges in a
+        // press or two, the D154 precedent)
+        if (!inflM && !real && nbSec instanceof LaneSection nb
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
                 && !nb.reversed && !nb.influenced()
                 && (laneIdx == 2
@@ -10667,7 +11127,8 @@ class GraphEditor extends Region {
         // ~0.1 °/s per Shift+B round-trip without ever settling.
         // Analytic targets are exact AT the fixed point, so a re-press
         // changes nothing and the seam stays put.
-        if (!real && !wg && laneIdx < 2 && nbSec instanceof LaneSection nbl
+        if (!inflM && !real && !wg && laneIdx < 2
+                && nbSec instanceof LaneSection nbl
                 && !nbl.reversed
                 // an influenced neighbor's authored lanes don't
                 // describe its actual curves — sampled path (v15.0);
@@ -11018,7 +11479,12 @@ class GraphEditor extends Region {
      *  where the lane is global (NaN on vertical track), trueAt
      *  otherwise. */
     private double worldLaneAt(int i, int laneIdx, LaneSection act) {
-        if (act == null || !laneWorld(act, laneIdx)) return trueAt(i, laneIdx);
+        // the INFLUENCE surface's world-ness rides the influence
+        // axis flags, not the section's own (v18.37, D209)
+        boolean world = activeInfl() != null
+            ? activeGeo() && act != null && act.inflYawPitchGlobal
+            : act != null && laneWorld(act, laneIdx);
+        if (!world) return trueAt(i, laneIdx);
         double[] wr = Coaster.worldRates(app.lastSamples.get(i),
             app.trueRates[i][1], app.trueRates[i][2], app.trueRates[i][3]);
         return wr[laneIdx];
@@ -11063,9 +11529,16 @@ class GraphEditor extends Region {
      *  is deliberately extended: drag to the end, release, grab it
      *  again to pull further. MAX_VALUE = no wall. */
     private double endLimitFor(int nodeIdx) {
-        // strip surface: ABSOLUTE wall at the control's end — no
-        // started-at-end extension (the control's diamonds resize it)
-        if (surfStrip) return surfCtl.len;
+        // strip surface (v18.43, D215 — user spec): the complex
+        // graph's LAST node drags the CONTROL LENGTH itself — its
+        // wall is the section end / next control, and moveNode
+        // writes surfCtl.len from it WITHOUT rescaling the earlier
+        // nodes (the end diamond keeps the classic stretch).
+        // Interior nodes stay boxed at the control end.
+        if (surfStrip) {
+            return nodeIdx == active().size() - 1
+                ? surfCtlMaxLen() : surfCtl.len;
+        }
         List<BezierBaker.Node> lane = active();
         if (nodeIdx != lane.size() - 1) return Double.MAX_VALUE;
         // the influence surface's wall is ABSOLUTE (no started-at-end
@@ -11405,12 +11878,15 @@ class GraphEditor extends Region {
                     ? Double.MAX_VALUE
                     : lane.get(idx + 1).t - minGap();
             if (surfStrip) {
-                // the control is a HARD BOX (v18.5, D174): its LAST
-                // node never moves horizontally under a time ripple
-                // (value ripple still applies) and nothing leaves the
-                // control — the drag clamps against the pinned end
+                // the control is a HARD BOX (v18.5, D174): interior
+                // nodes never leave it and a time ripple never moves
+                // the pinned end. The LAST node itself drags the
+                // CONTROL LENGTH since v18.43 (D215, user spec — no
+                // stretch of the earlier nodes; the end diamond
+                // keeps the classic rescale): its wall is the
+                // section end / next control instead of the box.
                 if (idx == lane.size() - 1) {
-                    hi = Math.min(hi, surfCtl.len);
+                    hi = Math.min(hi, surfCtlMaxLen());
                 } else if (app.rippleT) {
                     hi = Math.min(hi, lane.get(lane.size() - 1).t
                         - minGap() * (lane.size() - 1 - idx));
@@ -11444,6 +11920,14 @@ class GraphEditor extends Region {
         }
         n.t = newT;
         n.val = newVal;
+        // the strip's LAST node carries the control length with it
+        // (v18.43, D215): the box follows the node — floored so
+        // spClampControls never has to re-stretch the graph (a graph
+        // ending short of the floor just holds dotted to the end)
+        if (surfStrip && idx == lane.size() - 1 && idx > 0) {
+            surfCtl.len = Math.max(newT, Math.min(
+                minGapOf(surfRs.sec()) * 2, surfCtlMaxLen()));
+        }
         // handles facing the squished/stretched segments keep their
         // SLOPES — dv rescales with the run (v16.1, D105; the
         // removeBridging rule on node moves — smooth joints no longer
@@ -11972,7 +12456,10 @@ class GraphEditor extends Region {
         for (TrackPiece p : app.coaster.pieces) {
             for (Section s : p.sections) {
                 for (SpeedControl c : s.speedControls()) {
-                    if (c.complex) enforceLockLane(c.lane);
+                    if (c.complex) {
+                        enforceLockLane(c.lane);
+                        enforceLockLane(c.decelLane);   // D217
+                    }
                 }
             }
         }
@@ -12586,15 +13073,18 @@ class GraphEditor extends Region {
         if (!resAxisOn) return;
         boolean geo = activeGeo();
         // defaults MATCH the normal lane scales (v17.7, D144): felt
-        // −1..4 like Gv, rates ±60 like geo lanes — ±5 in °/m — and
-        // an absolute-bank overlay starts at the bank lane's ±90
+        // −1..4 like Gv, rates ±60 like geo lanes — ±5 in °/m.
+        // PER-QUANTITY normalization (v18.42, D214): the roll/bank
+        // overlay joins the shared fit ONLY when its units match
+        // comps 1/2 (force view + rate roll); over geo sections (g
+        // vs °/s) and for absolute bank (°) it fits its OWN pair —
+        // a −112 °/s roll rate must never stretch the g axis.
         double lo = geo ? -1 : resRatePM() ? -5 : -60;
         double hi = geo ? 4 : resRatePM() ? 5 : 60;
-        if (resCompOn(3) && app.settings.resRollAbs()
-                && app.settings.resRollG()) {
-            lo = Math.min(lo, -90);
-            hi = Math.max(hi, 90);
-        }
+        boolean ownRoll = resRollOwnScale();
+        boolean resAbs = app.settings.resRollAbs() && app.settings.resRollG();
+        double lo3 = resAbs ? -90 : resRatePM() ? -5 : -60;
+        double hi3 = resAbs ? 90 : resRatePM() ? 5 : 60;
         double t0 = viewStart(), t1 = viewEnd();
         List<Double> seams = sectionBoundaries();
         double rT0 = runT0(), rT1 = rT0 + runDur();   // run clamp (D85)
@@ -12613,14 +13103,34 @@ class GraphEditor extends Region {
                 hi = Math.max(hi, resValueAt(i, 2));
             }
             if (resCompOn(3)) {
-                lo = Math.min(lo, resValueAt(i, 3));
-                hi = Math.max(hi, resValueAt(i, 3));
+                double v = resValueAt(i, 3);
+                if (ownRoll) {
+                    lo3 = Math.min(lo3, v);
+                    hi3 = Math.max(hi3, v);
+                } else {
+                    lo = Math.min(lo, v);
+                    hi = Math.max(hi, v);
+                }
             }
         }
         double pad = (hi - lo) * 0.05;
         double step = niceStep((hi - lo) / 6);
         resLo = Math.floor((lo - pad) / step) * step;
         resHi = Math.ceil((hi + pad) / step) * step;
+        double pad3 = (hi3 - lo3) * 0.05;
+        double step3 = niceStep((hi3 - lo3) / 6);
+        resLo3 = Math.floor((lo3 - pad3) / step3) * step3;
+        resHi3 = Math.ceil((hi3 + pad3) / step3) * step3;
+    }
+
+    /** The roll/bank overlay normalizes on its OWN scale whenever its
+     *  units differ from comps 1/2 (v18.42, D214): geo view (g vs
+     *  rates) and absolute bank (degrees vs anything). Force view
+     *  with a RATE roll shares — all three comps are °/s or °/m. */
+    private boolean resRollOwnScale() {
+        return resCompOn(3)
+            && (activeGeo()
+                || (app.settings.resRollAbs() && app.settings.resRollG()));
     }
 
     /** Interior section boundaries in AXIS coordinates across the
@@ -12814,8 +13324,12 @@ class GraphEditor extends Region {
         app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
     }
 
-    private double resToY(double v) {
-        return MARGIN_TOP + plotHeight() * (1 - (v - resLo) / (resHi - resLo));
+    private double resToY(int comp, double v) {
+        // comp 3 may normalize on its own pair (v18.42, D214)
+        boolean own = comp == 3 && resRollOwnScale();
+        double lo = own ? resLo3 : resLo;
+        double hi = own ? resHi3 : resHi;
+        return MARGIN_TOP + plotHeight() * (1 - (v - lo) / (hi - lo));
     }
 
     /** Overlay accent: rates wear the geo palette, forces the force one
@@ -12864,6 +13378,13 @@ class GraphEditor extends Region {
     // ---------- drawing ----------
 
     private void redraw() {
+        // UNLOADED while the graph panel is collapsed (v18.36, D208):
+        // a busy zoomed-out plot must cost nothing off screen. The
+        // canvas is usually 0-high then anyway (the size check below);
+        // this makes it a contract. 3D markers/gizmos stay synced —
+        // rebuildMeshes calls refreshMarkers directly — and expanding
+        // repaints via the divider listener + layoutChildren.
+        if (app.graphCollapsed()) return;
         // ALWAYS drawn from the MAIN surface (v18.4, D173 — the
         // strip-flashing root cause): a strip-surface mutation
         // (dragNodeTo under withSurf) triggers rebuildTrack →
@@ -13012,25 +13533,30 @@ class GraphEditor extends Region {
             gc.setLineWidth(1);
             gc.setLineDashes(4, 4);
             gc.setGlobalAlpha(0.7);
-            for (int comp = 1; comp <= 3; comp++) {
-                if (!resCompOn(comp)) continue;
-                gc.setStroke(overlayColor(comp));
-                gc.beginPath();
-                boolean started = false;
-                for (int i = 0; i < app.resultRates.length; i++) {
-                    double a = gAxis(i);
-                    double trim = axisTrim(i);
-                    if (a < rT0 + trim || a > rT1 - trim
-                            || nearSeam(a, seams, trim)) {
-                        started = false;   // break the path across seams
-                        continue;
+            if (app.resultRates.length > 0) {
+                // view-culled index range + seam-crossing breaks
+                // (v18.35/v18.36): the curves run right up to each
+                // seam sample — span-differenced rates are clean
+                // there — and the path breaks exactly ON the seam,
+                // never drawing a connector across the jump
+                int[] ir = axisIdxRange(Math.max(viewStart(), rT0),
+                    Math.min(viewEnd(), rT1));
+                for (int comp = 1; comp <= 3; comp++) {
+                    if (!resCompOn(comp)) continue;
+                    gc.setStroke(overlayColor(comp));
+                    ColPath path = new ColPath(gc);
+                    SeamWalk sw = new SeamWalk(seams, gAxis(ir[0]));
+                    for (int i = ir[0]; i <= ir[1]; i++) {
+                        double a = gAxis(i);
+                        if (sw.crossed(a)) path.endRun();
+                        if (a < rT0 - 1e-6 || a > rT1 + 1e-6) {
+                            path.endRun();
+                            continue;
+                        }
+                        path.add(tToX(a), resToY(comp, resValueAt(i, comp)));
                     }
-                    double rx = tToX(a);
-                    double ry = resToY(resValueAt(i, comp));
-                    if (!started) { gc.moveTo(rx, ry); started = true; }
-                    else gc.lineTo(rx, ry);
+                    path.stroke();
                 }
-                gc.stroke();
             }
             gc.setLineDashes((double[]) null);
             gc.setGlobalAlpha(1.0);
@@ -13042,7 +13568,7 @@ class GraphEditor extends Region {
         // Shift swaps in the numeric slope, like the lane hover (v10.4)
         if (hoverResComp != 0) {
             double hx = tToX(hoverResT);
-            double hy = resToY(hoverResVal);
+            double hy = resToY(hoverResComp, hoverResVal);
             gc.setGlobalAlpha(0.55);
             gc.setFill(overlayColor(hoverResComp));
             gc.fillOval(hx - 4, hy - 4, 8, 8);
@@ -13067,8 +13593,8 @@ class GraphEditor extends Region {
             String txt;
             if (hoverSlope) {
                 int ic = sampleIdxAtAxis(hoverResT);
-                int i0 = Math.max(0, ic - 2);
-                int i1 = Math.min(app.resultRates.length - 1, ic + 2);
+                int[] w2 = slopeWin(ic, 2);   // span-clamped (D207)
+                int i0 = w2[0], i1 = w2[1];
                 double span = gAxis(i1) - gAxis(i0);
                 double slope = span < 1e-9 ? 0
                     : (resValueAt(i1, hoverResComp) - resValueAt(i0, hoverResComp)) / span;
@@ -13099,8 +13625,8 @@ class GraphEditor extends Region {
             String txt;
             int ic = sampleIdxAtAxis(hoverDerT);
             if (hoverSlope) {
-                int i0 = Math.max(0, ic - 2);
-                int i1 = Math.min(app.resultRates.length - 1, ic + 2);
+                int[] w2 = slopeWin(ic, 2);   // span-clamped (D207)
+                int i0 = w2[0], i1 = w2[1];
                 double span = gAxis(i1) - gAxis(i0);
                 double slope = span < 1e-9 ? 0
                     : (derivedAt(i1, hoverDerLane)
@@ -13233,16 +13759,26 @@ class GraphEditor extends Region {
             gc.setTextAlign(TextAlignment.LEFT);
             gc.setTextBaseline(VPos.CENTER);
             for (double v = Math.ceil(resLo / rStep) * rStep; v <= resHi + 1e-9; v += rStep) {
-                gc.fillText(fmtVal(v), rx, resToY(v));
+                gc.fillText(fmtVal(v), rx, resToY(1, v));
             }
             gc.save();
             gc.translate(w - 6, MARGIN_TOP + plotHeight() / 2);
             gc.rotate(90);
             gc.setFont(Font.font(11));
             gc.setTextAlign(TextAlignment.CENTER);
+            boolean resAbs = app.settings.resRollAbs()
+                && app.settings.resRollG();
+            // the axis numbers name the SHARED scale; an own-scaled
+            // roll/bank overlay says so (v18.42 — the axis used to
+            // claim g for a °/s roll curve; hover for its values)
             gc.fillText((activeInfl() != null ? "True resulting " : "Resulting ")
                 + (activeGeo() ? "G (g)"
-                    : resRatePM() ? "rate (°/m)" : "rate (°/s)"), 0, 0);
+                    : resRatePM() ? "rate (°/m)" : "rate (°/s)")
+                + (resRollOwnScale()
+                    ? (resAbs ? " · bank ° own scale"
+                              : resRatePM() ? " · roll °/m own scale"
+                                            : " · roll °/s own scale")
+                    : ""), 0, 0);
             gc.restore();
         }
 

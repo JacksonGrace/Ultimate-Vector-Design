@@ -8055,3 +8055,465 @@ OVERHAUL, 2: train approximation graphs, 3: imports & content,
 4: 3D nodal track influence).
 (advanced turns, roll customization, closure, viewport
 interactivity with neighbor re-solve).
+
+
+## D204 (v18.32) — shakedown round 1a: new-file defaults, Optimal-first previews, the seam padlock returns
+
+Three small user specs from building the full test coaster:
+
+1. FILE > NEW starts LOW AND SLOW — piece at y = 5 m, v0 =
+   5 m/s, section 0's design speed 5 (constants NEW_START_Y /
+   NEW_START_SPEED). The STARTUP document deliberately keeps
+   21 m / 26 m/s: it ships the demo layout, whose 2.5 g hills
+   need that energy budget (flagged to him — if he wants the
+   startup blank-slate too, that is a one-line follow-up).
+   Legacy-load defaults (0,21,0)/26 untouched.
+
+2. The DENSITY PREVIEW opens on "Optimal placement" EVERY time
+   (pvAdaptive := true in beginDensityPreview) — his "default
+   selection optimize for every time it is opened". Unchecking
+   is per-open; the sticky spacing/accuracy values persist as
+   before. Applies to every preview flavor (converts, domain,
+   make-real, bake-influence, reversal) — one window, one rule.
+
+3. The strict-seam settings' per-axis "Discontinuous" toggle
+   (D136/D140 wording) reverts to a plain PADLOCK button —
+   🔒 = the axis holds the spinner's angle, 🔓 = it follows the
+   seam; red outline stays as the held-axis telltale, tooltip
+   carries the words. All machinery (first-open seeding D145,
+   ↺ creation angle, Apply/Cancel) unchanged; Help re-worded.
+
+## D205 (v18.33) — the STALE-PIECE gizmo: a document GENERATION joins the viewport signatures
+
+His bug: new project → Convert the section to geo (distance,
+°/m, both axes global) → drag the entry gizmo — "only the gizmo
+moved, not the track."
+
+ROOT CAUSE (not the compiler): a 32-combination headless sweep
+(GizmoProbe) shows every convert-flag combo compiles and follows
+piece moves exactly. The break is OBJECT IDENTITY in the
+viewport: applyDocState — which the density preview runs on
+every rerun and Apply, and undo/redo run on every Ctrl+Z —
+rebuilds coaster.pieces with NEW TrackPiece objects carrying
+IDENTICAL values. Viewport3D.gizmoSigNow() is a pure VALUE
+signature (pose numbers, locks, flags), so refreshGizmo saw
+"nothing changed" and kept the white ball's/rig's closures wired
+to the ORPHANED pre-convert piece. A ball drag then wrote x/y/z
+into a dead object — the ball follows its own writes (its anchor
+reads the same dead piece), the document never changes, the
+track never moves. Same hole after any lanes-only undo.
+
+FIX: FvdDesigner.docGen — bumped wherever piece objects are
+replaced wholesale (applyDocState, File > New, Load) — leads the
+gizmo signature, so the next refreshGizmo (rebuildMeshes ends in
+refreshMarkers → refreshGizmo on every compile) rebuilds
+balls/rigs against the live objects. Covers every applyDocState
+consumer at once: convert previews, undo/redo, load, new. The
+mid-drag guard (no rebuild while gizmoDragging) is unaffected —
+a doc-state swap cannot happen inside a gizmo gesture.
+
+## D206 (v18.34) — a dragged "second click" no longer opens the node dialog
+
+His intermittent bug: switch lanes (click a dimmed lane's node),
+then click-AND-DRAG that node — the node settings dialog pops on
+release. ROOT CAUSE: JavaFX counts clicks by press TIME/DISTANCE
+only — the lane-switch click is click 1, the drag's press is
+click 2, and MOUSE_CLICKED fires after the drag with
+clickCount == 2 (dragging never resets it). The canvas clicked
+handler now keeps the press point (clkPressX/Y) and treats any
+gesture that traveled > 3 px as NOT a click — the seam-diamond
+deadband convention (D158) — covering the node dialog AND the
+s/c element dialog. A genuine stationary double-click (even one
+whose first click switched lanes: it IS a double-click on that
+node) still opens.
+
+## D207 (v18.35) — SEAM-CLEAN RATES: Pass A differences per SPAN, the graph trim bands collapse
+
+His ask: "make the buffer space on the seam between sections a
+bit smaller for all situations… without artifacts."
+
+The buffer existed because bodyRates' ±1-sample central windows
+DIFFERENCED ACROSS section seams: a rate discontinuity smeared
+over the straddling samples, so every consumer (Resulting
+overlays, derived strips, true strokes, scale fits) trimmed
+SEAM_TRIM = 2.5·dt around each boundary — a ~6·dt visual hole.
+
+FIX at the source: passA segments per section SPAN (was per RUN,
+D84 — a new int[] overload; the runs-based one delegates for
+probes). One-sided windows at span edges make every seam-adjacent
+sample honest: the boundary sample's rate is its OWN section's,
+and the instant jump lives BETWEEN samples — where the seam
+CARETS (D138/D140) already point. Consequences:
+- The drawn curves run TO the seam and break exactly ON it
+  (SeamWalk crossing-breaks replace the proximity trims; no
+  extrapolation, no connector across the jump — zero artifacts).
+- SEAM_TRIM shrinks 2.5·dt → 0.6·dt and only guards hover
+  readouts/scale fits; hover SLOPE differencing clamps to the
+  sample's own span (slopeWin) instead.
+- D203's known corner — the one-sample true-rate dip AT the seam
+  (bodyRates straddling the landing runt) — is CURED, not
+  covered: the runt interval sits inside one span.
+- Gate re-baseline: Phase3Gate 50f asserted the unsmoothed 9°
+  kink shows a > 300 °/s smeared spike — that spike WAS the
+  artifact this fix removes. Re-pointed at the new contract
+  (sharp seam = clean rates ≤ 60 °/s + the U-kink witness;
+  smoothed = the real ~23 °/s ramp). Single-section documents
+  are bitwise (one span == the old whole-array call); smooth
+  seams move by one-sided-vs-central dust. All suites +
+  DetermGates 197-200 green.
+
+## D208 (v18.36) — the collapsed graph editor UNLOADS; zoomed-out draws decimate per pixel column
+
+1. redraw() is a hard no-op while the panel is collapsed
+   (FvdDesigner.graphCollapsed, divider > 0.97) — the busy-plot
+   cost goes to zero off screen. Expanding repaints via the
+   divider listener + layoutChildren; 3D markers/gizmos stay
+   synced through rebuildMeshes' direct refreshMarkers call
+   (never redraw-borne — the D178 lesson holds).
+
+2. The zoomed-out lag itself (his "if there is a way…"): the
+   three sample-walking draw families each scanned the WHOLE
+   compiled array per curve — derived strips even did it per
+   inactive strip × 3 lanes. Now: view-culled index ranges
+   (axisIdxRange binary search), span-scoped derived strips
+   (each strip walks only its own samples; off-screen strips
+   skip outright), and a COLUMN-COMPACTED path writer (ColPath /
+   compactCols): consecutive points in one pixel column collapse
+   to enter/min/max/exit, so the stroked coverage is IDENTICAL —
+   spikes preserved exactly — while the path stays O(pixels)
+   however many samples are in view. At normal zoom every point
+   passes through verbatim (no change at all); dense dashed
+   overlays additionally stop chewing their dash pattern inside
+   zigzag columns.
+
+## D209 (v18.37) — influence edge B/Shift+B lines up the RESULTING graphs (reverses D102's zero rule)
+
+His re-spec (explicitly reversing the earlier instruction): on
+the influence surface, B/Shift+B on a delta lane's EDGE node
+should position it — value AND handle slope — so the RESULTING
+graphs line up with the neighbor, not return it to zero. And
+"like usual, B aims to line up the resulting graphs, not the
+design graph."
+
+MECHANISM: resulting == base + delta EXACTLY (the D98 two-pass
+contract), so the matched delta is neighborTarget − base.
+- neighborTarget rides the standard boundaryState machinery with
+  an influence-mode routing (inflM): the authored/analytic
+  shortcuts are SKIPPED — their lane semantics are the
+  SECTION's, not the surface's (the v15.0 sameMode branch would
+  hand a force neighbor's felt G to a Δpitch lane) — so targets
+  come from the SAMPLED resulting curves, uniform across every
+  neighbor type (force/geo/s-c/bridge/reversed/influenced/
+  tilted), with the real-split κ conversion built in: at a ≠v
+  seam B lines up the REAL curves, like everywhere else. The
+  °/m wrapper and the world-rate matcher key off the DELTA
+  lanes' own semantics (rates only for force-section influence;
+  inflYawPitchGlobal drives world targets) — worldLaneAt reads
+  the influence flags too.
+- base value/slope read the compiler's baseCurves rows at the
+  exact edge (t = 0 / the last row); a distance-native lane's
+  handle slope converts per-second → per-meter at the seam
+  speed.
+- NO seam-speed re-freeze here: an influenced section's
+  operating speed moves only by explicit action (the D95/D98
+  reconcile contract stands).
+- Fallbacks keep the OLD zero rule wherever matching is
+  meaningless: no neighbor on that side (ride start/end), no
+  compiled data yet, and the inert roll lane.
+The sampled extrapolation carries the usual ~3-samples-inside
+bias — a press or two converges (the D154 precedent, documented
+in Help). InflMatchProbe: the seam's resulting-rate step closes
+135.4 → 3.4 °/s on the first press, slopes join, and
+resulting == base + delta holds through the span (0.09 °/s).
+
+
+## D210 (v18.38) — new-file round 2: 5 s starter + a STANDARD camera, saved per file
+
+1. File > New's starting section runs 5 s (NEW_START_LEN, joining
+   D204's 5 m / 5 m/s — a 25 m level starter).
+2. The fly/orbit CAMERA rides the .fvd (user spec: "opening a file
+   will also bring the camera to the position the file was saved
+   in"): a `camera px py pz yaw pitch dist` cosmetic line (world
+   coordinates — Viewport3D.cameraWorld/applyCameraWorld convert
+   through the pane's scene offsets gridCamX0/Z0 and the Y-mirror;
+   an ortho pane reports/receives its saved perspective pose, a
+   flying pane the orbit pose it returns to). Cosmetics grows a
+   nullable camera slot; missing line = the view stays put (old
+   files unchanged). Save writes the PRIMARY pane's pose; load
+   applies to it after the rebuild. File > New frames the fresh
+   starter deterministically (pivot mid-track at (12.5, 5, 0),
+   yaw −30, pitch −20, dist 35 — the default orbit angles).
+   Save-while-flying stores the pre-fly orbit pose (accepted).
+
+## D211 (v18.39) — POV stats line: absolute global Pitch/Yaw/Roll + rates
+
+The bottom stats line (which lives on FvdDesigner.updatePovStats —
+the CLAUDE.md Viewport3D attribution was stale) gains three
+entries: Pitch (elevation°), Yaw (heading°, REPORTED left-positive
+per the D186 display boundary — eulerOf's internal heading
+negates), Roll (bank°), each with its GLOBAL rate (°/s) from
+Coaster.worldRates on the TRUE arrays (already reported-sign).
+Angles lerp wrap-aware between the POV bracket samples (D193);
+vertical track shows "—" where heading/bank are undefined
+(worldRates' NaN hold-off).
+
+## D212 (v18.40) — blank spinner: the zero rule at EVERY commit entry + press backstops
+
+His report stood: ENTER-on-blank committed 0 (D192) but clicking
+off didn't. TWO root causes (bytecode-verified by the
+investigation): (a) most numeric spinners live in NON-AUTOHIDE
+Popup scenes (seam settings, speed-control options) whose other
+controls are focus-untraversable — JavaFX focus is per-Scene and a
+popup's focused flag is slaved to the owner stage, so clicking
+anywhere else fires NO focus event at all: neither JavaFX's own
+commit nor the D191 listener ever ran; (b) where a transition DOES
+fire, Spinner's INTERNAL focus-loss commit (installed in its
+constructor — the D191 "JavaFX only commits on ENTER" premise was
+wrong) runs FIRST and drives the value through the converter's
+empty→NULL transient — swallowed NPEs in the appliers, and
+commitTyped's custom-factory restore branch rendered "null" (which
+the numeric TextFormatter rejected: value stuck).
+
+FIX, three layers: (1) FvdDesigner.wrapBlankConverter — a
+BlankSafeConverter around every numeric spinner's factory
+converter, so blank reads as clamp-to-range(0) for double
+factories (current value for the snap-step walkers) at EVERY
+commit entry point, Spinner's internal ones included; the null
+transient is gone at the source (re-wrapped after the friction
+spinners install their fixed-decimal converters). (2) Scene-level
+MOUSE_PRESSED backstops (installNumericPressCommit /
+commitStrayNumericEditors): any press outside the focused spinner
+commits it — in its own scene AND across windows (a popup's editor
+vs a main-window click); the stage-deactivation handler runs the
+same sweep BEFORE settleIfPending. (3) A null guard in
+wireDocSpinner (hardening; the transient no longer occurs).
+
+## D213 (v18.41) — the °/m + absolute-roll convert de-banked (one-line guard)
+
+His "converting from roll rate to absolute roll always generated
+erroneous results": convertToLanes' PER-METER block divided lane 2
+by the profile speed UNCONDITIONALLY — including when the
+toRollAbs block had just filled it with the measured BANK ANGLE
+(degrees). Every °/m+absolute target authored bank/v (60.5° →
+2.39° at ~25 m/s — measured); his sections are °/m throughout, so
+it hit "always". rateM=0 targets were always fine, which is why
+DomainGate 47c never saw it. FIX: `if (!toRollAbs)` on the lane-2
+division — an absolute bank lane is degrees, not a rate; the
+integrators consume it verbatim under every flag (laneRatePM's
+exemption, and the '+'-hold already passed bank through undivided).
+Covers whole/partial/bridge converts (one engine). The
+investigator's 28-combination sweep now lands every combo at the
+rateM=0 fit residuals (≤ 0.06 m / 0.09°; was 58° bankDev, 168 m).
+Known separate corner (unmeasured, pre-existing): the bank
+extraction doesn't unwrap ±180° across inversions.
+
+## D214 (v18.42) — resulting overlays: PER-QUANTITY normalization (the −125 g axis)
+
+His two-geo rate→abs fixture showed a force axis of −125..+25 g
+though nothing exceeds 3.7 g (measured on his file — the model
+arrays are clean). The ~±100 lives in resultRates[i][3]: a legit
+−112 °/s resulting ROLL RATE (−9.86 °/m × v), fitted by
+updateResScale into the ONE shared overlay scale — which over a
+geo section is seeded, labeled and read as G. FIX: the roll/bank
+overlay (comp 3) normalizes on its OWN pair (resLo3/resHi3,
+comp-aware resToY) whenever its units differ from comps 1/2 — geo
+view (g vs rates) and absolute bank (degrees) — with its own
+defaults (±60 °/s / ±5 °/m / ±90°); force view with a RATE roll
+keeps the shared scale (all three comps same units, unchanged).
+The right-edge axis title appends "· roll °/s own scale" so the
+numbers never claim g for a rate curve; hover reads its values.
+
+## D215 (v18.43) — complex-control LAST-NODE length drag + the collapsed strip readout
+
+1. Dragging a complex speed-control graph's LAST node now drags
+   the CONTROL LENGTH itself (user spec: like a normal lane's end
+   node — no stretch): endLimitFor's strip wall becomes the
+   section end / next control (surfCtlMaxLen) for the last node,
+   and moveNode writes surfCtl.len = the node's new x (floored at
+   2× the domain gap so spClampControls never re-stretches; a
+   graph ending short holds dotted, the D174 look). Interior
+   nodes keep the hard box; the END DIAMOND (and the popup Length
+   spinner) keep the classic stretch semantics — both rescale
+   BOTH graphs now via spRescaleCtlLanes. Non-ripple neighbor
+   clamp (v1).
+2. The drag-to-create "length … m/s" readout drew at lineY − 8 —
+   in the COLLAPSED strip that is above the strip's own clip rect
+   and the glyphs were cut to slivers (his "hover message gets
+   covered up"). Collapsed mode drops it under the line
+   (bot − 2); tall mode unchanged.
+
+## D216 (v18.44) — the FAIL-SOFT loader ("should be able to open the file anyway")
+
+Continuing D196/D198, from a full audit of DesignIO.load vs
+save() (9 findings, 3 confirmed by measurement):
+- PER-LINE fail-soft: a truncated/garbled known line (a partial
+  write, a sync conflict — the docs live in OneDrive) used to
+  throw AIOOBE/NumberFormatException out of load() and refuse the
+  ENTIRE file. The line-switch now catches per line, skips, and
+  counts; LoadResult carries `warnings`, and loadDesign reports
+  "N damaged line(s) skipped/healed", marking DIRTY so a save
+  rewrites a clean file. Damage can still mis-attach children
+  when a structural line (piece/section/lane) is the broken one —
+  the warning is the honest cue (documented tradeoff).
+- Post-load HEALING replaces refusals: an empty lane block heals
+  to a held constant (1 g on a force Gv lane, 0 elsewhere — a
+  1-node lane is legal, D196), an element-less s/c section and a
+  sectionless piece DROP with a warning; a document with nothing
+  left throws "no track data" — CLEANLY, before loadDesign
+  mutates the live document (a zero-piece file used to load,
+  replace the session doc, then crash the editor on
+  pieces.get(0): the one path where a bad file corrupted the
+  RUNNING session).
+- Clamp symmetry (the D198 rule, upper face): the reconcile
+  writes true entry speeds UNCAPPED while load clamped vDesign
+  (and infl) to 1000 — a >1000 m/s save (legal inside the
+  admitted ±1e6 placement envelope) silently rewrote on reload.
+  Upper bound now 1e4 (≥ the envelope's ~6.3 km/s ceiling).
+- Smaller: UTF-8 BOM before FVDD3 no longer refuses; railcolor/
+  start loops bounded by parts.length (the gradcolors pattern);
+  FVDD1 zero-length-segment handles no longer produce NaN
+  fractions; the bridge `section` line persists vPinned (field 6
+  — the lane/sc lines always did; a pin on a bridge-first piece
+  silently dropped).
+- NaN policy: deliberately UNCHANGED (admitted bit-faithfully;
+  Infinity clamps) — rejecting would break bit-fidelity for the
+  one case where the session really held NaN; the codebase's
+  no-NaN stance lives in the writers (Coaster.java:1837).
+
+## D217 (v18.45) — ACCEL/DECEL split for constant-acceleration controls
+
+User spec: separate Acceleration and Deceleration, tied by
+default. Model: SpeedControl gains decel + tied + decelLane (+ the
+session-only showDecel display flag; all ride copy() = undo), and
+driveCore takes both magnitudes — the below-target (launch) side
+drives at aAcc, the above-target (brake) side at aDec, each with
+its own a ≤ 0 = natural guard; tied passes accel for both =
+BIT-IDENTICAL to the one-magnitude arithmetic (gated). rowFor
+widens to {type, vt, aAcc, aDec, min, max} (passD pre-resolves
+complex decel graphs per sample like accel always was);
+Ctl.drive/driveRow/snapRow re-index; portion() clips and
+carrySpeedCtls remaps decelLane exactly like lane.
+
+UI: the options popup's accel row gains a "Tied" check (default
+on); untied reveals a Deceleration row — spinner when constant,
+"Edit Deceleration" button when complex. The two Edit buttons
+pick WHICH graph the strip displays/edits (▸ marks it; accel
+first on untie — user spec); the un-displayed twin draws dimmed
+behind. Untying seeds decel := accel (deep-copied graph), so
+nothing changes at the split; re-tying keeps the decel data
+stored but ignored (session fidelity). The strip pipeline routes
+through SpeedControl.editLane() at the active() choke; scale
+fits, hit tests, lock enforcement, and all three length-rescale
+sites cover both lanes.
+
+IO: sctl fields 9-10 = decel + tied (missing = tied with decel :=
+accel — every old file bitwise), decel graph as `cdn` node lines
+(written even while tied; old readers drop unknown lines), heal
+to a flat graph like cn. Accepted corner (the D166 class): the
+typed node dialog applies to the graph that was displayed when it
+opened.
+
+Gates: R2Probe (14 checks — tied-ignores-decel BITWISE, untied
+brake distances land on ¼-theory, flat-complex == constants to
+3.6e-15, byte-identical round-trip, reload-bitwise, decel-graph
+clipping; plus the D210 camera line and five D216 loader checks).
+GATE-INFRA note (same round): the on-disk determinism fixture
+came back KNOTLESS (he re-saved it 2026-08-04 — the known
+re-saves-test-files trap), so DetermGate198/199/200 now fall back
+to a CONSTRUCTED knot (KnotFixture: a geo climb that eats the
+kinetic energy chained into a force section the reconcile floors
+at 0.1); DetermGate199's window/split legs made single-piece-
+safe; LoadGate196's "empty lane throws" leg re-baselined to the
+D216 heal; Phase3Gate 50f re-baselined for D207 (the smeared-
+spike expectation WAS the artifact). Full battery green.
+
+
+## D218 (v18.46) — Add View centers on the coaster; camera jumps re-follow the floor grid
+
+His round-3 report: a freshly added pane's floor grid "does not
+update until the view is moved — can result in no grid being
+shown". ROOT CAUSE: the LOD grid follows the camera only through
+the MOVE handlers (orbit/pan/fly/pivot each call updateGridLOD);
+a new pane's grid is parked at the TRACK MIDPOINT by the
+worldCentered block, while its camera was a copy of the spawner's
+pose — past the grid's 240 m fade that reads as no floor at all.
+Same-cause audit found two more holes: (a) applyCameraWorld (the
+D210 load restore + New framing) moved the pivot without the grid
+following — the SAME bug one report later; (b) the D182
+spawner-pose copy transplanted SCENE coordinates between panes
+whose worlds can be centered on different documents' midpoints
+(pane 0 centers on the STARTUP doc, later panes on the current
+one) — a silently offset camera.
+
+FIX, one route: updateGridLOD moved INTO applyCameraWorld (every
+programmatic camera jump re-follows the grid), and Add View now
+CENTERS ON THE COASTER (his spec) via FvdDesigner.frameCoasterPose
+— compiled-track bbox center, the default orbit angles, distance
+fitting the bounding radius in the current FOV — applied through
+applyCameraWorld AFTER the pane's first rebuildMeshes (the
+scene↔world offsets exist only then). The scene-coord copy is
+gone with the feature it served.
+
+## D219 (v18.47) — the accel/decel CHAIN LINK (his UI re-spec of D217)
+
+The Tied check + conditional Deceleration row become ONE always-
+visible line: Acceleration · 🔗 · Deceleration (spinners when
+constant, the ▸ Edit buttons when complex). The 🔗 ToggleButton
+(tooltip "Link Acceleration and Deceleration"; lit border while
+linked, dimmed when not) replaces "Tied": LINKED (default) keeps
+both spinners editable and MIRRORS every edit into the other —
+the classic one-magnitude behavior, still bitwise (the model's
+tied flag and evaluator are unchanged; the mirror just keeps
+decel == accel in the file too). Unlinking seeds decel := accel
+(+ a deep copy of the graph when complex) so nothing changes at
+the split; re-linking snaps decel back onto accel. While linked
+BOTH Edit buttons open the one shared graph and both wear the ▸;
+unlinked, each button selects its own graph (accel first).
+
+
+## D220 (v18.48) — round-4 polish: closer default framing, denser/bigger combs, the neon chain, the layered-under speed curve
+
+1. DEFAULT VIEW: frameCoasterPose tightens to 0.8× the
+   fit-the-sphere distance (coasters are flat-ish — the bounding
+   sphere overestimates) and now ALSO applies at STARTUP (the
+   default view was the never-centered pivot-at-origin rig; file
+   loads still restore their saved camera on top) and to File >
+   New (replacing the hand-tuned constant — one framing rule
+   everywhere).
+2. COMBS: 1.5× denser (COMB_SPACING 0.5 → ⅓ m; the TIME comb's
+   fillers follow automatically — their count derives from the
+   spacing — while whole-second ticks stay on seconds) and the
+   old 140% size IS the new 100% (COMB_SIZE_BASE 1.4 multiplies
+   the slider; a stored 140% now renders 1.96× — the slider's ↺
+   returns to the new default look). EVERY comb hover readout and
+   the POV stats angles/rates read THREE decimals (his round-5
+   follow-up), and the radius wears a plain "r=" — it is the
+   exact reciprocal of the displayed °/m value, so its accuracy
+   IS the curvature reading's.
+3. The speed-control CHAIN: smaller button (padding only — the 🔗
+   glyph size unchanged), BRIGHT PURE YELLOW background while
+   linked (rgb(255,235,0) — the first pick's green cast came from
+   G > R), plain gray otherwise, glyph always black, NO
+   outline (the blue border is gone). And his re-spec of the
+   linked behavior: the DECELERATION side grays out while linked
+   — spinner disabled but live (it visibly mirrors every
+   Acceleration edit), the Edit Deceleration button disabled, the
+   ▸ stays on Acceleration alone. Unlink to edit the brake side.
+4. The "dim resulting speed graph at 5 m/s" ROOT CAUSE: the
+   strip drew the green dotted TRUE-speed curve BEFORE its value-
+   axis gridlines — the main plot's inverse layering — so the
+   dark gridlines painted over the curve; a new file's near-flat
+   5 m/s curve hugs one gridline for a long stretch and read as
+   washed out. The curve now draws AFTER the grid (and at full
+   alpha like every other curve); no color was ever wrong — the
+   layering was.
+
+
+NEXT: the rest of his shakedown feedback (he is holding a couple
+of items for their own prompts), then Phase 4 in the adopted
+order (1: the STRAIGHT/CURVE OVERHAUL — advanced turns, roll
+customization, closure, viewport interactivity with neighbor
+re-solve; 2: train approximation graphs; 3: imports & content;
+4: 3D nodal track influence). Also pending his verdict: renaming
+the .fvd extension is a two-line FileChooser change whenever he
+picks a program name (answered in-session).

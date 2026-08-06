@@ -3392,6 +3392,97 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     DetermGate199 (10 checks); Phase2Gate's two pass-through
     contracts re-baselined to compile == placed-direct-at-origin.
 
+142. v18.32-v18.37 (D204-D209): the shakedown feedback round.
+    (a) File > New: piece at 5 m, start speed 5 m/s (startup demo
+    keeps 21/26); (b) any Convert/preview window opens with
+    "Optimal placement" checked, every time; (c) strict-seam
+    settings rows wear a 🔒/🔓 padlock (red outline while locked)
+    instead of "Discontinuous" — behavior identical; (d) new
+    project → Convert to geo (distance, °/m, both axes global) →
+    drag the entry ball/arrows: the TRACK follows (pre-fix only
+    the gizmo moved — stale piece object after the preview's
+    applyDocState; also try: undo a node edit, then drag the
+    ball); (e) switch lanes by clicking a dimmed node, then
+    immediately click-DRAG that node: no node dialog on release
+    (a stationary double-click still opens it); (f) at every
+    section seam the Resulting overlays / derived strips / true
+    strokes now run right up to the boundary and break ON it —
+    no blank band; hover slopes near seams stay sane; a sharp
+    strict seam shows NO rate spike (the carets are the jump's
+    witness); (g) collapse the graph panel on a big zoomed-out
+    layout: interaction lag from the plot disappears (expand
+    repaints correctly); zoomed-out drawing is also decimated
+    per pixel column — verify curves look identical at every
+    zoom; (h) influence-edit a section with a neighbor and press
+    B / Shift+B on a delta EDGE node: the dotted RESULTING curves
+    line up with the neighbor (value + slope; re-press converges;
+    with no neighbor on that side it still zeroes). Headless:
+    GizmoProbe (32 convert combos × rigid moves), InflMatchProbe
+    (3 checks), Phase3Gate 50f RE-BASELINED (span-clean rates
+    show no smeared seam spike — the old > 300 °/s expectation
+    WAS the artifact), all suites + DetermGates 197-200 green.
+
+143. v18.38-v18.45 (D210-D217): shakedown round 2.
+    (a) File > New: 5 s starter section, camera framing it the same
+    way every time; save a file, orbit somewhere else, reopen — the
+    view returns to where it was saved (old files: view stays put);
+    (b) ride POV: the stats line shows Pitch/Yaw/Roll angles +
+    °/s rates (yaw left-positive; vertical track shows —);
+    (c) blank ANY spinner (piece x/y/z, seam angles, speed-control
+    boxes, friction) then click anywhere — same panel, main window,
+    or another app: it commits 0 (clamped; the snap-step spinner
+    restores its value instead); (d) convert a rolling section to
+    absolute roll WITH °/m rate units: the banking survives (was
+    flattened to ~angle/v); (e) geo section + Resulting roll
+    overlay: the G axis stays honest (the roll curve fits its own
+    scale, title says so); (f) drag a complex control's LAST node:
+    the control end follows, earlier nodes stay put (the end
+    diamond still stretches); the drag-create length readout is
+    readable on the collapsed strip; (g) hand-damage a .fvd line
+    (or truncate the tail): the file OPENS with a warning count and
+    marks dirty; a header-only file refuses cleanly; (h) ACCEL
+    control: untick Tied — set decel ≠ accel and watch the brake
+    ramp change while the launch side doesn't; check Complex: two
+    graphs, the Edit buttons switch which one shows (dimmed twin
+    behind), untying seeds decel = accel. Headless: R2Probe (14),
+    probeAbsRoll sweep (28 combos at fit residual), full battery +
+    DetermGates green. GATE-INFRA: DetermGate198/199/200 build
+    their own knot now (KnotFixture — the on-disk fixture was
+    re-saved knotless 2026-08-04); LoadGate196 check (c)
+    re-baselined to the D216 heal.
+
+144. v18.46-v18.47 (D218-D219): round-3 polish. (a) Add View on a
+    big layout: the new pane opens centered on the WHOLE coaster
+    with the floor grid visible immediately (pre-fix: spawner's
+    pose, grid parked at mid-track — often no floor until the
+    first move); also load a file whose saved camera is far from
+    the track start — the grid must be under the camera right
+    away. (b) ACCEL control popup: Acceleration · 🔗 · Deceleration
+    on one line, always visible; linked (default, lit chain) =
+    editing either spinner changes both; unlink (dimmed chain) =
+    independent; hover the chain = "Link Acceleration and
+    Deceleration". Complex: the two ▸ Edit buttons sit in the same
+    layout — linked, both open the one shared graph (both wear ▸);
+    unlinked, each picks its own. Re-linking snaps decel onto
+    accel. Headless: full battery green (tied stays the bitwise
+    one-magnitude path).
+
+145. v18.48 (D220): round-4 polish. (a) startup, File > New and
+    Add View all frame the coaster the same way, noticeably closer
+    than before (0.8× fit); (b) combs are 1.5× denser and read
+    ~1.4× bigger at the slider's 100% (a stored 140% renders
+    bigger still — ↺ returns to the new default look); EVERY comb
+    hover readout and the POV stats angles/rates read THREE
+    decimals, and the radius wears a plain "r=" (it is the exact
+    reciprocal of the °/m value); (c) the 🔗 chain
+    is a small bright-yellow-when-linked button with a black glyph
+    and no outline; while linked the Deceleration spinner/button
+    is grayed but the spinner visibly mirrors Acceleration edits;
+    (d) new file, tall speed strip: the green dotted true-speed
+    curve is fully bright even where it runs along a gridline
+    (the strip layered it UNDER the axis grid before — root cause
+    of the "dim around 5 m/s" report).
+
 ## Debugging heuristics learned the hard way
 
 - Wild 3D output after math edits → check the frame-rotation sign (`−ωU·R`)

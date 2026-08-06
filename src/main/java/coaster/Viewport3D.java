@@ -750,6 +750,49 @@ class Viewport3D {
     // the 1-6 view-direction keys; FvdDesigner.handleViewDigit routes
     // to orthoEnterTop/setOrthoSideMode.)
 
+    /** The orbit rig's pose in WORLD coordinates — {pivot x, y, z,
+     *  yaw°, pitch°, distance m}, the per-file `camera` line (v18.38,
+     *  D210). Scene→world: the world group's centering translate
+     *  (gridCamX0/Z0) and the scene Y-mirror undo here. An ortho pane
+     *  reports its saved perspective pose; a flying pane reports the
+     *  orbit pose it will return to. */
+    double[] cameraWorld() {
+        return new double[]{
+            camPivot.getX() + gridCamX0,
+            -camPivot.getY(),
+            camPivot.getZ() + gridCamZ0,
+            orthoView ? savedYaw : camYaw.getAngle(),
+            orthoView ? savedPitch : camPitch.getAngle(),
+            -(orthoView ? savedZoom : camZoom.getZ()) };
+    }
+
+    /** Apply a WORLD-coordinate pose to the orbit rig (file load /
+     *  File > New's standard framing, v18.38 D210). An ortho pane
+     *  takes the angles/zoom as the perspective pose it restores to
+     *  (its pivot moves live — shared state). */
+    void applyCameraWorld(double[] cm) {
+        if (cm == null || cm.length < 6) return;
+        camPivot.setX(cm[0] - gridCamX0);
+        camPivot.setY(-cm[1]);
+        camPivot.setZ(cm[2] - gridCamZ0);
+        double z = -Math.max(1, Math.min(ORTHO_FAR_CLIP * 0.5, cm[5]));
+        if (orthoView) {
+            savedYaw = cm[3];
+            savedPitch = cm[4];
+            savedZoom = z;
+        } else {
+            camYaw.setAngle(cm[3]);
+            camPitch.setAngle(cm[4]);
+            camZoom.setZ(z);
+        }
+        // the LOD floor grid FOLLOWS the camera — but only through
+        // the move handlers; a programmatic jump (load restore, New
+        // framing, Add View centering) left it wherever the last
+        // rebuild parked it, up to "no grid at all" past its 240 m
+        // fade (v18.46, D218 — the user's empty-floor new pane)
+        updateGridLOD(cm[0], cm[2]);
+    }
+
     private void orthoEnter(boolean top) {
         if (flyActive || povActive) return;
         if (orthoView && top && orthoTop) {   // T again in top view: exit
@@ -1818,7 +1861,10 @@ class Viewport3D {
     // from the TRUE arrays; curvature straight off the frames.
     // Hovering anywhere on a tooth shows its value bottom-left.
 
-    static final double COMB_SPACING = 0.5;    // m of track per tooth
+    // 1.5× the historic 0.5 m tooth density since v18.48 (D220,
+    // user spec) — the TIME comb's fillers follow (their count is
+    // derived from this spacing); whole-second ticks stay on seconds
+    static final double COMB_SPACING = 1.0 / 3; // m of track per tooth
     static final double COMB_VG_SCALE = 0.5;   // m per g (vertical)
     static final double COMB_LG_SCALE = 0.8;   // m per g (lateral)
     static final double COMB_V_SCALE = 0.05;   // m per m/s (speed)
@@ -1826,6 +1872,9 @@ class Viewport3D {
     static final double COMB_TIME_STEP = 0.1;  // s of ride per time tooth
     static final double COMB_TIME_LEN = 0.5;   // m — time tooth height
     static final double COMB_MAX = 3.5;        // length cap (m, at 100%)
+    // the old 140% look IS the new 100% (v18.48, D220 — user spec:
+    // "listed at 100%, really just making all combs 1.4x bigger")
+    static final double COMB_SIZE_BASE = 1.4;
 
     // tooth KINDS: 0 vert G, 1 lat G, 2 speed (GREEN since v17.16),
     // 3 geo local pitch, 4 geo local yaw, 5 geo global elevation,
@@ -2361,7 +2410,7 @@ class Viewport3D {
         TriangleMesh mesh = new TriangleMesh();
         int v = 0, tc = 0;
         double scale = FvdDesigner.clamp(
-            app.settings.combScale(), 10, 500) / 100.0;
+            app.settings.combScale(), 10, 500) / 100.0 * COMB_SIZE_BASE;
         if (samples.size() < 2) return new MeshView(mesh);
         int lo = 0;
         if (kind == 9 || kind == 10) {
@@ -2654,32 +2703,36 @@ class Viewport3D {
             combLabel.setVisible(false);
             return;
         }
+        // THREE decimals on every comb readout (v18.48, user spec)
         combLabel.setText(switch (hit.kind()) {
-            case 0 -> String.format("%.2f g vert", hit.value());
-            case 1 -> String.format("%.2f g lat", hit.value());
-            case 2 -> String.format("%.1f m/s  (%.0f km/h)",
+            case 0 -> String.format("%.3f g vert", hit.value());
+            case 1 -> String.format("%.3f g lat", hit.value());
+            case 2 -> String.format("%.3f m/s  (%.3f km/h)",
                 hit.value(), hit.value() * 3.6);
-            case 3 -> String.format("pitch %.2f °/m  %s",
+            case 3 -> String.format("pitch %.3f °/m  %s",
                 hit.value(), radiusTxt(hit.value()));
-            case 4 -> String.format("yaw %.2f °/m  %s",
+            case 4 -> String.format("yaw %.3f °/m  %s",
                 hit.value(), radiusTxt(hit.value()));
-            case 5 -> String.format("elev %.2f °/m  %s",
+            case 5 -> String.format("elev %.3f °/m  %s",
                 hit.value(), radiusTxt(hit.value()));
-            case 6 -> String.format("heading %.2f °/m  %s",
+            case 6 -> String.format("heading %.3f °/m  %s",
                 hit.value(), radiusTxt(hit.value()));
-            case 7 -> String.format("curv %.2f °/m  %s",
+            case 7 -> String.format("curv %.3f °/m  %s",
                 hit.value(), radiusTxt(hit.value()));
-            default -> String.format("t = %.1f s", hit.value());
+            default -> String.format("t = %.3f s", hit.value());
         });
         combLabel.setVisible(true);
     }
 
     /** The curvature-tooth hover's radius parenthetical (v17.18, user
      *  spec — EVERY geometric tooth reads its radius now): a zero
-     *  component — straight track in that plane — reads (r=∞). */
+     *  component — straight track in that plane — reads (r=∞).
+     *  Plain "=" since v18.48: the radius is the exact reciprocal of
+     *  the displayed °/m value — identical accuracy, nothing
+     *  approximate about the conversion. */
     private static String radiusTxt(double degPerM) {
         return Math.abs(degPerM) < 1e-6 ? "(r=∞)"
-            : String.format("(r≈%.0f m)", 57.29578 / Math.abs(degPerM));
+            : String.format("(r=%.3f m)", 57.29578 / Math.abs(degPerM));
     }
 
     /** Recenter the floor grid under the camera, quantized to 10 m steps so
@@ -2951,7 +3004,13 @@ class Viewport3D {
         BridgeSection into = app.bridgeInto(pi);
         BridgeSection trail = app.bridgeInto(pi + 1);
         StringBuilder sb = new StringBuilder();
-        sb.append(app.settings.gizmoLocal() ? 'L' : 'G')
+        // the DOCUMENT GENERATION (v18.33, D205): applyDocState/Load/
+        // New replace the TrackPiece objects — often with identical
+        // VALUES (a convert preview's Apply, a lanes-only undo), so a
+        // value signature alone kept the ball/rig closures wired to
+        // an orphaned piece: drags moved the gizmo, never the track
+        sb.append(app.docGen).append('~')
+          .append(app.settings.gizmoLocal() ? 'L' : 'G')
           .append(orthoPlaneAxis())   // fixed-ortho arrow hiding (v18.11)
           .append(gizmoReveal)        // ball-click reveal (v18.16, D187)
           .append('|').append(pi)

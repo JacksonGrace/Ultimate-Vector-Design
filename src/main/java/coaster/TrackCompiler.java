@@ -449,7 +449,13 @@ public final class TrackCompiler {
         for (int i = 0; i < hy.length; i++) hy[i] = hyAcc.get(i);
         double[] trueV = passD(all, runs, c.fricRoll, c.fricAir,
             ctlSampleRows(all, spans, c), hy);
-        double[][] rates = passA(all, runs);
+        // rates difference per SECTION SPAN since v18.35 (D207): the
+        // ±1 central windows never straddle a seam, so seam-adjacent
+        // rates are one-sided and CLEAN — the graphs draw right up to
+        // the boundary instead of trimming a smear band
+        int[] segStarts = new int[spans.size()];
+        for (int i = 0; i < spans.size(); i++) segStarts[i] = spans.get(i).i0();
+        double[][] rates = passA(all, segStarts);
         return new Result(all, trueV, rates,
             trueFelt(all, trueV), trueRates(all, rates, trueV), spans);
     }
@@ -1606,14 +1612,34 @@ public final class TrackCompiler {
      *  differences used to reach across the GAP to a detached piece's
      *  first sample — the run-end rates jumped wild (the user's
      *  "graphs jump around at the very end"). Bridged seams are one
-     *  continuous body and still difference straight through. */
+     *  continuous body and still difference straight through.
+     *  (Probe/legacy surface — compile() segments per SPAN since
+     *  v18.35, the int[] overload below.) */
     public static double[][] passA(List<FVDIntegrator.Sample> samples,
                                    List<double[]> runs) {
+        int[] starts = new int[runs.size()];
+        for (int r = 0; r < runs.size(); r++) starts[r] = (int) runs.get(r)[0];
+        return passA(samples, starts);
+    }
+
+    /** Pass A, differenced WITHIN each segment (v18.35, D207 — the
+     *  segments are the section SPANS now, was per run): a rate
+     *  discontinuity at a seam used to smear across the ±1-sample
+     *  windows that straddled it, and every consumer trimmed a
+     *  SEAM_TRIM band around each boundary to hide it — the user's
+     *  "buffer space" between sections' graphs. One-sided windows at
+     *  segment edges keep every sample honest: a boundary sample's
+     *  rate is its OWN section's, exact to the sample spacing. A
+     *  single-section document is bitwise-identical (one segment ==
+     *  the old whole-array call); smooth seams (bridges included)
+     *  change only by the O(dt·slope) one-sided-vs-central dust. */
+    public static double[][] passA(List<FVDIntegrator.Sample> samples,
+                                   int[] segStarts) {
         double[][] out = new double[samples.size()][4];
-        for (int r = 0; r < runs.size(); r++) {
-            int i0 = (int) runs.get(r)[0];
-            int i1 = r + 1 < runs.size() ? (int) runs.get(r + 1)[0]
-                                         : samples.size();
+        for (int r = 0; r < segStarts.length; r++) {
+            int i0 = segStarts[r];
+            int i1 = r + 1 < segStarts.length ? segStarts[r + 1]
+                                              : samples.size();
             if (i0 >= i1) continue;
             double[][] part = FVDIntegrator.bodyRates(
                 samples.subList(i0, i1));

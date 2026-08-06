@@ -46,7 +46,12 @@ public final class DesignIO {
     public record Cosmetics(double heart, double gauge, double tiespace,
                             boolean railSolid, double[] railColor,
                             double[] gradColors, double[] gradStops,
-                            double[] latColors, double[] latStops) {
+                            double[] latColors, double[] latStops,
+                            double[] camera) {
+
+        // camera (v18.38, D210): the fly/orbit pose saved per file —
+        // {pivot world x, y, z, yaw°, pitch°, distance m}; null =
+        // no camera line (old files: the view stays where it is)
 
         public static Cosmetics defaults() {
             return new Cosmetics(1.0, 1.0, 1.0, false,
@@ -57,11 +62,17 @@ public final class DesignIO {
                 new double[]{ -1.5, -1, -0.5, 1, 3, 5 },
                 new double[]{ 0.2, 0.9, 0.3,  1.0, 0.9, 0.1,
                               1.0, 0.15, 0.1 },
-                new double[]{ 0.5, 1.0, 1.5 });
+                new double[]{ 0.5, 1.0, 1.5 },
+                null);
         }
     }
 
-    public record LoadResult(Coaster coaster, Cosmetics cosmetics) {}
+    /** warnings > 0 = the file was damaged and loaded FAIL-SOFT
+     *  (v18.44, D216): that many lines were skipped or healed — the
+     *  caller should tell the user and mark dirty so a re-save
+     *  writes a clean file. */
+    public record LoadResult(Coaster coaster, Cosmetics cosmetics,
+                             int warnings) {}
 
     /** Which of the SIX gradient slots the k-th stop of an n-stop
      *  file line lands in (v16.15): 6 = direct; 5 (v16.14) = cyan
@@ -115,6 +126,15 @@ public final class DesignIO {
         StringBuilder ls = new StringBuilder("latstops");
         for (double v : cos.latStops()) ls.append(String.format(Locale.US, " %.4f", v));
         out.println(ls);
+        // the fly/orbit camera pose (v18.38, D210): pivot world
+        // x/y/z + yaw/pitch degrees + orbit distance — cosmetic
+        // precision (render-only); missing = the view stays put
+        if (cos.camera() != null && cos.camera().length >= 6) {
+            double[] cam = cos.camera();
+            out.printf(Locale.US,
+                "camera %.4f %.4f %.4f %.4f %.4f %.4f%n",
+                cam[0], cam[1], cam[2], cam[3], cam[4], cam[5]);
+        }
         for (TrackPiece piece : c.pieces) {
             // 5th-8th fields (v12.1): the piece's BASE ORIENTATION
             // quaternion (split/reversal anchor); missing = identity,
@@ -157,8 +177,13 @@ public final class DesignIO {
                     // bridge (v13.0): the FROZEN solve inputs — poses
                     // bit-exact (world-anchored geometry re-derives
                     // from them deterministically) + tangent lengths
-                    out.printf(Locale.US, "section bridge %s distance %d%n",
-                        d(bs.vDesign), bs.reversed ? 1 : 0);
+                    // field 6 = vPinned (v18.44, D216 — lane/sc
+                    // section lines always persisted it; a pin on a
+                    // bridge-FIRST piece silently dropped on reload;
+                    // the reader takes parts[5] for every kind)
+                    out.printf(Locale.US, "section bridge %s distance %d %d%n",
+                        d(bs.vDesign), bs.reversed ? 1 : 0,
+                        bs.vPinned() ? 1 : 0);
                     out.printf(Locale.US, "bpose"
                         + " %s %s %s %s %s %s %s"
                         + " %s %s %s %s %s %s %s%n",
@@ -290,6 +315,12 @@ public final class DesignIO {
 
     public static LoadResult load(BufferedReader in) throws IOException {
         String header = in.readLine();
+        // a UTF-8 BOM (an external editor's re-save) must not refuse
+        // an otherwise byte-perfect file (v18.44, D216)
+        if (header != null && !header.isEmpty()
+                && header.charAt(0) == '﻿') {
+            header = header.substring(1);
+        }
         if (header == null || !header.startsWith("FVDD"))
             throw new IOException("not an FVD design file");
         boolean legacy1 = header.trim().equals("FVDD1");
@@ -307,6 +338,8 @@ public final class DesignIO {
         double[] lats = def.latStops().clone();
         double v0 = 26;
         double[] start = { 0, 21, 0 };   // legacy `start` line (FVDD2/1)
+        double[] camera = null;          // v18.38: missing = view stays
+        int warnings = 0;                // fail-soft skips/heals (D216)
 
         TrackPiece curPiece = null;
         Section curSection = null;
@@ -325,6 +358,14 @@ public final class DesignIO {
         while ((line = in.readLine()) != null) {
             String[] parts = line.trim().split("\\s+");
             if (parts.length == 0 || parts[0].isEmpty()) continue;
+            // FAIL-SOFT per line (v18.44, D216): a truncated or
+            // garbled line — a partial write, a sync conflict —
+            // used to throw out of the whole load and refuse the
+            // entire document. Skip it, count it, keep parsing;
+            // the caller reports the count and marks dirty. The
+            // post-load validation still refuses documents with
+            // nothing left in them.
+            try {
             switch (parts[0]) {
                 case "v0" -> v0 = clamp(Double.parseDouble(parts[1]), 1, 100);
                 // Phase 3 friction (v17.0, D133); missing = 0 0
@@ -338,13 +379,25 @@ public final class DesignIO {
                 case "gauge" -> gauge = Double.parseDouble(parts[1]);
                 case "tiespace" -> tie = clamp(Double.parseDouble(parts[1]), 0.2, 10);
                 case "start" -> {
-                    for (int k = 0; k < 3; k++)
+                    // bounded by parts.length like gradcolors (D216:
+                    // a truncated cosmetic line keeps its defaults)
+                    for (int k = 0; k < 3 && k + 1 < parts.length; k++)
                         start[k] = clamp(Double.parseDouble(parts[k + 1]), -500, 500);
                 }
                 case "railmode" -> solid = parts[1].equals("solid");
                 case "railcolor" -> {
-                    for (int k = 0; k < 3; k++)
+                    for (int k = 0; k < 3 && k + 1 < parts.length; k++)
                         rail[k] = clamp(Double.parseDouble(parts[k + 1]), 0, 1);
+                }
+                // the saved fly/orbit camera pose (v18.38, D210):
+                // {pivot world x,y,z, yaw°, pitch°, dist}; missing
+                // or short = the view stays where it is
+                case "camera" -> {
+                    if (parts.length > 6) {
+                        camera = new double[6];
+                        for (int k = 0; k < 6; k++)
+                            camera[k] = Double.parseDouble(parts[k + 1]);
+                    }
                 }
                 case "gradcolors" -> {
                     // SIX stops since v16.15 (18 values). Legacy maps:
@@ -438,9 +491,14 @@ public final class DesignIO {
                     // exactly 0.1, and the old [1,100] turned it into
                     // 1.0 — 10x the knot curvature, the user's
                     // "changes at exactly one point" reload), and
-                    // speed controls can push design speeds past 100
+                    // speed controls can push design speeds past 100.
+                    // Upper bound 1e4 since v18.44 (D216): the
+                    // reconcile writes true entry speeds UNCAPPED,
+                    // and the admitted ±1e6 coordinate envelope
+                    // reaches ~6.3 km/s — the old 1000 silently
+                    // rewrote such saves (non-bitwise reload)
                     double vd = parts.length > 2
-                        ? clamp(Double.parseDouble(parts[2]), 0.1, 1000) : v0;
+                        ? clamp(Double.parseDouble(parts[2]), 0.1, 1e4) : v0;
                     curSection = switch (parts[1]) {
                         case "force" -> ForceSection.empty(vd);
                         case "geo"   -> GeoSection.empty(vd);
@@ -510,12 +568,27 @@ public final class DesignIO {
                         curCtl.minLimit = true;   // at least one, always
                         curCtl.maxLimit = true;
                     }
+                    // fields 9-10 = decel + tied (v18.45, D217);
+                    // missing = tied, decel mirrors accel
+                    if (parts.length > 10) {
+                        curCtl.decel = clamp(
+                            Double.parseDouble(parts[9]), 0, 20);
+                        curCtl.tied = parts[10].equals("1");
+                    } else {
+                        curCtl.decel = curCtl.accel;
+                        curCtl.tied = true;
+                    }
                     dst.add(curCtl);
                 }
                 case "cn" -> {
                     if (curCtl == null)
                         throw new IOException("cn outside speed control");
                     curCtl.lane.add(parseNode(parts));
+                }
+                case "cdn" -> {   // decel graph nodes (v18.45, D217)
+                    if (curCtl == null)
+                        throw new IOException("cdn outside speed control");
+                    curCtl.decelLane.add(parseNode(parts));
                 }
                 case "smark" -> {
                     List<Double> dst = markListOf(curSection);
@@ -533,9 +606,10 @@ public final class DesignIO {
                     // operating speed rides this line (§5.6 mapping)
                     ls.vAuthored = ls.vDesign;
                     // same admit-what-the-app-writes rule as the
-                    // section line (D198): influenced sections join
-                    // the reconcile, whose floor is 0.1
-                    ls.vDesign = clamp(Double.parseDouble(parts[1]), 0.1, 1000);
+                    // section line (D198; upper bound 1e4 with it,
+                    // D216): influenced sections join the reconcile,
+                    // whose floor is 0.1 and whose top is uncapped
+                    ls.vDesign = clamp(Double.parseDouble(parts[1]), 0.1, 1e4);
                     // v16.5 influence axis flags; missing = local
                     ls.inflRollGlobal = parts.length > 2
                         && parts[2].equals("1");
@@ -649,6 +723,9 @@ public final class DesignIO {
                 }
                 default -> { /* unknown lines ignored: forward compatibility */ }
             }
+            } catch (RuntimeException | IOException damaged) {
+                warnings++;   // skip the damaged line, keep the rest
+            }
         }
 
         if (!v3) {
@@ -661,22 +738,32 @@ public final class DesignIO {
         c.v0 = v0;
 
         for (TrackPiece piece : c.pieces) {
-            for (Section s : piece.sections) {
+            // FAIL-SOFT validation (v18.44, D216 — was a whole-file
+            // refusal): a truncated tail leaves an element-less s/c
+            // section or an empty lane block — DROP the former, HEAL
+            // the latter (a 1-node lane is legal, D196; an empty one
+            // heals to a held constant — 1 g on a force Gv lane so a
+            // damaged file still loads as track, 0 elsewhere), and
+            // count every repair for the caller's warning line.
+            for (java.util.Iterator<Section> it = piece.sections.iterator();
+                    it.hasNext();) {
+                Section s = it.next();
                 if (s instanceof BridgeSection) continue;   // bpose defaulted is fine
                 if (s instanceof StraightCurveSection sc) {
-                    if (sc.elements.isEmpty())
-                        throw new IOException("straight/curve section needs >= 1 element");
+                    if (sc.elements.isEmpty()) {
+                        it.remove();
+                        warnings++;
+                    }
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
-                for (List<BezierBaker.Node> lane : fs.lanes) {
-                    // a single node is a LEGAL lane (a held constant —
-                    // splitLanes' hold branch emits one whenever a cut
-                    // lands past a lane's last node, v14.0/v16.18, and
-                    // bakeLane/exactAt hold its value); only an EMPTY
-                    // block is corruption (D196)
-                    if (lane.isEmpty())
-                        throw new IOException("each lane needs at least 1 node");
+                for (int li = 0; li < fs.lanes.size(); li++) {
+                    List<BezierBaker.Node> lane = fs.lanes.get(li);
+                    if (lane.isEmpty()) {
+                        lane.add(new BezierBaker.Node(0,
+                            li == 0 && fs instanceof ForceSection ? 1 : 0));
+                        warnings++;
+                    }
                 }
                 if (fs.influenced()) {
                     // delta lanes need only ONE node (flat zero is a
@@ -688,19 +775,36 @@ public final class DesignIO {
                 if (legacy1) convertLegacyHandles(fs);
             }
             // complex speed controls heal to a flat two-node graph
-            // when their cn block is missing/degenerate (v18.0)
+            // when their cn block is missing/degenerate (v18.0);
+            // an untied ACCEL control's decel graph likewise (D217)
             for (Section s : piece.sections) {
                 for (SpeedControl sc2 : s.speedControls()) {
                     if (sc2.complex && sc2.lane.size() < 2) {
                         sc2.freshLane(sc2.type == SpeedControl.ACCEL
                             ? sc2.accel : sc2.speed);
                     }
+                    if (sc2.complex && !sc2.tied
+                            && sc2.type == SpeedControl.ACCEL
+                            && sc2.decelLane.size() < 2) {
+                        sc2.freshDecelLane(sc2.decel);
+                    }
                 }
             }
         }
+        // sectionless pieces drop; a document with NOTHING left is
+        // the one clean refusal — and it must happen HERE, before
+        // the caller mutates the live document (a zero-piece load
+        // used to crash the session's editor instead, D216)
+        int before = c.pieces.size();
+        c.pieces.removeIf(p -> p.sections.isEmpty());
+        warnings += before - c.pieces.size();
+        if (c.pieces.isEmpty()) {
+            throw new IOException("no track data in file"
+                + (warnings > 0 ? " (" + warnings + " damaged lines)" : ""));
+        }
 
         return new LoadResult(c, new Cosmetics(heart, gauge, tie, solid,
-            rail, grad, stops, latc, lats));
+            rail, grad, stops, latc, lats, camera), warnings);
     }
 
     /** SPEED CONTROLS (v18.0, D160): one `sctl` line per control —
@@ -713,10 +817,16 @@ public final class DesignIO {
                                        List<SpeedControl> ctls,
                                        List<Double> marks) {
         for (SpeedControl c : ctls) {
-            out.printf(Locale.US, "sctl %d %d %s %s %s %s %d %d%n",
+            // fields 9-10 = decel + tied (v18.45, D217; missing =
+            // tied with decel := accel — every old file); the decel
+            // graph rides `cdn` lines, written even while tied
+            // (session fidelity — the evaluator ignores it then)
+            out.printf(Locale.US, "sctl %d %d %s %s %s %s %d %d %s %d%n",
                 c.type, c.complex ? 1 : 0, d(c.x0), d(c.len), d(c.speed),
-                d(c.accel), c.minLimit ? 1 : 0, c.maxLimit ? 1 : 0);
+                d(c.accel), c.minLimit ? 1 : 0, c.maxLimit ? 1 : 0,
+                d(c.decel), c.tied ? 1 : 0);
             for (BezierBaker.Node n : c.lane) writeNode(out, "cn", n);
+            for (BezierBaker.Node n : c.decelLane) writeNode(out, "cdn", n);
         }
         for (double m : marks) {
             out.printf(Locale.US, "smark %s%n", d(m));
@@ -791,11 +901,17 @@ public final class DesignIO {
             for (int i = 0; i < lane.size(); i++) {
                 BezierBaker.Node n = lane.get(i);
                 double outDt = n.outFrac, inDt = n.inFrac;
-                n.outFrac = i < lane.size() - 1
-                    ? clamp(outDt / (lane.get(i + 1).t - n.t), 0, BezierBaker.MAX_FRAC)
+                // zero-length segments (damaged legacy file) take the
+                // default fraction — 0/0 was a NaN that rode straight
+                // through clamp() into the baker (D216)
+                double segR = i < lane.size() - 1
+                    ? lane.get(i + 1).t - n.t : 0;
+                double segL = i > 0 ? n.t - lane.get(i - 1).t : 0;
+                n.outFrac = segR > 1e-9
+                    ? clamp(outDt / segR, 0, BezierBaker.MAX_FRAC)
                     : BezierBaker.DEFAULT_FRAC;
-                n.inFrac = i > 0
-                    ? clamp(-inDt / (n.t - lane.get(i - 1).t), 0, BezierBaker.MAX_FRAC)
+                n.inFrac = segL > 1e-9
+                    ? clamp(-inDt / segL, 0, BezierBaker.MAX_FRAC)
                     : BezierBaker.DEFAULT_FRAC;
             }
         }

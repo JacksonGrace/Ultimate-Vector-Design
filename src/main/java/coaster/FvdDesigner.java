@@ -213,6 +213,14 @@ public class FvdDesigner extends Application {
     static final double FRIC_ROLL_DEFAULT = 0.03;    // m/m
     static final double FRIC_AIR_DEFAULT = 1.0e-4;   // 1/m
 
+    // File > New starts low and slow (v18.32, D204 — user spec): 5 m
+    // above the ground grid at 5 m/s, a 5 s starting section (v18.38,
+    // D210). The STARTUP document keeps its historic 21 m / 26 m/s —
+    // it ships the demo layout, whose hills need that energy budget.
+    static final double NEW_START_Y = 5;     // m above ground
+    static final double NEW_START_SPEED = 5; // m/s
+    static final double NEW_START_LEN = 5;   // s of held 1 g
+
     /** Fixed-decimal spinner converter (the air-resistance spinner
      *  needs 5 places — the default converter rounds 1e-4 away). */
     private static javafx.util.StringConverter<Double> fixedDecimalConverter(int places) {
@@ -354,8 +362,18 @@ public class FvdDesigner extends Application {
     /** Restore a document snapshot: pieces, path settings, and the
      *  spinner displays (their listeners are suppressed — fields are
      *  set here; placement spinners show the ACTIVE piece). */
+    /** Bumped whenever the document's piece OBJECTS are replaced
+     *  wholesale (undo/redo/density-preview via applyDocState, File >
+     *  New, Load). Viewport signatures include it (v18.33, D205): the
+     *  gizmo/ball closures capture TrackPiece objects at build time,
+     *  and a value-identical replacement — a convert preview's Apply,
+     *  an undo that only touched lanes — used to leave them writing
+     *  to an ORPHANED piece ("only the gizmo moved, not the track"). */
+    int docGen;
+
     void applyDocState(DocState s) {
         docApplying = true;
+        docGen++;
         coaster.pieces.clear();
         // snapshot lists are deep copies popped off the stack - adopt them
         for (PieceState pst : s.pieces()) {
@@ -449,10 +467,25 @@ public class FvdDesigner extends Application {
      *  for values that can go negative. Every numeric spinner in the
      *  app routes through here (v18.1 sweep). Since v18.20 (D191) it
      *  also COMMITS TYPED TEXT ON FOCUS LOSS — JavaFX only commits
-     *  on ENTER, so typing then clicking away silently reverted. */
+     *  on ENTER, so typing then clicking away silently reverted.
+     *  Since v18.40 (D212) the D192 blank→zero rule lives INSIDE the
+     *  value factory's converter (every commit entry point, incl.
+     *  Spinner's OWN internal focus-loss commit — whose empty→NULL
+     *  transient used to NPE the appliers and corrupt custom
+     *  factories) and scene-level PRESS filters commit the focused
+     *  editor even where no focus event ever fires (the non-autohide
+     *  popup panels, whose other controls are focus-untraversable —
+     *  the user's "clicking off still doesn't set it to zero"). */
     static void numericEditor(Spinner<?> sp, boolean signed) {
         sp.getEditor().setTextFormatter(
             signed ? signedNumFormatter() : numFormatter());
+        wrapBlankConverter(sp);
+        sp.getProperties().put(NUM_SPINNER_TAG, Boolean.TRUE);
+        // the press-commit backstop follows the editor's scene
+        // (popup panels get their own scenes)
+        installNumericPressCommit(sp.getEditor().getScene());
+        sp.getEditor().sceneProperty().addListener(
+            (o, was, sc) -> installNumericPressCommit(sc));
         sp.focusedProperty().addListener((o, was, is) -> {
             if (!is && sp.isEditable()) commitTyped(sp);
         });
@@ -467,6 +500,107 @@ public class FvdDesigner extends Application {
                     ev.consume();
                 }
             });
+    }
+
+    private static final String NUM_SPINNER_TAG = "fvd-numeric-spinner";
+    private static final java.util.Set<javafx.scene.Scene> numCommitScenes =
+        java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+    /** The D192 blank rule at EVERY commit entry point (v18.40,
+     *  D212): blank reads as clamp-to-range(0) for double factories
+     *  and as the CURRENT value for custom step-walkers (whose
+     *  restore branch used to render "null"); a base converter's own
+     *  null result restores too. Kills the null transient at the
+     *  source — Spinner's internal commits included. */
+    @SuppressWarnings("unchecked")
+    static void wrapBlankConverter(Spinner<?> spr) {
+        Spinner<Object> sp = (Spinner<Object>) spr;
+        SpinnerValueFactory<Object> f = sp.getValueFactory();
+        if (f == null || f.getConverter() == null
+                || f.getConverter() instanceof BlankSafeConverter) {
+            return;
+        }
+        f.setConverter(new BlankSafeConverter(f, f.getConverter()));
+    }
+
+    /** The converter wrapper behind wrapBlankConverter — a NAMED
+     *  class so re-wrapping is idempotent and a caller that installs
+     *  a custom converter (the friction spinners' fixed-decimal one)
+     *  can be re-wrapped afterwards. */
+    private static final class BlankSafeConverter
+            extends javafx.util.StringConverter<Object> {
+        private final SpinnerValueFactory<?> f;
+        private final javafx.util.StringConverter<Object> base;
+        BlankSafeConverter(SpinnerValueFactory<?> f,
+                           javafx.util.StringConverter<Object> base) {
+            this.f = f;
+            this.base = base;
+        }
+        @Override public String toString(Object v) {
+            return v == null ? "" : base.toString(v);
+        }
+        @Override public Object fromString(String s) {
+            if (s == null || s.isBlank()) {
+                if (f instanceof
+                        SpinnerValueFactory.DoubleSpinnerValueFactory df) {
+                    return Math.min(df.getMax(),
+                        Math.max(df.getMin(), 0.0));
+                }
+                return f.getValue();
+            }
+            Object v = base.fromString(s);
+            return v == null ? f.getValue() : v;
+        }
+    }
+
+    /** Scene-level MOUSE_PRESSED backstop (v18.40, D212): commit the
+     *  focused numeric editor when a press lands outside its spinner
+     *  — in this scene AND in every other showing window (a popup
+     *  panel's editor vs a click in the main window: JavaFX focus is
+     *  per-Scene and the popup's focused flag rides the owner stage,
+     *  so no focus event ever fires there). */
+    static void installNumericPressCommit(javafx.scene.Scene sc) {
+        if (sc == null || !numCommitScenes.add(sc)) return;
+        sc.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED,
+            e -> commitStrayNumericEditors(sc,
+                e.getTarget() instanceof javafx.scene.Node n ? n : null));
+    }
+
+    /** Commit every tagged spinner whose editor holds its scene's
+     *  focus but is not under the pressed node. Null scene/target =
+     *  window deactivation sweep (commit everything focused). */
+    static void commitStrayNumericEditors(javafx.scene.Scene pressed,
+                                          javafx.scene.Node target) {
+        for (javafx.stage.Window w :
+                java.util.List.copyOf(javafx.stage.Window.getWindows())) {
+            javafx.scene.Scene sc = w.getScene();
+            if (sc == null || !w.isShowing()) continue;
+            Spinner<?> sp = taggedSpinnerOf(sc.getFocusOwner());
+            if (sp == null || !sp.isEditable()) continue;
+            if (sc == pressed && target != null
+                    && isInsideNode(target, sp)) {
+                continue;   // press on the spinner itself: no commit
+            }
+            commitTyped(sp);
+        }
+    }
+
+    private static Spinner<?> taggedSpinnerOf(javafx.scene.Node n) {
+        for (javafx.scene.Node p = n; p != null; p = p.getParent()) {
+            if (p instanceof Spinner<?> sp
+                    && sp.getProperties().containsKey(NUM_SPINNER_TAG)) {
+                return sp;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isInsideNode(javafx.scene.Node n,
+                                        javafx.scene.Node anc) {
+        for (javafx.scene.Node p = n; p != null; p = p.getParent()) {
+            if (p == anc) return true;
+        }
+        return false;
     }
 
     private static boolean isBlankEditor(Spinner<?> sp) {
@@ -975,24 +1109,75 @@ public class FvdDesigner extends Application {
     }
 
     /** The bottom stats line = the CURRENT (shared) POV position
-     *  (v17.11; pane-shared since v18.10): X/Y/Z, speed and
-     *  vertical/lateral G at povTime, TRUE values — interpolated at
-     *  the exact ride time since v18.22 (D193). */
+     *  (v17.11; pane-shared since v18.10): X/Y/Z, speed,
+     *  vertical/lateral G, and — since v18.39 (D211, user spec) —
+     *  the absolute GLOBAL pitch/yaw/roll angles with their global
+     *  rates: elevation, heading (REPORTED left-positive, D186) and
+     *  bank via eulerOf, rates via worldRates on the TRUE arrays.
+     *  All interpolated at the exact ride time (D193); vertical
+     *  track shows "—" where heading/bank are undefined. */
     void updatePovStats() {
         if (lastSamples == null || lastSamples.isEmpty()
                 || trueV == null || trueFelt == null) return;
         double[] b = povBracket(povTime);
         int i = (int) b[0], j = (int) b[1];
         double f = b[2];
-        Vec3 pa = lastSamples.get(i).pos(), pb = lastSamples.get(j).pos();
+        FVDIntegrator.Sample sa = lastSamples.get(i), sb = lastSamples.get(j);
+        Vec3 pa = sa.pos(), pb = sb.pos();
+        double[] ea = Coaster.eulerOf(Quat.fromFrame(sa.T(), sa.U()));
+        double[] eb = Coaster.eulerOf(Quat.fromFrame(sb.T(), sb.U()));
+        double[] wa = trueRates != null && j < trueRates.length
+            ? Coaster.worldRates(sa, trueRates[i][1], trueRates[i][2],
+                trueRates[i][3])
+            : new double[]{ Double.NaN, Double.NaN, Double.NaN };
+        double[] wb = trueRates != null && j < trueRates.length
+            ? Coaster.worldRates(sb, trueRates[j][1], trueRates[j][2],
+                trueRates[j][3])
+            : wa;
         statsLabel.setText(String.format(
-            "POV   X: %.3f   Y: %.3f   Z: %.3f   |   Speed: %.3f m/s   |   Vertical G: %.3f   |   Lateral G: %.3f",
+            "POV   X: %.3f   Y: %.3f   Z: %.3f   |   Speed: %.3f m/s   |   Vertical G: %.3f   |   Lateral G: %.3f"
+            + "   |   Pitch: %s   |   Yaw: %s   |   Roll: %s",
             pa.x() + (pb.x() - pa.x()) * f,
             pa.y() + (pb.y() - pa.y()) * f,
             pa.z() + (pb.z() - pa.z()) * f,
             trueV[i] + (trueV[j] - trueV[i]) * f,
             trueFelt[i][0] + (trueFelt[j][0] - trueFelt[i][0]) * f,
-            trueFelt[i][1] + (trueFelt[j][1] - trueFelt[i][1]) * f));
+            trueFelt[i][1] + (trueFelt[j][1] - trueFelt[i][1]) * f,
+            // elevation raw; heading NEGATED to reported-left (the
+            // D186 display boundary); bank raw; worldRates' rows
+            // are {elevation', heading', bank'}, already reported
+            angTxt(lerpAngle(ea[1], eb[1], f), lerpNan(wa[0], wb[0], f)),
+            angTxt(-lerpAngle(ea[0], eb[0], f), lerpNan(wa[1], wb[1], f)),
+            angTxt(lerpAngle(ea[2], eb[2], f), lerpNan(wa[2], wb[2], f))));
+    }
+
+    /** Wrap-aware lerp of two angle readings (degrees, ±180); NaN on
+     *  either side yields the other (vertical-track hold-off). */
+    private static double lerpAngle(double a, double b, double f) {
+        if (Double.isNaN(a)) return b;
+        if (Double.isNaN(b)) return a;
+        double d = b - a;
+        if (d > 180) d -= 360;
+        if (d < -180) d += 360;
+        double r = a + d * f;
+        if (r > 180) r -= 360;
+        if (r < -180) r += 360;
+        return r;
+    }
+
+    private static double lerpNan(double a, double b, double f) {
+        if (Double.isNaN(a)) return b;
+        if (Double.isNaN(b)) return a;
+        return a + (b - a) * f;
+    }
+
+    /** "12.345° (4.567°/s)" — em-dash where the quantity is
+     *  undefined. Three decimals like the rest of the stats line
+     *  (v18.48, user spec). */
+    private static String angTxt(double ang, double rate) {
+        return (Double.isNaN(ang) ? "—" : String.format("%.3f°", ang))
+            + " (" + (Double.isNaN(rate) ? "—"
+                : String.format("%.3f°/s", rate)) + ")";
     }
 
     void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx,
@@ -1410,26 +1595,53 @@ public class FvdDesigner extends Application {
      *  perspective pose instead). */
     void addViewPane(Viewport3D from) {
         Viewport3D vp = new Viewport3D(this);
-        if (from != null) {
-            vp.camPivot.setX(from.camPivot.getX());
-            vp.camPivot.setY(from.camPivot.getY());
-            vp.camPivot.setZ(from.camPivot.getZ());
-            vp.camYaw.setAngle(from.orthoView ? from.savedYaw
-                : from.camYaw.getAngle());
-            vp.camPitch.setAngle(from.orthoView ? from.savedPitch
-                : from.camPitch.getAngle());
-            vp.camZoom.setZ(from.orthoView ? from.savedZoom
-                : from.camZoom.getZ());
-        }
         viewports.add(vp);
         viewSplit.getItems().add(vp.buildPane());
-        vp.rebuildMeshes();
+        vp.rebuildMeshes();   // centers the pane's world FIRST — the
+                              // scene<->world offsets exist after this
+        // new panes CENTER ON THE COASTER (v18.46, D218 — user spec,
+        // replacing the D182 spawner-pose copy; that copy was also
+        // subtly wrong in SCENE coords whenever the panes' worlds
+        // were centered on different documents' midpoints): default
+        // orbit angles, distance framing the whole track
+        vp.applyCameraWorld(frameCoasterPose());
         vp.startAxesRef();
         int n = viewSplit.getItems().size();
         double[] pos = new double[n - 1];
         for (int i = 1; i < n; i++) pos[i - 1] = (double) i / n;
         viewSplit.setDividerPositions(pos);
         placeCollapseBtn();
+    }
+
+    /** WORLD-coordinate orbit pose framing the WHOLE coaster
+     *  (v18.46, D218): pivot at the compiled track's bounding
+     *  center, the default orbit angles, distance fitting the
+     *  bounding radius in the current FOV. Falls back to the
+     *  new-document framing before a compile. */
+    double[] frameCoasterPose() {
+        if (lastSamples == null || lastSamples.isEmpty()) {
+            return new double[]{ NEW_START_SPEED * NEW_START_LEN / 2,
+                NEW_START_Y, 0, -30, -20, 35 };
+        }
+        double nx = Double.MAX_VALUE, xx = -Double.MAX_VALUE;
+        double ny = Double.MAX_VALUE, xy = -Double.MAX_VALUE;
+        double nz = Double.MAX_VALUE, xz = -Double.MAX_VALUE;
+        for (FVDIntegrator.Sample s : lastSamples) {
+            Vec3 p = s.pos();
+            nx = Math.min(nx, p.x()); xx = Math.max(xx, p.x());
+            ny = Math.min(ny, p.y()); xy = Math.max(xy, p.y());
+            nz = Math.min(nz, p.z()); xz = Math.max(xz, p.z());
+        }
+        double cx = (nx + xx) / 2, cy = (ny + xy) / 2, cz = (nz + xz) / 2;
+        double r = Math.max(5, Math.hypot(Math.hypot(xx - nx, xy - ny),
+            xz - nz) / 2);
+        // 0.8× the fit-the-sphere distance (v18.48, D220 — user
+        // spec "a little bit closer"; coasters are flat-ish, so the
+        // bounding sphere overestimates)
+        double dist = clamp(
+            r / Math.tan(Math.toRadians(settings.flyFov() / 2)) * 0.8 + 5,
+            15, Viewport3D.ORTHO_FAR_CLIP * 0.4);
+        return new double[]{ cx, cy, cz, -30, -20, dist };
     }
 
     /** "Remove View": drops THAT pane (any of them — the last one
@@ -1854,13 +2066,27 @@ public class FvdDesigner extends Application {
         mainSplit.setOrientation(Orientation.VERTICAL);
         mainSplit.setDividerPositions(lastDividerPos);
         mainSplit.getDividers().get(0).positionProperty().addListener(
-            (obs, o, v) -> collapseBtn.setText(v.doubleValue() > 0.97 ? "▲" : "▼"));
+            (obs, o, v) -> {
+                collapseBtn.setText(v.doubleValue() > 0.97 ? "▲" : "▼");
+                // expanding out of the collapsed state repaints what
+                // the unloaded editor skipped (v18.36, D208)
+                if (o.doubleValue() > 0.97 && v.doubleValue() <= 0.97
+                        && editor != null) {
+                    editor.refresh();
+                }
+            });
 
         BorderPane layout = new BorderPane();
         layout.setTop(menuBar);
         layout.setCenter(mainSplit);
 
         rebuildTrack();
+        // the STARTUP view centers on the coaster too (v18.48, D220
+        // — the default view was the never-centered pivot-at-origin
+        // rig; loads still restore their saved camera on top)
+        if (!viewports.isEmpty()) {
+            viewports.get(0).applyCameraWorld(frameCoasterPose());
+        }
 
         Rectangle2D vb = Screen.getPrimary().getVisualBounds();
         double w = Math.min(1400, vb.getWidth() * 0.95);
@@ -1893,6 +2119,10 @@ public class FvdDesigner extends Application {
         // verify round)
         stage.focusedProperty().addListener((o, was, is) -> {
             if (!is) {
+                // commit any half-typed numeric editor BEFORE the
+                // settle reads the document (v18.40, D212 — the
+                // window-deactivation leg of the blank-spinner fix)
+                commitStrayNumericEditors(null, null);
                 pointerDown = false;
                 gestureHot = false;
                 settleIfPending();
@@ -2054,6 +2284,16 @@ public class FvdDesigner extends Application {
     }
 
 
+    /** The graph panel is collapsed (the ▲/▼ corner toggle, or the
+     *  divider dragged shut): the editor unloads — redraw() is a hard
+     *  no-op — so a busy zoomed-out plot costs nothing while it is
+     *  off screen (v18.36, D208). Expanding repaints in full via the
+     *  divider listener + layoutChildren. */
+    boolean graphCollapsed() {
+        return mainSplit != null
+            && mainSplit.getDividerPositions()[0] > 0.97;
+    }
+
     /** Collapse the graph panel to full-screen the 3D view, or restore it
      *  to where the divider last sat. The divider itself stays draggable. */
     private void toggleGraphPanel() {
@@ -2179,6 +2419,7 @@ public class FvdDesigner extends Application {
      *  the document push (menuApplying) so histories don't double up. */
     private void wireDocSpinner(Spinner<Double> sp, java.util.function.DoubleConsumer apply) {
         sp.valueProperty().addListener((obs, o, v) -> {
+            if (v == null) return;     // null transient hardening (D212)
             if (docApplying) return;   // undo/redo writes the display only
             if (!menuApplying) {
                 editor.pushUndoSnapshot();
@@ -2287,6 +2528,7 @@ public class FvdDesigner extends Application {
         ((SpinnerValueFactory.DoubleSpinnerValueFactory)
             fricRollSpinner.getValueFactory()).setConverter(
                 fixedDecimalConverter(3));
+        wrapBlankConverter(fricRollSpinner);   // re-wrap (D212)
         wireDocSpinner(fricRollSpinner, v -> coaster.fricRoll = v);
         fricAirSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
@@ -2296,6 +2538,7 @@ public class FvdDesigner extends Application {
         ((SpinnerValueFactory.DoubleSpinnerValueFactory)
             fricAirSpinner.getValueFactory()).setConverter(
                 fixedDecimalConverter(5));
+        wrapBlankConverter(fricAirSpinner);   // re-wrap (D212)
         wireDocSpinner(fricAirSpinner, v -> coaster.fricAir = v);
 
         Label heartLbl = new Label("Heart (m)");
@@ -2628,8 +2871,8 @@ public class FvdDesigner extends Application {
     }
 
     /** File > New (Ctrl+N): offer to save, then start a fresh document —
-     *  one 1 s force/time section holding 1 g / 0 / 0, default settings,
-     *  empty history, "Untitled" title. */
+     *  one NEW_START_LEN-second force/time section holding 1 g / 0 / 0,
+     *  default settings, empty history, "Untitled" title. */
     private void newDesign() {
         if (!confirmSaveDiscard()) return;
         docApplying = true;   // spinners get set programmatically below
@@ -2637,15 +2880,16 @@ public class FvdDesigner extends Application {
         for (int i = 0; i < 3; i++) {
             List<BezierBaker.Node> lane = new ArrayList<>(2);
             lane.add(new BezierBaker.Node(0, i == 0 ? 1 : 0));
-            lane.add(new BezierBaker.Node(1, i == 0 ? 1 : 0));
+            lane.add(new BezierBaker.Node(NEW_START_LEN, i == 0 ? 1 : 0));
             BezierBaker.applyDefaultHandles(lane);
             nl.add(lane);
         }
         coaster.pieces.clear();
-        TrackPiece piece = new TrackPiece(0, 21, 0, 0);
-        piece.sections.add(new ForceSection(nl, 26));
+        docGen++;   // fresh piece objects (v18.33, D205)
+        TrackPiece piece = new TrackPiece(0, NEW_START_Y, 0, 0);
+        piece.sections.add(new ForceSection(nl, NEW_START_SPEED));
         coaster.pieces.add(piece);
-        coaster.v0 = 26;
+        coaster.v0 = NEW_START_SPEED;
         // NL2-like friction defaults for NEW documents (v18.0, D161):
         // rolling 0.03 m/m, air 1.0e-4 m⁻¹. Old files keep whatever
         // their `friction` line says (missing = 0 0, loss-free).
@@ -2667,10 +2911,10 @@ public class FvdDesigner extends Application {
         gaugeSpinner.getValueFactory().setValue(railGauge);
         tieSpinner.getValueFactory().setValue(tieSpacing);
         startXSpinner.getValueFactory().setValue(0.0);
-        startYSpinner.getValueFactory().setValue(21.0);
+        startYSpinner.getValueFactory().setValue(NEW_START_Y);
         startZSpinner.getValueFactory().setValue(0.0);
         yawSpinner.getValueFactory().setValue(0.0);
-        startSpeedSpinner.getValueFactory().setValue(26.0);
+        startSpeedSpinner.getValueFactory().setValue(NEW_START_SPEED);
         fricRollSpinner.getValueFactory().setValue(FRIC_ROLL_DEFAULT);
         fricAirSpinner.getValueFactory().setValue(FRIC_AIR_DEFAULT);
         (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
@@ -2686,6 +2930,13 @@ public class FvdDesigner extends Application {
         clearResultingPicks();   // opens start overlay-free (v18.10)
         rebuildTrack();      // spans first (stale ones belong to the
         editor.refresh();    // discarded document)
+        // STANDARD framing for a fresh document (v18.38, D210 — user
+        // spec: the fly view always starts in the same place with
+        // the track clearly in view; the shared coaster framing
+        // since v18.48, D220)
+        if (!viewports.isEmpty()) {
+            viewports.get(0).applyCameraWorld(frameCoasterPose());
+        }
         statsLabel.setText("New design");
     }
 
@@ -2694,7 +2945,10 @@ public class FvdDesigner extends Application {
         double[] rail = { railColor.getRed(), railColor.getGreen(), railColor.getBlue() };
         return new DesignIO.Cosmetics(heartOffset, railGauge, tieSpacing,
             railSolid, rail, flatten(gradColors), gradStops.clone(),
-            flatten(latColors), latStops.clone());
+            flatten(latColors), latStops.clone(),
+            // the PRIMARY pane's fly/orbit pose rides the file
+            // (v18.38, D210); loading brings the view back here
+            viewports.isEmpty() ? null : viewports.get(0).cameraWorld());
     }
 
     private static double[] flatten(Color[] cols) {
@@ -2727,6 +2981,7 @@ public class FvdDesigner extends Application {
 
             editor.pushUndoSnapshot(); // loading is undoable
             coaster.pieces.clear();
+            docGen++;   // fresh piece objects (v18.33, D205)
             coaster.pieces.addAll(r.coaster().pieces);
             coaster.v0 = r.coaster().v0;
             coaster.fricRoll = r.coaster().fricRoll;
@@ -2757,10 +3012,26 @@ public class FvdDesigner extends Application {
             clearResultingPicks();   // opens start overlay-free (v18.10)
             rebuildTrack();      // spans before the first graph layout:
             editor.refresh();    // s/c strip widths come from the compile
+            // the saved camera pose returns (v18.38, D210 — after the
+            // rebuild so the pane's world offsets are current); files
+            // without a camera line leave the view where it is
+            if (cos.camera() != null && !viewports.isEmpty()) {
+                viewports.get(0).applyCameraWorld(cos.camera());
+            }
             currentFile = f;
-            dirty = false;
-            updateTitle();
-            statsLabel.setText("Loaded: " + f.getName());
+            // a FAIL-SOFT load (v18.44, D216) repaired the file:
+            // say so and mark dirty — the next save writes it clean
+            if (r.warnings() > 0) {
+                dirty = true;
+                updateTitle();
+                statsLabel.setText("Loaded " + f.getName() + " with "
+                    + r.warnings() + " damaged line(s) skipped/healed — "
+                    + "check the layout; saving writes a clean file.");
+            } else {
+                dirty = false;
+                updateTitle();
+                statsLabel.setText("Loaded: " + f.getName());
+            }
         } catch (Exception ex) {
             statsLabel.setText("Load failed: " + ex.getMessage());
         }

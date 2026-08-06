@@ -58,8 +58,17 @@ public class SpeedControl {
     /** Target speed (m/s) — the value box for SPEED controls, and the
      *  approach target for ACCEL controls (complex included). */
     public double speed = 15;
-    /** Felt longitudinal G magnitude for ACCEL controls (g). */
+    /** Felt longitudinal G magnitude for ACCEL controls (g) — the
+     *  ACCELERATING side (below-target). */
     public double accel = 0.5;
+    /** The DECELERATING side's magnitude (g), v18.45 (D217): tied
+     *  (the default) means the evaluator reads accel for both sides
+     *  — bitwise the pre-split behavior; untied lets a section brake
+     *  at a different felt G than it launches. */
+    public double decel = 0.5;
+    /** Tied = one magnitude (and one complex graph) serves both
+     *  directions — the historic behavior and every old file. */
+    public boolean tied = true;
     /** How the target acts (at least one is always on — the UI
      *  re-checks the other when both would go off): maxLimit = the
      *  target is a ceiling (brake side), minLimit = a floor (lift/
@@ -67,8 +76,18 @@ public class SpeedControl {
      *  side. */
     public boolean minLimit = true, maxLimit = true;
     /** The complex graph — node x CONTROL-LOCAL in [0..len]; values
-     *  m/s (SPEED) or g (ACCEL). Always ≥ 2 nodes. */
+     *  m/s (SPEED) or g (ACCEL). Always ≥ 2 nodes. For an UNTIED
+     *  complex ACCEL control this is the ACCELERATION graph. */
     public List<BezierBaker.Node> lane = new ArrayList<>();
+    /** The DECELERATION graph of an untied complex ACCEL control
+     *  (v18.45, D217); empty = falls back to the decel constant.
+     *  Kept (and saved) across re-ties for session fidelity — the
+     *  evaluator simply ignores it while tied. */
+    public List<BezierBaker.Node> decelLane = new ArrayList<>();
+    /** Which graph the strip DISPLAYS/EDITS for an untied complex
+     *  ACCEL control (session state — rides undo via copy(), never
+     *  saved; accel first by default, D217 user spec). */
+    public boolean showDecel = false;
 
     public SpeedControl() {}
 
@@ -85,15 +104,35 @@ public class SpeedControl {
         BezierBaker.applyDefaultHandles(lane);
     }
 
+    /** freshLane's decel twin (v18.45, D217). */
+    public void freshDecelLane(double val) {
+        decelLane.clear();
+        decelLane.add(new BezierBaker.Node(0, val));
+        decelLane.add(new BezierBaker.Node(Math.max(0.01, len), val));
+        BezierBaker.applyDefaultHandles(decelLane);
+    }
+
+    /** The lane the strip DISPLAYS/EDITS (v18.45, D217): the decel
+     *  graph only for an untied complex ACCEL control toggled onto
+     *  its deceleration view. */
+    public List<BezierBaker.Node> editLane() {
+        return type == ACCEL && complex && !tied && showDecel
+            ? decelLane : lane;
+    }
+
     public SpeedControl copy() {
         SpeedControl c = new SpeedControl(x0, len);
         c.type = type;
         c.complex = complex;
         c.speed = speed;
         c.accel = accel;
+        c.decel = decel;
+        c.tied = tied;
+        c.showDecel = showDecel;
         c.minLimit = minLimit;
         c.maxLimit = maxLimit;
         for (BezierBaker.Node n : lane) c.lane.add(n.copy());
+        for (BezierBaker.Node n : decelLane) c.decelLane.add(n.copy());
         return c;
     }
 
@@ -112,10 +151,19 @@ public class SpeedControl {
     }
 
     /** Accel magnitude at control-local x (g; complex ACCEL graphs may
-     *  dip negative = coast). */
+     *  dip negative = coast) — the ACCELERATING side. */
     public double accelAt(double lx) {
         return complex && type == ACCEL && !lane.isEmpty()
             ? BezierBaker.exactAt(lane, lx) : accel;
+    }
+
+    /** The DECELERATING side's magnitude at control-local x (v18.45,
+     *  D217): tied reads the accel side — bitwise the old behavior;
+     *  untied reads the decel graph/constant. */
+    public double decelAt(double lx) {
+        if (tied) return accelAt(lx);
+        return complex && type == ACCEL && !decelLane.isEmpty()
+            ? BezierBaker.exactAt(decelLane, lx) : decel;
     }
 
     // ----------------------------------------------------------------
@@ -124,12 +172,21 @@ public class SpeedControl {
     // ----------------------------------------------------------------
 
     /** d(loss)/ds for a DRIVEN step (∓2gA toward the target), or NaN =
-     *  natural (friction applies). */
-    static double driveCore(int type, double vt, double a,
+     *  natural (friction applies). Split magnitudes since v18.45
+     *  (D217): aAcc drives the below-target (launch/lift) side, aDec
+     *  the above-target (brake) side — tied controls pass the same
+     *  value for both, reproducing the one-magnitude arithmetic
+     *  bit-for-bit. A non-positive magnitude leaves ITS side
+     *  natural, per-side (was one gate for both). */
+    static double driveCore(int type, double vt, double aAcc, double aDec,
                             boolean min, boolean max, double v) {
-        if (type != ACCEL || a <= 0) return Double.NaN;
-        if (v < vt - EPS && min) return -2 * FVDIntegrator.G0 * a;
-        if (v > vt + EPS && max) return 2 * FVDIntegrator.G0 * a;
+        if (type != ACCEL) return Double.NaN;
+        if (v < vt - EPS && min) {
+            return aAcc <= 0 ? Double.NaN : -2 * FVDIntegrator.G0 * aAcc;
+        }
+        if (v > vt + EPS && max) {
+            return aDec <= 0 ? Double.NaN : 2 * FVDIntegrator.G0 * aDec;
+        }
         return Double.NaN;
     }
 
@@ -218,6 +275,15 @@ public class SpeedControl {
                     cp.lane = splitLane(cp.lane, b - a)[0];
                 }
             }
+            // the decel graph clips identically (v18.45, D217)
+            if (cp.complex && !cp.decelLane.isEmpty()) {
+                if (a > c.x0 + 1e-9) {
+                    cp.decelLane = splitLane(cp.decelLane, a - c.x0)[1];
+                }
+                if (b < c.x0 + c.len - 1e-9) {
+                    cp.decelLane = splitLane(cp.decelLane, b - a)[0];
+                }
+            }
             cp.x0 = a - lo;
             cp.len = b - a;
             out.add(cp);
@@ -265,7 +331,8 @@ public class SpeedControl {
             SpeedControl c = at(x);
             if (c == null) return Double.NaN;
             return driveCore(c.type, Math.max(0.5, c.speed),
-                c.accelAt(x - c.x0), c.minLimit, c.maxLimit, v);
+                c.accelAt(x - c.x0), c.decelAt(x - c.x0),
+                c.minLimit, c.maxLimit, v);
         }
 
         /** Post-step snap: loss adjustment for the step that STARTED
@@ -286,25 +353,27 @@ public class SpeedControl {
     // {type, vt, A, min, max} so complex graphs are already evaluated)
     // ----------------------------------------------------------------
 
-    /** Resolved row {type, targetSpeed, accel, min, max} for a sample
-     *  at control-local x, in the given control. */
+    /** Resolved row {type, targetSpeed, accel, decel, min, max} for a
+     *  sample at control-local x, in the given control (decel slot
+     *  since v18.45, D217 — complex decel graphs pre-resolve for
+     *  passD exactly like accel always did). */
     static double[] rowFor(SpeedControl c, double lx) {
         return new double[]{ c.type,
             c.type == SPEED ? c.targetAt(lx) : Math.max(0.5, c.speed),
-            c.accelAt(lx),
+            c.accelAt(lx), c.decelAt(lx),
             c.minLimit ? 1 : 0, c.maxLimit ? 1 : 0 };
     }
 
     static double driveRow(double[] row, double v) {
         if (row == null) return Double.NaN;
-        return driveCore((int) row[0], row[1], row[2],
-            row[3] != 0, row[4] != 0, v);
+        return driveCore((int) row[0], row[1], row[2], row[3],
+            row[4] != 0, row[5] != 0, v);
     }
 
     static double snapRow(double[] row, double vB, double vA,
                           boolean drove) {
         if (row == null) return 0;
-        return snapCore((int) row[0], row[1], row[3] != 0, row[4] != 0,
+        return snapCore((int) row[0], row[1], row[4] != 0, row[5] != 0,
             vB, vA, drove);
     }
 }
