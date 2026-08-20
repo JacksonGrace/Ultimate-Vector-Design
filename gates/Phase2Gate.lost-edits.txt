@@ -1,0 +1,1333 @@
+UNPLACEABLE EDITS for Phase2Gate.java — recovered from the session transcripts but their
+anchor text was NOT present in the replayed file (the anchor came from a session whose
+transcript no longer exists). Listed chronologically; hand-merge if wanted.
+
+==============================================================================
+2026-07-10T02:26:03.444Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        check(joined, "partial convert RIGHT: the old target's track"
+            + " chains on after the lanes (no gap)");
+    }
+
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+NEW:
+        check(joined, "partial convert RIGHT: the old target's track"
+            + " chains on after the lanes (no gap)");
+    }
+
+    // ---------- partial convert honors the march (v13.14, D88) ------
+    // an OPTIMIZED (march-rendering) bridge's partial convert plants a
+    // STALE signature: the first rebuild's auto pass re-places the
+    // surviving bridge at its pinned length, so the march keeps
+    // rendering (pre-fix, the fresh sub-march missed the unmoved cut
+    // by 0.09-0.17 m whenever the march carried a hump, the landing
+    // gate failed and the graph silently fell to the septic — the
+    // "partial convert reshapes the bridge graph" bug). Septic bridges
+    // keep the record-only null: nothing moves.
+
+    /** Two geo pieces + an OPTIMIZED bridge whose entry is pitched AND
+     *  turning — the march carries a pitch hump, the case whose fresh
+     *  sub-march cannot reproduce the old sub-arc. */
+    static Coaster pcmFixture(BridgeSection[] out) {
+        Coaster c = new Coaster();
+        TrackPiece p0 = new TrackPiece(0, 21, 0, 0);
+        List<List<BezierBaker.Node>> l0 = new ArrayList<>();
+        l0.add(nodes(new double[][]{ {0, 15}, {1, 15} }));
+        l0.add(nodes(new double[][]{ {0, 25}, {1, 25} }));
+        l0.add(nodes(new double[][]{ {0, 0}, {1, 0} }));
+        p0.sections.add(new GeoSection(l0, 26));
+        c.pieces.add(p0);
+        TrackPiece p1 = new TrackPiece(60, 15, 20, 0);
+        List<List<BezierBaker.Node>> l1 = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            l1.add(nodes(new double[][]{ {0, 0}, {1, 0} }));
+        }
+        p1.sections.add(new GeoSection(l1, 26));
+        c.pieces.add(p1);
+        TrackCompiler.Result pre = TrackCompiler.compile(c, 0.01);
+        BridgeSection bs = BridgeSection.solve(
+            pre.spans().get(0).exit(), p1.entryPose(), 26);
+        p0.sections.add(bs);
+        TrackCompiler.compile(c, 0.01);        // capture seam dynamics
+        c.optimizeBridge(bs, 1, 30, true);     // march-rendering
+        TrackCompiler.compile(c, 0.01);
+        out[0] = bs;
+        return c;
+    }
+
+    static void partialConvertMarch() {
+        for (boolean left : new boolean[]{ false, true }) {
+            String dir = left ? "LEFT" : "RIGHT";
+            BridgeSection[] bh = new BridgeSection[1];
+            Coaster c = pcmFixture(bh);
+            TrackCompiler.Result before = TrackCompiler.compile(c, 0.01);
+            check(!c.autoReoptimizeBridges(before),
+                "pcm " + dir + ": optimized fixture starts settled");
+            check(c.partialConvertBridge(0, 1, 0.5, left, true, 0.01),
+                "pcm " + dir + ": applies");
+            BridgeSection sb = left
+                ? (BridgeSection) c.pieces.get(0).sections.get(2) : bh[0];
+            TrackPiece tgt = c.pieces.get(1);
+            double[] cutAt = { tgt.x, tgt.y, tgt.z };
+            // the app's rebuild loop: compile -> auto pass -> settle
+            TrackCompiler.Result r1 = TrackCompiler.compile(c, 0.01);
+            check(c.autoReoptimizeBridges(r1),
+                "pcm " + dir + ": stale signature fires the auto pass once");
+            double nudge = new Vec3(tgt.x - cutAt[0], tgt.y - cutAt[1],
+                tgt.z - cutAt[2]).length();
+            TrackCompiler.Result r2 = TrackCompiler.compile(c, 0.01);
+            check(!c.autoReoptimizeBridges(r2),
+                "pcm " + dir + ": ONE recompile settles");
+            check(nudge > 1e-6 && nudge < 0.5, String.format(
+                "pcm " + dir + ": re-place nudge bounded (%.3f m)", nudge));
+            // landing proxy: the placement now sits ON the fresh march,
+            // so a same-mode re-optimize at the same length moves
+            // ~nothing — exactly marchSpine's landing condition (march
+            // renders; pre-fix this moved by the 0.09-0.17 m miss)
+            double[] pp = { tgt.x, tgt.y, tgt.z };
+            c.optimizeBridge(sb, 1, sb.lastOptDist,
+                sb.optMode == BridgeSection.OPT_POS_YAW);
+            double moved = new Vec3(tgt.x - pp[0], tgt.y - pp[1],
+                tgt.z - pp[2]).length();
+            check(moved < 0.02, String.format("pcm " + dir
+                + ": placement sits ON the march — landing gate holds"
+                + " (re-optimize moves %.5f m)", moved));
+            // the whole track stays where the user cut it (fit
+            // residual + the bounded nudge)
+            TrackCompiler.Result r3 = TrackCompiler.compile(c, 0.01);
+            double[] dev = shapeDev(before.samples(), r3.samples());
+            check(dev[0] < 0.6 && dev[1] < 0.6, String.format(
+                "pcm " + dir + ": whole track holds (interior %.3f m,"
+                + " end %.3f m)", dev[0], dev[1]));
+        }
+
+        // a never-optimized (septic-rendering) bridge keeps the
+        // record-only null: the auto pass must NOT move the cut
+        Coaster cn = pcFixture();
+        check(cn.partialConvertBridge(0, 1, 0.55, false, false, 0.01),
+            "pcm septic: applies");
+        TrackPiece tn = cn.pieces.get(1);
+        double[] pn = { tn.x, tn.y, tn.z };
+        boolean acted = cn.autoReoptimizeBridges(TrackCompiler.compile(cn, 0.01));
+        check(!acted && tn.x == pn[0] && tn.y == pn[1] && tn.z == pn[2],
+            "pcm septic: never-optimized bridge stays record-only —"
+            + " nothing moves");
+
+        // LEFT remainder keeps the orientation locks (v13.14 — they
+        // silently reset to the defaults before)
+        Coaster c2 = pcFixture();
+        BridgeSection ob = (BridgeSection) c2.pieces.get(0).sections.get(1);
+        ob.lockYaw = true;
+        ob.lockPitch = false;
+        ob.lockRoll = false;
+        check(c2.partialConvertBridge(0, 1, 0.4, true, true, 0.01),
+            "pcm locks: applies");
+        BridgeSection rem2 = (BridgeSection) c2.pieces.get(0).sections.get(2);
+        check(rem2.lockYaw && !rem2.lockPitch && !rem2.lockRoll,
+            "pcm locks: LEFT remainder keeps the yaw/pitch/roll locks");
+    }
+
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+==============================================================================
+2026-07-10T02:26:11.727Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        deleteKeepsHandles();
+        partialConvert();
+        orientAlign();
+
+NEW:
+        deleteKeepsHandles();
+        partialConvert();
+        partialConvertMarch();
+        orientAlign();
+
+==============================================================================
+2026-07-10T03:04:20.315Z  Edit
+==============================================================================
+OLD (anchor, not found):
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+NEW:
+    // ---------- convert expansion (v14.0, D89/D90) -------------------
+    // target-density + adaptive fits, exact-fraction cuts, partial
+    // convert for lane and s/c sections, full bridge convert w/ attach
+
+    static Coaster laneFixture() {
+        Coaster c = new Coaster();
+        TrackPiece p = new TrackPiece(0, 21, 0, 0);
+        List<List<BezierBaker.Node>> lanes = new ArrayList<>();
+        lanes.add(nodes(new double[][]{ {0, 1}, {0.8, 2.2}, {1.9, 0.6}, {3, 1} }));
+        lanes.add(nodes(new double[][]{ {0, 0}, {3, 0} }));
+        lanes.add(nodes(new double[][]{ {0, 0}, {1, 40}, {2, -20}, {3, 0} }));
+        p.sections.add(new ForceSection(lanes, 26));
+        c.pieces.add(p);
+        return c;
+    }
+
+    static void convertExpansion() {
+        // --- target density: endpoints pinned, count closest to target
+        Coaster cd = laneFixture();
+        TrackCompiler.Result rd = TrackCompiler.compile(cd, 0.01);
+        List<FVDIntegrator.Sample> sd = rd.samples();
+        LaneSection conv5 = Coaster.convertToLanes(sd, 26, true, 0.01, 0.5, 0);
+        List<BezierBaker.Node> l5 = conv5.lanes.get(0);
+        double dur = l5.get(l5.size() - 1).t;
+        int want = Math.max(2, (int) Math.round(dur / 0.5) + 1);
+        boolean pinned = l5.get(0).t == 0
+            && Math.abs(l5.get(l5.size() - 1).t - dur) < 1e-9;
+        double gap0 = l5.get(1).t - l5.get(0).t;
+        boolean even = true;
+        for (int i = 1; i < l5.size(); i++) {
+            even &= Math.abs(l5.get(i).t - l5.get(i - 1).t - gap0) < 1e-6;
+        }
+        check(l5.size() == want && pinned && even, String.format(
+            "density 0.5 s: %d nodes (want %d), endpoints pinned, even"
+            + " (gap %.4f s)", l5.size(), want, gap0));
+        LaneSection convBig = Coaster.convertToLanes(sd, 26, true, 0.01, 99, 0);
+        check(convBig.lanes.get(0).size() == 2,
+            "density 99 s: collapses to the two endpoints");
+
+        // --- adaptive: flat lanes are bare endpoints; shape holds
+        LaneSection convA = Coaster.convertToLanes(sd, 26, true, 0.01, 0.1, 0.01);
+        int nGl = convA.lanes.get(1).size();
+        check(nGl == 2, String.format(
+            "adaptive: flat yaw lane keeps 2 nodes (%d)", nGl));
+        Coaster ca = laneFixture();
+        ca.pieces.get(0).sections.set(0, convA);
+        double[] devA = shapeDev(sd, TrackCompiler.compile(ca, 0.01).samples());
+        check(devA[0] < 0.30 && devA[1] < 0.30, String.format(
+            "adaptive tol 1%%: shape holds (interior %.3f m, end %.3f m;"
+            + " nodes %d/%d/%d)", devA[0], devA[1],
+            convA.lanes.get(0).size(), nGl, convA.lanes.get(2).size()));
+
+        // --- exact-fraction bridge cut: the pinned share IS the request
+        BridgeSection[] bh = new BridgeSection[1];
+        Coaster cb = pcmFixture(bh);
+        TrackCompiler.Result rb = TrackCompiler.compile(cb, 0.01);
+        double totalB = rb.spans().get(1).sLen();
+        check(cb.partialConvertBridge(0, 1, 0.37, false, true, 0.01),
+            "exact cut: RIGHT convert at 37% applies");
+        check(Math.abs(bh[0].lastOptDist - 0.37 * totalB) < 1e-6 * totalB,
+            String.format("exact cut: pinned length %.6f == 0.37 x %.3f",
+                bh[0].lastOptDist, totalB));
+
+        // --- lane partial convert (RIGHT side converts to geo)
+        Coaster cl = laneFixture();
+        TrackCompiler.Result before = TrackCompiler.compile(cl, 0.01);
+        check(cl.partialConvertSection(0, 0, 0.4, false, true, 0.01, 0.1, 0),
+            "lane partial RIGHT: applies");
+        List<Section> secs = cl.pieces.get(0).sections;
+        check(secs.size() == 2 && secs.get(0) instanceof ForceSection
+                && secs.get(1) instanceof GeoSection,
+            "lane partial RIGHT: [force, geo] structure");
+        TrackCompiler.Result after = TrackCompiler.compile(cl, 0.01);
+        TrackCompiler.Span keptSp = after.spans().get(0);
+        double keptDev = 0;
+        for (int i = keptSp.i0(); i <= keptSp.i1(); i++) {
+            FVDIntegrator.Sample sm = after.samples().get(i);
+            keptDev = Math.max(keptDev,
+                atS(before.samples(), sm.s()).pos().sub(sm.pos()).length());
+        }
+        check(keptDev < 0.05, String.format(
+            "lane partial RIGHT: kept LEFT side exact (dev %.4f m)", keptDev));
+        double[] dl = shapeDev(before.samples(), after.samples());
+        check(dl[0] < 0.35 && dl[1] < 0.35, String.format(
+            "lane partial RIGHT: whole track holds (interior %.3f m,"
+            + " end %.3f m)", dl[0], dl[1]));
+        double vCut = atS(before.samples(),
+            after.samples().get(keptSp.i1()).s()).v();
+        check(Math.abs(secs.get(1).vDesign() - vCut) < 0.05, String.format(
+            "lane partial RIGHT: converted side re-freezes to the cut"
+            + " speed (%.2f vs %.2f m/s)", secs.get(1).vDesign(), vCut));
+
+        // --- lane partial convert (LEFT side converts), cut ON a node
+        Coaster cl2 = laneFixture();
+        TrackCompiler.Result before2 = TrackCompiler.compile(cl2, 0.01);
+        check(cl2.partialConvertSection(0, 0, 1.9 / 3.0, true, true,
+                0.01, 0.1, 0),
+            "lane partial LEFT @node: applies");
+        List<Section> secs2 = cl2.pieces.get(0).sections;
+        check(secs2.get(0) instanceof GeoSection
+                && secs2.get(1) instanceof ForceSection,
+            "lane partial LEFT: [geo, force] structure");
+        List<BezierBaker.Node> keptGv = ((LaneSection) secs2.get(1)).lanes.get(0);
+        check(keptGv.size() == 2 && Math.abs(keptGv.get(0).val - 0.6) < 1e-9
+                && keptGv.get(0).t == 0,
+            String.format("lane partial LEFT @node: kept right lane starts"
+                + " AT the node, no inserted node (%d nodes, val %.2f)",
+                keptGv.size(), keptGv.get(0).val));
+        double[] dl2 = shapeDev(before2.samples(),
+            TrackCompiler.compile(cl2, 0.01).samples());
+        check(dl2[0] < 0.35 && dl2[1] < 0.35, String.format(
+            "lane partial LEFT: whole track holds (interior %.3f m,"
+            + " end %.3f m)", dl2[0], dl2[1]));
+
+        // --- s/c partial convert: kept side exact, blend-zone clamp
+        Coaster cs = new Coaster();
+        TrackPiece ps = new TrackPiece(0, 21, 0, 0);
+        ps.sections.add(scOf(24,
+            StraightCurveSection.Element.straight(12, 0),
+            StraightCurveSection.Element.curve(20, 90, 0, 4)));
+        cs.pieces.add(ps);
+        TrackCompiler.Result sb = TrackCompiler.compile(cs, 0.01);
+        double totalS = ((StraightCurveSection) ps.sections.get(0)).totalLen();
+        check(cs.partialConvertSection(0, 0, 0.5, false, true, 0.01, 0.1, 0),
+            "s/c partial RIGHT: applies");
+        List<Section> secsS = cs.pieces.get(0).sections;
+        StraightCurveSection keptSc = (StraightCurveSection) secsS.get(0);
+        check(secsS.get(1) instanceof GeoSection
+                && keptSc.elements.size() == 2
+                && Math.abs(keptSc.totalLen() - 0.5 * totalS) < 1e-6,
+            String.format("s/c partial RIGHT: kept [straight, partial arc]"
+                + " ends exactly at 50%% (%.4f vs %.4f m)",
+                keptSc.totalLen(), 0.5 * totalS));
+        TrackCompiler.Result sa = TrackCompiler.compile(cs, 0.01);
+        TrackCompiler.Span scSp = sa.spans().get(0);
+        double scDev = 0;
+        for (int i = scSp.i0(); i <= scSp.i1(); i++) {
+            FVDIntegrator.Sample sm = sa.samples().get(i);
+            scDev = Math.max(scDev,
+                atS(sb.samples(), sm.s()).pos().sub(sm.pos()).length());
+        }
+        check(scDev < 0.01, String.format(
+            "s/c partial RIGHT: kept side exact (dev %.5f m)", scDev));
+        // requested cut inside the boundary blend [9.9..16] -> clamped
+        Coaster cs2 = new Coaster();
+        TrackPiece ps2 = new TrackPiece(0, 21, 0, 0);
+        ps2.sections.add(scOf(24,
+            StraightCurveSection.Element.straight(12, 0),
+            StraightCurveSection.Element.curve(20, 90, 0, 4)));
+        cs2.pieces.add(ps2);
+        check(cs2.partialConvertSection(0, 0, 13 / totalS, false, true,
+                0.01, 0.1, 0),
+            "s/c partial clamp: applies");
+        double realized = ((StraightCurveSection) cs2.pieces.get(0)
+            .sections.get(0)).totalLen();
+        check(realized > 15.9 && realized < 16.1, String.format(
+            "s/c partial clamp: cut shifted out of the blend window"
+            + " (13 m requested -> %.2f m)", realized));
+
+        // --- full bridge convert: track stays connected (attach)
+        BridgeSection[] bw = new BridgeSection[1];
+        Coaster cw = pcmFixture(bw);
+        TrackCompiler.Result wb = TrackCompiler.compile(cw, 0.01);
+        check(cw.convertBridgeWhole(0, 1, true, 0.01, 0.1, 0),
+            "bridge whole convert: applies");
+        check(cw.pieces.size() == 1
+                && cw.pieces.get(0).sections.size() == 3,
+            "bridge whole convert: next piece ATTACHES (one piece,"
+            + " [geo, conv, geo])");
+        TrackCompiler.Result wa = TrackCompiler.compile(cw, 0.01);
+        boolean joined = true;
+        for (int i = 1; i < wa.samples().size(); i++) {
+            joined &= wa.samples().get(i).pos()
+                .sub(wa.samples().get(i - 1).pos()).length() < 1.0;
+        }
+        double[] dw = shapeDev(wb.samples(), wa.samples());
+        check(joined && dw[0] < 0.35 && dw[1] < 0.35, String.format(
+            "bridge whole convert: connected end to end, shape holds"
+            + " (interior %.3f m, end %.3f m)", dw[0], dw[1]));
+    }
+
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+==============================================================================
+2026-07-10T03:04:26.605Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        partialConvert();
+        partialConvertMarch();
+        orientAlign();
+
+NEW:
+        partialConvert();
+        partialConvertMarch();
+        convertExpansion();
+        orientAlign();
+
+==============================================================================
+2026-07-10T03:10:14.142Z  Edit
+==============================================================================
+OLD (anchor, not found):
+    static void convertExpansion() {
+
+NEW:
+    /** Position INTERPOLATED at arc s (atS snaps to the nearest sample
+     *  — up to half a sample of along-track offset reads as fake
+     *  deviation when two compiles' grids don't line up). */
+    static Vec3 posAtS(List<FVDIntegrator.Sample> l, double s) {
+        int lo = 0, hi = l.size() - 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (l.get(mid).s() <= s) lo = mid; else hi = mid;
+        }
+        FVDIntegrator.Sample a = l.get(lo), b = l.get(hi);
+        double ds = b.s() - a.s();
+        double u = ds < 1e-12 ? 0
+            : Math.max(0, Math.min(1, (s - a.s()) / ds));
+        return a.pos().add(b.pos().sub(a.pos()).scale(u));
+    }
+
+    static void convertExpansion() {
+
+==============================================================================
+2026-07-10T03:10:28.715Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        // --- adaptive: flat lanes are bare endpoints; shape holds
+        LaneSection convA = Coaster.convertToLanes(sd, 26, true, 0.01, 0.1, 0.01);
+        int nGl = convA.lanes.get(1).size();
+        check(nGl == 2, String.format(
+            "adaptive: flat yaw lane keeps 2 nodes (%d)", nGl));
+
+NEW:
+        // --- adaptive: flat lanes are bare endpoints (a ROLL-FREE
+        // level fixture: with roll, a zero-Gl lane converts to a
+        // genuinely nonzero yaw-rate curve) ; shape holds
+        Coaster cf = new Coaster();
+        TrackPiece pf = new TrackPiece(0, 21, 0, 0);
+        List<List<BezierBaker.Node>> lf = new ArrayList<>();
+        lf.add(nodes(new double[][]{ {0, 1}, {0.8, 2.2}, {1.9, 0.6}, {3, 1} }));
+        lf.add(nodes(new double[][]{ {0, 0}, {3, 0} }));
+        lf.add(nodes(new double[][]{ {0, 0}, {3, 0} }));
+        pf.sections.add(new ForceSection(lf, 26));
+        cf.pieces.add(pf);
+        List<FVDIntegrator.Sample> sf =
+            TrackCompiler.compile(cf, 0.01).samples();
+        LaneSection convF = Coaster.convertToLanes(sf, 26, true, 0.01, 0.1, 0.01);
+        check(convF.lanes.get(1).size() == 2 && convF.lanes.get(2).size() == 2,
+            String.format("adaptive: flat yaw + roll lanes keep 2 nodes"
+                + " (%d/%d)", convF.lanes.get(1).size(),
+                convF.lanes.get(2).size()));
+        LaneSection convA = Coaster.convertToLanes(sd, 26, true, 0.01, 0.1, 0.01);
+        int nGl = convA.lanes.get(1).size();
+
+==============================================================================
+2026-07-10T03:10:37.064Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        double keptDev = 0;
+        for (int i = keptSp.i0(); i <= keptSp.i1(); i++) {
+            FVDIntegrator.Sample sm = after.samples().get(i);
+            keptDev = Math.max(keptDev,
+                atS(before.samples(), sm.s()).pos().sub(sm.pos()).length());
+        }
+
+NEW:
+        double keptDev = 0;
+        for (int i = keptSp.i0(); i <= keptSp.i1(); i++) {
+            FVDIntegrator.Sample sm = after.samples().get(i);
+            keptDev = Math.max(keptDev,
+                posAtS(before.samples(), sm.s()).sub(sm.pos()).length());
+        }
+
+==============================================================================
+2026-07-10T03:10:47.833Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        double scDev = 0;
+        for (int i = scSp.i0(); i <= scSp.i1(); i++) {
+            FVDIntegrator.Sample sm = sa.samples().get(i);
+            scDev = Math.max(scDev,
+                atS(sb.samples(), sm.s()).pos().sub(sm.pos()).length());
+        }
+
+NEW:
+        double scDev = 0;
+        for (int i = scSp.i0(); i <= scSp.i1(); i++) {
+            FVDIntegrator.Sample sm = sa.samples().get(i);
+            scDev = Math.max(scDev,
+                posAtS(sb.samples(), sm.s()).sub(sm.pos()).length());
+        }
+
+==============================================================================
+2026-07-10T03:33:59.273Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        // --- full bridge convert: track stays connected (attach)
+
+NEW:
+        // --- whole-section convert through the model twin (the
+        // density preview re-runs this; was editor-local sampling)
+        Coaster cwv = laneFixture();
+        TrackCompiler.Result wv = TrackCompiler.compile(cwv, 0.01);
+        check(cwv.convertWholeSection(0, 0, true, 0.01, 0.1, 0)
+                && cwv.pieces.get(0).sections.get(0) instanceof GeoSection,
+            "whole-section convert: force -> geo in place");
+        double[] dwv = shapeDev(wv.samples(),
+            TrackCompiler.compile(cwv, 0.01).samples());
+        check(dwv[0] < 0.30 && dwv[1] < 0.30, String.format(
+            "whole-section convert: shape holds (interior %.3f m,"
+            + " end %.3f m)", dwv[0], dwv[1]));
+
+        // --- full bridge convert: track stays connected (attach)
+
+==============================================================================
+2026-07-10T04:13:17.124Z  Edit
+==============================================================================
+OLD (anchor, not found):
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+NEW:
+    // ---------- banked-seam bridges: roll hump + rate budget ---------
+    // (v14.1, D92 — the user's opposite-bank S-hill blowup)
+
+    static void bankedBridge() {
+        Coaster c = new Coaster();
+        TrackPiece pA = new TrackPiece(0, 21, 0, 0);
+        List<List<BezierBaker.Node>> lA = new ArrayList<>();
+        lA.add(nodes(new double[][]{ {0, 12}, {2, 12} }));
+        lA.add(nodes(new double[][]{ {0, 0}, {2, 0} }));
+        lA.add(nodes(new double[][]{ {0, 60}, {0.4, 60}, {0.6, 0}, {2, 0} }));
+        pA.sections.add(new GeoSection(lA, 26));
+        c.pieces.add(pA);
+        TrackPiece pB = new TrackPiece(45, 27, 10, 15);
+        pB.rollDeg = -30;   // banked the OTHER way, and CURVING
+        List<List<BezierBaker.Node>> lB = new ArrayList<>();
+        lB.add(nodes(new double[][]{ {0, 12}, {1.5, 12} }));
+        lB.add(nodes(new double[][]{ {0, 0}, {1.5, 0} }));
+        lB.add(nodes(new double[][]{ {0, 0}, {1.5, 0} }));
+        pB.sections.add(new GeoSection(lB, 26));
+        c.pieces.add(pB);
+        BridgeSection bs = BridgeSection.solve(
+            new TrackPose(new Vec3(0, 0, 0), Quat.IDENTITY),
+            new TrackPose(new Vec3(1, 0, 0), Quat.IDENTITY), 26);
+        pA.sections.add(bs);
+        TrackCompiler.compile(c, 0.01);
+
+        // the knee: pure 1/d cost runs long (documents the net-roll
+        // nature); the neighbor budget brings it to the ride's scale
+        double pure = c.optimalBridgeLength(bs, true);
+        TrackCompiler.Result r0 = TrackCompiler.compile(c, 0.01);
+        double budget = c.neighborRateBudget(r0.rates(), r0.spans(), 0);
+        double budgeted = c.optimalBridgeLength(bs, true, budget);
+        check(pure > 90, String.format(
+            "banked bridge: pure knee documents the 1/d runaway (%.0f m)",
+            pure));
+        check(budgeted > 15 && budgeted < 64, String.format(
+            "banked bridge: neighbor budget (%.0f) knees at the ride's"
+            + " scale (%.0f m — was the user's 100+ m)", budget, budgeted));
+
+        c.optimizeBridge(bs, 1, 30, true);
+        TrackCompiler.Result r = TrackCompiler.compile(c, 0.01);
+        if (c.autoReoptimizeBridges(r)) r = TrackCompiler.compile(c, 0.01);
+        TrackCompiler.Span sp = r.spans().get(1);
+        List<FVDIntegrator.Sample> s = r.samples();
+        // far-seam continuity: the roll hump carries the bank INSIDE
+        // the march, so the target's body curvature acts in the right
+        // frame (pre-fix: 76 deg direction step, felt Gl -1.00 vs
+        // -0.50 — the "weird and rough" graphs)
+        Vec3 dIn = s.get(sp.i1() - 1).T().sub(s.get(sp.i1() - 5).T());
+        Vec3 dOut = s.get(sp.i1() + 6).T().sub(s.get(sp.i1() + 2).T());
+        double ang = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1,
+            dIn.normalize().dot(dOut.normalize())))));
+        check(ang < 10, String.format(
+            "banked bridge: far-seam curvature DIRECTION continuous"
+            + " (%.1f deg step; pre-fix 76)", ang));
+        FVDIntegrator.Sample bEnd = s.get(sp.i1());
+        FVDIntegrator.Sample tHead = s.get(sp.i1() + 2);
+        check(Math.abs(bEnd.Gv() - tHead.Gv()) < 0.05
+                && Math.abs(bEnd.Gl() - tHead.Gl()) < 0.05, String.format(
+            "banked bridge: far-seam felt continuous (dGv %.3f, dGl %.3f;"
+            + " pre-fix dGl 0.50)", Math.abs(bEnd.Gv() - tHead.Gv()),
+            Math.abs(bEnd.Gl() - tHead.Gl())));
+        double maxGl = 0;
+        for (int i = sp.i0(); i <= sp.i1(); i++) {
+            maxGl = Math.max(maxGl, Math.abs(s.get(i).Gl()));
+        }
+        check(maxGl < 0.6, String.format(
+            "banked bridge: no phantom lateral (|Gl|max %.2f g;"
+            + " pre-fix 1.00)", maxGl));
+        // the hump-carrying march still LANDS: same-mode re-optimize
+        // at the same length moves ~nothing (the march-spine renders)
+        TrackPiece tgt = c.pieces.get(1);
+        double[] pp = { tgt.x, tgt.y, tgt.z };
+        c.optimizeBridge(bs, 1, bs.lastOptDist, true);
+        double moved = new Vec3(tgt.x - pp[0], tgt.y - pp[1],
+            tgt.z - pp[2]).length();
+        check(moved < 0.02, String.format(
+            "banked bridge: hump march is deterministic — placement"
+            + " sits ON it (re-optimize moves %.5f m)", moved));
+    }
+
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+==============================================================================
+2026-07-10T04:13:26.147Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        partialConvertMarch();
+        convertExpansion();
+        orientAlign();
+
+NEW:
+        partialConvertMarch();
+        convertExpansion();
+        bankedBridge();
+        orientAlign();
+
+==============================================================================
+2026-07-10T04:18:19.657Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        Vec3 dIn = s.get(sp.i1() - 1).T().sub(s.get(sp.i1() - 5).T());
+        Vec3 dOut = s.get(sp.i1() + 6).T().sub(s.get(sp.i1() + 2).T());
+        double ang = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1,
+            dIn.normalize().dot(dOut.normalize())))));
+        check(ang < 10, String.format(
+            "banked bridge: far-seam curvature DIRECTION continuous"
+            + " (%.1f deg step; pre-fix 76)", ang));
+
+NEW:
+        // (the remaining few degrees are the PITCH hump's shoulder —
+        // the parabola ends with slope by design, D83/D84's accepted
+        // "graphs may bend right off the seam" — not a frame error)
+        Vec3 dIn = s.get(sp.i1() - 1).T().sub(s.get(sp.i1() - 5).T());
+        Vec3 dOut = s.get(sp.i1() + 6).T().sub(s.get(sp.i1() + 2).T());
+        double ang = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1,
+            dIn.normalize().dot(dOut.normalize())))));
+        check(ang < 20, String.format(
+            "banked bridge: far-seam curvature DIRECTION continuous"
+            + " (%.1f deg step; pre-fix 76)", ang));
+        double uMatch = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1,
+            s.get(sp.i1()).U().dot(s.get(sp.i1() + 1).U())))));
+        check(uMatch < 1.0, String.format(
+            "banked bridge: the march ARRIVES in the target's frame"
+            + " (U mismatch %.2f deg; pre-fix ~60)", uMatch));
+
+==============================================================================
+2026-07-10T15:11:10.463Z  Edit
+==============================================================================
+OLD (anchor, not found):
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+NEW:
+    // ---------- march stability under ramped/folding seams -----------
+    // (v14.1, D93 — the deep-dive sweep's surviving invariants)
+
+    static List<BezierBaker.Node> rampLane(double a, double b, double T) {
+        List<BezierBaker.Node> l = new ArrayList<>();
+        BezierBaker.Node n0 = new BezierBaker.Node(0, a);
+        BezierBaker.Node n1 = new BezierBaker.Node(T, b);
+        n0.outFrac = 1.0 / 3;
+        n0.outDv = (b - a) / 3;
+        n1.inFrac = 1.0 / 3;
+        n1.inDv = -(b - a) / 3;
+        l.add(n0);
+        l.add(n1);
+        return l;
+    }
+
+    static List<BezierBaker.Node> holdLane(double v, double T) {
+        return nodes(new double[][]{ {0, v}, {T, v} });
+    }
+
+    static void marchStability() {
+        // the F4b fold family: pitch rate RAMPING 0->60 into the seam
+        // (entry pitched 60°) bridging to a level straight
+        Coaster c = new Coaster();
+        TrackPiece pA = new TrackPiece(0, 40, 0, 0);
+        List<List<BezierBaker.Node>> lA = new ArrayList<>();
+        lA.add(rampLane(0, 60, 2));
+        lA.add(holdLane(0, 2));
+        lA.add(holdLane(0, 2));
+        pA.sections.add(new GeoSection(lA, 26));
+        c.pieces.add(pA);
+        TrackPiece pB = new TrackPiece(50, 42, 12, 15);
+        List<List<BezierBaker.Node>> lB = new ArrayList<>();
+        for (int i = 0; i < 3; i++) lB.add(holdLane(0, 2));
+        pB.sections.add(new GeoSection(lB, 26));
+        c.pieces.add(pB);
+        BridgeSection bs = BridgeSection.solve(
+            new TrackPose(new Vec3(0, 0, 0), Quat.IDENTITY),
+            new TrackPose(new Vec3(1, 0, 0), Quat.IDENTITY), 26);
+        pA.sections.add(bs);
+        TrackCompiler.compile(c, 0.01);
+
+        // the KNEE must be LANDABLE: its apply renders the march it
+        // scored (it used to pick fold lengths whose apply fell to a
+        // different, wilder septic)
+        TrackCompiler.Result r0 = TrackCompiler.compile(c, 0.01);
+        double knee = c.optimalBridgeLength(bs, true,
+            c.neighborRateBudget(r0.rates(), r0.spans(), 0));
+        c.optimizeBridge(bs, 1, knee, true);
+        TrackCompiler.Result rk = TrackCompiler.compile(c, 0.01);
+        if (c.autoReoptimizeBridges(rk)) rk = TrackCompiler.compile(c, 0.01);
+        double arcK = rk.spans().get(1).sLen();
+        check(Math.abs(arcK - knee) < 0.5 && knee < 40, String.format(
+            "march stability: ramped-seam knee LANDS (%.0f m, arc %.1f;"
+            + " it used to pick fold lengths)", knee, arcK));
+
+        // the 32 m FOLD window: no barrel roll — the fold-signature
+        // rejection keeps the march PLANAR or hands it to the septic;
+        // either way zero phantom lateral (it spiraled 360° of bank
+        // and 1.9 g of lateral on this planar fixture)
+        c.optimizeBridge(bs, 1, 32, true);
+        TrackCompiler.Result r32 = TrackCompiler.compile(c, 0.01);
+        if (c.autoReoptimizeBridges(r32)) r32 = TrackCompiler.compile(c, 0.01);
+        TrackCompiler.Span sp = r32.spans().get(1);
+        double maxGl = 0;
+        for (int i = sp.i0() + 2; i < sp.i1() - 1; i++) {
+            maxGl = Math.max(maxGl, Math.abs(r32.samples().get(i).Gl()));
+        }
+        check(maxGl < 0.05, String.format(
+            "march stability: fold window stays PLANAR (|Gl|max %.3f;"
+            + " the 360° barrel roll is gone)", maxGl));
+
+        // DETERMINISM through the fold window: re-optimizing at the
+        // same length moves nothing (fold-adjacent chaos crept 8.7 m)
+        TrackPiece tgt = c.pieces.get(1);
+        double[] pp = { tgt.x, tgt.y, tgt.z };
+        c.optimizeBridge(bs, 1, bs.lastOptDist, true);
+        double moved = new Vec3(tgt.x - pp[0], tgt.y - pp[1],
+            tgt.z - pp[2]).length();
+        check(moved < 1e-6, String.format(
+            "march stability: deterministic in the fold window"
+            + " (re-optimize moves %.7f m)", moved));
+    }
+
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+==============================================================================
+2026-07-10T15:11:18.144Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        convertExpansion();
+        bankedBridge();
+        orientAlign();
+
+NEW:
+        convertExpansion();
+        bankedBridge();
+        marchStability();
+        orientAlign();
+
+==============================================================================
+2026-07-10T20:17:12.164Z  Edit
+==============================================================================
+OLD (anchor, not found):
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+NEW:
+    // ---------- zero lateral G + budget de-inflation (v14.3, D94) ---
+
+    static void zeroGlGate() {
+        // unbanked flat-turn seams: the bridge turn carries ~0.9 g of
+        // real lateral (F3 family) — zeroGl must bank it away in the
+        // interior while the seams keep their (level) banks
+        Coaster c = new Coaster();
+        TrackPiece pA = new TrackPiece(0, 40, 0, 0);
+        List<List<BezierBaker.Node>> lA = new ArrayList<>();
+        lA.add(holdLane(0, 2));
+        lA.add(holdLane(20, 2));
+        lA.add(holdLane(0, 2));
+        pA.sections.add(new GeoSection(lA, 26));
+        c.pieces.add(pA);
+        TrackPiece pB = new TrackPiece(50, 40, 12, 60);
+        List<List<BezierBaker.Node>> lB = new ArrayList<>();
+        lB.add(holdLane(0, 2));
+        lB.add(holdLane(20, 2));
+        lB.add(holdLane(0, 2));
+        pB.sections.add(new GeoSection(lB, 26));
+        c.pieces.add(pB);
+        BridgeSection bs = BridgeSection.solve(
+            new TrackPose(new Vec3(0, 0, 0), Quat.IDENTITY),
+            new TrackPose(new Vec3(1, 0, 0), Quat.IDENTITY), 26);
+        pA.sections.add(bs);
+        TrackCompiler.compile(c, 0.01);
+        c.optimizeBridge(bs, 1, 36, true);
+        TrackCompiler.Result r0 = TrackCompiler.compile(c, 0.01);
+        if (c.autoReoptimizeBridges(r0)) r0 = TrackCompiler.compile(c, 0.01);
+        TrackCompiler.Span s0 = r0.spans().get(1);
+        double glOff = midGl(r0, s0);
+        bs.zeroGl = true;
+        TrackCompiler.Result r1 = TrackCompiler.compile(c, 0.01);
+        TrackCompiler.Span s1 = r1.spans().get(1);
+        double glOn = midGl(r1, s1);
+        check(glOff > 0.4 && glOn < 0.06, String.format(
+            "zero lateral G: mid-span |Gl| %.2f -> %.3f g", glOff, glOn));
+        // the spine is untouched: same positions, only the banking
+        double dPos = r1.samples().get((s1.i0() + s1.i1()) / 2).pos()
+            .sub(r0.samples().get((s0.i0() + s0.i1()) / 2).pos()).length();
+        check(dPos < 1e-6, String.format(
+            "zero lateral G: path unchanged (mid-span pos delta %.2e m)",
+            dPos));
+        // seam roll continuity: the first bridge sample's U matches
+        // the neighbor's (the ease holds the seam banks)
+        double uSeam = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1,
+            r1.samples().get(s1.i0()).U()
+                .dot(r1.samples().get(s1.i0() - 1).U())))));
+        check(uSeam < 1.5, String.format(
+            "zero lateral G: entry seam bank held (U step %.2f deg)",
+            uSeam));
+    }
+
+    static double midGl(TrackCompiler.Result r, TrackCompiler.Span sp) {
+        int a = sp.i0() + (sp.i1() - sp.i0()) * 2 / 5;
+        int b = sp.i0() + (sp.i1() - sp.i0()) * 3 / 5;
+        double m = 0;
+        for (int i = a; i <= b; i++) {
+            m = Math.max(m, Math.abs(r.samples().get(i).Gl()));
+        }
+        return m;
+    }
+
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+==============================================================================
+2026-07-10T20:17:21.270Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        bankedBridge();
+        marchStability();
+        orientAlign();
+
+NEW:
+        bankedBridge();
+        marchStability();
+        zeroGlGate();
+        orientAlign();
+
+==============================================================================
+2026-07-10T21:15:28.868Z  python script (failed: python FAILED: ValueError: substring not found (tolerant also failed: ValueError: substring not found))
+==============================================================================
+import io, re
+p = 'Phase2Gate.java'
+s = io.open(p, encoding='utf-8').read()
+# drop the three v14.1-14.3 gate groups (delimited by their section comments)
+start = s.index('    // ---------- banked-seam bridges: roll hump + rate budget ---------')
+end = s.index('    // ---------- orientation deltas + alignment (v13.13, D87) --------')
+s = s[:start] + s[end:]
+s = s.replace('        bankedBridge();\n', '')
+s = s.replace('        marchStability();\n', '')
+s = s.replace('        zeroGlGate();\n', '')
+io.open(p, 'w', encoding='utf-8', newline='\n').write(s)
+print('stripped')
+
+==============================================================================
+2026-07-10T21:18:36.875Z  Edit
+==============================================================================
+OLD (anchor, not found):
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+    /** Signed bank of q's U vs the level up at T (rad) — the gate's
+     *  own copy of ScIntegrator.bankOf (package-private there). */
+
+NEW:
+    // ---------- same-piece speed reconcile (v14.1, D95) --------------
+
+    static List<BezierBaker.Node> holdLane(double v, double T) {
+        return nodes(new double[][]{ {0, v}, {T, v} });
+    }
+
+    static void speedReconcile() {
+        // [curvy force, geo] chain: the force hill changes the exit
+        // speed away from the geo section's frozen 26 — the reconcile
+        // loop must re-freeze it and CLOSE the design/true split
+        Coaster c = new Coaster();
+        TrackPiece p = new TrackPiece(0, 30, 0, 0);
+        List<List<BezierBaker.Node>> lf = new ArrayList<>();
+        lf.add(nodes(new double[][]{ {0, 1}, {0.8, 2.0}, {2, 1} }));
+        lf.add(holdLane(0, 2));
+        lf.add(holdLane(0, 2));
+        p.sections.add(new ForceSection(lf, 26));
+        List<List<BezierBaker.Node>> lg = new ArrayList<>();
+        lg.add(holdLane(5, 2));
+        lg.add(holdLane(10, 2));
+        lg.add(holdLane(0, 2));
+        p.sections.add(new GeoSection(lg, 26));
+        c.pieces.add(p);
+        TrackCompiler.Result r = TrackCompiler.compile(c, 0.01);
+        double before = Math.abs(
+            r.samples().get(r.spans().get(0).i1()).v()
+            - c.pieces.get(0).sections.get(1).vDesign());
+        for (int i = 0; i < 3; i++) {   // the rebuildTrack loop
+            if (!c.reconcileChainedSpeeds(r)) break;
+            r = TrackCompiler.compile(c, 0.01);
+        }
+        double vIn = r.samples().get(r.spans().get(0).i1()).v();
+        double vD = c.pieces.get(0).sections.get(1).vDesign();
+        check(before > 0.05 && Math.abs(vD - vIn) < 2e-3, String.format(
+            "speed reconcile: chained geo re-freezes to its entry"
+            + " speed (drift %.3f -> %.4f m/s)", before,
+            Math.abs(vD - vIn)));
+        double maxDrift = 0;
+        for (int i = 0; i < r.samples().size(); i++) {
+            maxDrift = Math.max(maxDrift,
+                Math.abs(r.trueV()[i] - r.samples().get(i).v()));
+        }
+        check(maxDrift < 5e-3, String.format(
+            "speed reconcile: the design/true split is CLOSED across"
+            + " the piece (max %.4f m/s)", maxDrift));
+    }
+
+    // ---------- orientation deltas + alignment (v13.13, D87) --------
+
+    /** Signed bank of q's U vs the level up at T (rad) — the gate's
+     *  own copy of ScIntegrator.bankOf (package-private there). */
+
+==============================================================================
+2026-07-10T23:50:31.622Z  python script (failed: python FAILED: AssertionError:  (tolerant also failed: AssertionError: ))
+==============================================================================
+import io
+s = io.open('Phase2Gate.java', encoding='utf-8').read()
+anchor = "    // ---------- orientation deltas + alignment (v13.13, D87) --------"
+add = '''    // ---------- split resolution + true-speed bridge convert ---------
+    // (v14.5, D97 — SECTIONS-DESIGN §5 round B)
+
+    static void splitResolution() {
+        // a DROPPING piece bridged to a slow-design target: the run's
+        // true speed at the target far exceeds its frozen vDesign
+        Coaster c = new Coaster();
+        TrackPiece pA = new TrackPiece(0, 45, 0, 0);
+        List<List<BezierBaker.Node>> lA = new ArrayList<>();
+        lA.add(nodes(new double[][]{ {0, -12}, {2, -12} }));
+        lA.add(holdLane(8, 2));
+        lA.add(holdLane(0, 2));
+        pA.sections.add(new GeoSection(lA, 26));
+        c.pieces.add(pA);
+        TrackPiece pB = new TrackPiece(55, 25, 10, 20);
+        List<List<BezierBaker.Node>> lB = new ArrayList<>();
+        lB.add(holdLane(4, 2));
+        lB.add(holdLane(6, 2));
+        lB.add(holdLane(0, 2));
+        pB.sections.add(new GeoSection(lB, 15));   // slow design: DRIFT
+        c.pieces.add(pB);
+        BridgeSection bs = BridgeSection.solve(
+            new TrackPose(new Vec3(0, 0, 0), Quat.IDENTITY),
+            new TrackPose(new Vec3(1, 0, 0), Quat.IDENTITY), 26);
+        pA.sections.add(bs);
+        TrackCompiler.compile(c, 0.01);
+        c.optimizeBridge(bs, 1, 25, true);
+        TrackCompiler.Result r0 = TrackCompiler.compile(c, 0.01);
+        if (c.autoReoptimizeBridges(r0)) r0 = TrackCompiler.compile(c, 0.01);
+        int i0 = r0.spans().get(2).i0();
+        double drift0 = Math.abs(r0.trueV()[i0] - r0.samples().get(i0).v());
+        check(drift0 > 3, String.format(
+            "split fixture: bridged piece really drifts (%.1f m/s)", drift0));
+
+        // MAKE GRAPHS REAL: shape kept, split closed
+        Coaster c1 = deep(c);
+        check(c1.makeGraphsReal(1, 0, 0.01, 0.1, 0),
+            "make real: applies");
+        TrackCompiler.Result r1 = TrackCompiler.compile(c1, 0.01);
+        if (c1.autoReoptimizeBridges(r1)) r1 = TrackCompiler.compile(c1, 0.01);
+        int j0 = r1.spans().get(2).i0();
+        double drift1 = Math.abs(r1.trueV()[j0] - r1.samples().get(j0).v());
+        double[] dev = shapeDev(r0.samples(), r1.samples());
+        check(drift1 < 0.05 && dev[0] < 0.4, String.format(
+            "make real: split CLOSED (%.3f m/s) with shape kept"
+            + " (interior %.3f m)", drift1, dev[0]));
+
+        // RE-FREEZE: graphs kept (same lane objects), vDesign = true
+        Coaster c2 = deep(c);
+        GeoSection sec2 = (GeoSection) c2.pieces.get(1).sections.get(0);
+        List<BezierBaker.Node> laneRef = sec2.lanes.get(0);
+        check(c2.refreezeSpeed(1, 0, 0.01), "re-freeze: applies");
+        TrackCompiler.Result r2 = TrackCompiler.compile(c2, 0.01);
+        if (c2.autoReoptimizeBridges(r2)) r2 = TrackCompiler.compile(c2, 0.01);
+        int k0 = r2.spans().get(2).i0();
+        double drift2 = Math.abs(r2.trueV()[k0] - r2.samples().get(k0).v());
+        check(drift2 < 0.05
+                && c2.pieces.get(1).sections.get(0) instanceof GeoSection g2
+                && g2.lanes.get(0) == laneRef,
+            String.format("re-freeze: split CLOSED (%.3f m/s), graphs"
+                + " untouched (same lane objects)", drift2));
+
+        // BRIDGE partial convert hands the converted piece the TRUE
+        // speed (v14.5 — vCut was the design BLEND's speed)
+        Coaster c3 = deep(c);
+        BridgeSection bs3 = (BridgeSection) c3.pieces.get(0).sections.get(1);
+        check(c3.partialConvertBridge(0, 1, 0.5, false, true, 0.01),
+            "bridge true convert: applies");
+        TrackCompiler.Result r3 = TrackCompiler.compile(c3, 0.01);
+        if (c3.autoReoptimizeBridges(r3)) r3 = TrackCompiler.compile(c3, 0.01);
+        int m0 = r3.spans().get(2).i0();   // the converted lanes' span
+        double drift3 = Math.abs(r3.trueV()[m0] - r3.samples().get(m0).v());
+        check(drift3 < 0.05, String.format(
+            "bridge true convert: converted lanes ride the REAL profile"
+            + " (drift %.3f m/s; the blend speed used to freeze in)",
+            drift3));
+    }
+
+    /** Deep copy via the save round-trip (public API only). */
+    static Coaster deep(Coaster c) {
+        try {
+            java.io.StringWriter sw = new java.io.StringWriter();
+            DesignIO.save(c, DesignIO.Cosmetics.defaults(),
+                new PrintWriter(sw));
+            return DesignIO.load(new BufferedReader(
+                new StringReader(sw.toString()))).coaster();
+        } catch (Exception ex) {
+            throw new RuntimeException(ex);
+        }
+    }
+
+'''
+assert anchor in s
+s = s.replace(anchor, add + anchor)
+s = s.replace('        speedReconcile();', '        speedReconcile();\n        splitResolution();')
+io.open('Phase2Gate.java','w',encoding='utf-8',newline='\n').write(s)
+print('ok')
+
+==============================================================================
+2026-07-11T01:19:50.913Z  python script (failed: python FAILED: AssertionError: block (tolerant also failed: AssertionError: block))
+==============================================================================
+import io
+s = io.open('Phase2Gate.java', encoding='utf-8').read()
+old = '''        // BRIDGE partial convert hands the converted piece the TRUE
+        // speed (v14.5 — vCut was the design BLEND's speed)
+        Coaster c3 = deep(c);
+        BridgeSection bs3 = (BridgeSection) c3.pieces.get(0).sections.get(1);
+        check(c3.partialConvertBridge(0, 1, 0.5, false, true, 0.01),
+            "bridge true convert: applies");
+        TrackCompiler.Result r3 = TrackCompiler.compile(c3, 0.01);
+        if (c3.autoReoptimizeBridges(r3)) r3 = TrackCompiler.compile(c3, 0.01);
+        int m0 = r3.spans().get(2).i0();   // the converted lanes' span
+        double drift3 = Math.abs(r3.trueV()[m0] - r3.samples().get(m0).v());
+        check(drift3 < 0.05, String.format(
+            "bridge true convert: converted lanes ride the REAL profile"
+            + " (drift %.3f m/s; the blend speed used to freeze in)",
+            drift3));
+    }'''
+new = '''        // BRIDGE partial convert PRESERVES the downstream split
+        // (v14.5 corrected, D97 — user rule: converting changes
+        // nothing it doesn't have to): design speeds untouched, the
+        // old first section PINNED so the D95 reconcile leaves it
+        // alone even through the full rebuild loop
+        Coaster c3 = deep(c);
+        check(c3.partialConvertBridge(0, 1, 0.5, false, true, 0.01),
+            "bridge convert: applies");
+        Section old0 = c3.pieces.get(1).sections.get(1);
+        TrackCompiler.Result r3 = TrackCompiler.compile(c3, 0.01);
+        for (int i = 0; i < 3; i++) {
+            boolean again = c3.reconcileChainedSpeeds(r3);
+            if (c3.autoReoptimizeBridges(r3)) again = true;
+            if (!again) break;
+            r3 = TrackCompiler.compile(c3, 0.01);
+        }
+        int m0 = r3.spans().get(3).i0();   // [geo, bridge, lanes, OLD]
+        double drift3 = Math.abs(r3.trueV()[m0] - r3.samples().get(m0).v());
+        check(old0.vDesign() == 15.0 && old0.vPinned() && drift3 > 3,
+            String.format("bridge convert: downstream split PRESERVED"
+                + " (vDesign %.1f kept, pinned, drift %.1f m/s)",
+                old0.vDesign(), drift3));
+        check(deep(c3).pieces.get(1).sections.get(1).vPinned(),
+            "bridge convert: the pin survives save/load");
+
+        // WHOLE convert: the attached section keeps vB + its split
+        Coaster c5 = deep(c);
+        check(c5.convertBridgeWhole(0, 1, true, 0.01, 0.1, 0),
+            "whole convert: applies");
+        Section att = c5.pieces.get(0).sections.get(2);
+        TrackCompiler.Result r5 = TrackCompiler.compile(c5, 0.01);
+        for (int i = 0; i < 3; i++) {
+            boolean again = c5.reconcileChainedSpeeds(r5);
+            if (c5.autoReoptimizeBridges(r5)) again = true;
+            if (!again) break;
+            r5 = TrackCompiler.compile(c5, 0.01);
+        }
+        int a0 = r5.spans().get(2).i0();
+        double drift5 = Math.abs(r5.trueV()[a0] - r5.samples().get(a0).v());
+        check(att.vDesign() == 15.0 && att.vPinned() && drift5 > 3,
+            String.format("whole convert: attached split PRESERVED"
+                + " through the reconcile (vDesign %.1f, pinned,"
+                + " drift %.1f m/s)", att.vDesign(), drift5));
+    }'''
+assert old in s, 'block'
+s = s.replace(old, new)
+io.open('Phase2Gate.java','w',encoding='utf-8',newline='\n').write(s)
+print('ok')
+
+==============================================================================
+2026-07-11T05:32:09.403Z  python script (failed: python FAILED: AssertionError: b (tolerant also failed: AssertionError: b))
+==============================================================================
+import io
+p = 'coaster-next-up.md'
+s = io.open(p, encoding='utf-8').read()
+old = "As of 2026-07-10: v13.14 committed (43baeeb — partial-convert\nSIG_STALE re-place, D88). UNCOMMITTED on top, pending Jackson's\nhand-test:"
+new = "As of 2026-07-10: ALL WORK COMMITTED at add40f0 (v14.0-v14.5,\nD89-D97; on top of 43baeeb/v13.14). What landed:"
+assert old in s, 'a'
+s = s.replace(old, new)
+old = "Gated TESTING #36 + walkthrough #67\n(219 checks + 7 probes)."
+new = """Gated TESTING #36 + walkthrough #67
+(219 checks + 7 probes). Final tweaks in the commit: resolve ops
+blocked behind ANY upstream unconverted bridge in the run (his
+"directly after only" was reversed after testing), adaptive
+accuracy floor 0.01%. The canonical Phase2Gate.java with ALL
+groups lives in session scratchpad e373274a-694e-4215-bbd4-
+1aa86ad23089 (newest as of this commit)."""
+assert old in s, 'b'
+s = s.replace(old, new)
+s = s.replace("All of v14.0-v14.5 UNCOMMITTED.", "")
+io.open(p, 'w', encoding='utf-8', newline='\n').write(s)
+
+p = 'MEMORY.md'
+s = io.open(p, encoding='utf-8').read()
+old = "- [Coaster next up](coaster-next-up.md) — v14.1-14.3 bridge round REVERTED (read D95 first!); v14.0 convert + speed reconcile uncommitted pending hand-test"
+new = "- [Coaster next up](coaster-next-up.md) — v14.0-14.5 committed (add40f0): convert expansion + §5 round B done, bridge-opt round reverted (read D95!); next = §5 round C"
+assert old in s, 'c'
+s = s.replace(old, new)
+io.open(p, 'w', encoding='utf-8', newline='\n').write(s)
+print('ok')
+
+==============================================================================
+2026-07-11T20:29:24.331Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        speedReconcile();
+        splitResolution();
+        orientAlign();
+        System.out.println(failures == 0 ? "\nALL GATES PASS" : "\n" + failures + " FAILURES");
+
+NEW:
+        speedReconcile();
+        splitResolution();
+        orientAlign();
+        influence();
+        System.out.println(failures == 0 ? "\nALL GATES PASS" : "\n" + failures + " FAILURES");
+
+==============================================================================
+2026-07-12T00:12:04.311Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        orientAlign();
+        influence();
+        System.out.println(failures == 0 ? "\nALL GATES PASS" : "\n" + failures + " FAILURES");
+
+NEW:
+        orientAlign();
+        influence();
+        convRound();
+        System.out.println(failures == 0 ? "\nALL GATES PASS" : "\n" + failures + " FAILURES");
+
+==============================================================================
+2026-07-17T16:14:55.270Z  python script (failed: python FAILED: AssertionError:  (tolerant also failed: AssertionError: ))
+==============================================================================
+import io, glob
+p = glob.glob(r'C:/Users/jacks/AppData/Local/Temp/claude/C--Users-jacks-OneDrive-Documents-AI-Fun-coaster/9c04fda9*/scratchpad/Phase2Gate.java')[0]
+with io.open(p, 'r', encoding='utf-8', newline='') as f:
+    t = f.read()
+anchor = "        nodeSplit();"
+assert anchor in t
+t = t.replace(anchor, anchor + "\n        connectSections();", 1)
+new_gate = '''
+    // ---------- CONNECT sections (v16.19, D131 — the split's inverse) --
+    static void connectSections() {
+        double DT = 0.01;
+        java.util.function.Supplier<Coaster> fix = () -> {
+            Coaster c = new Coaster();
+            TrackPiece p = new TrackPiece(0, 21, 0, 0);
+            List<List<BezierBaker.Node>> ln = new ArrayList<>();
+            ln.add(nodes(new double[][]{ {0, 1}, {0.8, 2.2}, {1.9, 0.6}, {3, 1} }));
+            ln.add(nodes(new double[][]{ {0, 0}, {1.9, 0}, {3, 0} }));
+            ln.add(nodes(new double[][]{ {0, 0}, {1, 40}, {1.9, -10}, {3, 0} }));
+            p.sections.add(new ForceSection(ln, 26));
+            c.pieces.add(p);
+            return c;
+        };
+        // 1) split → connect ROUND-TRIPS to the original exactly
+        Coaster c0 = fix.get();
+        TrackCompiler.Result r0 = TrackCompiler.compile(c0, DT);
+        Coaster c1 = fix.get();
+        c1.splitSectionAt(0, 0, 1.9, DT);
+        boolean ok = c1.mergeSections(0, 0);
+        TrackCompiler.Result r1 = TrackCompiler.compile(c1, DT);
+        double dev = 0;
+        int n = Math.min(r0.samples().size(), r1.samples().size());
+        for (int i = 0; i < n; i++) {
+            dev = Math.max(dev, r0.samples().get(i).pos()
+                .sub(r1.samples().get(i).pos()).length());
+        }
+        check(ok && c1.pieces.get(0).sections.size() == 1
+            && r1.samples().size() == r0.samples().size() && dev < 1e-12,
+            String.format("connect: split -> connect round-trips the"
+            + " original (dev %.2e m)", dev));
+
+        // 2) an UNMATCHED seam averages value + handle slope
+        Coaster c2 = new Coaster();
+        TrackPiece p2 = new TrackPiece(0, 21, 0, 0);
+        List<List<BezierBaker.Node>> la = new ArrayList<>();
+        la.add(nodes(new double[][]{ {0, 1}, {2, 0.6} }));
+        la.add(nodes(new double[][]{ {0, 0}, {2, 0} }));
+        la.add(nodes(new double[][]{ {0, 0}, {2, 0} }));
+        List<List<BezierBaker.Node>> lb = new ArrayList<>();
+        lb.add(nodes(new double[][]{ {0, 1.4}, {1, 1} }));
+        lb.add(nodes(new double[][]{ {0, 0}, {1, 0} }));
+        lb.add(nodes(new double[][]{ {0, 0}, {1, 0} }));
+        p2.sections.add(new ForceSection(la, 26));
+        p2.sections.add(new ForceSection(lb, 24));
+        c2.pieces.add(p2);
+        boolean ok2 = c2.mergeSections(0, 0);
+        LaneSection ms = (LaneSection) c2.pieces.get(0).sections.get(0);
+        List<BezierBaker.Node> l0 = ms.lanes.get(0);
+        BezierBaker.Node seam = null;
+        for (BezierBaker.Node nd : l0) {
+            if (Math.abs(nd.t - 2) < 1e-9) seam = nd;
+        }
+        check(ok2 && c2.pieces.get(0).sections.size() == 1
+            && seam != null && Math.abs(seam.val - 1.0) < 1e-9
+            && seam.smooth,
+            "connect: unmatched seam node averages value (0.6/1.4 ->"
+            + " 1.0) and comes out smooth");
+
+        // 3) UNLIKE neighbors refuse (force + geo)
+        Coaster c3 = fix.get();
+        c3.splitSectionAt(0, 0, 1.9, DT);
+        LaneSection right = (LaneSection) c3.pieces.get(0).sections.get(1);
+        GeoSection geo = new GeoSection(right.lanes, right.vDesign());
+        c3.pieces.get(0).sections.set(1, geo);
+        check(!c3.mergeSections(0, 0),
+            "connect: unlike sections (force + geo) refuse");
+    }
+'''
+close = t.rfind('}')
+t = t[:close] + new_gate + '\n' + t[close:]
+with io.open(p, 'w', encoding='utf-8', newline='') as f:
+    f.write(t)
+print('connect gate added')
+
+==============================================================================
+2026-07-17T19:00:57.598Z  python script (failed: python FAILED: SystemExit(anchor missing) (tolerant also failed: SystemExit(anchor missing)))
+==============================================================================
+import io, glob
+p = glob.glob(r'C:/Users/jacks/AppData/Local/Temp/claude/C--Users-jacks-OneDrive-Documents-AI-Fun-coaster/9c04fda9*/scratchpad/Phase2Gate.java')[0]
+with io.open(p, 'r', encoding='utf-8', newline='') as f:
+    t = f.read()
+old = """            ln.add(nodes(new double[][]{ {0, 0}, {1, 40}, {1.9, -10}, {3, 0} }));
+            p.sections.add(new ForceSection(ln, 26));
+            c.pieces.add(p);
+            return c;
+        };
+        // 1) split → connect ROUND-TRIPS to the original exactly
+        Coaster c0 = fix.get();
+        TrackCompiler.Result r0 = TrackCompiler.compile(c0, DT);
+        Coaster c1 = fix.get();
+        c1.splitSectionAt(0, 0, 1.9, DT);
+        boolean ok = c1.mergeSections(0, 0);"""
+new = """            // lane 2 ends EARLY (holds 40 to the end) — the v16.20
+            // hold-lane coverage: its dead edge handles must not
+            // bend the reconnected join
+            ln.add(nodes(new double[][]{ {0, 0}, {1.2, 40} }));
+            p.sections.add(new ForceSection(ln, 26));
+            c.pieces.add(p);
+            return c;
+        };
+        // 1) split → connect ROUND-TRIPS to the original exactly —
+        // WITH deliberately dirtied dead handles on the held lane
+        // (v16.20: merge zeroes them; appending them verbatim bent
+        // the join, the user's "connect changes the slope")
+        Coaster c0 = fix.get();
+        TrackCompiler.Result r0 = TrackCompiler.compile(c0, DT);
+        Coaster c1 = fix.get();
+        c1.splitSectionAt(0, 0, 1.9, DT);
+        LaneSection lh = (LaneSection) c1.pieces.get(0).sections.get(0);
+        List<BezierBaker.Node> hz = lh.lanes.get(2);
+        hz.get(hz.size() - 1).outDv = 25;    // dead out-handle, left
+        LaneSection rh = (LaneSection) c1.pieces.get(0).sections.get(1);
+        rh.lanes.get(2).get(0).inDv = -40;   // dead in-handle, right
+        boolean ok = c1.mergeSections(0, 0);"""
+for o, n in ((old, new), (old.replace('\\n','\\r\\n'), new.replace('\\n','\\r\\n'))):
+    if o in t:
+        t = t.replace(o, n, 1)
+        break
+else:
+    raise SystemExit('anchor missing')
+with io.open(p, 'w', encoding='utf-8', newline='') as f:
+    f.write(t)
+print('gate strengthened')
+
+==============================================================================
+2026-07-17T20:53:35.917Z  python script (failed: python FAILED: AssertionError:  (tolerant also failed: AssertionError: ))
+==============================================================================
+import io, glob
+p = glob.glob(r'C:/Users/jacks/AppData/Local/Temp/claude/C--Users-jacks-OneDrive-Documents-AI-Fun-coaster/9c04fda9*/scratchpad/Phase2Gate.java')[0]
+with io.open(p, 'r', encoding='utf-8', newline='') as f:
+    t = f.read()
+
+# 1) fixture-1: give the split node a REAL slope on both coasters
+old = """        Coaster c0 = fix.get();
+        TrackCompiler.Result r0 = TrackCompiler.compile(c0, DT);
+        Coaster c1 = fix.get();
+        c1.splitSectionAt(0, 0, 1.9, DT);"""
+new = """        // the split node carries a REAL slope (v16.20 — flat-handled
+        // fixtures were blind to the negative-effInDt guard bug that
+        // halved matched-seam slopes)
+        java.util.function.Consumer<Coaster> slope = c -> {
+            List<BezierBaker.Node> l0 =
+                ((LaneSection) c.pieces.get(0).sections.get(0)).lanes.get(0);
+            BezierBaker.Node nd = l0.get(2);   // t = 1.9
+            nd.smooth = true;
+            nd.inDv = -0.7333;
+            nd.outDv = 0.7333;
+        };
+        Coaster c0 = fix.get();
+        slope.accept(c0);
+        TrackCompiler.Result r0 = TrackCompiler.compile(c0, DT);
+        Coaster c1 = fix.get();
+        slope.accept(c1);
+        c1.splitSectionAt(0, 0, 1.9, DT);"""
+assert old in t; t = t.replace(old, new, 1)
+
+# 2) fixture-2: held-lane averaging with slope
+old2 = """        List<List<BezierBaker.Node>> la = new ArrayList<>();
+        la.add(nodes(new double[][]{ {0, 1}, {2, 0.6} }));
+        la.add(nodes(new double[][]{ {0, 0}, {2, 0} }));
+        la.add(nodes(new double[][]{ {0, 0}, {2, 0} }));
+        List<List<BezierBaker.Node>> lb = new ArrayList<>();
+        lb.add(nodes(new double[][]{ {0, 1.4}, {1, 1} }));
+        lb.add(nodes(new double[][]{ {0, 0}, {1, 0} }));
+        lb.add(nodes(new double[][]{ {0, 0}, {1, 0} }));"""
+new2 = """        List<List<BezierBaker.Node>> la = new ArrayList<>();
+        la.add(nodes(new double[][]{ {0, 1}, {2, 0.6} }));
+        la.add(nodes(new double[][]{ {0, 0}, {2, 0} }));
+        la.add(nodes(new double[][]{ {0, 40} }));   // HELD lane
+        List<List<BezierBaker.Node>> lb = new ArrayList<>();
+        lb.add(nodes(new double[][]{ {0, 1.4}, {1, 1} }));
+        lb.add(nodes(new double[][]{ {0, 0}, {1, 0} }));
+        lb.add(nodes(new double[][]{ {0, 10}, {1, 10} }));"""
+assert old2 in t; t = t.replace(old2, new2, 1)
+
+old3 = """        p2.sections.add(new ForceSection(la, 26));
+        p2.sections.add(new ForceSection(lb, 24));"""
+new3 = """        // the held-facing node carries a slope: out 4 over outDt
+        // 1/3 -> sOut 12, so the averaged seam must land sAvg 6
+        lb.get(2).get(0).outDv = 4;
+        p2.sections.add(new ForceSection(la, 26));
+        p2.sections.add(new ForceSection(lb, 24));"""
+assert old3 in t; t = t.replace(old3, new3, 1)
+
+# 3) extend fixture-2's assertions with the held-lane seam checks
+old4 = """        check(ok2 && c2.pieces.get(0).sections.size() == 1
+            && seam != null && Math.abs(seam.val - 1.0) < 1e-9
+            && seam.smooth,
+            "connect: unmatched seam node averages value (0.6/1.4 ->"
+            + " 1.0) and comes out smooth");"""
+new4 = """        check(ok2 && c2.pieces.get(0).sections.size() == 1
+            && seam != null && Math.abs(seam.val - 1.0) < 1e-9
+            && seam.smooth,
+            "connect: unmatched seam node averages value (0.6/1.4 ->"
+            + " 1.0) and comes out smooth");
+        // held lane: value averages with the hold and the slope
+        // halves toward the flat side (sAvg = sOut/2 = 6 deg/s):
+        // inDv = 6 * (-1/3 * 2) = -4, outDv = 6 * (1/3 * 1) = 2
+        List<BezierBaker.Node> l2m = ms.lanes.get(2);
+        BezierBaker.Node hs = null;
+        for (BezierBaker.Node nd : l2m) {
+            if (Math.abs(nd.t - 2) < 1e-9) hs = nd;
+        }
+        check(hs != null && Math.abs(hs.val - 25) < 1e-9
+            && Math.abs(hs.inDv + 4) < 1e-9
+            && Math.abs(hs.outDv - 2) < 1e-9 && hs.smooth,
+            "connect: HELD lane averages too (40/10 -> 25, slope"
+            + " sOut/2 both handles)");"""
+assert old4 in t; t = t.replace(old4, new4, 1)
+
+with io.open(p, 'w', encoding='utf-8', newline='') as f:
+    f.write(t)
+print('gate hardened')
+

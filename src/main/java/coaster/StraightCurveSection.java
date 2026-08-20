@@ -138,7 +138,10 @@ public final class StraightCurveSection implements Section {
      *  continues the entry pose dead ahead, seamless after anything. */
     public static StraightCurveSection straight(double lengthM, double vDesign) {
         List<Element> els = new ArrayList<>();
-        els.add(Element.straight(lengthM, 0));
+        // element 0's smoothIn = the SECTION-ENTRY roll ease, taken
+        // verbatim since v19.4 (D233): new sections keep the
+        // comfortable 2 m default explicitly (the old implicit floor)
+        els.add(Element.straight(lengthM, 2));
         return new StraightCurveSection(els, vDesign);
     }
 

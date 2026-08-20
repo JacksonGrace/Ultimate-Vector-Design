@@ -8517,3 +8517,704 @@ re-solve; 2: train approximation graphs; 3: imports & content;
 4: 3D nodal track influence). Also pending his verdict: renaming
 the .fvd extension is a two-line FileChooser change whenever he
 picks a program name (answered in-session).
+
+
+## D221 (v19.0) — the ORIENTATION LINK: design/true pitch-roll shown, chosen, and carried
+
+His first "larger addition" prompt: make the hidden difference
+between DESIGN and TRUE orientation a first-class control. (He
+wrote "pitch/yaw"; yaw physically CANNOT split design from true —
+rotation about gravity's axis commutes with the solve, D199 — so
+the substance is pitch/ROLL, with yaw riding along in every
+surface. Stated in the summary; roll included by symmetry.)
+
+1. ONE FLAG PER PIECE, THREE SURFACES. TrackPiece.orientMode
+   {AUTO, LINKED, RIGID} + nodesDirty, surfaced as an
+   "Orientation edits reshape track" check on the Track Piece
+   panel, the Bridge properties panel (targeting the NEXT piece)
+   and the Strict seam settings (targeting the FOLLOWER). LINKED
+   = orientation edits fold into the GENERATION frame — gravity
+   re-solves the shape, design == true, no ≠v from placement.
+   RIGID = the historic D100 tilt: shape preserved, honest ≠v.
+   Toggling flips POLICY only (nothing is baked): with live
+   deltas the shape re-solves or reverts, orientation never
+   jumps, and the flip is symmetric + undoable.
+
+2. AUTO DEFAULT = "pristine pieces link". linkedNow() resolves
+   AUTO by nodesDirty: a piece whose AUTHORED content (lane
+   nodes, s/c elements, speed controls) has never been hand-
+   edited since the piece's creation stays LINKED; the first
+   content edit flips it RIGID. Tracked by a per-rebuild content
+   FINGERPRINT (Coaster.contentFingerprint) baselined on fresh
+   piece objects — undo restores, convert previews and loads
+   replace pieces wholesale (applyDocState), so CONVERSIONS and
+   INITIAL-SPEED edits never count, exactly his exemption list,
+   with no per-call-site bookkeeping. Old files load AUTO+dirty
+   (a `porient mode dirty` line per piece, missing = dirty) =
+   bitwise the historic behavior — all four DetermGates green
+   untouched.
+
+3. LINKED GENERATION IS CANON-SPACE. The pitch/roll deltas
+   compose onto the canonical (heading-stripped) frame
+   (TrackCompiler.linkedCanon) — the same axis math as
+   entryPose() rotated by −psi, heading-equivariant, so psi
+   stays additive: x/y/z AND yaw moves of a linked piece remain
+   BITWISE-rigid (OrientGate d1/d2) while pitch/roll edits
+   re-solve, which is the point. Linked tilt == bakeTilt's
+   re-solve to 1.3e-14 m (gate c1) WITHOUT mutating stored
+   fields — the deltas stay in the spinners, and unchecking
+   returns the rigid reading. Resolve ops skip bakeTilt on
+   linked pieces (nothing to resolve; baking would only swap
+   arithmetic bits). LINKED FOLLOWERS generate AT the follow
+   pose (canonOf(eff)) — design tracks the seam and upstream
+   edits reshape the follower, the deliberate opposite of the
+   D135 freeze; upstream translation is bitwise, upstream yaw
+   re-solves with dust (the held-angle re-aim's accepted class).
+
+4. RIGID CARRY: the whole downstream chain is one rigid body.
+   A RIGID piece's placement edit (spinners, all gizmo surfaces,
+   seam settings — every write funnels through
+   FvdDesigner.placementEdit) transforms the CONNECTED chain
+   (trailing bridges + strict followers, recursively) by the
+   same rigid delta (Coaster.carryDownstream): manual-bridge
+   targets get position + orientation-as-deltas (decomposeEntry
+   — yaw carries the heading conflict-free, pitch/roll ARE the
+   adopted conflict), optimize-mode targets get orientation only
+   (the march re-lands position on the rigid image itself),
+   followers get their LOCKED Euler angles rewritten (position +
+   unlocked axes follow the moved seam automatically). Gated:
+   translation exact to 9e-14 through a manual bridge; a 6°
+   pitch keeps both pieces exact rigid images (6e-14) with the
+   bridge SPINE rigid to the check's own chord floor (7e-4) —
+   only the bridge's TIME sampling re-derives over the new
+   heights, the honest energy law. A carried LINKED piece that
+   receives a tilt flips to explicit RIGID (folding it in would
+   reshape — the opposite of a rigid carry). LINKED pieces keep
+   today's behavior: bridges re-solve, followers re-aim, nothing
+   is carried.
+
+5. RETURN TO DESIGN. Each surface shows a "Return to design
+   orientation" button only while a RIGID conflict exists:
+   piece/bridge-target = zero the pitch/roll deltas (the rigid
+   un-rotation — shape preserved, conflict closed, downstream
+   carried back); seam = each LOCKED axis back to the follower's
+   stored generation Euler. Yaw is deliberately untouched
+   (design yaw == true yaw always).
+
+6. THE OPTIMIZER LOOP GUARD. alignPieceForBridge writing
+   pitch/roll onto a LINKED target would re-solve its shape,
+   re-capture its head and re-align — an unsettleable loop. The
+   march claiming those axes flips the target to explicit RIGID
+   (gate i3); the default P+Y locks (yaw-only alignment) leave
+   the flag alone (i2), so bridging onto a pristine piece with
+   default locks keeps it linked. The bridge panel's link check
+   grays under optimize-orientation with a hint.
+
+Accepted corners (stated to him): a follower's UNLOCKED axes
+follow the seam by definition, so under a pitch/roll carry their
+re-aim differs from the exact rigid image at second order
+(pure translation/yaw carries are exact — gate g at 5e-16); a
+vertical-heading bridge target cannot take the delta
+decomposition and carries position-only; spinner-click carries
+compose per commit (hand-reverting leaves float dust — Ctrl+Z
+is the exact path, as everywhere); the carry writes ride the
+caller's one undo snapshot. Gates: OrientGate (23 checks) +
+DetermGate197/198/199/200, Phase2Gate (258), Phase3Gate,
+DomainGate, LoadGate196 all green — the three fixture files pin
+nodesDirty=true where they hand-author pieces in code and then
+assert RIGID-tilt behavior (model-built pieces are pristine by
+construction; a user's authored piece is dirty by the fingerprint).
+
+
+## D222 (v19.0) — "Lock Track Shape": the two-tier re-spec of D221 + the seam-popup fly-keys fix
+
+His feedback round on D221 (he confirmed "pitch/yaw" was a typo
+for pitch/ROLL), plus a mid-round clarification: seam and bridge
+ORIENTATIONS work exactly as before — the feature lives at the
+START of a track piece only — but the rigid carry stays keyed to
+the edited piece's checkbox.
+
+1. TWO TIERS, ONE ROUTING FLAG. TrackPiece grows
+   designPitchDeg/designRollDeg beside the true pitchDeg/rollDeg
+   (spinners + file fields 9-10 unchanged). Generation composes
+   the DESIGN tier in canonical space (TrackCompiler.designCanon);
+   the design→true gap applies as the rigid conflict tilt
+   (conflictTilt: design (0,0) = tilt()'s historic arithmetic
+   bitwise; design == true = the IDENTITY object, the pure link).
+   shapeLocked (default TRUE) is a pure EDIT-ROUTING flag — the
+   compile never reads it. TrackPiece.editPitch/editRoll are the
+   routing chokes: locked = true tier only (conflict grows, shape
+   kept, rigid carry); unlocked = both tiers move by the same
+   Euler amount. That lockstep IS his invariance spec: unchecking
+   never moves anything (the offset freezes), and the shaping any
+   subsequent edit causes is IDENTICAL with or without a conflict
+   riding on top — same design triple, same generation bits
+   (OrientGate c3: dev 0.0, the conflicted twin is the exact
+   rigid image). D221's policy-flip-reshapes behavior is gone;
+   AUTO/nodesDirty/contentFingerprint died with it (the default
+   is simply LOCKED = classic).
+
+2. ONE SURFACE. The checkbox ("Lock Track Shape", checked by
+   default, tooltip verbatim "Design orientation does not
+   change") lives on the Track Piece panel ONLY — the D221 bridge
+   and seam copies were removed on his spec ("weird edge cases").
+   Strict-seam and bridge orientation surfaces are classical
+   single-tier again (the linked-follower compiler branch is
+   deleted; the march writes the true tier by convention, so the
+   optimizer can never reshape-loop — even on an unlocked target,
+   gate i). The carry keeps its D221 shape and keys off the
+   EDITED piece's flag: locked = the downstream chain (bridges +
+   strict seams, recursively) rides along rigidly adopting the
+   conflict on its TRUE tier; unlocked = natural (historic)
+   updates. Followers hide the surface (seam-owned; their
+   default-locked flag keeps seam re-aims carrying).
+
+3. THE BUTTON PAIR + READOUT. One line, shown only while design ≠
+   real: "Design → Real Orientation" (design := true — the shape
+   re-solves at the real frame; bitwise the pure-link shape, gate
+   j2) and "Real → Design Orientation" (true := design — the
+   piece and its carried chain un-rotate onto the authored
+   orientation, shape preserved, gate j1; replaces D221's
+   "Return to design orientation"). Below the pitch/roll
+   spinners, a read-only "Design orientation: pitch X° roll Y°"
+   line appears while split (synced per rebuild +
+   syncPlacementSpinners; the popup's row visibility refreshes
+   through the same hook).
+
+4. TIER HYGIENE. bakeTilt zeroes BOTH tiers (and the pure-yaw
+   canon fast path now requires all four deltas zero); the
+   resolve ops bake on orientConflict() only; reversePiece,
+   bakeFollow and partialConvertBridge's right-side re-anchor
+   reset the design tier with the true one — a leftover design
+   delta would silently ACTIVATE generation when the piece stops
+   being machine-owned (the workflow's change-surface sweep
+   caught all three). editRoll wraps the design tier into ±360
+   (ring drags wrap the true value; the ±720 lockstep jump is
+   the same rotation, kept in spinner range).
+
+5. IO. `porient locked designPitch designRoll` (Double.toString —
+   the design tier SHAPES the track, so it is geometry-feeding);
+   missing = locked + (0,0) = every pre-v19 file bitwise; the
+   uncommitted D221 interim format (`porient mode dirty`)
+   migrates: mode 1 (LINKED) → unlocked + design := true (gate
+   h3). PieceState carries the three fields.
+
+6. THE FLY-KEYS BUG (his report: "right clicking into the
+   viewport in fly view doesn't allow camera movement when in at
+   least the strict seam menu"). Root cause, pinned by a
+   full-window audit: the strict-seam settings popup was the ONE
+   editor-hosting secondary window without the D166
+   installViewKeys ride-key forwarder — its non-auto-hide window
+   holds keyboard focus after any spinner click, so W/A/S/D died
+   in the popup's scene while right-click fly-entry and mouse
+   look (mouse events, focus-free) kept working. Fix: a
+   setOnShown installViewKeys registration (covers BOTH show
+   branches — the gizmo-anchored one returns early). The audit
+   cleared every other window: all editor-hosting
+   dialogs/popups/menus already forward (or are momentary plain
+   menus / deliberately-blocking modal alerts).
+
+Bitwise contract note: a piece with a LIVE CONFLICT has always
+carried last-ulp dust under yaw moves (the tilt quat is
+yaw-conjugated — the D100 tilted-piece limit, unchanged);
+conflict-free pieces (either tier alone) keep D199's bitwise
+yaw/translation rigidity (OrientGate d1/d2). Full battery green:
+OrientGate 23, DetermGate197/198/199/200, Phase2 (258, fixture
+pins reverted — default-locked restores rigid fixtures natively),
+Phase3, Domain, LoadGate196.
+
+
+## D223 (v19.1) — Small-items round: badge hover, export piece picker; the LOST GATES + the durable `gates/` folder
+
+Batch 15 opened with two quick asks: (1) the section-settings
+BADGE lights up under the mouse (brighter fill/edge, full alpha,
+hand cursor — the seam-line hover pattern, `hoverBadge`; the
+mouse-exit now also clears the seam hover it never cleared), so
+it reads as the button it is; (2) File > Export grows a "Track
+piece" dropdown (Whole track | Piece k/n — hidden for one-piece
+docs): a piece exports its own compiled sample range incl. a
+trailing bridge, with the dropped continuation seam sample put
+back so the spline starts ON the piece's entry; filename
+`coaster-pieceN`.
+
+PROCESS NOTE (important): Windows Temp cleanup purged every
+older session scratchpad between the D222 round and this one —
+Phase2Gate/Phase3Gate/DomainGate/DetermGate197-200/LoadGate196/
+KnotFixture existed ONLY there. They were RECOVERED by replaying
+the Write/Edit tool calls out of the session transcripts, and
+ALL gates now live in the repo under `gates/` (compile with
+`javac -cp target/classes -d gates/out gates/*.java`, run with
+`java -cp "target/classes;gates/out" X`; the recovery script is
+gates/tools/). Never keep a gate only in a scratchpad again.
+Recovery was complete for every gate EXCEPT Phase2Gate, which is
+PARTIAL: 163 of its historic 258 checks (the convert / partial-
+convert / node-split / connect-sections / speed-reconcile / split-
+resolution families were authored in a session whose transcript
+no longer exists — surviving fragments in Phase2Gate.lost-edits.txt);
+three recovered checks were stale and re-baselined (six-stop
+cosmetics round-trip, the D84 dropped-seam-sample bridge check, a
+55i stall fixture that looped instead of stalling — now a straight
+geo climb). Rewriting the lost families is an open item.
+
+
+## D224 (v19.1) — ABSOLUTE orientation boxes; a TILTED split stays put; through-the-pole rings (decomposeNear)
+
+His report: after splitting a piece at a pitched/banked point,
+the Track Piece boxes read zero orientation while the position
+boxes read the real position; asked that the boxes always show
+the REAL starting orientation, that splitting NEVER changes the
+track however complicated, and (a separate item) that global
+gizmo rings and the placement pitch pass through vertical
+seamlessly like NL2 — plus a "wobble" at the top of local ring
+drags.
+
+1. DISPLAY, NOT MODEL. baseOrient + deltas stay the model (the
+   D71/D199 bitwise split rides on baseOrient copies). The panel
+   shows CANONICAL heading/elevation/bank of the entry —
+   TrackPiece.dispYaw/dispPitch/dispRoll: base Euler
+   (decomposeEntry off the identity) + delta, exact by the
+   composition's construction (yaw keeps elevation+bank, pitch
+   about the horizontal right keeps heading+bank, roll keeps
+   both) — EXCEPT past the pole, where a raw elevation beyond
+   ±90 reads as heading+180, mirrored elevation, bank+180 (the
+   level-up reference flips). Fresh pieces (identity base) show
+   the deltas bitwise as before. setDispYaw/Pitch/Roll invert on
+   the CURRENT pole branch (setDispPitch keeps a past-the-pole
+   piece on its mirrored scale — heading never jumps); route =
+   the D222 lock (true only vs lockstep), false = the bridge
+   rows' plain true write. The bridge next-piece rows and the
+   design readout use the same functions.
+2. RINGS DRIVE THE RAW COORDINATE. Global rings read/write
+   rawAbsYaw/Pitch/Roll (base + delta, unreduced) — absolute-
+   from-press stays continuous THROUGH the pole (a raw pitch of
+   100 composes fine; the boxes then read 80 with heading+180 =
+   NL2's flip); the ±85 clamps are gone everywhere (spinners
+   ±90). pitchAxis draws the ring about the YAWED BASE heading's
+   horizontal right (identical to the true T's below the pole,
+   continuous through it).
+3. decomposeNear (the wobble fix). Local rings/carries used
+   decomposeEntry — canonical, so crossing the pole flipped yaw
+   AND roll by 180 (with a SHARED yaw, that would have flipped
+   the design tier too) while the ±85 clamp fought it: the
+   wobble. decomposeNear(base, target, hints) evaluates BOTH
+   Euler branches (primary: heading gap / elevation gap; flipped:
+   yaw±180, pitch carried OVER the pole = 180−e₁−eₜ, roll±180),
+   wraps each component into the hint's 360° window and returns
+   the branch with the smaller total change — a pole crossing
+   keeps yaw/roll and runs pitch past 90; a 170° yaw carry stays
+   pure yaw (the flipped branch costs ~360° there). Used by the
+   local rings (piece + bridge), carryDownstream, and the split.
+4. TILTED SPLIT CONTINUITY. Span carries exitTilt (the piece's
+   conflict tilt or a follower's re-aim; canon pair now ALWAYS
+   stored). splitPiece hands the new piece the DESIGN chain
+   (baseOrient := tilt⁻¹·E, the pair copied — bitwise
+   generation) plus the tilt as its OWN true-tier deltas
+   (decomposeNear(design, E)): a rotation about the new entry
+   composed with the boundary translation is the parent's
+   rotation about ITS entry, so the maps coincide — the track
+   stays to dust (gate c1 6.8e-14, follower e 7.1e-14) and the
+   panel shows the honest inherited conflict. Untilted splits
+   keep the exact-zero path (bitwise, gate b1). The D100
+   "splits re-solve" corner is CLOSED (reversal still bakes).
+   Gate: OrientGate2 (18 checks).
+
+Accepted: a raw pitch accumulates unbounded across ring drags
+(the display is canonical; a spinner write re-derives on the
+current branch); yaw is shared, so a rotation with a heading
+component splits into design heading + pitch/roll conflict at a
+split (rotationally exact, "Real → Design" leaves that heading).
+
+
+## D225 (v19.1) — LIVE node editor
+
+"Instead of an Apply button, make the track update while
+editing each value." The node dialog's boxes are LiveNum
+widgets (TextField + ▲/▼ steppers + mouse wheel — Shift ×10,
+Ctrl ×0.1): every PARSEABLE text change applies at once through
+the same paths Apply used (moveNode for time/value — ripple,
+level runs, slope-keeping dv rescale; direct fraction writes
+for handles; the start-speed spinner; vDesign+pin for the
+initial design speed); a blank/unparseable box holds (his
+"exactly as it does currently" clause = the old parseOr
+fallback). Each edit is a GLOBAL undo step (typing bursts within
+0.8 s on the same box coalesce). The node is re-resolved BY
+INDEX per apply on the captured surface, so Ctrl+Z (which swaps
+lane objects) leaves the box live; switching section/lane makes
+it inert rather than writing elsewhere. Buttons: Close only.
+
+
+## D226 (v19.1) — The START SCREEN + "Add floating section"
+
+File > New shows a start screen IN the graph area (StartPanel,
+hosted over the GraphEditor canvas; graph keys dead while up,
+text boxes get their keys): step 1 = two tiles (Straight/Curve |
+Geometric/Force) with the track HIDDEN (Viewport3D reads
+app.trackHidden); step 2 = the track appears and a live form:
+the section's rows (the Add-section dialog's Type/Domain/Rate
+units/Yaw-pitch axis/Roll axis/Roll behavior for lane types; a
+10 m straight note for s/c), Placement (x/y/z + yaw/pitch/roll —
+BOTH tiers written = "as if Lock Track Shape were unchecked", no
+conflict), Speed, and (new file only) Friction, all applying
+live; "Start designing" closes it (history clean, doc clean),
+"Skip" keeps the plain 5 s starter, "‹ Back" re-picks. Defaults
+= the historic ones. "Add floating section…" in the ⊕ menu opens
+the same screen minus friction for a NEW detached piece —
+default 5 m past the active piece's end at its heading and true
+speed; ONE undo step (snapshot at the pick; Cancel/Back
+un-create through it). Model writes funnel through
+FvdDesigner.wizard* so undo/dirty/spinner sync stay in one
+place. Dev hook: `-Dfvd.devshot=<dir>` renders the three states
+to PNG (this display is too small to show the graph panel).
+
+
+## D227 (v19.2) — The UNDO deep-dive: one history, global keys in every shape-affecting window, live panels
+
+His report: intermittent Ctrl+Z weirdness around the Track Piece
+settings (dead while the panel was open; edits made in the panel
+not undoable after closing it), Ctrl+Z dead in the node editor,
+and the rule going forward — ANY menu that can change the track
+gets the GLOBAL Ctrl+Z; menu-local undo is for cosmetic/settings
+menus only. Root causes found:
+
+1. TWO HISTORIES FOR ONE EDIT. wireDocSpinner pushed a document
+   snapshot AND a menu-local edit; the popup's Ctrl+Z (its scene
+   filter → menuUndo, consumed) replayed the spinner with
+   menuApplying=true (no doc push) while the document stack kept
+   its snapshot — the next main-window Ctrl+Z re-applied a state
+   already current ("undo did nothing"), and when the local stack
+   was empty (gizmo edits, the lock check) the popup's Ctrl+Z did
+   nothing at all. FIX: installDocUndoKeys — the bound undo/redo
+   combos route to editor.undo()/redo() (consumed before any
+   TextField's own text-undo) — on every shape-affecting window:
+   the Track Piece / Bridge properties panel, the strict-seam
+   pop-out, the node editor, the speed-control popup, the
+   orientation, add-section, element and initial-speed dialogs,
+   and the COASTER MENU (heart/gauge/friction shape the track;
+   its cosmetic rows — tie spacing, rail color — simply carry no
+   Ctrl+Z there any more; the color picker keeps OK/Cancel).
+   wireDocSpinner keeps ONE history. installMenuUndoKeys stays
+   for the View menu, Snapping, colors and Export.
+2. ORPHANED PIECE OBJECTS. Undo/redo REPLACE the TrackPiece
+   objects; the panel's lock-shape rows had captured the piece
+   at build time, so after any Ctrl+Z the check and the two
+   resolve buttons wrote to a dead object. FIX: live resolution
+   by index at click time; the row's sync re-reads the flag.
+3. STALE LIVE DIALOGS. The node editor's boxes showed pre-undo
+   values (and its 0.8 s coalescing could swallow the snapshot
+   of the edit right after an undo). FIX: GraphEditor keeps
+   docRestoreHooks — every undo/redo restore re-reads the boxes
+   (muted) and resets the burst; the strict-seam pop-out (whose
+   closures also captured the replaced piece) is REBUILT in place
+   at its screen position after a restore.
+
+
+## D228 (v19.2) — Handle SLOPES in the node editor
+
+The node editor's handle rows carry the handle SLOPE beside the
+length: dv/dx in lane units per axis unit (g/s, °/s per s, °/m per
+m …). A SMOOTH node (both handles collinear) shows ONE slope box
+driving both handles; a broken node one per handle (an edge node
+its single handle's). Slope edits keep the length — dv := slope ×
+the handle's x-run (BezierBaker.effOutDt/effInDt), which is exactly
+the quantity removeBridging/rescaleDvToGaps preserve, so the
+existing slope-keeping machinery reads them back unchanged. Live,
+undoable, resynced after undo like every other box.
+
+
+## D229 (v19.2) — Piece labels wear LENGTH; the main ground axes; menu order
+
+Every piece label — the piece selector, Bridge to piece, Attach
+floating piece, the export dropdown — says the piece's compiled
+LENGTH ("Piece 3 — 187.4 m") instead of its section count
+(FvdDesigner.pieceLengthM: its spans' sLen sum). Two EXTRA-THICK
+world-fixed lines mark the main X (green) and Z (red) ground axes
+through the origin, 5 mm above the grid, outside the camera-
+following LOD group. In the ⊕ menu "Add floating section…" now
+sits BELOW "Attach floating piece". The wizard's "Orientation
+sets the DESIGN frame" hint is gone.
+
+
+## D230 (v19.2) — MULTI-COASTER FILES
+
+One .fvd holds any number of coasters — add, name, rename, switch,
+delete (down to ZERO — an empty document is legal and loads
+without exception). Design:
+
+- MODEL: FvdDesigner.coasters (the file) + `coaster` = the ACTIVE
+  one; every editor/viewport path already read app.coaster live,
+  so switching re-points the field. Coaster.name + Coaster.look
+  (the stashed render look of an INACTIVE coaster; the active
+  one's look lives in the shell fields and swaps on switch —
+  stashActiveLook/applyLook). An empty document keeps `coaster`
+  on a zero-piece placeholder (no NPEs) and hasCoaster() gates:
+  rebuildTrack clears the meshes, the GraphEditor covers itself
+  with a "No coaster in this file — New coaster…" panel, sections()
+  returns an empty list, redraw/refreshMarkers/sync* return, keys
+  allow only undo/redo/file ops/view digits.
+- RENDER: inactive coasters render in their own SOLID rail color
+  (whatever their rail mode — user spec), own heart/gauge/tie
+  spacing, never desaturated, never picked (Viewport3D.
+  buildOtherCoasters swaps the shell's look fields around the
+  existing builders; compiles are cached per coaster until it is
+  next active — an inactive coaster cannot change).
+- UNDO: DocState = every coaster (CoasterState: name, pieces,
+  heart/gauge/v0/friction, look) + the active index + the wizard
+  record. Restore reuses coaster objects by index (their looks
+  stay — cosmetics stay outside undo per D51) and re-creates the
+  ones an undone delete brings back with the snapshot's look.
+- IO: ONE coaster still writes FVDD3 (plus a harmless `name`
+  line — every older reader ignores it); any other count writes
+  FVDD4: `ncoasters N`, the camera, then `coaster <name>` blocks
+  each holding the exact FVDD3 body. The loader takes both; a v4
+  file may hold zero coasters; a v3 file with no track still
+  refuses; sectionless coasters drop fail-soft. LoadResult now
+  carries lists; coaster()/cosmetics() keep the legacy shape.
+- UI: the COASTER MENU's top block lists the coasters (✓ =
+  active; click switches), then New coaster… (the start screen),
+  Rename coaster…, Delete coaster, separator. Export grows a
+  Coaster dropdown when there is more than one (an inactive one
+  exports from its cached compile; the piece list follows). The
+  window title wears the active coaster's name in multi-coaster
+  documents. Gate: MultiCoasterGate (15).
+
+
+## D231 (v19.2) — The start screen reworked: one form, wizard state IN the document
+
+His feedback on D226: (1) the type pick + settings on ONE form
+(the two SECTION TYPE tiles under a "Section Type" header at the
+FAR RIGHT — Placement, then Speed & friction (+ the coaster's
+NAME), then Section — the type's options appearing beneath the
+tiles once picked; confirming without a type shows "Select the
+Section Type First" and FLASHES the tiles); (2) the panel is
+LOCAL to what it builds — select another piece/coaster and the
+normal graphs show; return and the panel is as you left it; (3)
+the graph editor never shrinks below the panel's comfortable
+size while it shows (grows to it at once); (4) FULL undo — every
+setting change one step, and Ctrl+Z right after opening removes
+the piece/coaster.
+
+The model that gives all four: the wizard's target EXISTS from
+the moment it opens — a coaster (with its first piece) or a
+floating piece, holding a placeholder 5 s / 1 g section and
+flagged PENDING (renders nothing — rails, ties, ball, markers)
+until the type is picked; the WizardState {mode, coaster, piece,
+picked, sc} RIDES THE DOCUMENT (DocState.wizard), and every panel
+edit is a document undo step through FvdDesigner.wizard*
+(place, speed, friction, name, type pick, option change, Cancel).
+The panel is a VIEW: StartPanel.syncFromModel re-reads the target
+after every restore; showing is decided by syncWizardPanel from
+the document + the SESSION flag wizardOpen (false once Done or
+Cancel was pressed — later undos restore values with the panel
+closed, EXCEPT when a restore lands on a still-pending state: the
+panel returns, an invisible piece with no way to pick would be a
+trap) + the selection (its coaster active; for a floating piece
+its piece active). One wizard at a time: opening another brings
+the open one back instead. File > New = an EMPTY document + the
+first coaster's wizard (Cancel leaves the file empty). The
+editor pins its min height to StartPanel.MIN_HEIGHT while the
+panel shows (FvdDesigner.growEditorTo moves the divider).
+Placement yaw/pitch/roll write BOTH tiers (design frame, no lock
+conflict). Dev hook -Dfvd.devshot renders pick / lane / s-c.
+
+
+## D232 (v19.3) — Batch 17: wizard polish, Coaster menu restructure, seam UX, MAKE SMOOTHING REAL, s/c entry ease, axis-shimmer fix
+
+1. START SCREEN polish (user spec): tile descriptions and the s/c
+   note parenthetical are gone; "Force/Geometric" (renamed, now
+   FIRST) is SELECTED BY DEFAULT — the placeholder 5 s force
+   section IS the pick, so the track is visible from open and the
+   type-error flash machinery died a round after it was born; the
+   lane options sit in a TWO-COLUMN grid (Type+Yaw/pitch axis,
+   Domain+Roll axis, Rate units+Roll behavior — natural-width
+   labels, never-ellipsizing radios); MIN_HEIGHT 300 → 240.
+2. COASTER MENU restructured (user spec): a coaster SELECTOR
+   dropdown at the top, then "Coaster Options…" (a modeless dialog:
+   rename + the two friction rows + the statistics block),
+   "New Coaster…", "Delete Coaster" (a CONFIRM dialog naming the
+   coaster), separator, "Rail Settings…" (a modeless dialog: the
+   rail-color radios + swatch + G-Force Colors… plus heartline,
+   gauge and tie spacing — the future home of track TYPE). The
+   settings ROWS survive as shell fields and re-parent per open;
+   Dialogs.railSettingsContent() replaced railColorItems (built
+   once — the radios stay the app's rail-mode sync targets).
+   Everything left-aligned; both dialogs take installDocUndoKeys
+   (D227 — friction/heart/gauge/rename are document history; the
+   cosmetics simply carry no undo, as decided in D227).
+3. STRICT SEAM UX: the settings pop-out went DARK (the Track Piece
+   panel look; v17.3's white verdict reversed on user spec — locks
+   keep their black glyph on the light button face); the smoothing
+   DIAMOND's clean click opens the full SEAM MENU (was the
+   settings pop-out — his original intent); "Un-strict seam" lost
+   its parenthetical.
+4. CTRL-HOVER on a curve: the leading time readout is now the Δ
+   from the PREVIOUS NODE (the transition an insert would create)
+   instead of the absolute axis position (v16.16 reversed).
+5. GROUND AXES LOD: the fixed 600 m X/Z quads SHIMMERED far away
+   (sub-pixel, the same disease the grid's fade bands solve). They
+   are now camera-following 30 m segments alpha-faded by 2D
+   distance (±240 m, gone beyond), rebuilt with updateGridLOD's
+   10 m quantization — world-anchored at x=0/z=0 as before.
+6. S/C ENTRY ROLL EASE (user: "the small smooth transition at the
+   start"): element 0's entry-smoothing box is EDITABLE and means
+   the SECTION-ENTRY bank ease — a positive value replaces the
+   historic max(smoothIn, 2 m) floor (sub-2 m now possible), 0
+   keeps the 2 m default so every old file is bitwise (elem 0 was
+   uneditable and stored 0). The κ seam stays sharp. scCutClamp
+   mirrors the formula. ACCEPTED corner: an old file whose
+   element-0 got there by DELETING the original first element and
+   carried 0 < smoothIn < 2 sees its entry ease shorten to the
+   stored value (was floored to 2) — the stored number now means
+   what it says. Gated c1-c3.
+7. MAKE SMOOTHING REAL (the batch's core — see the
+   Coaster.makeSmoothingReal javadoc for the full mechanics):
+   seam menu > "Make smoothing real…" through the density preview.
+   The blend window [seam−L/2, seam+L/2] (the compiler's own
+   clamps) becomes ONE authored section of the UPSTREAM section's
+   type/domain/axes/units, fitted from the SMOOTHED compiled
+   samples AT THE TRUE entry speed ("to be real" — also keeps the
+   reconcile from ever re-timing it); the neighbor halves are
+   exact de Casteljau cuts; the follower re-anchors at the window
+   END as a fresh hand-made strict seam (smoothing off), and the
+   original seam is gone. THE BUG THE GATE CAUGHT: anchoring the
+   follower's remainder at the blended WORLD frame re-solved its
+   force lanes against gravity from the re-aimed frame (a 6° held
+   pitch walked the tail 37 m) — the remainder must generate at
+   the DESIGN-chain frame; Span.exitTilt (D224) recovers it
+   (baseOrient := tilt⁻¹·world) and the re-seeded held angles
+   re-aim the rigid image back onto the world. Whole-track hold:
+   5 mm at fine density (gate a4/a5). HIS "IN THEORY" QUESTION —
+   can the trailing seam vanish with no change? Not bitwise: W is
+   a FIT, its exit misses the original window end by the fit
+   residual, and un-stricting re-bends by that miss. The op
+   auto-un-stricts only when the joint lands essentially exact
+   (< 1e-4 rad / 1e-4 m / 1e-3 m/s) — real fits sit at
+   mm/centidegree, so the seam stays in practice; the honest
+   answer is the guard seam. Refusals (stats-bar reasons): s/c or
+   bridge neighbors, influence, legacy-reversed, speed controls on
+   either section, a stall inside the window (< 0.5 m/s — the
+   re-time is ill-defined), a window too small to have engaged.
+   RELATED (user observation): strict-seam smoothing can no longer
+   be ENABLED on the edge of an s/c section (conflicting eases; no
+   lane form for the window) — old files with it keep compiling
+   and can still disable. Gate: SmoothRealGate (11).
+
+
+## D233 (v19.4) — Batch 18: seam-UX polish round, quintic s/c roll eases, entry ease to ZERO + its diamond, hover interpolation, window-scoped make-real refusals
+
+1. MAKE SMOOTHING REAL refusals are WINDOW-SCOPED (user spec):
+   speed controls/marks on the seam sections are fine as long as
+   none touches the blend window — outside-the-window controls
+   ride onto the kept halves (carrySpeedCtls; a control INSIDE
+   the window still refuses with a reason). Influence on a DIRECT
+   seam section still refuses — the window always cuts into both
+   seam sections and an influenced section cannot be cut (D98);
+   influence anywhere else never blocked. Gate b2/b3.
+2. THE ALIGNED-OUTLINE BUTTON PATTERN (user screenshot: the seam
+   padlocks'' red outline sat crooked). A border over JavaFX''s
+   DEFAULT button background never lines up — the default is
+   multi-layer with unequal insets and its own radii. THE RULE
+   from now on, captured as FvdDesigner.outlineStyle(extra,
+   borderColor): ONE background layer, -fx-background-insets: 0,
+   and the SAME radius on background and border. The seam
+   padlocks use it; the audit found no other bordered button (the
+   bridge/placement padlocks tint by background, the 🔗 link is
+   background-only per D219, the toolbar checks are custom
+   regions).
+3. THE COASTER SELECTOR is a SUBMENU (fix: a ChoiceBox inside a
+   menu popup never opened — the menu''s focus/auto-hide grab eats
+   the press). "Coaster:  <name>" ▸ one item per coaster.
+4. Wizard: title "New Track Piece" / "New Coaster"; the options
+   grid puts labels and radio pairs in SEPARATE GridPane cells,
+   so every row''s first radio dot lines up per column (optLbl/
+   optPair; the D232 HBox cells ragged them).
+5. HOVER INTERPOLATION (user report: the resulting/derived hover
+   dot stuck to piecewise nearest-sample heights): interpAtAxis
+   lerps any per-sample quantity between the bracketing samples
+   at the cursor''s axis coordinate — the Resulting-overlay hover
+   and the s/c-bridge-influence derived hover ride it; the dot
+   follows the drawn curve.
+6. QUINTIC S/C ROLL EASES (user report: "a jolt on either end of
+   the smoothing" — the sine ease''s nonzero end curvature kinks
+   the roll-RATE graph): the GLOBAL bank ease and the RATE-roll
+   component of boundary blends now use the quintic smoothstep
+   (6u⁵−15u⁴+10u³ — rate leaves and lands tangent to zero, the
+   strict-seam smoothing''s own weight; ScIntegrator.quintic).
+   CURVATURE blends (pitch/yaw) keep the historic sine — "the
+   pitch/yaw is okay" — so roll-less sections stay bitwise; roll
+   transients on old files change shape (accepted, his no-
+   attachment note). Gated: the compiled bank IS the quintic law
+   per sample to 0.000°.
+7. ENTRY EASE TO ZERO (user spec, walking back D232''s 0=default):
+   element 0''s smoothIn is VERBATIM — 0 = an instant bank snap at
+   the section entry. Old files (stored 0) now snap instead of
+   easing 2 m — accepted per his "not attached to old files"; NEW
+   sections create element 0 with an explicit 2 m (the historic
+   comfortable look). scCutClamp mirrors.
+8. THE ENTRY-EASE DIAMOND: the s/c strip draws the section-entry
+   boundary''s own diamond + shaded band [0, ease] — drag sets the
+   ease ABSOLUTELY (cursor arc into the section; Ctrl snaps by
+   the element step; < 0.2 m snaps to 0; capped at element 0''s
+   length; live "entry ease X m" readout; hitScDiamond index 0,
+   one undo per gesture — the exact internal-diamond surface).
+
+## D234 (v19.5) — Batch 19: the Coaster menu root cause (+ ChoiceBox restored), influence splits, window-scoped influence in make-real, entry-ease band edge, resolve renames
+
+1. THE COASTER MENU BUG'S REAL ROOT CAUSE (user: "the menu popup
+   itself does not appear when pressing Coaster" — D233's submenu
+   fix rested on a MISDIAGNOSIS): a JavaFX Menu with ZERO items
+   never opens its popup at all — the exact trick the Help menu
+   exploits deliberately — and the D232 restructure populated the
+   menu only in onShown, which never fires on a menu that never
+   opens. Chicken-and-egg: empty → never shows → never populates.
+   Fix: populate at construction + rebuild in onShowing (fires
+   BEFORE display, list always fresh). The D233 "a ChoiceBox
+   inside a menu popup never opens" lesson is FALSE and expunged.
+2. THE CHOICEBOX SELECTOR IS BACK (user spec): "Coaster: [pick]"
+   as a CustomMenuItem row, hideOnClick(false); picking hides the
+   menu and switches. VERIFIED END TO END with a JavaFX Robot
+   (-Dfvd.devmenu=1, the new dev hook): real click on the menu-bar
+   button opens the popup, real click on the ChoiceBox opens ITS
+   dropdown (a child popup of the menu's window — no focus-grab
+   problem exists), DOWN/ENTER picks the second coaster and
+   switches, menu intact throughout. Robot caveat found on the
+   way: Menu.getStyleableNode() is null for MenuBar menus — find
+   the MenuBarButton via a ".menu-button" scene lookup instead.
+3. INFLUENCED SECTIONS SPLIT (user re-spec lifting the D98
+   refusal, which dated from when deltas had to start at zero):
+   splitSectionAt cuts the delta lanes at the same coordinate as
+   the authored lanes (legit under the D102 mirrored pair — the
+   delta axis t* matches the authored clock to the trapezoid's
+   µs; DISTANCE axes are identical outright; Coaster.
+   carryInfluence), both halves come out influenced with mirrored
+   pairs and carried axis flags; "Split section here" and "Split
+   track piece here" both work on the design surface (the delta
+   surface keeps its redirect message). LEGACY divergent pairs
+   (vAuthored != vDesign, hand-edited files only) refuse — their
+   delta axis is a genuinely different clock. ACCEPTED CORNER
+   (InflSplitGate c2/c4): with non-zero deltas BEFORE the cut the
+   right half's base re-derives from the cut's RESULTING frame
+   (the influence contract — ref runs from the section's own
+   entry), so the tail re-solves by roughly tail-length × the
+   prefix deltas' integrated rotation: ~1.8 m for a 1 °/s nudge,
+   ~11.8 m for a violent 6 °/s bump over ~170 m of tail. Deltas
+   zero up to the cut split in the normal seam class (gated
+   0.0003 m); the D71 piece split on top adds exactly nothing.
+4. MAKE SMOOTHING REAL takes INFLUENCE window-scoped (user spec —
+   the D233 speed-control precedent): influenced seam sections are
+   fine as long as the DELTAS are zero across the blend window
+   (deltasZeroOn: polyline rows in range + held tails + a uniform
+   exact sweep) — the kept halves STAY influenced (carryInfluence
+   at the cuts); non-zero deltas inside the window refuse with a
+   reason, and legacy divergent pairs refuse outright. Gates
+   b4-b6.
+5. THE ENTRY-EASE BAND EDGE DRAGS (user spec — the strict-seam
+   band pattern): scEdgeHit returns 0 for the entry band's far
+   edge (at s = ease), routing into the same absolute drag as the
+   entry diamond; H_RESIZE cursor included.
+6. RESOLVE-OP RENAMES (user spec): "Make graphs real (keep
+   shape)…" → "Convert Real to Design (keep track shape)…";
+   "Set Design Speed to Real (keep graphs, reshape)" → "Set
+   Design to Real (keep graphs, reshape)"; the initial-speed
+   dialog's button renames to match ("Set Design to Real" — the
+   D162 verbatim-match rule), the Add dialog's short "Set to
+   Real" stays.

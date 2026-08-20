@@ -3483,6 +3483,184 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     (the strip layered it UNDER the axis grid before — root cause
     of the "dim around 5 m/s" report).
 
+146. v19.0 (D221+D222): "LOCK TRACK SHAPE" — the two-tier
+    design/true orientation. (a) Track Piece panel: "Lock Track
+    Shape" CHECKED by default (tooltip "Design orientation does
+    not change") — unlock the pitch padlock and spin pitch: the
+    track TILTS RIGIDLY, "≠v" appears, a grey "Design
+    orientation: pitch …° roll …°" line shows under the spinners,
+    and the button pair "Design → Real Orientation" / "Real →
+    Design Orientation" appears on one line. Real→Design
+    un-rotates the piece (and its carried chain) back — shape
+    kept, conflict gone; Design→Real keeps the orientation and
+    RE-SOLVES the shape at the real frame. (b) UNCHECK the box:
+    nothing moves. Spin pitch now: the shape re-solves and BOTH
+    orientations move together (the readout stays at a constant
+    offset if a conflict predates the uncheck — the D222
+    invariance: the same edits after unlocking produce the same
+    shaping whether or not a conflict rides on top). Re-check:
+    nothing moves, edits tilt rigidly again. The toggle is one
+    undo step and never reshapes by itself. (c) RIGID carry:
+    chain pieces with a manual bridge and/or strict seam; with
+    the first piece's box CHECKED, tilt/move/yaw it — bridge,
+    seam and every following piece ride along as one rigid body
+    (each shows its own conflict); UNCHECKED = natural updates
+    (bridge re-solves, followers re-aim, historic). (d) Strict
+    seam + bridge panels carry NO lock-shape controls (D222 —
+    their orientation rows work exactly as always); a follower's
+    Track Piece panel hides them too. (e) Old files load checked
+    + no split = exactly the old behavior; save→reload keeps the
+    tiers bit-exactly (`porient locked pd rd`). (f) FLY-KEYS
+    BUG FIX: open the strict-seam settings, click a spinner,
+    right-click a 3D view → fly mode AND W/A/S/D movement work
+    (the popup was the one editor window missing the D166 key
+    forwarder). Headless: OrientGate (23 checks) + the full
+    DetermGate/Phase2/Phase3/Domain/Load suite.
+
+147. v19.1 (D223-D226): batch 15. (a) Hover a section BADGE:
+    it brightens + hand cursor; click behavior unchanged. (b)
+    File > Export on a multi-piece doc: a "Track piece" dropdown
+    (Whole track / Piece k/n); export a piece → the file holds
+    only that piece's spline, from its entry. (c) ABSOLUTE
+    boxes: split a piece at a pitched/banked point — the new
+    piece's Track Piece boxes read the REAL heading/elevation/
+    bank of the boundary (yaw + = left) and NOTHING moves;
+    split a TILTED (locked-conflict) piece — still nothing
+    moves, the new piece shows its own conflict + design readout;
+    typing into a split piece's pitch box tilts it about the
+    same physical axis it always did. (d) VERTICAL PASS-THROUGH:
+    reveal a piece gizmo (Global), drag the pitch ring past
+    straight up — the track keeps rotating smoothly, and the
+    boxes flip (heading +180, elevation mirrored, bank +180) the
+    way NoLimits shows it; Local rings near vertical no longer
+    wobble. Pitch spinners now allow ±90. (e) LIVE node editor:
+    double-click a node — no Apply; type / ▲▼ / wheel (Shift
+    ×10, Ctrl ×0.1) any box and the track updates at once; blank
+    a box → nothing changes until it parses; Ctrl+Z (main
+    window) undoes each edit, a typing burst as one; Ctrl+Z with
+    the dialog open then editing again still works (index-
+    resolved). (f) START SCREEN: File > New → the graph area
+    shows two tiles, the 3D view shows NO track; pick one → the
+    track appears and the form shows; change any radio/spinner →
+    live; "Start designing" → normal editor, title clean, empty
+    history; "Skip" → the classic 5 s starter. ⊕ > "Add floating
+    section…" → same screen minus friction, a new detached piece
+    5 m past the active piece's end; "Add piece" keeps it, Ctrl+Z
+    removes it in one step; Cancel un-creates it. Headless:
+    OrientGate2 (18) + OrientGate (23) + the recovered battery
+    (all in repo `gates/`). Dev hook: `java ... -Dfvd.devshot=DIR
+    coaster.FvdDesigner` writes start-pick/start-lane/start-sc-
+    floating PNGs.
+
+148. v19.2 (D227-D231): batch 16. (a) UNDO: open Track Piece ▾,
+    tilt/lock/unlock/resolve, press Ctrl+Z / Ctrl+Shift+Z WITH the
+    panel open — each step reverts, the spinners and the Lock
+    check follow; close it, Ctrl+Z again — every panel edit
+    reverts one by one, none skipped; same in the node editor
+    (boxes re-read after each undo), the strict-seam pop-out
+    (rebuilds in place), the speed-control popup, the Coaster
+    menu (heart/gauge/friction). Cosmetic menus (View, Snapping,
+    colors, Export) keep their local Ctrl+Z. (b) Node editor:
+    handle rows show LENGTH + SLOPE (one slope box on a smooth
+    node, one per handle when broken); typing a slope re-aims the
+    handle keeping its length. (c) Piece labels everywhere read
+    "Piece n — 123.4 m"; the ground shows a thick green X and red
+    Z axis through the origin; ⊕ menu order Attach → Add floating.
+    (d) MULTI-COASTER: Coaster ▸ New coaster… builds a second one
+    (start screen); the list at the menu top switches (title
+    shows [name]); the inactive coaster renders in its solid
+    color; Rename/Delete work and undo; delete all → the graph
+    shows "No coaster in this file", nothing throws, Ctrl+Z brings
+    one back; Save = FVDD4 (or FVDD3 with a name line for one),
+    reload identical; Export gets a Coaster dropdown. (e) START
+    SCREEN: File > New → empty doc + wizard: Placement | Coaster
+    (name, speed, friction) | Section Type tiles; "Start
+    designing" without a type → red "Select the Section Type
+    First" + flashing tiles; pick a type → its options appear
+    under the tiles, the track appears; every change is a Ctrl+Z
+    step; Ctrl+Z right after ⊕ > Add floating section… removes
+    the new piece and closes the panel; select another piece
+    while the wizard is up → normal graphs; re-select → panel
+    back as left; the graph pane can't be dragged below the
+    panel's height while it shows. Headless: MultiCoasterGate
+    (15) + the whole battery.
+
+149. v19.3 (D232): batch 17. (a) START SCREEN: tiles read
+    "Force/Geometric" (first, pre-selected — the track shows
+    immediately) and "Straight / Curve", no grey descriptions;
+    the lane options sit in two columns; "Start designing" always
+    works. (b) COASTER MENU: selector dropdown at top, then
+    Coaster Options… (rename + friction + statistics), New
+    Coaster…, Delete Coaster (asks "Are you sure you want to
+    delete "NAME"?"), then Rail Settings… (rail color + G-Force
+    Colors… + heartline + gauge + tie spacing); everything
+    left-aligned; Ctrl+Z inside both dialogs is the global one.
+    (c) SEAMS: the strict-seam settings are DARK with light text;
+    clicking the smoothing ◇ opens the full seam MENU;
+    "Un-strict seam" has no parenthetical. (d) Ctrl-hover over a
+    curve leads with Δt from the previous node. (e) The green/red
+    ground axes no longer flash far away (camera-faded segments).
+    (f) S/C ENTRY EASE: edit element 0 → "Entry roll ease (m)" —
+    a global-bank first element's bank arrives over that length
+    (0 = the classic 2 m; 0.5 m comes in visibly earlier; 5 m
+    later). (g) MAKE SMOOTHING REAL: on a smoothed strict seam,
+    seam menu > "Make smoothing real…" → density preview → Apply:
+    the blend window becomes an authored section of the upstream
+    type, a fresh strict seam sits at the window's end, the track
+    holds (mm-class), Ctrl+Z restores exactly; refuses with a
+    stats-bar reason on s/c edges, speed controls, stalls in the
+    window. "Enable smoothing" grays on an s/c edge. Headless:
+    SmoothRealGate (11) + the whole battery.
+
+150. v19.4 (D233): batch 18. (a) Seam padlocks: the red outline
+    hugs the button exactly (the shared outlineStyle pattern —
+    use it for every future outlined button). (b) Coaster menu:
+    the "Coaster: NAME" submenu lists and switches coasters (the
+    ChoiceBox never opened — replaced). (c) Wizard: "New Coaster"
+    / "New Track Piece" titles; the options grid's radio dots
+    line up per column. (d) Hover a resulting/derived curve
+    inside a smoothing window at high zoom: the dot and value
+    follow the curve smoothly (interpolated, no more sample
+    stairs). (e) s/c ROLL smoothness: a global-bank element's
+    ease and a RATE-roll boundary blend leave/land with zero
+    roll-rate slope (quintic — no jolt at either end; pitch/yaw
+    blends unchanged). (f) ENTRY EASE: element 0's ease is the
+    typed value exactly — 0 = instant bank snap; new sections
+    default 2 m; the s/c strip has an entry DIAMOND + band (drag
+    = absolute length, Ctrl snaps, < 0.2 snaps to 0, capped at
+    element 0). (g) Make smoothing real: a speed control OUTSIDE
+    the window no longer refuses (it carries onto the kept
+    half); INSIDE still refuses with a reason. Headless:
+    SmoothRealGate (12) + the whole battery.
+
+151. v19.5 (D234): batch 19. (a) COASTER MENU: pressing "Coaster"
+    opens the popup (the real bug: the menu was EMPTY until
+    onShown, and an empty Menu never opens — populate at
+    construction + onShowing rebuild); the "Coaster: [ChoiceBox]"
+    row is back — its dropdown opens inside the menu popup,
+    picking a coaster switches and closes the menu
+    (Robot-verified end to end via -Dfvd.devmenu=1; the D233
+    "ChoiceBox never opens in a menu" lesson was false).
+    (b) INFLUENCE SPLITS: right-click a design-surface node of an
+    influenced section → "Split section here" / "Split track
+    piece here" both work; both halves stay influenced (deltas
+    cut with the lanes, flags carried). Deltas zero before the
+    cut = the track stays put (normal seam class); deltas BEFORE
+    the cut = the tail re-solves proportionally (accepted corner
+    — ~1.8 m per 1 °/s-nudge prefix on the gate's hill; Ctrl+Z
+    exact). The influence surface still redirects to the design
+    lanes. (c) MAKE SMOOTHING REAL + influence: an influenced
+    seam section with deltas ZERO across the window converts (the
+    kept halves stay influenced); non-zero deltas inside the
+    window refuse with a stats-bar reason. (d) S/C ENTRY EASE
+    BAND EDGE: the shaded band's far edge drags the ease exactly
+    like the diamond (H_RESIZE cursor on hover). (e) RESOLVE
+    RENAMES: the conflict submenu reads "Convert Real to Design
+    (keep track shape)…" / "Set Design to Real (keep graphs,
+    reshape)"; the initial-speed dialog's button says "Set Design
+    to Real". Headless: InflSplitGate (13, NEW) + SmoothRealGate
+    (15) + the whole battery.
+
 ## Debugging heuristics learned the hard way
 
 - Wild 3D output after math edits → check the frame-rotation sign (`−ωU·R`)

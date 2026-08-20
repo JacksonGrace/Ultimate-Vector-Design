@@ -61,10 +61,16 @@ public final class TrackCompiler {
      *  matches the flattened piece/section iteration. */
     public record Span(int i0, int i1, double t0, double t1,
                        double s0, double sLen, TrackPose exit,
-                       double exitPsi, Quat exitCanon) {
+                       double exitPsi, Quat exitCanon, Quat exitTilt) {
         public Span(int i0, int i1, double t0, double t1,
                     double s0, double sLen, TrackPose exit) {
-            this(i0, i1, t0, t1, s0, sLen, exit, 0, null);
+            this(i0, i1, t0, t1, s0, sLen, exit, 0, null, Quat.IDENTITY);
+        }
+        public Span(int i0, int i1, double t0, double t1,
+                    double s0, double sLen, TrackPose exit,
+                    double exitPsi, Quat exitCanon) {
+            this(i0, i1, t0, t1, s0, sLen, exit, exitPsi, exitCanon,
+                Quat.IDENTITY);
         }
     }
 
@@ -124,6 +130,52 @@ public final class TrackCompiler {
         double psiB = headingDeg(piece.baseOrient);
         return new CanonPose(pos, psiB + piece.yawDeg,
             Quat.aboutY(-psiB).mul(piece.baseOrient));
+    }
+
+    /** A piece's canonical entry with its DESIGN tilt composed IN
+     *  CANONICAL SPACE on top of pieceCanon (v19.0, D221/D222) — the
+     *  same axis math as designPose() rotated by −psi (the
+     *  composition is heading-equivariant, so the world pose is
+     *  identical in exact arithmetic). Keeping psi additive is the
+     *  point: yaw and position moves of a design-tilted piece stay
+     *  bitwise-rigid (D199) while design pitch/roll edits re-solve
+     *  the generation — which is what the unlocked shape MEANS.
+     *  Zero design deltas return pieceCanon's exact object state
+     *  (bitwise-historic). */
+    private static CanonPose designCanon(TrackPiece piece, Vec3 pos) {
+        CanonPose cp = pieceCanon(piece, pos);
+        if (piece.designPitchDeg == 0 && piece.designRollDeg == 0) {
+            return cp;
+        }
+        Quat q = cp.canon();
+        if (piece.designPitchDeg != 0) {
+            Vec3 t = q.T();
+            Vec3 r = new Vec3(-t.z(), 0, t.x());
+            double len = r.length();
+            if (len > 1e-9) {
+                q = Quat.aboutAxis(r.scale(1 / len),
+                    Math.toRadians(piece.designPitchDeg)).mul(q);
+            }
+        }
+        if (piece.designRollDeg != 0) {
+            q = Quat.aboutAxis(q.T(),
+                Math.toRadians(piece.designRollDeg)).mul(q);
+        }
+        return new CanonPose(pos, cp.psiDeg(), q);
+    }
+
+    /** The rigid CONFLICT tilt on top of the design generation
+     *  (D222): design == (0,0) takes tilt()'s historic arithmetic
+     *  bitwise; design == true short-circuits to the IDENTITY
+     *  object (pure link); the mixed case measures the exact
+     *  design→true rotation. */
+    private static Quat conflictTilt(TrackPiece piece) {
+        if (piece.designPitchDeg == 0 && piece.designRollDeg == 0) {
+            return piece.tilt();
+        }
+        if (!piece.orientConflict()) return Quat.IDENTITY;
+        return piece.entryPose().orient()
+            .mul(piece.designPose().orient().conjugate());
     }
 
     /** Rotation about world Y matching aboutY's action on vectors:
@@ -196,11 +248,24 @@ public final class TrackCompiler {
             // finished geometry rigidly about the entry point. tilt()
             // returns the IDENTITY object for untilted pieces, so the
             // historic path below is bitwise-untouched.
-            Quat tilt = piece.tilt();
+            // TWO-TIER TILT (v19.0, D221/D222): sections generate at
+            // the DESIGN orientation — baseOrient ⊕ yaw ⊕ the design
+            // pitch/roll deltas, composed in canonical space
+            // (designCanon) — and the remaining design→true gap
+            // applies as the rigid conflict tilt about the entry.
+            // Zero design deltas keep the historic tilt() arithmetic
+            // bitwise; design == true is the pure link (IDENTITY
+            // object). shapeLocked routes EDITS only — the compile
+            // reads nothing but the two stored tiers.
+            Quat tilt = conflictTilt(piece);
+            boolean designed = piece.designPitchDeg != 0
+                || piece.designRollDeg != 0;
             TrackPose pose = tilt == Quat.IDENTITY
-                ? piece.entryPose() : piece.genPose();
+                ? piece.entryPose()
+                : designed ? piece.designPose() : piece.genPose();
             Vec3 anchor = pose.pos();
-            CanonPose cp = pieceCanon(piece, pose.pos());
+            CanonPose cp = designed ? designCanon(piece, pose.pos())
+                                    : pieceCanon(piece, pose.pos());
             int pieceStart = all.size();
             boolean bridgedIn = prevEndsBridge;
             // STRICT SEAM (v17.1, D135): a FOLLOWING piece's entry
@@ -222,11 +287,16 @@ public final class TrackCompiler {
             Vec3 postShift = null;
             int secIdx = 0;
             if (followed) {
+                // (D222 walked back D221's linked-follower branch on
+                // user spec — "there might be some weird edge cases":
+                // followers ALWAYS take the D135 freeze; both delta
+                // tiers are dead here, like true deltas always were.)
                 TrackPose eff = Coaster.strictEntry(
                     spans.get(spans.size() - 1).exit(), piece);
                 Quat gen = piece.genPose().orient();
                 Quat tq = eff.orient().mul(gen.conjugate());
-                tilt = Math.abs(tq.w()) > 1 - 1e-14 ? Quat.IDENTITY : tq;
+                tilt = Math.abs(tq.w()) > 1 - 1e-14
+                    ? Quat.IDENTITY : tq;
                 pose = new TrackPose(eff.pos(), gen);
                 anchor = eff.pos();
                 // follower generation stays at the STORED orientation
@@ -425,13 +495,17 @@ public final class TrackCompiler {
                     }
                 }
                 hNext = hyAcc.get(all.size() - 1);
-                // the span's canonical pair is valid only where the
-                // WORLD chain equals the design chain (untilted,
-                // un-follow-tilted pieces) — splits elsewhere bake and
-                // re-solve anyway (the D100 corner)
+                // the span's canonical pair is the DESIGN chain; the
+                // world exit is that chain rigidly tilted (identity
+                // for plain pieces). Both ride the span since v19.1
+                // (D224): a split of a TILTED piece / re-aimed
+                // follower now hands the new piece the design chain
+                // (bitwise generation) PLUS the tilt as its own
+                // conflict deltas, so nothing moves — the D100
+                // "splits re-solve" corner is closed.
                 spans.add(new Span(i0, all.size() - 1, t0, end.t(),
                     s0, end.s() - s0, line.exit(),
-                    cp.psiDeg(), tilt == Quat.IDENTITY ? cp.canon() : null));
+                    cp.psiDeg(), cp.canon(), tilt));
                 continuation = true;
                 if (smoothSeam && secIdx == 0
                         && !(section instanceof BridgeSection)) {
@@ -676,12 +750,17 @@ public final class TrackCompiler {
 
     static List<FVDIntegrator.Sample> pieceHead(TrackPiece piece, double dt,
                                                 FVDIntegrator.Friction fric) {
-        Quat tilt = piece.tilt();
+        // TWO-TIER TILT (D221/D222): mirror the compile chain's
+        // branch exactly so the captured head matches bit-for-bit
+        Quat tilt = conflictTilt(piece);
+        boolean designed = piece.designPitchDeg != 0
+            || piece.designRollDeg != 0;
         // the SAME canonical entry the compile chain uses (pieceCanon
         // honors a split's stored pair, D199) so the captured head
         // matches the piece's actual compiled samples bit-for-bit
         TrackPose gen = piece.genPose();
-        CanonPose cp = pieceCanon(piece, gen.pos());
+        CanonPose cp = designed ? designCanon(piece, gen.pos())
+                                : pieceCanon(piece, gen.pos());
         Centerline local = passGRaw(piece.sections.get(0),
             new TrackPose(Vec3.ZERO, cp.canon()), dt, fric);
         Centerline line = placeLine(local, cp);
@@ -912,7 +991,7 @@ public final class TrackCompiler {
         spans.set(nsp - 1, new Span(sb.i0(), sb.i1(), sb.t0(), sb.t1(),
             sb.s0(), sb.sLen(), new TrackPose(xb.pos().add(dp),
                 xb.orient(), xb.s0(), xb.t0()),
-            sb.exitPsi(), sb.exitCanon()));
+            sb.exitPsi(), sb.exitCanon(), sb.exitTilt()));
         // re-stamp the ENERGY heights the blend/translation moved
         // (D199): world deltas anchored on the untouched window start
         // — the window is world geometry by definition

@@ -564,6 +564,8 @@ class Viewport3D {
           .append('|').append(System.identityHashCode(app.lastSamples))
           .append('|').append(app.settings.trackMarkers())
           .append('|').append(entryBall)
+          .append('|').append(app.isPendingPiece(app.activeCoaster,
+              app.editor.activePiece()))   // wizard pending (D231)
           .append('|').append(povActive);   // marker height flips (v18.7)
         // nodeTimes = each node's GLOBAL RIDE TIME, computed by the
         // editor (v16.0 — distance-domain lanes' x is meters, so the
@@ -574,6 +576,8 @@ class Viewport3D {
         markerSig = sig;
         markerGroup.getChildren().clear();
         if (!app.settings.trackMarkers() || app.lastSamples == null || app.lastSamples.isEmpty()) return;
+        // the wizard's PENDING piece shows nothing (D231)
+        if (app.isPendingPiece(app.activeCoaster, app.editor.activePiece())) return;
         for (int i = 0; i < count; i++) {
             if (i == 0 && entryBall) continue;   // the ball covers it
             int idx = (int) FvdDesigner.clamp(Math.round(nodeTimes[i] / FvdDesigner.INTEGRATE_DT),
@@ -1181,7 +1185,20 @@ class Viewport3D {
      *  through here). */
     void rebuildMeshes() {
         List<FVDIntegrator.Sample> samples = app.lastSamples;
-        if (samples == null || samples.size() < 2) return;
+        if (samples == null || samples.size() < 2) {
+            // EMPTY document / coaster (v19.2, D230): the old meshes go
+            // — only the ground and the OTHER coasters remain
+            tiePieces.clear();
+            combPoints.clear();
+            heartMesh = null;
+            combGroup = null;
+            List<javafx.scene.Node> rest = new ArrayList<>();
+            rest.add(markerGroup);
+            rest.addAll(buildOtherCoasters());
+            trackGroup.getChildren().setAll(rest);
+            markerGroup.getChildren().clear();
+            return;
+        }
         computeStallRanges(samples);      // v18.0, D163: unreachable track
         computePlateRanges(samples, app.sectionSpans);   // speed-control plates
 
@@ -1211,6 +1228,9 @@ class Viewport3D {
             int i1 = Math.min(spans.get(base + nSec - 1).i1(), samples.size() - 1);
             base += nSec;
             if (i1 - i0 < 1) continue;
+            // the start wizard's still-PENDING piece renders nothing
+            // (v19.2, D231 — it appears the moment its type is picked)
+            if (app.isPendingPiece(app.activeCoaster, p)) continue;
             List<FVDIntegrator.Sample> sub = samples.subList(i0, i1 + 1);
             // "Visualize Track Selection" OFF (v17.10): every piece
             // renders in its full active coloring — no desaturation
@@ -1297,6 +1317,9 @@ class Viewport3D {
             parts.add(combGroup);
         }
         parts.add(markerGroup);
+        // the OTHER coasters of the document (v19.2, D230): each in its
+        // own SOLID rail color, never desaturated, never picked
+        parts.addAll(buildOtherCoasters());
         trackGroup.getChildren().setAll(parts);
         markerSig = null;                          // geometry moved: force
         if (app.editor != null) app.editor.refreshMarkers();
@@ -1317,6 +1340,13 @@ class Viewport3D {
             // is always around the viewer (LOD)
             gridGroup = buildGrid(0);
             world.getChildren().add(gridGroup);
+            // the MAIN X / Z axes (v19.2, D229; camera-faded LOD
+            // segments since D232 — the fixed quads shimmered far
+            // away): world-fixed lines through the origin in the
+            // gizmo colors, populated by updateGridLOD
+            axisGroup = new Group();
+            axisGroup.setMouseTransparent(true);
+            world.getChildren().add(axisGroup);
             updateGridLOD(mid.pos().x(), mid.pos().z());
             worldCentered = true;
         }
@@ -1360,6 +1390,70 @@ class Viewport3D {
             }
         }
         out.add(samples.size() - 1);
+        return out;
+    }
+
+    /** The document's INACTIVE coasters (v19.2, D230): rails + ties per
+     *  piece in the coaster's own look — SOLID rail color whatever its
+     *  rail mode (user spec), its own heart/gauge/tie spacing. The
+     *  builders read the shell's look fields, so the shell's are
+     *  swapped for the build and restored (the trueFelt gradient read
+     *  is bypassed by forcing solid). A pending wizard piece of that
+     *  coaster is skipped like the active one's. */
+    private List<javafx.scene.Node> buildOtherCoasters() {
+        List<javafx.scene.Node> out = new ArrayList<>();
+        List<Object[]> others = app.otherCoasterRenders();
+        if (others.isEmpty()) return out;
+        double sh = app.heartOffset, sg = app.railGauge, st = app.tieSpacing;
+        boolean ss = app.railSolid;
+        Color sc = app.railColor;
+        double[][] sf = app.trueFelt;
+        try {
+            for (Object[] o : others) {
+                @SuppressWarnings("unchecked")
+                List<FVDIntegrator.Sample> smp = (List<FVDIntegrator.Sample>) o[0];
+                DesignIO.Cosmetics look = (DesignIO.Cosmetics) o[1];
+                Coaster c = (Coaster) o[2];
+                int cIdx = app.coasters.indexOf(c);
+                app.heartOffset = look.heart();
+                app.railGauge = look.gauge();
+                app.tieSpacing = look.tiespace();
+                app.railSolid = true;
+                app.railColor = Color.color(look.railColor()[0],
+                    look.railColor()[1], look.railColor()[2]);
+                app.trueFelt = null;
+                TrackCompiler.Result r = app.compiledFor(c);
+                List<TrackCompiler.Span> spans = r != null ? r.spans() : null;
+                if (spans == null) continue;
+                int base = 0;
+                Group g = new Group();
+                for (int p = 0; p < c.pieces.size(); p++) {
+                    int nSec = c.pieces.get(p).sections.size();
+                    if (nSec == 0 || base + nSec > spans.size()) {
+                        base += nSec;
+                        continue;
+                    }
+                    int i0 = spans.get(base).i0();
+                    int i1 = Math.min(spans.get(base + nSec - 1).i1(), smp.size() - 1);
+                    base += nSec;
+                    if (i1 - i0 < 1) continue;
+                    if (app.isPendingPiece(cIdx, p)) continue;
+                    List<FVDIntegrator.Sample> sub = smp.subList(i0, i1 + 1);
+                    g.getChildren().add(buildRailMesh(sub, i0, -app.railGauge / 2, true, false));
+                    g.getChildren().add(buildRailMesh(sub, i0, app.railGauge / 2, true, false));
+                    g.getChildren().addAll(buildTieMeshes(sub, true, i0, null, false));
+                }
+                g.setMouseTransparent(true);
+                out.add(g);
+            }
+        } finally {
+            app.heartOffset = sh;
+            app.railGauge = sg;
+            app.tieSpacing = st;
+            app.railSolid = ss;
+            app.railColor = sc;
+            app.trueFelt = sf;
+        }
         return out;
     }
 
@@ -2741,6 +2835,61 @@ class Viewport3D {
         if (gridGroup == null) return;
         gridGroup.setTranslateX(Math.round(worldX / 10) * 10);
         gridGroup.setTranslateZ(Math.round(worldZ / 10) * 10);
+        updateGroundAxesLOD(worldX, worldZ);
+    }
+
+    /** Re-fit the main-axis meshes to the camera (D232 — the fixed
+     *  600 m quads SHIMMERED far away, the same sub-pixel problem the
+     *  grid's fade bands solve): each axis draws only within ±240 m
+     *  of the camera along itself, split into segments whose alpha
+     *  falls with 2D distance from the camera (the far ends and an
+     *  axis the camera is far ABEAM of fade to nothing). Quantized
+     *  10 m like the grid; rebuilt only when the anchor moves. */
+    private void updateGroundAxesLOD(double worldX, double worldZ) {
+        if (axisGroup == null) return;
+        double ax = Math.round(worldX / 10) * 10;
+        double az = Math.round(worldZ / 10) * 10;
+        if (ax == axisAnchorX && az == axisAnchorZ
+                && !axisGroup.getChildren().isEmpty()) {
+            return;
+        }
+        axisAnchorX = ax;
+        axisAnchorZ = az;
+        axisGroup.getChildren().setAll(
+            buildAxisMesh(true, ax, az), buildAxisMesh(false, ax, az));
+    }
+
+    private Group axisGroup;
+    private double axisAnchorX = Double.NaN, axisAnchorZ = Double.NaN;
+
+    /** One main axis (D229/D232): xAxis = the world X axis (z = 0) in
+     *  the gizmo's X green, else the Z axis (x = 0) in its Z red —
+     *  0.18 m wide, 5 mm above the grid, in 30 m segments alpha-faded
+     *  by their 2D distance to the camera anchor. */
+    private javafx.scene.Node buildAxisMesh(boolean xAxis,
+                                            double camX, double camZ) {
+        Group g = new Group();
+        double along = xAxis ? camX : camZ;       // camera along the axis
+        double abeam = Math.abs(xAxis ? camZ : camX);   // distance off it
+        Color base = xAxis ? Color.color(0.30, 0.85, 0.35)
+                           : Color.color(0.95, 0.35, 0.35);
+        for (double s0 = along - 240; s0 < along + 240; s0 += 30) {
+            double mid = s0 + 15;
+            double d = Math.hypot(mid - along, abeam);
+            double a = 0.85 * (1 - d / 260);
+            if (a <= 0.02) continue;
+            TriangleMesh m = new TriangleMesh();
+            m.getTexCoords().addAll(0, 0);
+            if (xAxis) addFloorQuad(m, 0, s0, -0.09, s0 + 30, 0.09, 0.005);
+            else addFloorQuad(m, 0, -0.09, s0, 0.09, s0 + 30, 0.005);
+            MeshView mv = new MeshView(m);
+            mv.setMaterial(new PhongMaterial(
+                Color.color(base.getRed(), base.getGreen(), base.getBlue(), a)));
+            mv.setCullFace(CullFace.NONE);
+            g.getChildren().add(mv);
+        }
+        g.setMouseTransparent(true);
+        return g;
     }
 
     /** Floor: grid lines that fade smoothly with distance over several
@@ -3000,6 +3149,8 @@ class Viewport3D {
         }
         int pi = app.editor.activePiece();
         if (pi < 0 || pi >= app.coaster.pieces.size()) return "off";
+        // the wizard's PENDING piece shows nothing, ball included (D231)
+        if (app.isPendingPiece(app.activeCoaster, pi)) return "off";
         TrackPiece p = app.coaster.pieces.get(pi);
         BridgeSection into = app.bridgeInto(pi);
         BridgeSection trail = app.bridgeInto(pi + 1);
@@ -3080,9 +3231,11 @@ class Viewport3D {
             addRevealMark(() -> new Vec3(p.x, p.y, p.z), true,
                 () -> app.showPlacementPopup(Boolean.FALSE),
                 !movable ? null : v -> {
-                    p.x = v.x();
-                    p.y = v.y();
-                    p.z = v.z();
+                    app.placementEdit(p, () -> {   // D221 rigid carry
+                        p.x = v.x();
+                        p.y = v.y();
+                        p.z = v.z();
+                    });
                     app.rebuildTrack();
                 });
         } else if (app.editor.seamWorldPos(pi) != null) {
@@ -3138,9 +3291,11 @@ class Viewport3D {
                     && (intoP == null
                         || intoP.optMode == BridgeSection.OPT_NONE)) {
                 ctrMove = v -> {
-                    p.x = v.x();
-                    p.y = v.y();
-                    p.z = v.z();
+                    app.placementEdit(p, () -> {   // D221 rigid carry
+                        p.x = v.x();
+                        p.y = v.y();
+                        p.z = v.z();
+                    });
                     app.rebuildTrack();
                 };
             }
@@ -3149,9 +3304,11 @@ class Viewport3D {
             if (trail.optMode == BridgeSection.OPT_NONE) {
                 TrackPiece n = next;
                 ctrMove = v -> {
-                    n.x = v.x();
-                    n.y = v.y();
-                    n.z = v.z();
+                    app.placementEdit(n, () -> {   // D221 rigid carry
+                        n.x = v.x();
+                        n.y = v.y();
+                        n.z = v.z();
+                    });
                     app.editor.gizmoBridgeMoved();
                 };
             }
@@ -3400,9 +3557,12 @@ class Viewport3D {
                         ny = Math.round(ny / step) * step;
                         nz = Math.round(nz / step) * step;
                     }
-                    p.x = nx;
-                    p.y = ny;
-                    p.z = nz;
+                    final double fx = nx, fy = ny, fz = nz;
+                    app.placementEdit(p, () -> {   // D221 rigid carry
+                        p.x = fx;
+                        p.y = fy;
+                        p.z = fz;
+                    });
                     app.rebuildTrack();
                 }
             });
@@ -3420,29 +3580,36 @@ class Viewport3D {
             ? rightOf(p.entryPose().orient()) : pitchAxis(p);
         java.util.function.Supplier<Vec3> rolAx =
             () -> p.entryPose().orient().T();
+        // GLOBAL rings drive the RAW absolute Euler coordinate (D224:
+        // base + delta, unreduced) — absolute-from-press stays
+        // continuous THROUGH the pole (no ±85 clamp; the panel shows
+        // the canonical, pole-flipped numbers)
         if (!lockY) {
             addRing(rig, 1.0, RING_YAW, yawAx,
-                () -> p.yawDeg, deg -> {
+                () -> p.rawAbsYaw(), deg -> {
                     pushOnce();
-                    p.yawDeg = wrapDeg(deg);
+                    app.placementEdit(p,
+                        () -> p.setRawAbsYaw(deg, true));   // D221 carry
                     app.rebuildTrack();
                 }, local ? pieceLocal(p, yawAx, lockY, lockP, lockR)
                          : null);
         }
         if (!lockP) {
             addRing(rig, 0.85, RING_PITCH, pitAx,
-                () -> p.pitchDeg, deg -> {
+                () -> p.rawAbsPitch(), deg -> {
                     pushOnce();
-                    p.pitchDeg = FvdDesigner.clamp(deg, -85, 85);
+                    app.placementEdit(p,
+                        () -> p.setRawAbsPitch(deg, true));   // D222
                     app.rebuildTrack();
                 }, local ? pieceLocal(p, pitAx, lockY, lockP, lockR)
                          : null);
         }
         if (!lockR) {
             addRing(rig, 0.7, RING_ROLL, rolAx,
-                () -> p.rollDeg, deg -> {
+                () -> p.rawAbsRoll(), deg -> {
                     pushOnce();
-                    p.rollDeg = wrapDeg(deg);
+                    app.placementEdit(p,
+                        () -> p.setRawAbsRoll(deg, true));   // D222
                     app.rebuildTrack();
                 }, local ? pieceLocal(p, rolAx, lockY, lockP, lockR)
                          : null);
@@ -3469,12 +3636,19 @@ class Viewport3D {
             @Override public void rotate(double deltaDeg) {
                 Quat tgt = Quat.aboutAxis(a0,
                     Math.toRadians(deltaDeg)).mul(q0);
-                double[] d = TrackPiece.decomposeEntry(p.baseOrient, tgt);
+                // BRANCH-CONTINUOUS decompose (D224): the triple
+                // nearest the current deltas — through the vertical
+                // the pitch runs past 90 instead of yaw/roll jumping
+                // 180 (the old clamp+canonical pair was the "wobble")
+                double[] d = TrackPiece.decomposeNear(p.baseOrient, tgt,
+                    p.yawDeg, p.pitchDeg, p.rollDeg);
                 if (d == null) return;   // heading undefined: hold
                 pushOnce();
-                if (!lockY) p.yawDeg = wrapDeg(d[0]);
-                if (!lockP) p.pitchDeg = FvdDesigner.clamp(d[1], -85, 85);
-                if (!lockR) p.rollDeg = wrapDeg(d[2]);
+                app.placementEdit(p, () -> {   // D222 routing + carry
+                    if (!lockY) p.yawDeg = wrapDeg(d[0]);
+                    if (!lockP) p.editPitch(d[1]);
+                    if (!lockR) p.editRoll(d[2]);
+                });
                 app.rebuildTrack();
             }
         };
@@ -3543,7 +3717,8 @@ class Viewport3D {
             @Override public void rotate(double deltaDeg) {
                 Quat tgt = Quat.aboutAxis(a0,
                     Math.toRadians(deltaDeg)).mul(q0);
-                double[] d = TrackPiece.decomposeEntry(t.baseOrient, tgt);
+                double[] d = TrackPiece.decomposeNear(t.baseOrient, tgt,
+                    t.yawDeg, t.pitchDeg, t.rollDeg);   // D224
                 if (d == null) return;
                 pushOnce();
                 app.editor.gizmoSetBridgeOrientAll(wrapDeg(d[0]),
@@ -3631,9 +3806,12 @@ class Viewport3D {
                             ny = Math.round(ny / step) * step;
                             nz = Math.round(nz / step) * step;
                         }
-                        t.x = nx;
-                        t.y = ny;
-                        t.z = nz;
+                        final double fx = nx, fy = ny, fz = nz;
+                        app.placementEdit(t, () -> {   // D221 carry
+                            t.x = fx;
+                            t.y = fy;
+                            t.z = fz;
+                        });
                         app.editor.gizmoBridgeMoved();
                     }
                 });
@@ -3667,23 +3845,25 @@ class Viewport3D {
                 ? rightOf(t.entryPose().orient()) : pitchAxis(t);
             java.util.function.Supplier<Vec3> rolAx =
                 () -> t.entryPose().orient().T();
+            // raw absolute coordinates (D224) — continuous through
+            // the pole like the piece rig
             if (!bs.lockYaw) {
                 addRing(rig, 1.0, RING_YAW, yawAx,
-                    () -> t.yawDeg, deg -> {
+                    () -> t.rawAbsYaw(), deg -> {
                         pushOnce();
                         app.editor.gizmoSetBridgeOrient(0, deg);
                     }, local ? bridgeLocal(t, yawAx) : null);
             }
             if (!bs.lockPitch) {
                 addRing(rig, 0.85, RING_PITCH, pitAx,
-                    () -> t.pitchDeg, deg -> {
+                    () -> t.rawAbsPitch(), deg -> {
                         pushOnce();
                         app.editor.gizmoSetBridgeOrient(1, deg);
                     }, local ? bridgeLocal(t, pitAx) : null);
             }
             if (!bs.lockRoll) {
                 addRing(rig, 0.7, RING_ROLL, rolAx,
-                    () -> t.rollDeg, deg -> {
+                    () -> t.rawAbsRoll(), deg -> {
                         pushOnce();
                         app.editor.gizmoSetBridgeOrient(2, deg);
                     }, local ? bridgeLocal(t, rolAx) : null);
@@ -3694,7 +3874,12 @@ class Viewport3D {
     /** The model's pitch axis at a piece's entry: horizontal right of
      *  the heading (TrackPiece.entryPose's exact axis). */
     private static Vec3 pitchAxis(TrackPiece p) {
-        Vec3 t = p.entryPose().orient().T();
+        // the YAWED BASE heading's horizontal right (D224): identical
+        // to the true T's for |pitch| < 90 (pitching keeps heading)
+        // and, unlike it, continuous THROUGH the pole — the raw
+        // pitch coordinate the global ring drives rotates about
+        // exactly this axis
+        Vec3 t = p.genPose().orient().T();
         Vec3 r = new Vec3(-t.z(), 0, t.x());
         double len = r.length();
         return len > 1e-9 ? r.scale(1 / len) : new Vec3(1, 0, 0);

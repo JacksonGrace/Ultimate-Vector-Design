@@ -120,8 +120,18 @@ public final class ScIntegrator {
                 rollGlobal[i] = glob;
                 rollTarget[i] = glob ? Math.toRadians(e.rollVal) : 0;
                 cT[i] = glob ? 0 : Math.toRadians(e.rollVal);
-                rollEase[i] = Math.max(1e-9, Math.min(e.arcLen(),
-                    Math.max(e.smoothIn, ROLL_EASE_MIN)));
+                // ELEMENT 0's smoothIn is EDITABLE since v19.3 (D232)
+                // and taken VERBATIM since v19.4 (D233, user spec —
+                // "the entry ease can go all the way to zero"): 0 = an
+                // instant bank snap at the section entry. Old files
+                // stored 0 there and now snap instead of the historic
+                // 2 m ease — accepted (his "not attached to old
+                // files"); NEW sections create element 0 with 2 m, the
+                // comfortable default. Interior elements keep the
+                // historic max(smoothIn, 2 m) floor.
+                double ease = i == 0 ? e.smoothIn
+                    : Math.max(e.smoothIn, ROLL_EASE_MIN);
+                rollEase[i] = Math.max(1e-9, Math.min(e.arcLen(), ease));
             }
             totalLen = s;
             // clamp: an element's entry+exit blend halves must fit inside
@@ -190,8 +200,22 @@ public final class ScIntegrator {
             double f = (1 - Math.cos(Math.PI * u)) / 2;   // sine ease
             out[0] = cU[b - 1] + (cU[b] - cU[b - 1]) * f;
             out[1] = cR[b - 1] + (cR[b] - cR[b - 1]) * f;
-            out[2] = cT[b - 1] + (cT[b] - cT[b - 1]) * f;
+            // RATE roll blends with the QUINTIC since v19.4 (D233,
+            // user report: "a jolt on either end of the smoothing" —
+            // cT is a roll RATE, and the sine's nonzero end curvature
+            // put a corner in the roll-rate graph; the quintic's
+            // first AND second derivatives vanish at the ends, the
+            // strict-seam smoothing's own weight). Curvature (cU/cR
+            // → pitch/yaw) keeps the historic sine — "the pitch/yaw
+            // is okay" — so roll-less sections stay bitwise.
+            out[2] = cT[b - 1] + (cT[b] - cT[b - 1]) * quintic(u);
         }
+    }
+
+    /** The quintic smoothstep 6u⁵−15u⁴+10u³ — zero value, slope AND
+     *  curvature at both ends (the strict-seam smoothing weight). */
+    static double quintic(double u) {
+        return u * u * u * (u * (u * 6 - 15) + 10);
     }
 
     /** Minimum in-element ease for a GLOBAL bank change (m) — bank must
@@ -386,7 +410,11 @@ public final class ScIntegrator {
             roll.from = bank;
         }
         double u = Math.min(1, (st.s() - prof.starts[i]) / prof.rollEase[i]);
-        double f = (1 - Math.cos(Math.PI * u)) / 2;   // the house ease
+        // QUINTIC since v19.4 (D233): the sine's nonzero end curvature
+        // kinked the roll-RATE graph at both ease ends (the "jolt");
+        // the quintic's rate leaves and lands tangent to zero — the
+        // strict-seam smoothing's own smoothness class
+        double f = quintic(u);
         double d = roll.from + (prof.rollTarget[i] - roll.from) * f - bank;
         if (Math.abs(d) < 1e-12) return st;
         return new State(st.pos(),

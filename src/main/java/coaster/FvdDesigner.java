@@ -28,6 +28,7 @@ import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.CheckMenuItem;
+import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.ColorPicker;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.CustomMenuItem;
@@ -190,8 +191,20 @@ public class FvdDesigner extends Application {
     // clearance above the y=0 ground plane (D41). Cosmetics below stay
     // UI-side until the milestone-B split and travel via
     // DesignIO.Cosmetics at save/load.
-    final Coaster coaster = withDefaultFriction(
+    // MULTI-COASTER document (v19.2, D230): `coasters` is the file,
+    // `coaster` the ACTIVE one — every editor/viewport path reads it
+    // live, so switching just re-points it (plus the look swap). An
+    // EMPTY document keeps `coaster` on a zero-piece placeholder so no
+    // dereference NPEs; hasCoaster() gates every path that indexes
+    // pieces (the editor shows its no-coaster panel then).
+    final List<Coaster> coasters = new ArrayList<>();
+    int activeCoaster = 0;
+    private final Coaster emptyCoaster = new Coaster();
+    Coaster coaster = withDefaultFriction(
         Coaster.singleForce(lanes, 26, 0, 21, 0));
+    { coasters.add(coaster); }
+
+    boolean hasCoaster() { return !coasters.isEmpty(); }
 
     /** The startup document counts as a NEW document: it gets the
      *  NL2-like friction defaults (v18.0, D161 — Coaster's own field
@@ -223,7 +236,7 @@ public class FvdDesigner extends Application {
 
     /** Fixed-decimal spinner converter (the air-resistance spinner
      *  needs 5 places — the default converter rounds 1e-4 away). */
-    private static javafx.util.StringConverter<Double> fixedDecimalConverter(int places) {
+    static javafx.util.StringConverter<Double> fixedDecimalConverter(int places) {
         return new javafx.util.StringConverter<>() {
             @Override public String toString(Double v) {
                 return v == null ? ""
@@ -298,16 +311,61 @@ public class FvdDesigner extends Application {
                       // canonical generation pair (v18.27, D199 —
                       // undo of a split must restore it or the split
                       // piece loses its bitwise chain state)
-                      double canonPsi, Quat canonOrient) {}
+                      double canonPsi, Quat canonOrient,
+                      // two-tier orientation (v19.0, D221/D222)
+                      boolean shapeLocked,
+                      double designPitch, double designRoll) {}
 
-    record DocState(List<PieceState> pieces, int activePiece, int active,
-                    double heart, double gauge, double v0,
-                    double fricRoll, double fricAir) {}
+    /** One coaster's undoable state (v19.2, D230): name, pieces, the
+     *  path-shaping globals (heart/gauge/v0/friction — D51) and its
+     *  look (restored ONLY onto a coaster an undo re-creates; the
+     *  cosmetics of a live coaster stay outside undo, D51). */
+    record CoasterState(String name, List<PieceState> pieces,
+                        double heart, double gauge, double v0,
+                        double fricRoll, double fricAir,
+                        DesignIO.Cosmetics look) {}
+
+    /** The whole document (D230): every coaster + which is active +
+     *  the editor's active piece/section + the start wizard's target
+     *  (null = none; see StartPanel). */
+    record DocState(List<CoasterState> coasters, int activeCoaster,
+                    int activePiece, int active, WizardState wizard) {}
+
+    /** The start wizard's DOCUMENT state (v19.2, D231): which coaster/
+     *  piece it is building and whether the section TYPE was picked
+     *  yet (a pending piece renders nothing). Rides undo so Ctrl+Z
+     *  right after opening the wizard removes its piece/coaster. */
+    record WizardState(int mode, int coasterIdx, int pieceIdx, boolean picked,
+                       boolean sc) {}
 
     private boolean docApplying = false;   // suppress spinner listeners while
                                            // an undo/redo writes them back
 
     DocState snapshotDoc() {
+        List<CoasterState> cs = new ArrayList<>();
+        for (int i = 0; i < coasters.size(); i++) {
+            Coaster c = coasters.get(i);
+            boolean act = i == activeCoaster;
+            DesignIO.Cosmetics look = act ? shellLook() : c.look;
+            cs.add(new CoasterState(c.name, snapshotPieces(c),
+                act ? heartOffset : lookOf(c).heart(),
+                act ? railGauge : lookOf(c).gauge(),
+                c.v0, c.fricRoll, c.fricAir, look));
+        }
+        return new DocState(cs, activeCoaster,
+            editor != null ? editor.activePiece() : 0,
+            editor != null ? editor.activeSection() : 0,
+            wizardState);
+    }
+
+    /** A coaster's look — its stash, or the shell's for the active one,
+     *  or defaults. */
+    DesignIO.Cosmetics lookOf(Coaster c) {
+        if (c == coaster && hasCoaster()) return shellLook();
+        return c.look != null ? c.look : DesignIO.Cosmetics.defaults();
+    }
+
+    List<PieceState> snapshotPieces(Coaster coaster) {
         List<PieceState> ps = new ArrayList<>();
         for (TrackPiece piece : coaster.pieces) {
             List<SecState> secs = new ArrayList<>();
@@ -350,13 +408,11 @@ public class FvdDesigner extends Application {
                 piece.followPrev, piece.sLockYaw,
                 piece.sLockPitch, piece.sLockRoll,
                 piece.sYawDeg, piece.sPitchDeg, piece.sRollDeg,
-                piece.sSmoothLen, piece.canonPsiDeg, piece.canonOrient));
+                piece.sSmoothLen, piece.canonPsiDeg, piece.canonOrient,
+                piece.shapeLocked, piece.designPitchDeg,
+                piece.designRollDeg));
         }
-        return new DocState(ps,
-            editor != null ? editor.activePiece() : 0,
-            editor != null ? editor.activeSection() : 0,
-            heartOffset, railGauge, coaster.v0,
-            coaster.fricRoll, coaster.fricAir);
+        return ps;
     }
 
     /** Restore a document snapshot: pieces, path settings, and the
@@ -374,9 +430,71 @@ public class FvdDesigner extends Application {
     void applyDocState(DocState s) {
         docApplying = true;
         docGen++;
+        // MULTI-COASTER restore (D230): rebuild every coaster's pieces;
+        // coaster OBJECTS are reused by index (their looks stay), new
+        // ones (an undone delete) take the snapshot's look; the active
+        // coaster follows the snapshot with the look swap
+        stashActiveLook();
+        otherCompiles.clear();
+        while (coasters.size() > s.coasters().size()) {
+            coasters.remove(coasters.size() - 1);
+        }
+        for (int i = 0; i < s.coasters().size(); i++) {
+            CoasterState cst = s.coasters().get(i);
+            Coaster c;
+            if (i < coasters.size()) {
+                c = coasters.get(i);
+            } else {
+                c = new Coaster();
+                c.look = cst.look();
+                coasters.add(c);
+            }
+            c.name = cst.name();
+            c.v0 = cst.v0();
+            c.fricRoll = cst.fricRoll();
+            c.fricAir = cst.fricAir();
+            restorePieces(c, cst.pieces());
+            if (c.look == null) c.look = cst.look();
+            // heart/gauge ride undo per coaster (D51): into the stash
+            // for inactive coasters, into the shell below for the
+            // active one
+            if (c.look != null) {
+                DesignIO.Cosmetics lk = c.look;
+                c.look = new DesignIO.Cosmetics(cst.heart(), cst.gauge(),
+                    lk.tiespace(), lk.railSolid(), lk.railColor(),
+                    lk.gradColors(), lk.gradStops(), lk.latColors(),
+                    lk.latStops(), null);
+            }
+        }
+        wizardState = s.wizard();
+        if (coasters.isEmpty()) {
+            coaster = emptyCoaster;
+            activeCoaster = 0;
+        } else {
+            activeCoaster = (int) clamp(s.activeCoaster(), 0, coasters.size() - 1);
+            coaster = coasters.get(activeCoaster);
+            applyLook(lookOf(coaster));
+        }
+        if (editor != null && hasCoaster()) {
+            editor.restoreActive(s.activePiece(), s.active());
+        }
+        heartSpinner.getValueFactory().setValue(heartOffset);
+        gaugeSpinner.getValueFactory().setValue(railGauge);
+        startSpeedSpinner.getValueFactory().setValue(coaster.v0);
+        fricRollSpinner.getValueFactory().setValue(coaster.fricRoll);
+        fricAirSpinner.getValueFactory().setValue(coaster.fricAir);
+        docApplying = false;
+        syncPlacementSpinners();
+        updatePieceButton();
+        syncWizardPanel();
+        syncNoCoasterPanel();
+    }
+
+    /** Rebuild one coaster's piece list from a snapshot (the deep
+     *  copies popped off the stack are ADOPTED). */
+    private void restorePieces(Coaster coaster, List<PieceState> pieces) {
         coaster.pieces.clear();
-        // snapshot lists are deep copies popped off the stack - adopt them
-        for (PieceState pst : s.pieces()) {
+        for (PieceState pst : pieces) {
             TrackPiece piece = new TrackPiece(pst.x(), pst.y(), pst.z(), pst.yaw());
             piece.pitchDeg = pst.pitch();
             piece.rollDeg = pst.roll();
@@ -393,6 +511,9 @@ public class FvdDesigner extends Application {
             piece.sSmoothLen = pst.sSmooth();
             piece.canonPsiDeg = pst.canonPsi();
             piece.canonOrient = pst.canonOrient();
+            piece.shapeLocked = pst.shapeLocked();
+            piece.designPitchDeg = pst.designPitch();
+            piece.designRollDeg = pst.designRoll();
             for (SecState st : pst.sections()) {
                 Section sec = switch (st.mode()) {
                     case 3  -> st.bridge();   // deep copy, adopted
@@ -432,20 +553,159 @@ public class FvdDesigner extends Application {
             }
             coaster.pieces.add(piece);
         }
-        if (editor != null) editor.restoreActive(s.activePiece(), s.active());
-        heartOffset = s.heart();
-        railGauge = s.gauge();
-        coaster.v0 = s.v0();
-        coaster.fricRoll = s.fricRoll();
-        coaster.fricAir = s.fricAir();
-        heartSpinner.getValueFactory().setValue(s.heart());
-        gaugeSpinner.getValueFactory().setValue(s.gauge());
-        startSpeedSpinner.getValueFactory().setValue(s.v0());
-        fricRollSpinner.getValueFactory().setValue(s.fricRoll());
-        fricAirSpinner.getValueFactory().setValue(s.fricAir());
-        docApplying = false;
-        syncPlacementSpinners();
+    }
+
+    // -----------------------------------------------------------------
+    // MULTI-COASTER document ops (v19.2, D230)
+    // -----------------------------------------------------------------
+
+    /** The shell's per-coaster look as a Cosmetics bundle (no camera). */
+    DesignIO.Cosmetics shellLook() {
+        double[] rail = { railColor.getRed(), railColor.getGreen(), railColor.getBlue() };
+        return new DesignIO.Cosmetics(heartOffset, railGauge, tieSpacing,
+            railSolid, rail, flatten(gradColors), gradStops.clone(),
+            flatten(latColors), latStops.clone(), null);
+    }
+
+    /** Stash the shell's look onto the active coaster (before a switch,
+     *  a save, a snapshot). */
+    void stashActiveLook() {
+        if (hasCoaster() && coaster != emptyCoaster) coaster.look = shellLook();
+    }
+
+    /** Load a coaster's look into the shell fields + spinners + rail
+     *  menu (listeners suppressed). */
+    void applyLook(DesignIO.Cosmetics cos) {
+        boolean was = docApplying;
+        docApplying = true;
+        heartOffset = cos.heart();
+        railGauge = cos.gauge();
+        tieSpacing = cos.tiespace();
+        railSolid = cos.railSolid();
+        railColor = Color.color(cos.railColor()[0], cos.railColor()[1], cos.railColor()[2]);
+        unflatten(cos.gradColors(), gradColors);
+        unflatten(cos.latColors(), latColors);
+        System.arraycopy(cos.gradStops(), 0, gradStops, 0, gradStops.length);
+        System.arraycopy(cos.latStops(), 0, latStops, 0, latStops.length);
+        if (heartSpinner != null) {
+            heartSpinner.getValueFactory().setValue(heartOffset);
+            gaugeSpinner.getValueFactory().setValue(railGauge);
+            tieSpinner.getValueFactory().setValue(tieSpacing);
+            (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
+        }
+        docApplying = was;
+    }
+
+    /** Make coaster idx the active one (look swap + editor reset). */
+    void switchCoaster(int idx) {
+        if (idx < 0 || idx >= coasters.size()) return;
+        if (idx == activeCoaster && coaster == coasters.get(idx)) return;
+        stashActiveLook();
+        otherCompiles.remove(coaster);   // it may have been edited while active
+        activeCoaster = idx;
+        coaster = coasters.get(idx);
+        applyLook(lookOf(coaster));
+        boolean was = docApplying;
+        docApplying = true;
+        startSpeedSpinner.getValueFactory().setValue(coaster.v0);
+        fricRollSpinner.getValueFactory().setValue(coaster.fricRoll);
+        fricAirSpinner.getValueFactory().setValue(coaster.fricAir);
+        docApplying = was;
+        editor.resetSections();
+        editor.clearSelection();
+        clearResultingPicks();
+        rebuildTrack();
+        editor.refresh();
         updatePieceButton();
+        syncPlacementSpinners();
+        syncWizardPanel();
+        syncNoCoasterPanel();
+        updateTitle();
+    }
+
+    /** ADD a coaster (one undo step, caller pushes) and activate it. */
+    void addCoaster(Coaster c) {
+        stashActiveLook();
+        if (c.look == null) c.look = DesignIO.Cosmetics.defaults();
+        coasters.add(c);
+        markDirty();
+        switchCoasterForce(coasters.size() - 1);
+    }
+
+    /** switchCoaster that also handles the empty→first transition. */
+    private void switchCoasterForce(int idx) {
+        activeCoaster = -1;   // defeat the same-index short-circuit
+        switchCoaster(idx);
+    }
+
+    /** DELETE the active coaster (undoable — the caller pushes). The
+     *  last one leaves an EMPTY document (legal since D230). */
+    void deleteActiveCoaster() {
+        if (!hasCoaster()) return;
+        int idx = activeCoaster;
+        otherCompiles.remove(coasters.get(idx));
+        coasters.remove(idx);
+        markDirty();
+        if (coasters.isEmpty()) {
+            coaster = emptyCoaster;
+            activeCoaster = 0;
+            editor.hideStartPanel();
+            wizardState = null;
+            rebuildTrack();
+            editor.refresh();
+            updatePieceButton();
+            syncNoCoasterPanel();
+            updateTitle();
+            return;
+        }
+        switchCoasterForce(Math.min(idx, coasters.size() - 1));
+    }
+
+    void renameActiveCoaster(String name) {
+        if (!hasCoaster() || name == null || name.isBlank()) return;
+        editor.pushUndoSnapshot();
+        coaster.name = name.trim();
+        markDirty();
+        updateTitle();
+    }
+
+    /** A fresh coaster name unique in the document. */
+    String freshCoasterName() {
+        for (int k = coasters.size() + 1; ; k++) {
+            String nm = "Coaster " + k;
+            boolean taken = false;
+            for (Coaster c : coasters) if (c.name.equals(nm)) taken = true;
+            if (!taken) return nm;
+        }
+    }
+
+    /** The other coasters' compiled results for rendering/export —
+     *  compiled on demand and cached until the coaster is next active
+     *  (an inactive coaster cannot change). */
+    private final java.util.Map<Coaster, TrackCompiler.Result> otherCompiles =
+        new java.util.HashMap<>();
+
+    TrackCompiler.Result compiledFor(Coaster c) {
+        if (c == coaster) return null;   // the active one lives in the shell
+        TrackCompiler.Result r = otherCompiles.get(c);
+        if (r == null && !c.pieces.isEmpty()) {
+            r = TrackCompiler.compile(c, INTEGRATE_DT);
+            otherCompiles.put(c, r);
+        }
+        return r;
+    }
+
+    /** Render bundles of every INACTIVE coaster (samples + look) — the
+     *  viewport draws them in their solid rail color. */
+    List<Object[]> otherCoasterRenders() {
+        List<Object[]> out = new ArrayList<>();
+        for (Coaster c : coasters) {
+            if (c == coaster) continue;
+            TrackCompiler.Result r = compiledFor(c);
+            if (r == null || r.samples().size() < 2) continue;
+            out.add(new Object[]{ r.samples(), lookOf(c), c });
+        }
+        return out;
     }
 
     /** Numeric-only editor filter allowing a leading minus (v13.5 —
@@ -659,6 +919,7 @@ public class FvdDesigner extends Application {
      *  (listener-safe: docApplying suppresses the undo push). */
     void syncPlacementSpinners() {
         if (editor == null || startXSpinner == null) return;
+        if (!hasCoaster() || coaster.pieces.isEmpty()) return;   // D230
         TrackPiece p = coaster.pieces.get(
             Math.min(editor.activePiece(), coaster.pieces.size() - 1));
         boolean was = docApplying;
@@ -666,7 +927,10 @@ public class FvdDesigner extends Application {
         startXSpinner.getValueFactory().setValue(p.x);
         startYSpinner.getValueFactory().setValue(p.y);
         startZSpinner.getValueFactory().setValue(p.z);
-        yawSpinner.getValueFactory().setValue(-p.yawDeg);   // reported yaw (D186)
+        // ABSOLUTE display (D224): the boxes show the entry's real
+        // heading/elevation/bank — a split piece's included — reported
+        // yaw negated (D186)
+        yawSpinner.getValueFactory().setValue(-p.dispYaw() + 0.0);   // no "-0"
         // a piece PLACED through a bridge grays whatever the bridge
         // owns (v16.13, user spec — the rows silently fought the
         // auto re-optimize before): position under any optimize
@@ -691,8 +955,8 @@ public class FvdDesigner extends Application {
             // (shared padlocks), else the piece's own UI guard. A
             // LOCKED axis freezes its spinner; a bridged-in piece in
             // optimize-orientation mode is march-owned either way.
-            piecePitchSpinner.getValueFactory().setValue(p.pitchDeg);
-            pieceRollSpinner.getValueFactory().setValue(p.rollDeg);
+            piecePitchSpinner.getValueFactory().setValue(p.dispPitch());
+            pieceRollSpinner.getValueFactory().setValue(p.dispRoll());
             BridgeSection bs = bridgeInto(editor.activePiece());
             boolean lp = bs != null ? bs.lockPitch : p.uiLockPitch;
             boolean lr = bs != null ? bs.lockRoll : p.uiLockRoll;
@@ -704,6 +968,7 @@ public class FvdDesigner extends Application {
             pieceRollSpinner.setDisable(follows || lr || marchOwns);
         }
         docApplying = was;
+        syncDesignReadout();   // D222: design-orientation line
     }
 
     // ---------- file lifecycle: New / Save / Save As, dirty flag, title ----------
@@ -722,8 +987,14 @@ public class FvdDesigner extends Application {
     }
 
     private void updateTitle() {
-        if (stage != null)
-            stage.setTitle(docName() + (dirty ? "*" : "") + " — FVD Coaster Designer");
+        if (stage != null) {
+            // the ACTIVE coaster's name joins the title for multi-
+            // coaster documents (D230)
+            String c = coasters.size() > 1 && hasCoaster()
+                ? " [" + coaster.name + "]" : "";
+            stage.setTitle(docName() + (dirty ? "*" : "") + c
+                + " — FVD Coaster Designer");
+        }
     }
 
     // ---------- the 3D viewport (Viewport3D.java, D54) ----------
@@ -733,7 +1004,209 @@ public class FvdDesigner extends Application {
      *  here; falls back to piece 0 before the editor exists). */
     TrackPiece activePieceRef() {
         int p = editor != null ? editor.activePiece() : 0;
+        if (coaster.pieces.isEmpty()) return new TrackPiece(0, 0, 0, 0);   // D230 no-coaster
         return coaster.pieces.get(Math.min(p, coaster.pieces.size() - 1));
+    }
+
+    // ---------- orientation link + rigid carry (v19.0, D221) ----------
+
+    /** Run a USER placement write on piece `pieceIdx`; when the piece
+     *  is orientation-RIGID, carry the connected downstream chain by
+     *  the same rigid delta (Coaster.carryDownstream) so the whole
+     *  assembly keeps its shape and adopts the one design/real
+     *  conflict. LINKED pieces skip the carry — bridges re-solve and
+     *  followers re-aim naturally (the historic behavior). Callers
+     *  still push undo/rebuild; the carry rides their undo step. */
+    void placementEdit(int pieceIdx, Runnable write) {
+        if (pieceIdx < 0 || pieceIdx >= coaster.pieces.size()) {
+            write.run();
+            return;
+        }
+        TrackPiece p = coaster.pieces.get(pieceIdx);
+        if (!p.shapeLocked) {
+            // shape unlocked (D222): edits reshape — downstream
+            // updates naturally (bridges re-solve, followers re-aim)
+            write.run();
+            return;
+        }
+        TrackPose before = effEntryPose(pieceIdx);
+        write.run();
+        TrackPose after = effEntryPose(pieceIdx);
+        if (before != null && after != null) {
+            coaster.carryDownstream(pieceIdx, before, after, sectionSpans);
+        }
+    }
+
+    /** Overload resolving the piece's index by identity (viewport
+     *  sinks hold the TrackPiece object). Unfindable = just write. */
+    void placementEdit(TrackPiece p, Runnable write) {
+        placementEdit(coaster.pieces.indexOf(p), write);
+    }
+
+    /** The piece's EFFECTIVE entry pose for the carry: a strict
+     *  follower's orientation reads through the follow contract
+     *  anchored at the seam (its held-angle edits rotate it there);
+     *  everything else is the stored placement. Null when a follower
+     *  has no compiled seam yet (no carry — nothing to anchor). */
+    private TrackPose effEntryPose(int pieceIdx) {
+        TrackPiece p = coaster.pieces.get(pieceIdx);
+        if (p.followPrev && pieceIdx > 0) {
+            TrackPiece prev = coaster.pieces.get(pieceIdx - 1);
+            boolean bridged = !prev.sections.isEmpty()
+                && prev.sections.get(prev.sections.size() - 1)
+                    instanceof BridgeSection;
+            if (!bridged && !prev.sections.isEmpty()) {
+                TrackPose ex = pieceExitPose(pieceIdx - 1);
+                return ex == null ? null : Coaster.strictEntry(ex, p);
+            }
+        }
+        return p.entryPose();
+    }
+
+    /** The D222 "Lock Track Shape" rows — Track Piece panel ONLY
+     *  since D222 (the D221 bridge/seam copies were removed on user
+     *  spec: "there might be some weird edge cases"): the per-piece
+     *  EDIT-ROUTING check plus the two orientation-resolution
+     *  buttons on one line, shown only while a design→true conflict
+     *  exists. Toggling the check changes NOTHING by itself — it
+     *  only routes future edits (checked = true tier only, shape
+     *  kept + rigid carry; unchecked = both tiers in lockstep,
+     *  shape re-solves). Hidden for strict-seam followers (the seam
+     *  owns their orientation, D222); grayed under an
+     *  optimize-orientation bridge (the march owns the axes). */
+    VBox lockShapeRows(TrackPiece p0, int pieceIdx) {
+        // LIVE piece resolution (v19.2, D227 — the undo deep-dive):
+        // undo/redo REPLACE the TrackPiece objects, so a panel that
+        // captured `p0` wrote to an orphan after any Ctrl+Z ("the
+        // buttons do nothing"); every handler resolves the piece by
+        // INDEX at click time and the sync re-reads the check state
+        java.util.function.Supplier<TrackPiece> live = () ->
+            pieceIdx < coaster.pieces.size() ? coaster.pieces.get(pieceIdx) : p0;
+        CheckBox lock = new CheckBox("Lock Track Shape");
+        lock.setTextFill(Color.WHITE);
+        lock.setFocusTraversable(false);
+        lock.setStyle("-fx-font-size: 11px; -fx-text-fill: white;");
+        lock.setSelected(p0.shapeLocked);
+        Tooltip.install(lock, new Tooltip(
+            "Design orientation does not change"));
+        Button d2r = new Button("Design → Real Orientation");
+        d2r.setFocusTraversable(false);
+        d2r.setStyle("-fx-font-size: 11px;");
+        Tooltip.install(d2r, new Tooltip(
+            "Bring the design orientation to the real one: the shape\n"
+            + "re-solves under gravity at the real frame (graphs stay\n"
+            + "put, geometry re-bends), conflict closed."));
+        Button r2d = new Button("Real → Design Orientation");
+        r2d.setFocusTraversable(false);
+        r2d.setStyle("-fx-font-size: 11px;");
+        Tooltip.install(r2d, new Tooltip(
+            "Bring the real orientation back to the design one: the\n"
+            + "piece (and its rigidly carried chain) un-rotates onto\n"
+            + "the orientation the graphs were authored at — shape\n"
+            + "preserved, conflict closed."));
+        BridgeSection binto = bridgeInto(pieceIdx);
+        boolean machine = binto != null
+            && binto.optMode == BridgeSection.OPT_POS_YAW;
+        String hint = "The optimize-orientation bridge owns this "
+            + "piece's pitch/roll — switch the bridge mode or lock "
+            + "its axes to hand-edit the orientation.";
+        // grayHint wraps CONTROLS (its disabled-swallows-events
+        // premise) — wrap the buttons individually, not the HBox
+        HBox btns = machine
+            ? new HBox(8, GraphEditor.grayHint(d2r, hint),
+                GraphEditor.grayHint(r2d, hint))
+            : new HBox(8, d2r, r2d);
+        btns.setAlignment(Pos.CENTER_LEFT);
+        final boolean[] syncing = { false };
+        Runnable sync = () -> {
+            TrackPiece p = live.get();
+            boolean conflict = p.orientConflict();
+            btns.setVisible(conflict);
+            btns.setManaged(conflict);
+            if (lock.isSelected() != p.shapeLocked) {
+                syncing[0] = true;
+                lock.setSelected(p.shapeLocked);   // undo restored the flag
+                syncing[0] = false;
+            }
+        };
+        lockRowsSync = sync;   // live refresh while the panel is open
+                               // (cleared on popup hide)
+        lock.setOnAction(e -> {
+            if (docApplying || syncing[0]) return;
+            // pure routing flip (D222): nothing moves, no rebuild —
+            // the flag rides document undo and the save file
+            editor.pushUndoSnapshot();
+            live.get().shapeLocked = lock.isSelected();
+            markDirty();
+            sync.run();
+        });
+        d2r.setOnAction(e -> {
+            if (docApplying) return;
+            editor.pushUndoSnapshot();
+            TrackPiece p = live.get();
+            p.designPitchDeg = p.pitchDeg;
+            p.designRollDeg = p.rollDeg;
+            markDirty();
+            rebuildTrack();
+            syncPlacementSpinners();
+            updateBridgeControls();
+            editor.redrawFromViewport();
+            sync.run();
+        });
+        r2d.setOnAction(e -> {
+            if (docApplying) return;
+            editor.pushUndoSnapshot();
+            placementEdit(pieceIdx, () -> {
+                TrackPiece p = live.get();
+                p.pitchDeg = p.designPitchDeg;
+                p.rollDeg = p.designRollDeg;
+            });
+            markDirty();
+            rebuildTrack();
+            syncPlacementSpinners();
+            updateBridgeControls();
+            editor.redrawFromViewport();
+            sync.run();
+        });
+        sync.run();
+        if (machine) {
+            lock.setDisable(true);
+            d2r.setDisable(true);
+            r2d.setDisable(true);
+            return new VBox(4, GraphEditor.grayHint(lock, hint), btns);
+        }
+        return new VBox(4, lock, btns);
+    }
+
+    /** D222: refresh the design-orientation readout + the lock-shape
+     *  row's button visibility (live while the panel is open). */
+    void syncDesignReadout() {
+        if (designTiltLbl == null || coaster.pieces.isEmpty()) return;
+        TrackPiece p = activePieceRef();
+        boolean show = p.orientConflict();
+        designTiltLbl.setVisible(show);
+        designTiltLbl.setManaged(show);
+        if (show) {
+            designTiltLbl.setText(String.format(java.util.Locale.US,
+                "Design orientation:  pitch %.2f°   roll %.2f°",
+                p.dispDesignPitch(), p.dispDesignRoll()));   // absolute (D224)
+        }
+        if (lockRowsSync != null) lockRowsSync.run();
+    }
+
+    private Label designTiltLbl;
+    private Runnable lockRowsSync;
+
+    /** Compiled exit pose of a piece's LAST section (the follow
+     *  seam), from the current spans. */
+    private TrackPose pieceExitPose(int pieceIdx) {
+        if (sectionSpans == null) return null;
+        int idx = -1;
+        for (int q = 0; q <= pieceIdx && q < coaster.pieces.size(); q++) {
+            idx += coaster.pieces.get(q).sections.size();
+        }
+        return idx >= 0 && idx < sectionSpans.size()
+            ? sectionSpans.get(idx).exit() : null;
     }
 
     /** The "Track Piece ▾" / "Bridge properties ▾" panel — a MOVABLE
@@ -751,6 +1224,7 @@ public class FvdDesigner extends Application {
      *  bridge rows, FALSE = the piece rows, null = follow the active
      *  section (the toolbar button's historic behavior). */
     void showPlacementPopup(Boolean forceBridge) {
+        if (!hasCoaster() || coaster.pieces.isEmpty()) return;   // D230
         if (placementPopup != null && placementPopup.isShowing()) {
             placementPopup.hide();
             placementPopup = null;
@@ -768,6 +1242,9 @@ public class FvdDesigner extends Application {
         if (forceBridge != null ? forceBridge
                 : editor.activeBridgeWithTarget()) {
             updateBridgeControls();
+            // (D222: the D221 orientation-link rows LEFT this branch
+            // on user spec — bridge orientations work classically;
+            // the next piece's own Track Piece panel is the surface)
             box.getChildren().addAll(bridgeModeRow, bridgeLenRow,
                 bridgeYawRow, bridgePitchRow, bridgeRollRow,
                 bridgePosRow);
@@ -781,8 +1258,19 @@ public class FvdDesigner extends Application {
                 placementPopup = null;
                 editor.reverseActivePiece();
             });
+            int ai = Math.min(editor.activePiece(),
+                coaster.pieces.size() - 1);
             box.getChildren().addAll(placementRow, yawPlacementRow,
-                tiltPlacementRow, rev);
+                tiltPlacementRow, designTiltLbl);
+            // a strict-seam FOLLOWER's beginning is seam-owned (D222:
+            // no lock-shape surface; its flag stays default-locked so
+            // seam re-aims still carry its downstream)
+            if (!editor.followsPrev(ai)) {
+                box.getChildren().add(
+                    lockShapeRows(coaster.pieces.get(ai), ai));
+            }
+            box.getChildren().add(rev);
+            syncDesignReadout();
         }
         double[] grab = new double[2];
         box.setOnMousePressed(ev2 -> {
@@ -794,12 +1282,14 @@ public class FvdDesigner extends Application {
             pop.setY(ev2.getScreenY() - grab[1]);
         });
         pop.getContent().add(box);
-        pop.setOnShown(ev2 -> {
-            beginMenuSession();
-            installMenuUndoKeys(box.getScene());
-        });
+        // GLOBAL undo inside the panel (D227): every row here shapes
+        // the track, so Ctrl+Z / Ctrl+Shift+Z are the document's —
+        // the old menu-local session replayed spinners against a
+        // history the document also kept (the "undo does nothing /
+        // doesn't work while open" report)
+        pop.setOnShown(ev2 -> installDocUndoKeys(box.getScene()));
         pop.setOnHidden(ev2 -> {
-            endMenuSession();
+            lockRowsSync = null;   // D222: the row's sync dies with it
             if (placementPopup == pop) placementPopup = null;
         });
         if (popupAnchorX != null) {
@@ -822,6 +1312,7 @@ public class FvdDesigner extends Application {
      *  syncing never re-runs the optimization. */
     void updateBridgeControls() {
         if (bridgeGapSpinner == null || editor == null) return;
+        if (!hasCoaster() || coaster.pieces.isEmpty()) return;   // D230
         // the SAME toolbar button is the piece-placement menu or the
         // bridge's own properties menu (v13.10, D84 — user: "really a
         // completely different menu"); the label says which
@@ -906,7 +1397,7 @@ public class FvdDesigner extends Application {
      *  entirely while the ride is a single piece (the common case). */
     void updatePieceButton() {
         if (pieceBtn == null) return;
-        boolean multi = coaster.pieces.size() > 1;
+        boolean multi = hasCoaster() && coaster.pieces.size() > 1;
         pieceBtn.setVisible(multi);
         pieceBtn.setManaged(multi);
         if (multi && editor != null) {
@@ -991,6 +1482,20 @@ public class FvdDesigner extends Application {
     private boolean docSettled = false;
 
     void rebuildTrack() {
+        // EMPTY document / coaster (v19.2, D230): nothing to compile —
+        // drop the last results, clear the meshes, leave the shell in
+        // its no-coaster mode
+        if (!hasCoaster() || coaster.pieces.isEmpty()) {
+            lastSamples = null;
+            sectionSpans = null;
+            resultRates = null;
+            trueV = null;
+            trueFelt = null;
+            trueRates = null;
+            docSettled = true;
+            for (Viewport3D vp : viewports) vp.rebuildMeshes();
+            return;
+        }
         TrackCompiler.Result compiled =
             TrackCompiler.compile(coaster, INTEGRATE_DT);
         // iterate to QUIESCENCE (v18.25, D197 — was a 3-pass cap):
@@ -1034,6 +1539,7 @@ public class FvdDesigner extends Application {
         trueRates = compiled.trueRates();
         sectionSpans = compiled.spans();
         updateBridgeControls();   // gap spinner tracks live moves
+        syncDesignReadout();      // D222: design-orientation line
         double maxGv = -99, minGv = 99, maxY = -1e9, minY = 1e9, maxV = 0;
         for (int i = 0; i < samples.size(); i++) {
             FVDIntegrator.Sample sm = samples.get(i);
@@ -1407,6 +1913,23 @@ public class FvdDesigner extends Application {
      *  since v14.0 (D91): GREEN = unlocked, RED = locked — the glyphs
      *  alone read too alike; SATURATED since v14.4 (D96, user: the
      *  faded 0.30-alpha washes read as "grayed out"/disabled). */
+    /** OUTLINED-BUTTON style (v19.4, D233 — the recurring
+     *  misaligned-outline fix, the seam padlocks' screenshot): a
+     *  border drawn over JavaFX's DEFAULT button background never
+     *  lines up — the default is multi-layer with unequal insets and
+     *  its own radii. The clean pattern, used for EVERY outlined /
+     *  highlighted button from now on: ONE background layer,
+     *  `-fx-background-insets: 0`, and the SAME radius on background
+     *  and border. */
+    static String outlineStyle(String extra, String borderColor) {
+        return "-fx-background-color: rgb(225,227,232);"
+            + " -fx-background-insets: 0; -fx-background-radius: 4;"
+            + " -fx-border-insets: 0; -fx-border-radius: 4;"
+            + " -fx-border-width: 2;"
+            + " -fx-border-color: " + borderColor + ";"
+            + (extra == null ? "" : " " + extra);
+    }
+
     private static final String LOCK_BASE_STYLE =
         "-fx-font-size: 10px; -fx-padding: 1 4 1 4;";
     private static final String LOCK_OPEN_STYLE = LOCK_BASE_STYLE
@@ -1743,6 +2266,10 @@ public class FvdDesigner extends Application {
     // rail-mode radios, VIEW-menu residents since v16.14 (Dialogs
     // builds and assigns them; setRailMode/loads re-sync as ever)
     RadioButton gradientModeItem, solidModeItem;
+    // the settings rows (v19.3, D232 — they LEFT the Coaster menu for
+    // the Coaster Options / Rail Settings dialogs; the row objects
+    // survive here and re-parent per dialog open)
+    HBox heartRow, gaugeRow, tieRow, fricRollRow, fricAirRow;
     private CheckBox resPitchCheck, resYawCheck, resRollCheck;   // retitled per mode
 
     /** Every file OPEN (New / Load / the startup Untitled) begins
@@ -1951,10 +2478,9 @@ public class FvdDesigner extends Application {
             for (int p = 0; p < coaster.pieces.size(); p++) {
                 TrackPiece tp = coaster.pieces.get(p);
                 MenuItem it = new MenuItem(String.format(Locale.US,
-                    "%sPiece %d — %d section%s at (%.0f, %.0f, %.0f)",
+                    "%sPiece %d — %s at (%.0f, %.0f, %.0f)",
                     p == editor.activePiece() ? "✓ " : "   ",
-                    p + 1, tp.sections.size(),
-                    tp.sections.size() == 1 ? "" : "s", tp.x, tp.y, tp.z));
+                    p + 1, pieceLengthLabel(p), tp.x, tp.y, tp.z));
                 final int idx = p;
                 it.setOnAction(ev -> editor.setActivePiece(idx));
                 cm.getItems().add(it);
@@ -2132,6 +2658,154 @@ public class FvdDesigner extends Application {
         stage.setScene(scene);
         stage.show();
         stage.centerOnScreen();
+        devShots();
+        devMenu();
+    }
+
+    /** DEV HOOK (v19.5): `-Dfvd.devmenu=1` — Robot-drive the Coaster
+     *  menu end to end: press the menu-bar button, verify the popup
+     *  opened, press the coaster ChoiceBox, verify ITS dropdown
+     *  opened, pick the second coaster via DOWN/ENTER and verify the
+     *  switch. Prints one MENUTEST line and exits (0 = all green).
+     *  Inert without the property. */
+    ChoiceBox<String> devMenuPick;   // the live selector (rebuilt per showing)
+
+    private void devMenu() {
+        if (System.getProperty("fvd.devmenu") == null) return;
+        Coaster c2 = new Coaster();
+        c2.name = "Second";
+        TrackPiece tp = new TrackPiece(0, 21, 0, 0);
+        tp.sections.add(Coaster.holdSection(1, 0, 0, 26));
+        c2.pieces.add(tp);
+        coasters.add(c2);
+        stage.setAlwaysOnTop(true);
+        Thread.setDefaultUncaughtExceptionHandler((t, ex) -> {
+            System.out.println("MENUTEST-EX " + ex);
+            ex.printStackTrace();
+        });
+        javafx.scene.robot.Robot robot = new javafx.scene.robot.Robot();
+        boolean[] menuOpen = new boolean[1];
+        boolean[] choiceOpen = new boolean[1];
+        devAfter(400, () -> {
+            stage.requestFocus();
+            // Menu.getStyleableNode() is null on a MenuBar menu —
+            // find the real MenuBarButton by its label instead
+            javafx.scene.Node btn = null;
+            for (javafx.scene.Node n
+                    : stage.getScene().getRoot().lookupAll(".menu-button")) {
+                if (n instanceof javafx.scene.control.Labeled lb
+                        && "Coaster".equals(lb.getText())) {
+                    btn = n;
+                    break;
+                }
+            }
+            System.out.println("MENUTEST-DBG btn=" + btn
+                + " bounds=" + (btn == null ? null
+                    : btn.localToScreen(btn.getBoundsInLocal()))
+                + " focused=" + stage.isFocused()
+                + " items=" + coasterMenu.getItems().size());
+            devClick(robot, btn);
+            devAfter(500, () -> {
+                menuOpen[0] = coasterMenu.isShowing();
+                System.out.println("MENUTEST-DBG afterClick showing="
+                    + menuOpen[0] + " focused=" + stage.isFocused()
+                    + " mouse=" + robot.getMousePosition());
+                if (!menuOpen[0]) coasterMenu.show();   // structural probe
+                devAfter(300, () -> {
+                if (devMenuPick != null) devClick(robot, devMenuPick);
+                devAfter(500, () -> {
+                    choiceOpen[0] = devMenuPick != null
+                        && devMenuPick.isShowing();
+                    System.out.println("MENUTEST-DBG pick=" + devMenuPick
+                        + " open=" + choiceOpen[0]
+                        + " menuStill=" + coasterMenu.isShowing());
+                    if (stage.isFocused() || choiceOpen[0]) {
+                        robot.keyType(KeyCode.DOWN);
+                        robot.keyType(KeyCode.ENTER);
+                    }
+                    devAfter(600, () -> {
+                        boolean switched = activeCoaster == 1;
+                        System.out.println("MENUTEST menu=" + menuOpen[0]
+                            + " choice=" + choiceOpen[0]
+                            + " switched=" + switched);
+                        System.exit(menuOpen[0] && choiceOpen[0]
+                            && switched ? 0 : 1);
+                    });
+                });
+                });
+            });
+        });
+    }
+
+    private static void devAfter(double ms, Runnable r) {
+        javafx.animation.PauseTransition p = new javafx.animation
+            .PauseTransition(javafx.util.Duration.millis(ms));
+        p.setOnFinished(e -> r.run());
+        p.play();
+    }
+
+    private static void devClick(javafx.scene.robot.Robot robot,
+                                 javafx.scene.Node n) {
+        if (n == null) return;
+        javafx.geometry.Bounds b = n.localToScreen(n.getBoundsInLocal());
+        if (b == null) return;
+        robot.mouseMove(b.getMinX() + b.getWidth() / 2,
+            b.getMinY() + b.getHeight() / 2);
+        robot.mouseClick(javafx.scene.input.MouseButton.PRIMARY);
+    }
+
+    /** DEV HOOK (v19.1): `-Dfvd.devshot=<dir>` renders the START
+     *  SCREEN's three states (pick / lane form / s-c form) to PNGs in
+     *  <dir> straight from JavaFX and exits — a headless-ish UI check
+     *  for displays too small to show the graph panel. Inert without
+     *  the property. */
+    private void devShots() {
+        String dir = System.getProperty("fvd.devshot");
+        if (dir == null || dir.isBlank()) return;
+        java.io.File d = new java.io.File(dir);
+        d.mkdirs();
+        // the wizard opens on the REAL document (a new coaster); the
+        // panel object is re-parented into the shot stage
+        openNewCoasterWizard(true);
+        editor.hideStartPanel();
+        StartPanel[] panel = { new StartPanel(this, wizardState) };
+        Stage s = new Stage();
+        s.setTitle("devshot");
+        Scene sc = new Scene(panel[0], 1180, 320);
+        s.setScene(sc);
+        s.show();
+        java.util.function.BiConsumer<String, Runnable> snap = (name, next) -> {
+            javafx.application.Platform.runLater(() ->
+                javafx.application.Platform.runLater(() -> {
+                    try {
+                        javafx.scene.image.WritableImage img = sc.getRoot().snapshot(null, null);
+                        int w = (int) img.getWidth(), h = (int) img.getHeight();
+                        java.awt.image.BufferedImage bi = new java.awt.image.BufferedImage(
+                            w, h, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                        javafx.scene.image.PixelReader pr = img.getPixelReader();
+                        for (int yy = 0; yy < h; yy++) {
+                            for (int xx = 0; xx < w; xx++) {
+                                bi.setRGB(xx, yy, pr.getArgb(xx, yy));
+                            }
+                        }
+                        javax.imageio.ImageIO.write(bi, "png",
+                            new java.io.File(d, name + ".png"));
+                    } catch (Exception ex) {
+                        System.err.println("devshot: " + ex);
+                    }
+                    next.run();
+                }));
+        };
+        snap.accept("start-pick", () -> {
+            panel[0].devPick(false);
+            snap.accept("start-lane", () -> {
+                panel[0].devPick(true);
+                snap.accept("start-sc", () -> {
+                    javafx.application.Platform.exit();
+                    System.exit(0);
+                });
+            });
+        });
     }
 
     private void handleKey(KeyEvent e) {
@@ -2191,6 +2865,33 @@ public class FvdDesigner extends Application {
         // line or the density preview is up, edit/file/undo actions
         // are dead — an open convert is an open gesture (view keys
         // like POV/ortho stay live below)
+        // the START SCREEN owns the graph the same way (D226) — and it
+        // hosts text boxes in the MAIN scene, so a focused editor gets
+        // every key untouched
+        if (editor.startPanelActive()) {
+            javafx.scene.Node fo = stage.getScene() == null ? null
+                : stage.getScene().getFocusOwner();
+            if (fo instanceof javafx.scene.control.TextInputControl) return;
+            // undo/redo stay live — every wizard setting is a document
+            // step (D231) — plus file ops and the view keys
+            if (matches("undo", e)) editor.undo();
+            else if (matches("redo", e)) editor.redo();
+            else if (matches("save", e)) saveDesign(false);
+            else if (matches("pov", e)) togglePov();
+            else if (handleViewDigit(e)) { /* view keys stay live */ }
+            return;
+        }
+        // NO COASTER in the document (D230): only file ops, undo/redo
+        // (a deleted coaster comes back) and the view keys
+        if (!hasCoaster()) {
+            if (matches("undo", e)) editor.undo();
+            else if (matches("redo", e)) editor.redo();
+            else if (matches("save", e)) saveDesign(false);
+            else if (matches("load", e)) loadDesign();
+            else if (matches("newfile", e)) newDesign();
+            else if (handleViewDigit(e)) { /* view keys */ }
+            return;
+        }
         if (editor.convertUiActive()) {
             if (matches("pov", e)) togglePov();
             else if (handleViewDigit(e)) { /* view keys stay live */ }
@@ -2294,6 +2995,26 @@ public class FvdDesigner extends Application {
             && mainSplit.getDividerPositions()[0] > 0.97;
     }
 
+    /** Make the graph editor at least h px tall (D231 — the start
+     *  screen's comfortable minimum): moves the divider up when the
+     *  editor is smaller (or collapsed); never shrinks it. */
+    void growEditorTo(double h) {
+        if (mainSplit == null || mainSplit.getHeight() <= 0) return;
+        double total = mainSplit.getHeight();
+        double topH = 0;
+        if (mainSplit.getItems().size() > 1
+                && mainSplit.getItems().get(1) instanceof BorderPane bp
+                && bp.getTop() != null) {
+            topH = bp.getTop().getLayoutBounds().getHeight();
+        }
+        double need = h + topH + 8;
+        double pos = Math.max(0.15, 1 - need / total);
+        if (mainSplit.getDividerPositions()[0] > pos) {
+            lastDividerPos = pos;
+            mainSplit.setDividerPositions(pos);
+        }
+    }
+
     /** Collapse the graph panel to full-screen the 3D view, or restore it
      *  to where the divider last sat. The divider itself stays draggable. */
     private void toggleGraphPanel() {
@@ -2373,8 +3094,27 @@ public class FvdDesigner extends Application {
         menuUndoStack.push(edit);
     }
 
+    /** DOCUMENT undo keys for every window that can change the TRACK
+     *  (v19.2, D227 — user rule: menu-local Ctrl+Z is for cosmetic /
+     *  settings menus only): the bound undo/redo combos route to the
+     *  GLOBAL history exactly as in the main window, and are consumed
+     *  before any TextField's own text-undo sees them. Idempotent per
+     *  scene; ride keys forwarded too. */
+    private final java.util.Set<Scene> docKeyScenes =
+        java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+    void installDocUndoKeys(Scene s) {
+        if (s == null || !docKeyScenes.add(s)) return;
+        s.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
+            if (matches("redo", e)) { editor.redo(); e.consume(); }
+            else if (matches("undo", e)) { editor.undo(); e.consume(); }
+        });
+        installViewKeys(s);
+    }
+
     /** Route Ctrl+Z / Ctrl+Shift+Z inside a menu popup or dialog scene to
-     *  the menu-local history (idempotent per scene). */
+     *  the menu-local history (idempotent per scene) — COSMETIC/settings
+     *  menus only since D227 (View menu, Snapping, colors, Export). */
     void installMenuUndoKeys(Scene s) {
         if (s == null || !menuKeyScenes.add(s)) return;
         s.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
@@ -2421,11 +3161,12 @@ public class FvdDesigner extends Application {
         sp.valueProperty().addListener((obs, o, v) -> {
             if (v == null) return;     // null transient hardening (D212)
             if (docApplying) return;   // undo/redo writes the display only
-            if (!menuApplying) {
-                editor.pushUndoSnapshot();
-                pushMenuEdit(() -> sp.getValueFactory().setValue(o),
-                             () -> sp.getValueFactory().setValue(v));
-            }
+            // ONE history only (D227): a document spinner used to ALSO
+            // push a menu-local edit — a menu Ctrl+Z replayed the
+            // spinner (menuApplying, no doc push) while the doc stack
+            // kept its snapshot, so the next main-window Ctrl+Z re-
+            // applied a state already current ("undo did nothing")
+            editor.pushUndoSnapshot();
             apply.accept(v);
             markDirty();
             rebuildTrack();
@@ -2488,23 +3229,29 @@ public class FvdDesigner extends Application {
         startXSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.x, 1));
         startXSpinner.setPrefWidth(82);
         typable(startXSpinner, true);
-        wireDocSpinner(startXSpinner, v -> activePieceRef().x = v);
+        // placement writes route through placementEdit (v19.0, D221):
+        // an orientation-RIGID piece carries its downstream chain
+        wireDocSpinner(startXSpinner, v -> placementEdit(
+            activePieceRef(), () -> activePieceRef().x = v));
         startYSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.y, 1));
         startYSpinner.setPrefWidth(82);
         typable(startYSpinner, true);
-        wireDocSpinner(startYSpinner, v -> activePieceRef().y = v);
+        wireDocSpinner(startYSpinner, v -> placementEdit(
+            activePieceRef(), () -> activePieceRef().y = v));
         startZSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-500, 500, piece0.z, 1));
         startZSpinner.setPrefWidth(82);
         typable(startZSpinner, true);
-        wireDocSpinner(startZSpinner, v -> activePieceRef().z = v);
+        wireDocSpinner(startZSpinner, v -> placementEdit(
+            activePieceRef(), () -> activePieceRef().z = v));
         // yaw ANGLES read/type LEFT-positive since v18.15 (D186,
         // pairing with the D185 rates): the UI negates at this
         // boundary — the stored yawDeg (and the file) keep the
         // historic internal sense, so nothing ever moves
-        yawSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, -piece0.yawDeg, 5));
+        yawSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360, -piece0.dispYaw(), 5));
         yawSpinner.setPrefWidth(82);   // the clipped-"3" report (D191)
         typable(yawSpinner, true);
-        wireDocSpinner(yawSpinner, v -> activePieceRef().yawDeg = -v);
+        wireDocSpinner(yawSpinner, v -> placementEdit(
+            activePieceRef(), () -> activePieceRef().setDispYaw(-v)));
         startSpeedSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(1, 100, coaster.v0, 1));
         startSpeedSpinner.setPrefWidth(82);
         typable(startSpeedSpinner, false);
@@ -2556,11 +3303,11 @@ public class FvdDesigner extends Application {
         yawLbl.setTextFill(Color.WHITE);
         Label speedLbl = new Label("Start speed (m/s)");
         speedLbl.setTextFill(Color.BLACK);
-        HBox heartRow = new HBox(8, heartLbl, heartSpinner);
+        heartRow = new HBox(8, heartLbl, heartSpinner);
         heartRow.setAlignment(Pos.CENTER_LEFT);
-        HBox gaugeRow = new HBox(8, gaugeLbl, gaugeSpinner);
+        gaugeRow = new HBox(8, gaugeLbl, gaugeSpinner);
         gaugeRow.setAlignment(Pos.CENTER_LEFT);
-        HBox tieRow = new HBox(8, tieLbl, tieSpinner);
+        tieRow = new HBox(8, tieLbl, tieSpinner);
         tieRow.setAlignment(Pos.CENTER_LEFT);
         // gray-out explainers (v16.13): a bridged-in piece's owned
         // values say to edit through the BRIDGE instead
@@ -2584,18 +3331,22 @@ public class FvdDesigner extends Application {
         // shared state, whichever panel flips them
         Label tiltLbl = new Label("Piece pitch/roll (°)");
         tiltLbl.setTextFill(Color.WHITE);   // dark popup (v17.9)
+        // ABSOLUTE boxes (D224): canonical elevation ±90 / bank ±360
+        // of the real entry; writes route through the D222 lock
         piecePitchSpinner = new Spinner<>(
-            new SpinnerValueFactory.DoubleSpinnerValueFactory(-85, 85,
-                piece0.pitchDeg, 1));
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(-90, 90,
+                piece0.dispPitch(), 1));
         piecePitchSpinner.setPrefWidth(80);
         typable(piecePitchSpinner, true);
-        wireDocSpinner(piecePitchSpinner, v -> activePieceRef().pitchDeg = v);
+        wireDocSpinner(piecePitchSpinner, v -> placementEdit(
+            activePieceRef(), () -> activePieceRef().setDispPitch(v, true)));
         pieceRollSpinner = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(-360, 360,
-                piece0.rollDeg, 1));
+                piece0.dispRoll(), 1));
         pieceRollSpinner.setPrefWidth(80);
         typable(pieceRollSpinner, true);
-        wireDocSpinner(pieceRollSpinner, v -> activePieceRef().rollDeg = v);
+        wireDocSpinner(pieceRollSpinner, v -> placementEdit(
+            activePieceRef(), () -> activePieceRef().setDispRoll(v, true)));
         pieceLockPitchBtn = placementLockBtn(1);
         pieceLockRollBtn = placementLockBtn(2);
         String tiltGray = "Locked — open the padlock to edit. When a "
@@ -2606,6 +3357,13 @@ public class FvdDesigner extends Application {
             pieceLockPitchBtn, GraphEditor.grayHint(piecePitchSpinner, tiltGray),
             pieceLockRollBtn, GraphEditor.grayHint(pieceRollSpinner, tiltGray));
         tiltPlacementRow.setAlignment(Pos.CENTER_LEFT);
+        // D222: read-only DESIGN-orientation readout, shown just
+        // below the spinners only while design ≠ real
+        designTiltLbl = new Label();
+        designTiltLbl.setTextFill(Color.rgb(200, 205, 215));
+        designTiltLbl.setStyle("-fx-font-size: 10px;");
+        designTiltLbl.setVisible(false);
+        designTiltLbl.setManaged(false);
 
         // bridge placement panel (v13.5): while a live bridge is
         // active, the Placement dropdown edits the NEXT piece through
@@ -2691,7 +3449,7 @@ public class FvdDesigner extends Application {
         Label bPitchLbl = new Label("Next piece pitch (°)");
         bPitchLbl.setTextFill(Color.WHITE);   // dark popup
         bridgePitchSpinner = new Spinner<>(
-            new SpinnerValueFactory.DoubleSpinnerValueFactory(-85, 85, 0, 1));
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(-90, 90, 0, 1));
         bridgePitchSpinner.setPrefWidth(90);
         typable(bridgePitchSpinner, true);
         bridgePitchSpinner.valueProperty().addListener((obs, o, v) -> {
@@ -2729,7 +3487,7 @@ public class FvdDesigner extends Application {
         // friction rows (v17.0): tooltips carry the model
         Label fricRollLbl = new Label("Friction (m/m)");
         fricRollLbl.setTextFill(Color.BLACK);
-        HBox fricRollRow = new HBox(8, fricRollLbl, fricRollSpinner);
+        fricRollRow = new HBox(8, fricRollLbl, fricRollSpinner);
         fricRollRow.setAlignment(Pos.CENTER_LEFT);
         Tooltip.install(fricRollRow, new Tooltip(
             "Rolling/mechanical losses: constant deceleration μ·g per\n"
@@ -2738,7 +3496,7 @@ public class FvdDesigner extends Application {
             + "coaster — design profiles and the true ride both shed."));
         Label fricAirLbl = new Label("Air resistance (m⁻¹)");
         fricAirLbl.setTextFill(Color.BLACK);
-        HBox fricAirRow = new HBox(8, fricAirLbl, fricAirSpinner);
+        fricAirRow = new HBox(8, fricAirLbl, fricAirSpinner);
         fricAirRow.setAlignment(Pos.CENTER_LEFT);
         Tooltip.install(fricAirRow, new Tooltip(
             "Air resistance: deceleration k·v² with k in 1/m.\n"
@@ -2759,40 +3517,23 @@ public class FvdDesigner extends Application {
         reverseItem = new MenuItem("Reverse piece (rebuild backward)…");
         reverseItem.setOnAction(e -> editor.reverseActivePiece());
 
-        coasterMenu = new Menu("Coaster", null,
-            new CustomMenuItem(heartRow, false),
-            new CustomMenuItem(gaugeRow, false),
-            new CustomMenuItem(tieRow, false),
-            new CustomMenuItem(fricRollRow, false),
-            new CustomMenuItem(fricAirRow, false));
-        // "Rail Color" section (v17.10, user spec — moved here from
-        // the View menu): Solid (inline swatch) | Normal Force, with
-        // "G-Force Colors…" below while Normal Force is selected
-        coasterMenu.getItems().addAll(dialogs.railColorItems());
-        // COASTER STATISTICS submenu (v17.11, user spec — the five
-        // numbers that lived on the stats bar; refreshed per open)
-        Label[] statRows = new Label[5];
-        Menu statsMenu = new Menu("Coaster Statistics");
-        for (int i = 0; i < 5; i++) {
-            statRows[i] = new Label();
-            statRows[i].setTextFill(Color.BLACK);
-            statsMenu.getItems().add(new CustomMenuItem(statRows[i], false));
-        }
-        coasterMenu.getItems().addAll(new SeparatorMenuItem(), statsMenu);
-        // menu-local undo/redo lives exactly as long as the menu is open;
-        // the popup has its own Scene, so the Ctrl+Z filter goes there
-        coasterMenu.setOnShown(e -> {
-            beginMenuSession();
-            installMenuUndoKeys(heartRow.getScene());
-            dialogs.railMenuSync.run();   // Load/New re-sync (v16.16)
-            statRows[0].setText(String.format("Ride time: %.1f s", statRideTime));
-            statRows[1].setText(String.format("Track length: %.0f m", statTrackLen));
-            statRows[2].setText(String.format("Height: %.1f to %.1f m", statMinY, statMaxY));
-            statRows[3].setText(String.format("Top speed: %.0f km/h", statTopV * 3.6));
-            statRows[4].setText(String.format("Vertical G: %.1f to %.1f", statMinGv, statMaxGv));
-        });
-        coasterMenu.setOnHidden(e -> endMenuSession());
-
+        // RESTRUCTURED Coaster menu (v19.3, D232 — user spec): the
+        // coaster SELECTOR, then Coaster Options… (rename + friction
+        // + statistics), New Coaster…, Delete Coaster, then Rail
+        // Settings… (rail color + heart + gauge + tie spacing). The
+        // settings ROWS built above re-parent into those dialogs;
+        // dialogs.railSettingsContent() assigns the rail-mode radios.
+        coasterMenu = new Menu("Coaster");
+        dialogs.railSettingsContent();   // creates + assigns the radios
+        // POPULATE NOW and refresh on every showing (v19.5, D234 —
+        // THE "Coaster menu does nothing" bug: a JavaFX Menu with
+        // ZERO items never opens its popup at all — the very trick
+        // the Help menu below exploits — so the old onShown-only
+        // rebuild could never fire: empty → never shows → never
+        // populates. onShowing fires BEFORE display, so the list is
+        // fresh each open.)
+        coasterMenu.setOnShowing(e -> rebuildCoasterMenu());
+        rebuildCoasterMenu();
         // --- Help: clicking the menu itself opens the dialog directly
         // (a Label graphic takes the click; the empty menu never opens) ---
         Menu helpMenu = new Menu();
@@ -2809,6 +3550,123 @@ public class FvdDesigner extends Application {
 
 
     // POV/fly cameras, meshes, grid: Viewport3D.java (D54).
+
+    /** Rebuild the RESTRUCTURED Coaster menu (v19.3, D232 — replaces
+     *  the D230 list rows): coaster SELECTOR dropdown · Coaster
+     *  Options… · New Coaster… · Delete Coaster · Rail Settings….
+     *  Everything left-aligned; global Ctrl+Z (D227) via the row's
+     *  scene once shown. */
+    private void rebuildCoasterMenu() {
+        // the SELECTOR is a ChoiceBox row again (v19.5, D234 — user
+        // spec; D233's submenu replacement rested on a misdiagnosis:
+        // the menu itself never opened because it had NO ITEMS until
+        // onShown, see buildMenuBar. A ChoiceBox opens fine inside a
+        // menu popup — its dropdown is a child popup of the menu's
+        // window, Robot-verified in the -Dfvd.devmenu hook —
+        // hideOnClick(false) keeps the row from dismissing the menu;
+        // a pick hides it deliberately.)
+        Label pickLbl = new Label("Coaster:");
+        pickLbl.setTextFill(Color.BLACK);
+        ChoiceBox<String> pick = new ChoiceBox<>();
+        devMenuPick = pick;
+        for (Coaster c : coasters) pick.getItems().add(c.name);
+        if (hasCoaster()) pick.getSelectionModel().select(activeCoaster);
+        pick.setDisable(coasters.isEmpty());
+        pick.setPrefWidth(160);
+        // listener attached AFTER the initial select — rebuilds never
+        // re-enter switchCoaster
+        pick.getSelectionModel().selectedIndexProperty()
+            .addListener((o, ov, nv) -> {
+                int idx = nv.intValue();
+                if (idx < 0 || idx == activeCoaster) return;
+                coasterMenu.hide();
+                switchCoaster(idx);
+            });
+        HBox pickRow = new HBox(8, pickLbl, pick);
+        pickRow.setAlignment(Pos.CENTER_LEFT);
+        CustomMenuItem pickItem = new CustomMenuItem(pickRow, false);
+
+        MenuItem options = new MenuItem("Coaster Options…");
+        options.setDisable(!hasCoaster());
+        options.setOnAction(ev -> showCoasterOptionsDialog());
+        MenuItem add = new MenuItem("New Coaster…");
+        add.setOnAction(ev -> openNewCoasterWizard(true));
+        MenuItem del = new MenuItem("Delete Coaster");
+        del.setDisable(!hasCoaster());
+        del.setOnAction(ev -> {
+            // CONFIRM by name (D232, user spec)
+            Alert a = new Alert(Alert.AlertType.CONFIRMATION,
+                "Are you sure you want to delete \"" + coaster.name + "\"?",
+                new ButtonType("Delete", ButtonBar.ButtonData.YES),
+                ButtonType.CANCEL);
+            a.initOwner(stage);
+            a.setTitle("Delete coaster");
+            a.setHeaderText(null);
+            if (a.showAndWait().orElse(ButtonType.CANCEL)
+                    .getButtonData() == ButtonBar.ButtonData.YES) {
+                editor.pushUndoSnapshot();
+                deleteActiveCoaster();
+            }
+        });
+        MenuItem rail = new MenuItem("Rail Settings…");
+        rail.setOnAction(ev -> dialogs.showRailSettingsDialog());
+        coasterMenu.getItems().setAll(pickItem, options, add, del,
+            new SeparatorMenuItem(), rail);
+        // the D227 undo rule needs the popup's scene — available only
+        // once a row is attached; runLater lands after the show
+        javafx.application.Platform.runLater(() -> {
+            if (options.getStyleableNode() != null
+                    && options.getStyleableNode().getScene() != null) {
+                installDocUndoKeys(options.getStyleableNode().getScene());
+            }
+        });
+    }
+
+    /** COASTER OPTIONS dialog (v19.3, D232): rename + the two
+     *  friction rows + the statistics block — modeless, global
+     *  Ctrl+Z. */
+    private Stage coasterOptionsDlg;
+
+    void showCoasterOptionsDialog() {
+        if (!hasCoaster()) return;
+        if (coasterOptionsDlg != null) coasterOptionsDlg.close();
+        Stage dlg = new Stage();
+        coasterOptionsDlg = dlg;
+        dlg.initOwner(stage);
+        dlg.setTitle("Coaster Options");
+        TextField name = new TextField(coaster.name);
+        name.setPrefColumnCount(14);
+        Runnable commitName = () -> {
+            if (!name.getText().isBlank()
+                    && !name.getText().trim().equals(coaster.name)) {
+                renameActiveCoaster(name.getText());
+            }
+        };
+        name.setOnAction(e -> commitName.run());
+        name.focusedProperty().addListener((o, was, is) -> {
+            if (!is) commitName.run();
+        });
+        HBox nameRow = new HBox(8, new Label("Name"), name);
+        nameRow.setAlignment(Pos.CENTER_LEFT);
+        Label statsHead = new Label("Statistics");
+        statsHead.setStyle("-fx-font-weight: bold;");
+        Label stats = new Label(String.format(Locale.US,
+            "Ride time: %.1f s%nTrack length: %.0f m%n"
+            + "Height: %.1f to %.1f m%nTop speed: %.0f km/h%n"
+            + "Vertical G: %.1f to %.1f",
+            statRideTime, statTrackLen, statMinY, statMaxY,
+            statTopV * 3.6, statMinGv, statMaxGv));
+        VBox box = new VBox(8, nameRow, fricRollRow, fricAirRow,
+            new javafx.scene.control.Separator(), statsHead, stats);
+        box.setPadding(new Insets(14));
+        Scene sc = new Scene(box);
+        dlg.setScene(sc);
+        dlg.setOnHidden(e -> {
+            if (coasterOptionsDlg == dlg) coasterOptionsDlg = null;
+        });
+        dlg.show();
+        installDocUndoKeys(sc);   // friction/rename shape the track (D227)
+    }
 
 
     // (the stats-bar shortcut hint is GONE, v17.11 — user spec: the
@@ -2840,9 +3698,13 @@ public class FvdDesigner extends Application {
         // destroy the user's file (D200 verify round)
         settleIfPending();
         try (PrintWriter out = new PrintWriter(f, "UTF-8")) {
-            // FVDD3 via DesignIO (Phase 1, D50) — cosmetics travel as
-            // plain doubles so the writer stays JavaFX-free
-            DesignIO.save(coaster, uiCosmetics(), out);
+            // FVDD3/FVDD4 via DesignIO (Phase 1, D50; multi-coaster
+            // v19.2 D230) — cosmetics travel as plain doubles so the
+            // writer stays JavaFX-free; every coaster with its look
+            stashActiveLook();
+            List<DesignIO.Cosmetics> looks = new ArrayList<>();
+            for (Coaster c : coasters) looks.add(lookOf(c));
+            DesignIO.saveAll(coasters, looks, uiCosmetics().camera(), out);
             currentFile = f;
             dirty = false;
             updateTitle();
@@ -2870,12 +3732,134 @@ public class FvdDesigner extends Application {
         return r == dont;
     }
 
-    /** File > New (Ctrl+N): offer to save, then start a fresh document —
-     *  one NEW_START_LEN-second force/time section holding 1 g / 0 / 0,
-     *  default settings, empty history, "Untitled" title. */
+    /** File > New (Ctrl+N): offer to save, then start a fresh EMPTY
+     *  document and open the START SCREEN for its first coaster (v19.2,
+     *  D230/D231 — the document may legally stay empty if the wizard is
+     *  cancelled): default look, empty history, "Untitled" title. */
     private void newDesign() {
         if (!confirmSaveDiscard()) return;
         docApplying = true;   // spinners get set programmatically below
+        editor.hideStartPanel();
+        wizardState = null;
+        wizardOpen = false;
+        wizardPanel = null;
+        coasters.clear();
+        otherCompiles.clear();
+        coaster = emptyCoaster;
+        activeCoaster = 0;
+        docGen++;   // fresh piece objects (v18.33, D205)
+        applyLook(DesignIO.Cosmetics.defaults());
+        startXSpinner.getValueFactory().setValue(0.0);
+        startYSpinner.getValueFactory().setValue(NEW_START_Y);
+        startZSpinner.getValueFactory().setValue(0.0);
+        yawSpinner.getValueFactory().setValue(0.0);
+        docApplying = false;
+
+        editor.clearHistory();
+        editor.clearSelection();
+        currentFile = null;
+        clearResultingPicks();   // opens start overlay-free (v18.10)
+        rebuildTrack();
+        editor.refresh();
+        // the first coaster's wizard (no undo push: the history is empty
+        // — Ctrl+Z on a brand-new document has nothing to return to)
+        openNewCoasterWizard(false);
+        editor.clearHistory();
+        dirty = false;
+        updateTitle();
+        statsLabel.setText("New design");
+    }
+    // -----------------------------------------------------------------
+    // START WIZARD glue (v19.1, D226): the StartPanel's model writes
+    // funnel through here so undo/dirty/spinner sync stay in one place
+    // -----------------------------------------------------------------
+
+    /** Show the start screen: FLOATING = a new detached piece in the
+     *  active coaster; NEW_COASTER = a new coaster in the document. */
+    void showStartWizard(StartPanel.Mode mode) {
+        if (mode == StartPanel.Mode.FLOATING) openFloatingWizard();
+        else openNewCoasterWizard(true);
+    }
+
+    /** Compiled arc length of piece p in meters (its spans' sLen sum;
+     *  NaN without a compile). */
+    double pieceLengthM(int p) {
+        if (sectionSpans == null || p < 0 || p >= coaster.pieces.size()) {
+            return Double.NaN;
+        }
+        int b = 0;
+        for (int q = 0; q < p; q++) b += coaster.pieces.get(q).sections.size();
+        int ns = coaster.pieces.get(p).sections.size();
+        if (b + ns > sectionSpans.size()) return Double.NaN;
+        double len = 0;
+        for (int k = 0; k < ns; k++) len += sectionSpans.get(b + k).sLen();
+        return len;
+    }
+
+    /** "123.4 m" — every piece label wears its LENGTH since v19.2
+     *  (D229, user spec — was the section count). */
+    String pieceLengthLabel(int p) {
+        double len = pieceLengthM(p);
+        return Double.isNaN(len) ? "? m"
+            : String.format(Locale.US, "%.1f m", len);
+    }
+
+    /** Same for any coaster + its spans (the export dialog's inactive
+     *  coasters). */
+    String pieceLengthLabel(Coaster c, List<TrackCompiler.Span> spans, int p) {
+        if (spans == null || p < 0 || p >= c.pieces.size()) return "? m";
+        int b = 0;
+        for (int q = 0; q < p; q++) b += c.pieces.get(q).sections.size();
+        int ns = c.pieces.get(p).sections.size();
+        if (b + ns > spans.size()) return "? m";
+        double len = 0;
+        for (int k = 0; k < ns; k++) len += spans.get(b + k).sLen();
+        return String.format(Locale.US, "%.1f m", len);
+    }
+
+    /** {x, y, z, reportedYaw, trueV} 5 m past the ACTIVE piece's end
+     *  along its heading (level) — the floating wizard's default; null
+     *  without a compile. */
+    double[] activePieceEnd() {
+        if (lastSamples == null || sectionSpans == null) return null;
+        int p = editor.activePiece();
+        if (p < 0 || p >= coaster.pieces.size()) return null;
+        int b = 0;
+        for (int q = 0; q < p; q++) b += coaster.pieces.get(q).sections.size();
+        int ns = coaster.pieces.get(p).sections.size();
+        if (ns == 0 || b + ns - 1 >= sectionSpans.size()) return null;
+        int i1 = sectionSpans.get(b + ns - 1).i1();
+        if (i1 < 0 || i1 >= lastSamples.size()) return null;
+        FVDIntegrator.Sample sm = lastSamples.get(i1);
+        Vec3 t = sm.T();
+        double hl = Math.hypot(t.x(), t.z());
+        double hx = hl > 1e-9 ? t.x() / hl : 1, hz = hl > 1e-9 ? t.z() / hl : 0;
+        double heading = Math.toDegrees(Math.atan2(-hz, hx));   // internal
+        double v = trueV != null && i1 < trueV.length ? trueV[i1] : sm.v();
+        return new double[]{ sm.pos().x() + 5 * hx, sm.pos().y(),
+            sm.pos().z() + 5 * hz, -heading, v };
+    }
+
+    // ---- the START WIZARD's document model (v19.2, D231) ----
+    // The wizard's target piece EXISTS from the moment the wizard opens
+    // (a placeholder 5 s force section, PENDING = invisible until the
+    // section type is picked); the WizardState rides the document undo
+    // (DocState.wizard), so Ctrl+Z right after opening removes the
+    // piece/coaster and every setting change is its own step.
+    // wizardOpen is SESSION state: false once the user pressed Done or
+    // Cancel — after that undo restores values but keeps the panel
+    // closed, unless it lands on a still-PENDING state (then the panel
+    // must return: an invisible piece with no way to pick would be a
+    // trap). The panel is bound to its target: it shows only while
+    // that coaster (and, for a floating piece, that piece) is active —
+    // select anything else and the normal graphs are back; return and
+    // the panel is as you left it.
+    WizardState wizardState;
+    boolean wizardOpen;
+    private StartPanel wizardPanel;
+
+    /** Placeholder for a pending piece: the classic 5 s / 1 g hold. */
+    private static ForceSection placeholderSection(double speed) {
         List<List<BezierBaker.Node>> nl = new ArrayList<>(3);
         for (int i = 0; i < 3; i++) {
             List<BezierBaker.Node> lane = new ArrayList<>(2);
@@ -2884,60 +3868,286 @@ public class FvdDesigner extends Application {
             BezierBaker.applyDefaultHandles(lane);
             nl.add(lane);
         }
-        coaster.pieces.clear();
-        docGen++;   // fresh piece objects (v18.33, D205)
+        return new ForceSection(nl, speed);
+    }
+
+    /** OPEN the wizard for a NEW COASTER (File > New's first coaster,
+     *  or Coaster > New coaster…): the coaster + its pending piece are
+     *  created NOW (one undo step, pushed by the caller when there is
+     *  history to keep). */
+    /** One wizard at a time: an open one takes the user back to its
+     *  target instead of stacking a second (its pending piece would
+     *  otherwise stay invisible forever). True = handled. */
+    private boolean focusOpenWizard() {
+        if (wizardState == null || wizardPiece() == null) return false;
+        if (wizardState.coasterIdx() != activeCoaster) {
+            switchCoaster(wizardState.coasterIdx());
+        }
+        if (wizardState.mode() == StartPanel.Mode.FLOATING.ordinal()) {
+            editor.setActivePiece(wizardState.pieceIdx());
+        }
+        wizardOpen = true;
+        syncWizardPanel();
+        statsLabel.setText("Finish or cancel the open start screen first");
+        return true;
+    }
+
+    void openNewCoasterWizard(boolean pushUndo) {
+        if (focusOpenWizard()) return;
+        if (pushUndo) editor.pushUndoSnapshot();
+        Coaster c = new Coaster();
+        c.name = freshCoasterName();
+        c.v0 = NEW_START_SPEED;
+        c.fricRoll = FRIC_ROLL_DEFAULT;
+        c.fricAir = FRIC_AIR_DEFAULT;
+        c.look = DesignIO.Cosmetics.defaults();
         TrackPiece piece = new TrackPiece(0, NEW_START_Y, 0, 0);
-        piece.sections.add(new ForceSection(nl, NEW_START_SPEED));
-        coaster.pieces.add(piece);
-        coaster.v0 = NEW_START_SPEED;
-        // NL2-like friction defaults for NEW documents (v18.0, D161):
-        // rolling 0.03 m/m, air 1.0e-4 m⁻¹. Old files keep whatever
-        // their `friction` line says (missing = 0 0, loss-free).
-        coaster.fricRoll = FRIC_ROLL_DEFAULT;
-        coaster.fricAir = FRIC_AIR_DEFAULT;
-
-        DesignIO.Cosmetics def = DesignIO.Cosmetics.defaults();
-        heartOffset = def.heart();
-        railGauge = def.gauge();
-        tieSpacing = def.tiespace();
-        railSolid = def.railSolid();
-        railColor = Color.color(def.railColor()[0], def.railColor()[1], def.railColor()[2]);
-        unflatten(def.gradColors(), gradColors);
-        unflatten(def.latColors(), latColors);
-        System.arraycopy(def.gradStops(), 0, gradStops, 0, gradStops.length);
-        System.arraycopy(def.latStops(), 0, latStops, 0, latStops.length);
-
-        heartSpinner.getValueFactory().setValue(heartOffset);
-        gaugeSpinner.getValueFactory().setValue(railGauge);
-        tieSpinner.getValueFactory().setValue(tieSpacing);
-        startXSpinner.getValueFactory().setValue(0.0);
-        startYSpinner.getValueFactory().setValue(NEW_START_Y);
-        startZSpinner.getValueFactory().setValue(0.0);
-        yawSpinner.getValueFactory().setValue(0.0);
-        startSpeedSpinner.getValueFactory().setValue(NEW_START_SPEED);
-        fricRollSpinner.getValueFactory().setValue(FRIC_ROLL_DEFAULT);
-        fricAirSpinner.getValueFactory().setValue(FRIC_AIR_DEFAULT);
-        (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
-        docApplying = false;
-
-        editor.clearHistory();
-        editor.resetSections();
-        editor.clearSelection();
-        updatePieceButton();
-        currentFile = null;
-        dirty = false;
-        updateTitle();
-        clearResultingPicks();   // opens start overlay-free (v18.10)
-        rebuildTrack();      // spans first (stale ones belong to the
-        editor.refresh();    // discarded document)
-        // STANDARD framing for a fresh document (v18.38, D210 — user
-        // spec: the fly view always starts in the same place with
-        // the track clearly in view; the shared coaster framing
-        // since v18.48, D220)
+        piece.sections.add(placeholderSection(NEW_START_SPEED));
+        c.pieces.add(piece);
+        addCoaster(c);
+        // Force/Geometric is PICKED BY DEFAULT since D232 — the
+        // placeholder 5 s force section IS that pick, so the track is
+        // visible from the first frame and Done always works
+        wizardState = new WizardState(StartPanel.Mode.NEW_COASTER.ordinal(),
+            activeCoaster, 0, true, false);
+        wizardOpen = true;
+        wizardPanel = null;
+        rebuildTrack();
+        editor.refresh();
+        syncWizardPanel();
         if (!viewports.isEmpty()) {
             viewports.get(0).applyCameraWorld(frameCoasterPose());
         }
-        statsLabel.setText("New design");
+    }
+
+    /** OPEN the wizard for a FLOATING piece in the active coaster. */
+    void openFloatingWizard() {
+        if (!hasCoaster()) return;
+        if (focusOpenWizard()) return;
+        editor.pushUndoSnapshot();
+        double[] end = activePieceEnd();
+        double x = 0, y = NEW_START_Y, z = 0, yaw = 0, v = NEW_START_SPEED;
+        if (end != null) {
+            x = end[0]; y = end[1]; z = end[2]; yaw = end[3];
+            v = Math.max(1, end[4]);
+        }
+        TrackPiece piece = new TrackPiece(x, y, z, 0);
+        wizardOrient(piece, yaw, 0, 0);
+        piece.sections.add(placeholderSection(v));
+        coaster.pieces.add(piece);
+        int idx = coaster.pieces.size() - 1;
+        markDirty();
+        wizardState = new WizardState(StartPanel.Mode.FLOATING.ordinal(),
+            activeCoaster, idx, true, false);   // default pick (D232)
+        wizardOpen = true;
+        wizardPanel = null;
+        editor.setActivePiece(idx);   // rebuilds
+        rebuildTrack();
+        editor.refresh();
+        syncWizardPanel();
+    }
+
+    /** Is (coasterIdx, pieceIdx) the wizard's still-PENDING piece?
+     *  (renders nothing) */
+    boolean isPendingPiece(int coasterIdx, int pieceIdx) {
+        return wizardState != null && !wizardState.picked()
+            && wizardState.coasterIdx() == coasterIdx
+            && wizardState.pieceIdx() == pieceIdx;
+    }
+
+    /** The wizard's piece, or null when it is gone/none. */
+    TrackPiece wizardPiece() {
+        if (wizardState == null) return null;
+        if (wizardState.coasterIdx() >= coasters.size()) return null;
+        Coaster c = coasters.get(wizardState.coasterIdx());
+        if (wizardState.pieceIdx() >= c.pieces.size()) return null;
+        return c.pieces.get(wizardState.pieceIdx());
+    }
+
+    Coaster wizardCoaster() {
+        if (wizardState == null || wizardState.coasterIdx() >= coasters.size()) {
+            return null;
+        }
+        return coasters.get(wizardState.coasterIdx());
+    }
+
+    /** Show/hide the wizard panel per the document + session state and
+     *  the current selection (call after every activation change and
+     *  every restore). */
+    void syncWizardPanel() {
+        if (editor == null) return;
+        boolean valid = wizardState != null && wizardPiece() != null;
+        if (valid && !wizardState.picked()) wizardOpen = true;   // the trap rule
+        boolean targetActive = valid && wizardState.coasterIdx() == activeCoaster
+            && (wizardState.mode() == StartPanel.Mode.NEW_COASTER.ordinal()
+                || editor.activePiece() == wizardState.pieceIdx());
+        if (!valid) {
+            wizardOpen = false;
+            wizardPanel = null;
+        }
+        boolean show = valid && wizardOpen && targetActive;
+        if (show) {
+            if (wizardPanel == null || !wizardPanel.targets(wizardState)) {
+                wizardPanel = new StartPanel(this, wizardState);
+            }
+            editor.showStartPanel(wizardPanel);
+            wizardPanel.syncFromModel();
+        } else {
+            editor.hideStartPanel();
+        }
+    }
+
+    /** Orientation as the wizard means it: yaw REPORTED (D186), pitch/
+     *  roll on BOTH tiers — the design frame, no lock conflict. */
+    private static void wizardOrient(TrackPiece p, double yaw,
+                                     double pitch, double roll) {
+        p.yawDeg = -yaw;
+        p.pitchDeg = pitch;
+        p.designPitchDeg = pitch;
+        p.rollDeg = roll;
+        p.designRollDeg = roll;
+    }
+
+    // ---- wizard edits (each = one undo step, pushed here) ----
+
+    void wizardPickType(boolean sc, Section sec) {
+        TrackPiece p = wizardPiece();
+        if (p == null) return;
+        editor.pushUndoSnapshot();
+        if (p.sections.isEmpty()) p.sections.add(sec);
+        else p.sections.set(0, sec);
+        wizardState = new WizardState(wizardState.mode(), wizardState.coasterIdx(),
+            wizardState.pieceIdx(), true, sc);
+        markDirty();
+        editor.repointActive();
+        rebuildTrack();
+        editor.refresh();
+    }
+
+    void wizardReplaceSection(Section sec) {
+        TrackPiece p = wizardPiece();
+        if (p == null) return;
+        editor.pushUndoSnapshot();
+        if (p.sections.isEmpty()) p.sections.add(sec);
+        else p.sections.set(0, sec);
+        markDirty();
+        editor.repointActive();
+        rebuildTrack();
+        editor.refresh();
+    }
+
+    void wizardPlace(double x, double y, double z,
+                     double yaw, double pitch, double roll) {
+        TrackPiece p = wizardPiece();
+        if (p == null) return;
+        editor.pushUndoSnapshot();
+        p.x = x;
+        p.y = y;
+        p.z = z;
+        wizardOrient(p, yaw, pitch, roll);
+        markDirty();
+        rebuildTrack();
+        syncPlacementSpinners();
+        editor.refresh();
+    }
+
+    void wizardSetSpeed(double speed) {
+        TrackPiece p = wizardPiece();
+        Coaster c = wizardCoaster();
+        if (p == null || c == null) return;
+        editor.pushUndoSnapshot();
+        if (!p.sections.isEmpty()) p.sections.get(0).vDesign(speed);
+        if (wizardState.mode() == StartPanel.Mode.NEW_COASTER.ordinal()) {
+            c.v0 = speed;
+            if (c == coaster) {
+                boolean was = docApplying;
+                docApplying = true;
+                startSpeedSpinner.getValueFactory().setValue(speed);
+                docApplying = was;
+            }
+        }
+        markDirty();
+        rebuildTrack();
+        editor.refresh();
+    }
+
+    void wizardSetFriction(double mu, double kair) {
+        Coaster c = wizardCoaster();
+        if (c == null) return;
+        editor.pushUndoSnapshot();
+        c.fricRoll = mu;
+        c.fricAir = kair;
+        if (c == coaster) {
+            boolean was = docApplying;
+            docApplying = true;
+            fricRollSpinner.getValueFactory().setValue(mu);
+            fricAirSpinner.getValueFactory().setValue(kair);
+            docApplying = was;
+        }
+        markDirty();
+        rebuildTrack();
+        editor.refresh();
+    }
+
+    void wizardSetName(String name) {
+        Coaster c = wizardCoaster();
+        if (c == null || name == null || name.isBlank()) return;
+        if (c.name.equals(name.trim())) return;
+        editor.pushUndoSnapshot();
+        c.name = name.trim();
+        markDirty();
+        updateTitle();
+    }
+
+    /** DONE: the piece/coaster stays; the panel closes for good
+     *  (session), the wizard record is cleared from the document. */
+    void wizardFinish() {
+        if (wizardState == null) return;
+        editor.pushUndoSnapshot();
+        wizardState = null;
+        wizardOpen = false;
+        wizardPanel = null;
+        editor.hideStartPanel();
+        rebuildTrack();
+        editor.refresh();
+        syncPlacementSpinners();
+        updatePieceButton();
+    }
+
+    /** CANCEL: the wizard's piece (or whole coaster) is removed — one
+     *  undo step, like every other wizard edit. */
+    void wizardCancel() {
+        if (wizardState == null) return;
+        editor.pushUndoSnapshot();
+        WizardState ws = wizardState;
+        wizardState = null;
+        wizardOpen = false;
+        wizardPanel = null;
+        editor.hideStartPanel();
+        if (ws.mode() == StartPanel.Mode.NEW_COASTER.ordinal()) {
+            if (ws.coasterIdx() < coasters.size()) {
+                if (ws.coasterIdx() != activeCoaster) switchCoasterForce(ws.coasterIdx());
+                deleteActiveCoaster();
+            }
+        } else if (ws.coasterIdx() < coasters.size()) {
+            Coaster c = coasters.get(ws.coasterIdx());
+            if (ws.pieceIdx() < c.pieces.size()) {
+                c.pieces.remove(ws.pieceIdx());
+                markDirty();
+                if (c == coaster) editor.resetSections();
+            }
+        }
+        rebuildTrack();
+        editor.refresh();
+        syncPlacementSpinners();
+        updatePieceButton();
+        syncNoCoasterPanel();
+    }
+
+    /** No-coaster panel sync (D230): the editor shows a placeholder
+     *  while the document has no coaster. */
+    void syncNoCoasterPanel() {
+        if (editor != null) editor.setNoCoaster(!hasCoaster());
     }
 
     /** Snapshot the UI-side per-coaster cosmetics for DesignIO. */
@@ -2979,44 +4189,51 @@ public class FvdDesigner extends Application {
             // flat files arrive as one piece holding one force section
             DesignIO.LoadResult r = DesignIO.load(in);
 
+            editor.hideStartPanel();   // a pending start screen dies (D226)
+            wizardState = null;
+            wizardOpen = false;
+            wizardPanel = null;
             editor.pushUndoSnapshot(); // loading is undoable
-            coaster.pieces.clear();
+            // MULTI-COASTER (D230): the file's coasters REPLACE the
+            // document; each keeps its look; the first becomes active
+            // (an empty FVDD4 file = an empty document, no exception)
+            coasters.clear();
+            otherCompiles.clear();
             docGen++;   // fresh piece objects (v18.33, D205)
-            coaster.pieces.addAll(r.coaster().pieces);
-            coaster.v0 = r.coaster().v0;
-            coaster.fricRoll = r.coaster().fricRoll;
-            coaster.fricAir = r.coaster().fricAir;
-            editor.resetSections();   // active section 0, lanes re-pointed
-
-            DesignIO.Cosmetics cos = r.cosmetics();
-            heartOffset = cos.heart();
-            railGauge = cos.gauge();
-            tieSpacing = cos.tiespace();
-            railSolid = cos.railSolid();
-            railColor = Color.color(cos.railColor()[0], cos.railColor()[1], cos.railColor()[2]);
-            unflatten(cos.gradColors(), gradColors);
-            unflatten(cos.latColors(), latColors);
-            System.arraycopy(cos.gradStops(), 0, gradStops, 0, gradStops.length);
-            System.arraycopy(cos.latStops(), 0, latStops, 0, latStops.length);
-
-            heartSpinner.getValueFactory().setValue(heartOffset);
-            gaugeSpinner.getValueFactory().setValue(railGauge);
-            tieSpinner.getValueFactory().setValue(tieSpacing);
-            startSpeedSpinner.getValueFactory().setValue(coaster.v0);
-            fricRollSpinner.getValueFactory().setValue(coaster.fricRoll);
-            fricAirSpinner.getValueFactory().setValue(coaster.fricAir);
+            for (int i = 0; i < r.coasters().size(); i++) {
+                Coaster c = r.coasters().get(i);
+                c.look = i < r.looks().size() ? r.looks().get(i)
+                                              : DesignIO.Cosmetics.defaults();
+                coasters.add(c);
+            }
+            if (coasters.isEmpty()) {
+                coaster = emptyCoaster;
+                activeCoaster = 0;
+                applyLook(DesignIO.Cosmetics.defaults());
+            } else {
+                activeCoaster = 0;
+                coaster = coasters.get(0);
+                applyLook(lookOf(coaster));
+                boolean was = docApplying;
+                docApplying = true;
+                startSpeedSpinner.getValueFactory().setValue(coaster.v0);
+                fricRollSpinner.getValueFactory().setValue(coaster.fricRoll);
+                fricAirSpinner.getValueFactory().setValue(coaster.fricAir);
+                docApplying = was;
+                editor.resetSections();   // active section 0, lanes re-pointed
+            }
             syncPlacementSpinners();   // active piece (0 after reset)
             updatePieceButton();
-            (railSolid ? solidModeItem : gradientModeItem).setSelected(true);
             editor.clearSelection();
             clearResultingPicks();   // opens start overlay-free (v18.10)
             rebuildTrack();      // spans before the first graph layout:
             editor.refresh();    // s/c strip widths come from the compile
+            syncNoCoasterPanel();
             // the saved camera pose returns (v18.38, D210 — after the
             // rebuild so the pane's world offsets are current); files
             // without a camera line leave the view where it is
-            if (cos.camera() != null && !viewports.isEmpty()) {
-                viewports.get(0).applyCameraWorld(cos.camera());
+            if (r.camera() != null && !viewports.isEmpty()) {
+                viewports.get(0).applyCameraWorld(r.camera());
             }
             currentFile = f;
             // a FAIL-SOFT load (v18.44, D216) repaired the file:
@@ -3086,16 +4303,107 @@ public class FvdDesigner extends Application {
         segSp.setPrefWidth(80);
         dialogs.wireOptionSpinner(segSp, settings::setNl2SegLen);
 
+        // COASTER picker (D230): a multi-coaster document exports one
+        // coaster at a time — the active one by default; an inactive
+        // one uses its cached compile
+        final Coaster[] expC = { coaster };
+        final List<FVDIntegrator.Sample>[] expSamples = new List[]{ lastSamples };
+        final List<TrackCompiler.Span>[] expSpans = new List[]{ sectionSpans };
+        ChoiceBox<String> coasterBox = new ChoiceBox<>();
+        for (Coaster c : coasters) coasterBox.getItems().add(c.name);
+        coasterBox.getSelectionModel().select(Math.max(0, activeCoaster));
+        coasterBox.setFocusTraversable(false);
+        HBox coasterRow = new HBox(8, new Label("Coaster:"), coasterBox);
+        coasterRow.setAlignment(Pos.CENTER_LEFT);
+        coasterRow.setVisible(coasters.size() > 1);
+        coasterRow.setManaged(coasters.size() > 1);
+
+        // TRACK PIECE picker (D223, user spec): "Whole track" or one
+        // piece — a piece exports its own compiled sample range (its
+        // sections incl. a trailing bridge). Hidden for one-piece docs.
+        ChoiceBox<String> pieceBox = new ChoiceBox<>();
+        pieceBox.setFocusTraversable(false);
+        HBox pieceRow = new HBox(8, new Label("Track piece:"), pieceBox);
+        pieceRow.setAlignment(Pos.CENTER_LEFT);
+        Runnable fillPieces = () -> {
+            pieceBox.getItems().clear();
+            pieceBox.getItems().add("Whole track");
+            int np = expC[0].pieces.size();
+            for (int p = 0; p < np; p++) {
+                pieceBox.getItems().add(String.format(Locale.US,
+                    "Piece %d/%d  (%s)", p + 1, np,
+                    pieceLengthLabel(expC[0], expSpans[0], p)));
+            }
+            pieceBox.getSelectionModel().select(0);
+            pieceRow.setVisible(np > 1);
+            pieceRow.setManaged(np > 1);
+        };
+        fillPieces.run();
+        coasterBox.getSelectionModel().selectedIndexProperty().addListener((o, a, b) -> {
+            int i = b.intValue();
+            if (i < 0 || i >= coasters.size()) return;
+            Coaster c = coasters.get(i);
+            expC[0] = c;
+            if (c == coaster) {
+                expSamples[0] = lastSamples;
+                expSpans[0] = sectionSpans;
+            } else {
+                TrackCompiler.Result r = compiledFor(c);
+                expSamples[0] = r != null ? r.samples() : null;
+                expSpans[0] = r != null ? r.spans() : null;
+            }
+            fillPieces.run();
+        });
+
         Button exportBtn = new Button("Export…");
         exportBtn.setDefaultButton(true);
         exportBtn.setOnAction(e -> {
             boolean elem = elemBtn.isSelected();
+            int pick = pieceBox.getSelectionModel().getSelectedIndex() - 1;
+            List<FVDIntegrator.Sample> src = expSamples[0];
+            List<TrackCompiler.Span> spans = expSpans[0];
+            Coaster ec = expC[0];
+            if (src == null) {
+                statsLabel.setText("Export: that coaster has no track");
+                return;
+            }
+            String base = coasters.size() > 1
+                ? ec.name.replaceAll("[^A-Za-z0-9._-]+", "_") : "coaster";
+            if (pick >= 0 && pick < ec.pieces.size() && spans != null) {
+                int b = 0;
+                for (int q = 0; q < pick; q++) {
+                    b += ec.pieces.get(q).sections.size();
+                }
+                int ns = ec.pieces.get(pick).sections.size();
+                if (ns > 0 && b + ns - 1 < spans.size()) {
+                    int i0 = spans.get(b).i0();
+                    int i1 = spans.get(b + ns - 1).i1();
+                    // a continued piece's dropped seam sample (D84):
+                    // include it so the piece's spline starts ON its
+                    // entry
+                    if (i0 > 0 && b > 0
+                            && spans.get(b - 1).i1() == i0 - 1
+                            && !(ec.pieces.get(pick - 1).sections
+                                .isEmpty())) {
+                        i0--;
+                    }
+                    if (i1 > i0) {
+                        src = src.subList(i0, i1 + 1);
+                        base = base + "-piece" + (pick + 1);
+                    }
+                }
+            }
+            if (src.size() < 2) {
+                statsLabel.setText("Export: nothing to export for that piece");
+                return;
+            }
+            final List<FVDIntegrator.Sample> exportSrc = src;
             FileChooser fc = new FileChooser();
             fc.setTitle("Export");
             fc.getExtensionFilters().add(elem
                 ? new FileChooser.ExtensionFilter("NL2 element (*.nl2elem)", "*.nl2elem")
                 : new FileChooser.ExtensionFilter("NL2 track (*.csv)", "*.csv"));
-            fc.setInitialFileName(elem ? "coaster.nl2elem" : "coaster.csv");
+            fc.setInitialFileName(base + (elem ? ".nl2elem" : ".csv"));
             File f = fc.showSaveDialog(dlg);
             if (f == null) return;
             try (PrintWriter out = new PrintWriter(f, "UTF-8")) {
@@ -3103,14 +4411,14 @@ public class FvdDesigner extends Application {
                 double stepUsed, lenUsed;
                 if (elem) {
                     Nl2ElemExporter.Result r = Nl2ElemExporter.export(
-                        lastSamples, heartBtn.isSelected(), heartOffset, segSp.getValue());
+                        exportSrc, heartBtn.isSelected(), heartOffset, segSp.getValue());
                     out.print(r.xml());
                     points = r.points();
                     stepUsed = r.step();
                     lenUsed = r.length();
                 } else {
                     Nl2CsvExporter.Result r = Nl2CsvExporter.export(
-                        lastSamples, heartBtn.isSelected(), heartOffset, segSp.getValue());
+                        exportSrc, heartBtn.isSelected(), heartOffset, segSp.getValue());
                     out.print(r.csv());
                     points = r.points();
                     stepUsed = r.step();
@@ -3134,7 +4442,7 @@ public class FvdDesigner extends Application {
             dialogs.optionReset(() -> segSp.getValueFactory().setValue(AppSettings.NL2_SEGLEN_DEFAULT)));
         segRow.setAlignment(Pos.CENTER_LEFT);
 
-        VBox box = new VBox(8, new Label("Format:"), csvBtn, elemBtn,
+        VBox box = new VBox(8, coasterRow, pieceRow, new Label("Format:"), csvBtn, elemBtn,
             new Label("Track points:"), heartBtn, spineBtn,
             segRow, buttons);
         box.setPadding(new Insets(14));

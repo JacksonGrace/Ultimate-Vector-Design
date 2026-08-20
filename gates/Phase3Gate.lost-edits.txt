@@ -1,0 +1,93 @@
+UNPLACEABLE EDITS for Phase3Gate.java — recovered from the session transcripts but their
+anchor text was NOT present in the replayed file (the anchor came from a session whose
+transcript no longer exists). Listed chronologically; hand-merge if wanted.
+
+==============================================================================
+2026-07-22T02:11:20.544Z  python script (failed: python FAILED: AssertionError:  missing-reads=testing.md (tolerant also failed: AssertionError:  missing-reads=testing.m)
+==============================================================================
+import io
+# TESTING walkthrough #105
+p = r"C:\Users\jacks\OneDrive\Documents\AI Fun\coaster\docs\TESTING.md"
+src = io.open(p, encoding='utf-8').read()
+i = src.find("104. v17.11")
+j = src.find("\n\n", src.find("panel stays open (it used to select the next piece and close).", i))
+assert j > 0
+w = """
+
+105. v17.12 (D153) — his round-3 report: (a) SEAM SLOPES: on the
+    bridge file, sweep the length — at BOTH bridge seams the
+    G/rate graphs now continue on the neighbors' SLOPES as well as
+    their values (the graphs used to leave the seams at a slightly
+    wrong angle, worst on short bridges). (b) ATTACH DEFAULTS:
+    attach a floating piece whose pitch/roll padlocks are locked
+    (the default) — the seam settings open with Pitch and Roll
+    DISCONTINUOUS (red) holding the piece's angles, Yaw continuous;
+    unlock a padlock first and that axis arrives continuous
+    instead. Answer YES to the zero-distance-bridge prompt — the
+    seam's Discontinuous axes match the bridge's padlocks (default
+    pitch+roll locked = discontinuous, yaw unlocked = continuous).
+    (c) TRUE-FORCE RAILS: on a track with a ≠v section, the Normal
+    Force gradient colors match the G-force comb (the real ride),
+    not the design graphs; without conflicts nothing changes.
+"""
+src = src[:j] + w + src[j:]
+io.open(p, 'w', encoding='utf-8', newline='').write(src)
+print("TESTING ok")
+
+# Phase3Gate 53a/b message refresh
+p2 = r"C:\Users\jacks\AppData\Local\Temp\claude\C--Users-jacks-OneDrive-Documents-AI-Fun-coaster\98c4da8b-1417-4893-a47b-1623414e43fa\scratchpad\Phase3Gate.java"
+src = io.open(p2, encoding='utf-8').read()
+old = '''        check(worstKink < 0.1, String.format(
+            "53a roll-free march bridge: seam kinks at the shipped "
+            + "parabola-hump level (worst %.4f deg/m — the v17.10 "
+            + "zero-slope hump draft was REVERTED, D150)", worstKink));
+        check(worstSlope < 0.6, String.format(
+            "53b roll-free march bridge: seam slope breaks bounded "
+            + "(worst %.3f deg/m2, septic ref 0.50)", worstSlope));'''
+new = '''        check(worstKink < 0.1, String.format(
+            "53a roll-free march bridge: no seam value kinks (worst "
+            + "%.4f deg/m; zero-end-slope correction weight, D153)",
+            worstKink));
+        check(worstSlope < 0.6, String.format(
+            "53b roll-free march bridge: seam slope breaks at the "
+            + "septic floor (worst %.3f deg/m2, ref 0.50 — D153: the "
+            + "corrections carry zero end slope)", worstSlope));'''
+assert old in src
+io.open(p2, 'w', encoding='utf-8', newline='').write(src.replace(old, new, 1))
+print("gate msgs ok")
+
+==============================================================================
+2026-07-26T00:46:34.543Z  Edit
+==============================================================================
+OLD (anchor, not found):
+        // 55i: a min-flag LIFT rescues a stalling climb in BOTH passes
+        {
+            Coaster co = new Coaster();
+            co.v0 = 10;
+            TrackPiece p = new TrackPiece(0, 5, 0, 0);
+            List<List<BezierBaker.Node>> lanes = new ArrayList<>();
+            lanes.add(nodes(new double[][]{
+                {0, 2.4}, {1.5, 2.4}, {2.2, 1}, {12, 1} }));
+            lanes.add(nodes(new double[][]{ {0, 0}, {12, 0} }));
+            lanes.add(nodes(new double[][]{ {0, 0}, {12, 0} }));
+            ForceSection fs = new ForceSection(lanes, 10);
+            p.sections.add(fs);
+            co.pieces.add(p);
+
+NEW:
+        // 55i: a min-flag LIFT rescues a stalling climb in BOTH passes
+        // (GEO fixture: pitch up 60° then hold attitude — gravity
+        // can't bend a geo shape, so the bare climb MUST stall)
+        {
+            Coaster co = new Coaster();
+            co.v0 = 10;
+            TrackPiece p = new TrackPiece(0, 5, 0, 0);
+            List<List<BezierBaker.Node>> lanes = new ArrayList<>();
+            lanes.add(nodes(new double[][]{
+                {0, 40}, {1.5, 40}, {1.6, 0}, {12, 0} }));
+            lanes.add(nodes(new double[][]{ {0, 0}, {12, 0} }));
+            lanes.add(nodes(new double[][]{ {0, 0}, {12, 0} }));
+            GeoSection fs = new GeoSection(lanes, 10);
+            p.sections.add(fs);
+            co.pieces.add(p);
+

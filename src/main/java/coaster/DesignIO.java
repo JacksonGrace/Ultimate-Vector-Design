@@ -70,9 +70,26 @@ public final class DesignIO {
     /** warnings > 0 = the file was damaged and loaded FAIL-SOFT
      *  (v18.44, D216): that many lines were skipped or healed — the
      *  caller should tell the user and mark dirty so a re-save
-     *  writes a clean file. */
-    public record LoadResult(Coaster coaster, Cosmetics cosmetics,
-                             int warnings) {}
+     *  writes a clean file. MULTI-COASTER since v19.2 (D230): every
+     *  coaster in the file with its own look; the legacy accessors
+     *  coaster()/cosmetics() return the FIRST (or an empty coaster +
+     *  defaults for an empty document — FVDD4 files may hold none). */
+    public record LoadResult(List<Coaster> coasters, List<Cosmetics> looks,
+                             double[] camera, int warnings) {
+        public LoadResult(Coaster coaster, Cosmetics cosmetics, int warnings) {
+            this(new ArrayList<>(List.of(coaster)),
+                new ArrayList<>(List.of(cosmetics)), cosmetics.camera(), warnings);
+        }
+        public Coaster coaster() {
+            return coasters.isEmpty() ? new Coaster() : coasters.get(0);
+        }
+        public Cosmetics cosmetics() {
+            Cosmetics c = looks.isEmpty() ? Cosmetics.defaults() : looks.get(0);
+            return new Cosmetics(c.heart(), c.gauge(), c.tiespace(),
+                c.railSolid(), c.railColor(), c.gradColors(), c.gradStops(),
+                c.latColors(), c.latStops(), camera);
+        }
+    }
 
     /** Which of the SIX gradient slots the k-th stop of an n-stop
      *  file line lands in (v16.15): 6 = direct; 5 (v16.14) = cyan
@@ -87,8 +104,56 @@ public final class DesignIO {
     // Save (FVDD3 only)
     // =====================================================================
 
+    /** Single-coaster save (the classic entry; gates + one-coaster
+     *  documents): FVDD3, byte-compatible with every reader. */
     public static void save(Coaster c, Cosmetics cos, PrintWriter out) {
-        out.println("FVDD3");
+        List<Coaster> cs = new ArrayList<>();
+        cs.add(c);
+        List<Cosmetics> ls = new ArrayList<>();
+        ls.add(cos);
+        saveAll(cs, ls, cos.camera(), out);
+    }
+
+    /** MULTI-COASTER save (v19.2, D230): ONE coaster writes the classic
+     *  FVDD3 (plus a harmless `name` line); any other count writes
+     *  FVDD4 — `ncoasters N`, the camera, then one `coaster <name>`
+     *  block per coaster holding exactly the FVDD3 body. Zero coasters
+     *  is a legal FVDD4 document. Old readers refuse FVDD4 cleanly
+     *  ("not an FVD design file" no — the header still starts with
+     *  FVDD, so they would merge the blocks: hence the version bump is
+     *  only taken when a merge would be wrong). */
+    public static void saveAll(List<Coaster> coasters, List<Cosmetics> looks,
+                               double[] camera, PrintWriter out) {
+        boolean single = coasters.size() == 1;
+        out.println(single ? "FVDD3" : "FVDD4");
+        if (!single) {
+            out.printf(Locale.US, "ncoasters %d%n", coasters.size());
+            writeCamera(camera, out);
+        }
+        for (int i = 0; i < coasters.size(); i++) {
+            Coaster c = coasters.get(i);
+            Cosmetics cos = i < looks.size() && looks.get(i) != null
+                ? looks.get(i) : Cosmetics.defaults();
+            if (!single) out.println("coaster " + c.name.replace('\n', ' '));
+            else out.println("name " + c.name.replace('\n', ' '));
+            writeCoaster(c, cos, single ? camera : null, out);
+        }
+    }
+
+    private static void writeCamera(double[] camera, PrintWriter out) {
+        // the fly/orbit camera pose (v18.38, D210): pivot world
+        // x/y/z + yaw/pitch degrees + orbit distance — cosmetic
+        // precision (render-only); missing = the view stays put
+        if (camera != null && camera.length >= 6) {
+            out.printf(Locale.US,
+                "camera %.4f %.4f %.4f %.4f %.4f %.4f%n",
+                camera[0], camera[1], camera[2], camera[3], camera[4], camera[5]);
+        }
+    }
+
+    /** One coaster's FVDD3 body (global lines + piece blocks). */
+    private static void writeCoaster(Coaster c, Cosmetics cos, double[] camera,
+                                     PrintWriter out) {
         // GEOMETRY-FEEDING numbers write BIT-EXACTLY since v18.26
         // (D198, superseding D197's %.10f): Double.toString is the
         // shortest decimal that parses back to the SAME double, so
@@ -126,15 +191,7 @@ public final class DesignIO {
         StringBuilder ls = new StringBuilder("latstops");
         for (double v : cos.latStops()) ls.append(String.format(Locale.US, " %.4f", v));
         out.println(ls);
-        // the fly/orbit camera pose (v18.38, D210): pivot world
-        // x/y/z + yaw/pitch degrees + orbit distance — cosmetic
-        // precision (render-only); missing = the view stays put
-        if (cos.camera() != null && cos.camera().length >= 6) {
-            double[] cam = cos.camera();
-            out.printf(Locale.US,
-                "camera %.4f %.4f %.4f %.4f %.4f %.4f%n",
-                cam[0], cam[1], cam[2], cam[3], cam[4], cam[5]);
-        }
+        writeCamera(camera, out);   // single-coaster files: here (D210)
         for (TrackPiece piece : c.pieces) {
             // 5th-8th fields (v12.1): the piece's BASE ORIENTATION
             // quaternion (split/reversal anchor); missing = identity,
@@ -172,6 +229,16 @@ public final class DesignIO {
                     d(piece.canonOrient.y()), d(piece.canonOrient.z()));
             }
             out.println();
+            // TWO-TIER ORIENTATION (v19.0, D221/D222) — its own line
+            // (the piece line's fields 19-23 are conditional, so
+            // trailing positions are unsafe): `porient locked
+            // designPitch designRoll`. locked routes EDITS only; the
+            // design deltas feed generation (bit-exact, they shape
+            // the track). Missing = locked + (0,0) = every pre-v19
+            // file bitwise. Old readers ignore unknown lines (D50).
+            out.printf(Locale.US, "porient %d %s %s%n",
+                piece.shapeLocked ? 1 : 0,
+                d(piece.designPitchDeg), d(piece.designRollDeg));
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // bridge (v13.0): the FROZEN solve inputs — poses
@@ -324,7 +391,16 @@ public final class DesignIO {
         if (header == null || !header.startsWith("FVDD"))
             throw new IOException("not an FVD design file");
         boolean legacy1 = header.trim().equals("FVDD1");
-        boolean v3 = header.trim().equals("FVDD3");
+        boolean v4 = header.trim().equals("FVDD4");   // multi-coaster (D230)
+        boolean v3 = header.trim().equals("FVDD3") || v4;
+
+        // MULTI-COASTER (v19.2, D230): the per-coaster locals below
+        // describe the CURRENT block; a `coaster <name>` line finishes
+        // it into these lists and resets them. FVDD3/2/1 files are one
+        // implicit block.
+        List<Coaster> coasters = new ArrayList<>();
+        List<Cosmetics> looks = new ArrayList<>();
+        boolean touched = false;   // any per-coaster line seen in this block
 
         Coaster c = new Coaster();
         // cosmetics accumulate over defaults
@@ -366,7 +442,54 @@ public final class DesignIO {
             // post-load validation still refuses documents with
             // nothing left in them.
             try {
+            if (!parts[0].equals("coaster") && !parts[0].equals("ncoasters")
+                    && !parts[0].equals("camera")) {
+                touched = true;
+            }
             switch (parts[0]) {
+                // MULTI-COASTER block separator (v19.2, D230): finish
+                // the current block, start a fresh one named by the
+                // rest of the line; the first separator of a v4 file
+                // just NAMES the implicit (still empty) block
+                case "coaster" -> {
+                    String nm = line.trim().length() > 8
+                        ? line.trim().substring(8).trim() : "";
+                    if (touched) {
+                        if (!v3) {   // legacy: the flat file's start/v0
+                            TrackPiece p = c.pieces.get(0);
+                            p.x = start[0]; p.y = start[1]; p.z = start[2];
+                            ((ForceSection) p.sections.get(0)).vDesign = v0;
+                        }
+                        c.v0 = v0;
+                        int[] w = { 0 };
+                        finishCoaster(c, legacy1, w);
+                        warnings += w[0];
+                        if (!c.pieces.isEmpty()) {
+                            coasters.add(c);
+                            looks.add(new Cosmetics(heart, gauge, tie, solid,
+                                rail, grad, stops, latc, lats, null));
+                        }
+                        c = new Coaster();
+                        heart = def.heart(); gauge = def.gauge(); tie = def.tiespace();
+                        solid = def.railSolid();
+                        rail = def.railColor().clone();
+                        grad = def.gradColors().clone();
+                        stops = def.gradStops().clone();
+                        latc = def.latColors().clone();
+                        lats = def.latStops().clone();
+                        v0 = 26;
+                        curPiece = null; curSection = null; curLane = -1;
+                        curDLane = -1; curCtl = null;
+                        touched = false;
+                    }
+                    if (!nm.isEmpty()) c.name = nm;
+                }
+                case "ncoasters" -> { /* informational (D230) */ }
+                case "name" -> {   // single-coaster files carry it (D230)
+                    String nm = line.trim().length() > 5
+                        ? line.trim().substring(5).trim() : "";
+                    if (!nm.isEmpty()) c.name = nm;
+                }
                 case "v0" -> v0 = clamp(Double.parseDouble(parts[1]), 1, 100);
                 // Phase 3 friction (v17.0, D133); missing = 0 0
                 case "friction" -> {
@@ -481,6 +604,27 @@ public final class DesignIO {
                     c.pieces.add(curPiece);
                     curSection = null;
                     curLane = -1;
+                }
+                case "porient" -> {
+                    // two-tier orientation (v19.0, D221/D222):
+                    // `porient locked designPitch designRoll`;
+                    // missing line = locked + (0,0) = historic. A
+                    // 2-field line is the short-lived D221 interim
+                    // build (`porient mode dirty`): its mode 1
+                    // (LINKED) meant design == true — migrate by
+                    // copying the true deltas into the design tier.
+                    if (curPiece != null && parts.length > 3) {
+                        curPiece.shapeLocked = !parts[1].equals("0");
+                        curPiece.designPitchDeg =
+                            Double.parseDouble(parts[2]);
+                        curPiece.designRollDeg =
+                            Double.parseDouble(parts[3]);
+                    } else if (curPiece != null && parts.length > 2
+                            && parts[1].equals("1")) {
+                        curPiece.shapeLocked = false;
+                        curPiece.designPitchDeg = curPiece.pitchDeg;
+                        curPiece.designRollDeg = curPiece.rollDeg;
+                    }
                 }
                 case "section" -> {
                     if (curPiece == null) throw new IOException("section outside piece");
@@ -736,7 +880,35 @@ public final class DesignIO {
             ((ForceSection) p.sections.get(0)).vDesign = v0;
         }
         c.v0 = v0;
+        {
+            int[] w = { 0 };
+            finishCoaster(c, legacy1, w);
+            warnings += w[0];
+        }
+        // the last block joins (an empty trailing block of a v4 file —
+        // or an untouched one — is nothing); a v3 document with NOTHING
+        // left is the one clean refusal, and it must happen HERE,
+        // before the caller mutates the live document (D216); a v4
+        // document may legally hold ZERO coasters (D230)
+        if (!c.pieces.isEmpty()) {
+            coasters.add(c);
+            looks.add(new Cosmetics(heart, gauge, tie, solid,
+                rail, grad, stops, latc, lats, null));
+        } else if (!v4 && coasters.isEmpty()) {
+            throw new IOException("no track data in file"
+                + (warnings > 0 ? " (" + warnings + " damaged lines)" : ""));
+        }
+        return new LoadResult(coasters, looks, camera, warnings);
+    }
 
+    /** FAIL-SOFT validation of one coaster (v18.44, D216 — was a
+     *  whole-file refusal): a truncated tail leaves an element-less s/c
+     *  section or an empty lane block — DROP the former, HEAL the
+     *  latter (a 1-node lane is legal, D196; an empty one heals to a
+     *  held constant — 1 g on a force Gv lane so a damaged file still
+     *  loads as track, 0 elsewhere), count every repair, and drop
+     *  sectionless pieces. */
+    private static void finishCoaster(Coaster c, boolean legacy1, int[] warnings) {
         for (TrackPiece piece : c.pieces) {
             // FAIL-SOFT validation (v18.44, D216 — was a whole-file
             // refusal): a truncated tail leaves an element-less s/c
@@ -752,7 +924,7 @@ public final class DesignIO {
                 if (s instanceof StraightCurveSection sc) {
                     if (sc.elements.isEmpty()) {
                         it.remove();
-                        warnings++;
+                        warnings[0]++;
                     }
                     continue;
                 }
@@ -762,7 +934,7 @@ public final class DesignIO {
                     if (lane.isEmpty()) {
                         lane.add(new BezierBaker.Node(0,
                             li == 0 && fs instanceof ForceSection ? 1 : 0));
-                        warnings++;
+                        warnings[0]++;
                     }
                 }
                 if (fs.influenced()) {
@@ -791,20 +963,11 @@ public final class DesignIO {
                 }
             }
         }
-        // sectionless pieces drop; a document with NOTHING left is
-        // the one clean refusal — and it must happen HERE, before
-        // the caller mutates the live document (a zero-piece load
-        // used to crash the session's editor instead, D216)
+        // sectionless pieces drop (the caller decides what an empty
+        // coaster means — a v3 file refuses, a v4 file just has fewer)
         int before = c.pieces.size();
         c.pieces.removeIf(p -> p.sections.isEmpty());
-        warnings += before - c.pieces.size();
-        if (c.pieces.isEmpty()) {
-            throw new IOException("no track data in file"
-                + (warnings > 0 ? " (" + warnings + " damaged lines)" : ""));
-        }
-
-        return new LoadResult(c, new Cosmetics(heart, gauge, tie, solid,
-            rail, grad, stops, latc, lats, camera), warnings);
+        warnings[0] += before - c.pieces.size();
     }
 
     /** SPEED CONTROLS (v18.0, D160): one `sctl` line per control —

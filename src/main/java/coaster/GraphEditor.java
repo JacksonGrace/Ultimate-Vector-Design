@@ -123,8 +123,16 @@ class GraphEditor extends Region {
     int activePiece() { return activePiece; }
 
     private List<Section> sections() {
-        return app.coaster.pieces.get(activePiece).sections;
+        // NO-COASTER mode (D230): an empty document has no pieces — the
+        // editor is covered by its placeholder, but per-rebuild reads
+        // still land here; an empty list keeps them harmless
+        if (app.coaster.pieces.isEmpty()) return NO_SECTIONS;
+        return app.coaster.pieces.get(
+            (int) FvdDesigner.clamp(activePiece, 0, app.coaster.pieces.size() - 1))
+            .sections;
     }
+
+    private static final List<Section> NO_SECTIONS = new ArrayList<>();
 
     /** Flattened span index of piece p's first section. */
     private int pieceBase(int p) {
@@ -411,6 +419,21 @@ class GraphEditor extends Region {
             MenuItem smTog = new MenuItem(fsm.sSmoothLen > 0.01
                 ? "Disable smoothing"
                 : "Enable smoothing (10 m)");
+            // smoothing is NOT an option on the edge of an s/c
+            // section (v19.3, D232 — user spec: its own entry ease
+            // conflicts and the window has no lane form); an already-
+            // smoothed old file can still DISABLE
+            List<Section> aSecs =
+                app.coaster.pieces.get(right.piece() - 1).sections;
+            boolean scEdge = (!aSecs.isEmpty()
+                    && aSecs.get(aSecs.size() - 1)
+                        instanceof StraightCurveSection)
+                || app.coaster.pieces.get(right.piece()).sections.get(0)
+                    instanceof StraightCurveSection;
+            if (scEdge && fsm.sSmoothLen <= 0.01) {
+                smTog.setDisable(true);
+                smTog.setText("Enable smoothing — not on an s/c edge");
+            }
             smTog.setOnAction(ev -> {
                 pushUndoSnapshot();
                 fsm.sSmoothLen = fsm.sSmoothLen > 0.01 ? 0 : 10;
@@ -418,8 +441,16 @@ class GraphEditor extends Region {
                 app.rebuildTrack();
                 redraw();
             });
-            MenuItem un = new MenuItem(
-                "Un-strict seam (reorient continuous, keep conflict)");
+            // MAKE SMOOTHING REAL (v19.3, D232): the blend window
+            // becomes authored lanes of the upstream section's type,
+            // guarded by a fresh strict seam at the window's end —
+            // through the density preview like every convert
+            MenuItem smReal = new MenuItem("Make smoothing real…");
+            smReal.setDisable(fsm.sSmoothLen <= 0.01 || scEdge);
+            smReal.setOnAction(ev ->
+                makeSmoothingRealPreview(right.piece()));
+            MenuItem un = new MenuItem("Un-strict seam");   // (D232:
+                // the explainer parenthetical left the label)
             un.setOnAction(ev -> {
                 pushUndoSnapshot();
                 int fp = right.piece();
@@ -452,7 +483,7 @@ class GraphEditor extends Region {
                 }
                 redraw();
             });
-            cm.getItems().addAll(settings, smTog, un, split);
+            cm.getItems().addAll(settings, smTog, smReal, un, split);
         } else if (right.section() > 0) {
             // CONNECT the two sections into one (D136 — the badge's
             // "Connect with previous section", now living here):
@@ -559,16 +590,15 @@ class GraphEditor extends Region {
         TrackPiece f = app.coaster.pieces.get(pieceIdx);
         if (!f.followPrev) return;
         double v = FvdDesigner.clamp(deg, -360, 360);
-        if (axis == 0) {
-            if (!f.sLockYaw) return;
-            f.sYawDeg = v;
-        } else if (axis == 1) {
-            if (!f.sLockPitch) return;
-            f.sPitchDeg = v;
-        } else {
-            if (!f.sLockRoll) return;
-            f.sRollDeg = v;
+        if (axis == 0 ? !f.sLockYaw
+                : axis == 1 ? !f.sLockPitch : !f.sLockRoll) {
+            return;
         }
+        app.placementEdit(pieceIdx, () -> {   // D221 rigid carry
+            if (axis == 0) f.sYawDeg = v;
+            else if (axis == 1) f.sPitchDeg = v;
+            else f.sRollDeg = v;
+        });
         app.markDirty();
         app.rebuildTrack();
         redraw();
@@ -584,11 +614,17 @@ class GraphEditor extends Region {
         }
         TrackPiece f = app.coaster.pieces.get(pieceIdx);
         if (!f.followPrev) return;
-        if (f.sLockYaw) f.sYawDeg = FvdDesigner.clamp(yaw, -360, 360);
-        if (f.sLockPitch) {
-            f.sPitchDeg = FvdDesigner.clamp(pitch, -360, 360);
-        }
-        if (f.sLockRoll) f.sRollDeg = FvdDesigner.clamp(roll, -360, 360);
+        app.placementEdit(pieceIdx, () -> {   // D221 rigid carry
+            if (f.sLockYaw) {
+                f.sYawDeg = FvdDesigner.clamp(yaw, -360, 360);
+            }
+            if (f.sLockPitch) {
+                f.sPitchDeg = FvdDesigner.clamp(pitch, -360, 360);
+            }
+            if (f.sLockRoll) {
+                f.sRollDeg = FvdDesigner.clamp(roll, -360, 360);
+            }
+        });
         app.markDirty();
         app.rebuildTrack();
         redraw();
@@ -655,16 +691,26 @@ class GraphEditor extends Region {
         javafx.stage.Popup pop = new javafx.stage.Popup();
         pop.setAutoHide(false);   // Apply or Cancel only (v17.8, D145)
         seamPopup = pop;
+        // MODELESS ride keys (D222 bug fix — "fly can't move with the
+        // seam menu open"): this was the one editor-hosting window
+        // without the D166 forwarder, so W/A/S/D died in the popup's
+        // focused scene while mouse-look (focus-free) kept working.
+        // setOnShown covers BOTH show branches below (the gizmo-
+        // anchored one returns early).
+        pop.setOnShown(ev -> app.installDocUndoKeys(pop.getScene()));   // D227: global undo
         GridPane grid = new GridPane();
         grid.setHgap(8);
         grid.setVgap(6);
-        // WHITE like the context menus (v17.3, user spec — the dark
-        // pv-popup styling read as a foreign window here), title only
-        grid.setStyle("-fx-background-color: white;"
-            + " -fx-padding: 12; -fx-border-color: rgb(160,163,170);"
+        // DARK like the Track Piece panel since v19.3 (D232, user spec
+        // — the white holdover read as a foreign window; v17.3's
+        // verdict reversed)
+        grid.setStyle("-fx-background-color: rgb(35,38,46);"
+            + " -fx-padding: 12; -fx-border-color: rgb(90,95,110);"
             + " -fx-border-radius: 6; -fx-background-radius: 6;");
         Label head = new Label("Strict seam");
-        head.setStyle("-fx-font-size: 12px; -fx-font-weight: bold;");
+        head.setTextFill(Color.WHITE);
+        head.setStyle("-fx-font-size: 12px; -fx-font-weight: bold;"
+            + " -fx-text-fill: white;");
         grid.add(head, 0, 0, 4, 1);
         // MOVABLE (v17.3, user spec — the pv popup's grab pattern):
         // drag any non-control spot
@@ -682,7 +728,8 @@ class GraphEditor extends Region {
         for (int a = 0; a < 3; a++) {
             final int axis = a;
             Label lbl = new Label(names[a]);
-            lbl.setStyle("-fx-font-size: 11px;");
+            lbl.setTextFill(Color.WHITE);   // dark panel (D232)
+            lbl.setStyle("-fx-font-size: 11px; -fx-text-fill: white;");
             // a plain PADLOCK (v18.32, D204 — the "Discontinuous"
             // label reverted on user spec): 🔒 = the axis holds an
             // editable angle, 🔓 = it follows the seam
@@ -708,11 +755,13 @@ class GraphEditor extends Region {
                     : axis == 1 ? f.sLockPitch : f.sLockRoll;
                 disc.setSelected(on);
                 disc.setText(on ? "🔒" : "🔓");
-                // the red outline IS the discontinuity telltale
-                disc.setStyle("-fx-font-size: 11px;"
-                    + " -fx-border-width: 2; -fx-border-radius: 4;"
-                    + (on ? " -fx-border-color: rgb(220,70,70);"
-                          : " -fx-border-color: transparent;"));
+                // the red outline IS the discontinuity telltale —
+                // drawn with the ALIGNED outline pattern (D233: the
+                // default button background made it sit crooked)
+                disc.setStyle(FvdDesigner.outlineStyle(
+                    "-fx-font-size: 11px; -fx-text-fill: black;"
+                    + " -fx-padding: 1 5 1 5;",
+                    on ? "rgb(220,70,70)" : "transparent"));
                 seamSyncing = true;
                 // yaw DISPLAYS left-positive (v18.15, D186): the UI
                 // negates at this boundary; sYawDeg stays internal
@@ -729,29 +778,34 @@ class GraphEditor extends Region {
             disc.setOnAction(ev -> {
                 pushUndoSnapshot();
                 boolean on = disc.isSelected();
-                if (on) {
-                    double cur;
-                    if (firstOpen) {
-                        // FIRST open (v17.3 rule): seed the ORIGINAL
-                        // creation angle, as if ↺ were pressed
-                        double[] orig = Coaster.eulerOf(
-                            f.entryPose().orient());
-                        cur = axis == 0
-                            ? (Double.isNaN(orig[0]) ? 0 : orig[0])
-                            : axis == 1 ? orig[1]
-                            : (Double.isNaN(orig[2]) ? 0 : orig[2]);
-                    } else {
-                        // later opens (v17.8, D145): hold the CURRENT
-                        // angle — nothing jumps
-                        cur = followerEuler(followerIdx)[axis];
+                // the write runs through the D221 carry: unlocking an
+                // axis re-aims the follower onto the seam, and a
+                // RIGID follower carries its own downstream rigidly
+                app.placementEdit(followerIdx, () -> {
+                    if (on) {
+                        double cur;
+                        if (firstOpen) {
+                            // FIRST open (v17.3 rule): seed the
+                            // ORIGINAL creation angle, as if ↺ pressed
+                            double[] orig = Coaster.eulerOf(
+                                f.entryPose().orient());
+                            cur = axis == 0
+                                ? (Double.isNaN(orig[0]) ? 0 : orig[0])
+                                : axis == 1 ? orig[1]
+                                : (Double.isNaN(orig[2]) ? 0 : orig[2]);
+                        } else {
+                            // later opens (v17.8, D145): hold the
+                            // CURRENT angle — nothing jumps
+                            cur = followerEuler(followerIdx)[axis];
+                        }
+                        if (axis == 0) f.sYawDeg = cur;
+                        else if (axis == 1) f.sPitchDeg = cur;
+                        else f.sRollDeg = cur;
                     }
-                    if (axis == 0) f.sYawDeg = cur;
-                    else if (axis == 1) f.sPitchDeg = cur;
-                    else f.sRollDeg = cur;
-                }
-                if (axis == 0) f.sLockYaw = on;
-                else if (axis == 1) f.sLockPitch = on;
-                else f.sLockRoll = on;
+                    if (axis == 0) f.sLockYaw = on;
+                    else if (axis == 1) f.sLockPitch = on;
+                    else f.sLockRoll = on;
+                });
                 app.markDirty();
                 app.rebuildTrack();
                 app.syncPlacementSpinners();
@@ -764,23 +818,32 @@ class GraphEditor extends Region {
                     : axis == 1 ? f.sLockPitch : f.sLockRoll;
                 if (!on) return;
                 pushUndoSnapshot();
-                if (axis == 0) f.sYawDeg = -val;   // typed = reported (D186)
-                else if (axis == 1) f.sPitchDeg = val;
-                else f.sRollDeg = val;
+                app.placementEdit(followerIdx, () -> {
+                    if (axis == 0) {
+                        f.sYawDeg = -val;   // typed = reported (D186)
+                    } else if (axis == 1) {
+                        f.sPitchDeg = val;
+                    } else {
+                        f.sRollDeg = val;
+                    }
+                });
                 app.markDirty();
                 app.rebuildTrack();
                 redraw();
             });
             rst.setOnAction(ev -> {
                 pushUndoSnapshot();
-                double[] orig = Coaster.eulerOf(f.entryPose().orient());
-                double v = axis == 0
-                    ? (Double.isNaN(orig[0]) ? 0 : orig[0])
-                    : axis == 1 ? orig[1]
-                    : (Double.isNaN(orig[2]) ? 0 : orig[2]);
-                if (axis == 0) f.sYawDeg = v;
-                else if (axis == 1) f.sPitchDeg = v;
-                else f.sRollDeg = v;
+                app.placementEdit(followerIdx, () -> {
+                    double[] orig = Coaster.eulerOf(
+                        f.entryPose().orient());
+                    double v = axis == 0
+                        ? (Double.isNaN(orig[0]) ? 0 : orig[0])
+                        : axis == 1 ? orig[1]
+                        : (Double.isNaN(orig[2]) ? 0 : orig[2]);
+                    if (axis == 0) f.sYawDeg = v;
+                    else if (axis == 1) f.sPitchDeg = v;
+                    else f.sRollDeg = v;
+                });
                 app.markDirty();
                 app.rebuildTrack();
                 for (Runnable rsy : rowSyncs) rsy.run();
@@ -790,7 +853,10 @@ class GraphEditor extends Region {
             grid.addRow(a + 1, lbl, disc, sp, rst);
         }
         // (the v17.2 Smoothing spinner row moved onto the seam itself
-        // — the drag DIAMOND, v17.3 D140, the s/c pattern)
+        // — the drag DIAMOND, v17.3 D140, the s/c pattern; the D221
+        // orientation-link rows LEFT this panel in D222, user spec —
+        // seam orientations work classically, the lock-shape surface
+        // is the Track Piece panel only)
         Button apply = new Button("Apply");
         apply.setDefaultButton(true);
         apply.setOnAction(ev -> {
@@ -811,12 +877,14 @@ class GraphEditor extends Region {
                 || f.sRollDeg != openDegs[2];
             if (changed) {
                 pushUndoSnapshot();
-                f.sLockYaw = openLocks[0];
-                f.sLockPitch = openLocks[1];
-                f.sLockRoll = openLocks[2];
-                f.sYawDeg = openDegs[0];
-                f.sPitchDeg = openDegs[1];
-                f.sRollDeg = openDegs[2];
+                app.placementEdit(followerIdx, () -> {
+                    f.sLockYaw = openLocks[0];
+                    f.sLockPitch = openLocks[1];
+                    f.sLockRoll = openLocks[2];
+                    f.sYawDeg = openDegs[0];
+                    f.sPitchDeg = openDegs[1];
+                    f.sRollDeg = openDegs[2];
+                });
                 app.markDirty();
                 app.rebuildTrack();
                 app.syncPlacementSpinners();
@@ -829,6 +897,13 @@ class GraphEditor extends Region {
         foot.setAlignment(Pos.CENTER_RIGHT);
         grid.add(foot, 0, 4, 4, 1);
         pop.getContent().add(grid);
+        seamPopupIdx = followerIdx;   // D227: the undo re-open knows it
+        if (seamPopupReopenAt != null) {
+            // rebuilt in place after an undo/redo (D227)
+            pop.show(canvas.getScene().getWindow(),
+                seamPopupReopenAt[0], seamPopupReopenAt[1]);
+            return;
+        }
         if (app.popupAnchorX != null) {
             // opened from the seam gizmo: show near the click
             // (v18.19, D190)
@@ -892,9 +967,11 @@ class GraphEditor extends Region {
         app.rebuildTrack();   // inactive-piece desaturation follows
         refreshOffset();
         redraw();
+        app.syncWizardPanel();   // the wizard follows its piece (D231)
     }
 
     void setActivePiece(int p) {
+        if (app.coaster.pieces.isEmpty()) return;   // no coaster (D230)
         p = (int) FvdDesigner.clamp(p, 0, app.coaster.pieces.size() - 1);
         if (p == activePiece) return;
         dropActiveView();   // leaving = back to the true domain (v16.2)
@@ -915,6 +992,7 @@ class GraphEditor extends Region {
         app.rebuildTrack();   // inactive pieces desaturate (v13.2)
         refreshOffset();
         redraw();
+        app.syncWizardPanel();   // the wizard follows its piece (D231)
     }
 
     // ---------- section MODE (Phase 2: force / geo lanes, s/c elements) ----------
@@ -1025,6 +1103,35 @@ class GraphEditor extends Region {
 
     /** Index of the compiled sample nearest axis coordinate a — the
      *  axis-generic sibling of rateIdxAt (0 before a compile). */
+    /** A per-sample quantity at an AXIS coordinate, LINEARLY
+     *  interpolated between the bracketing samples (v19.4, D233 —
+     *  user report: hover readouts on resulting/derived curves stuck
+     *  to piecewise nearest-sample heights, visibly inside smoothing
+     *  windows; the dot now follows the drawn graph). */
+    private double interpAtAxis(double a,
+            java.util.function.IntToDoubleFunction f) {
+        List<FVDIntegrator.Sample> ss = app.lastSamples;
+        if (ss == null || ss.size() < 2) return f.applyAsDouble(0);
+        boolean dist = axisDist();
+        int lo = 0, hi = ss.size() - 1;
+        double first = dist ? ss.get(0).s() : ss.get(0).t();
+        double last = dist ? ss.get(hi).s() : ss.get(hi).t();
+        if (a <= first) return f.applyAsDouble(0);
+        if (a >= last) return f.applyAsDouble(hi);
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            double m = dist ? ss.get(mid).s() : ss.get(mid).t();
+            if (m <= a) lo = mid;
+            else hi = mid;
+        }
+        double x0 = dist ? ss.get(lo).s() : ss.get(lo).t();
+        double x1 = dist ? ss.get(hi).s() : ss.get(hi).t();
+        double fr = x1 - x0 < 1e-12 ? 0 : (a - x0) / (x1 - x0);
+        double v0 = f.applyAsDouble(lo);
+        double v1 = f.applyAsDouble(hi);
+        return v0 + fr * (v1 - v0);
+    }
+
     private int sampleIdxAtAxis(double a) {
         if (app.resultRates == null || app.lastSamples == null
                 || app.lastSamples.isEmpty()) return 0;
@@ -1546,6 +1653,12 @@ class GraphEditor extends Region {
     void resetSections() {
         activePiece = 0;
         activeSection = 0;
+        if (sections().isEmpty()) {   // no coaster (D230)
+            app.lanes = NO_LANES;
+            selIdx = -1;
+            selSet.clear();
+            return;
+        }
         app.lanes = lanesFor(sections().get(0));
         selIdx = -1;
         selSet.clear();
@@ -1561,6 +1674,12 @@ class GraphEditor extends Region {
     /** Undo/redo restore: re-point at the snapshot's piece + section;
      *  the caller (applySnapshot) fixes selection against the lanes. */
     void restoreActive(int piece, int section) {
+        if (app.coaster.pieces.isEmpty()) {   // no coaster (D230)
+            activePiece = 0;
+            activeSection = 0;
+            app.lanes = NO_LANES;
+            return;
+        }
         activePiece = (int) FvdDesigner.clamp(piece, 0,
             app.coaster.pieces.size() - 1);
         List<Section> secs = sections();
@@ -1640,8 +1759,7 @@ class GraphEditor extends Region {
                 if (p >= rs && p <= re) continue;
                 TrackPiece tp = pieces.get(p);
                 MenuItem it = new MenuItem(String.format(Locale.US,
-                    "Piece %d — %d section%s%s", p + 1, tp.sections.size(),
-                    tp.sections.size() == 1 ? "" : "s",
+                    "Piece %d — %s%s", p + 1, app.pieceLengthLabel(p),
                     p == activePiece + 1 ? " (next)" : ""));
                 final int idx = p;
                 it.setOnAction(ev -> addBridgeTo(idx));
@@ -1665,16 +1783,20 @@ class GraphEditor extends Region {
             attach.setDisable(endsBridge);
             for (int p = 0; p < pieces.size(); p++) {
                 if (p >= rs && p <= re) continue;
-                TrackPiece tp = pieces.get(p);
                 MenuItem it = new MenuItem(String.format(Locale.US,
-                    "Piece %d — %d section%s", p + 1, tp.sections.size(),
-                    tp.sections.size() == 1 ? "" : "s"));
+                    "Piece %d — %s", p + 1, app.pieceLengthLabel(p)));
                 final int idx = p;
                 it.setOnAction(ev -> attachFloating(idx));
                 attach.getItems().add(it);
             }
             cm.getItems().add(attach);
         }
+        // ADD FLOATING SECTION (v19.1, D226; below Attach since v19.2 —
+        // user order): the start screen minus friction — a new detached
+        // piece with its own first section
+        MenuItem floating = new MenuItem("Add floating section…");
+        floating.setOnAction(ev -> app.showStartWizard(StartPanel.Mode.FLOATING));
+        cm.getItems().add(floating);
         showMenu(cm, screenX, screenY);
     }
 
@@ -1812,7 +1934,8 @@ class GraphEditor extends Region {
     }
 
 
-    /** "Make graphs real" (§5 round B, v14.5 D97): resolve this
+    /** "Convert Real to Design" (§5 round B, v14.5 D97 as "Make
+     *  graphs real"; renamed D234): resolve this
      *  section's design/true split KEEPING the shape — lanes re-fit
      *  at the true entry speed through the density preview; s/c just
      *  re-freezes (shape speed-independent, no preview needed). */
@@ -2138,18 +2261,22 @@ class GraphEditor extends Region {
         app.updateBridgeControls();
     }
 
-    /** Next-piece orientation DELTA (axis 0 = yaw, 1 = pitch, 2 =
-     *  roll — v13.13, D87). */
+    /** Next-piece DISPLAYED orientation (axis 0 = yaw, 1 = pitch, 2 =
+     *  roll — v13.13, D87; the canonical ABSOLUTE heading/elevation/
+     *  bank of its entry since v19.1 D224 — the rows show the real
+     *  starting orientation, a split piece's included). */
     double bridgeTargetOrient(int axis) {
         if (!activeBridgeWithTarget()) return 0;
         TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        return axis == 0 ? t.yawDeg : axis == 1 ? t.pitchDeg : t.rollDeg;
+        return axis == 0 ? t.dispYaw() : axis == 1 ? t.dispPitch()
+                                                    : t.dispRoll();
     }
 
-    /** Write a next-piece orientation delta and re-apply per mode
+    /** Write a next-piece DISPLAYED orientation and re-apply per mode
      *  (v13.13): only reachable while the axis is UNLOCKED and the
      *  mode isn't optimize-orientation (there the march owns the
-     *  unlocked axes). */
+     *  unlocked axes). Bridge writes hit the TRUE tier only — the
+     *  classic behavior, D222 clarification. */
     void setBridgeTargetOrient(int axis, double deg) {
         BridgeSection bs = activeBridge();
         if (bs == null || bridgeOrphan(bs)
@@ -2160,9 +2287,11 @@ class GraphEditor extends Region {
         if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
         lastGapNanos = now;
         TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        if (axis == 0) t.yawDeg = deg;
-        else if (axis == 1) t.pitchDeg = Math.max(-85, Math.min(85, deg));
-        else t.rollDeg = deg;
+        app.placementEdit(activePiece + 1, () -> {   // D221 rigid carry
+            if (axis == 0) t.setDispYaw(deg);
+            else if (axis == 1) t.setDispPitch(deg, false);
+            else t.setDispRoll(deg, false);
+        });
         app.markDirty();
         if (bs.optMode == BridgeSection.OPT_POS) {
             if (bs.optLen) applyOptimalLength(bs);
@@ -2220,9 +2349,11 @@ class GraphEditor extends Region {
         if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
         lastGapNanos = now;
         TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        if (axis == 0) t.x = v;
-        else if (axis == 1) t.y = v;
-        else t.z = v;
+        app.placementEdit(activePiece + 1, () -> {   // D221 rigid carry
+            if (axis == 0) t.x = v;
+            else if (axis == 1) t.y = v;
+            else t.z = v;
+        });
         app.rebuildTrack();
         refreshOffset();
         redraw();
@@ -2286,9 +2417,13 @@ class GraphEditor extends Region {
                                                : bs.lockRoll) return;
         if (activePiece + 1 >= app.coaster.pieces.size()) return;
         TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        if (axis == 0) t.yawDeg = deg;
-        else if (axis == 1) t.pitchDeg = Math.max(-85, Math.min(85, deg));
-        else t.rollDeg = deg;
+        // RAW absolute coordinates from the ring (D224 — continuous
+        // through the pole), true tier only
+        app.placementEdit(activePiece + 1, () -> {   // D221 rigid carry
+            if (axis == 0) t.setRawAbsYaw(deg, false);
+            else if (axis == 1) t.setRawAbsPitch(deg, false);
+            else t.setRawAbsRoll(deg, false);
+        });
         app.markDirty();
         if (bs.optMode == BridgeSection.OPT_POS) {
             // re-place at the current (or freshly kneed) length —
@@ -2314,11 +2449,11 @@ class GraphEditor extends Region {
         if (bs == null || bs.optMode == BridgeSection.OPT_POS_YAW) return;
         if (activePiece + 1 >= app.coaster.pieces.size()) return;
         TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        if (!bs.lockYaw) t.yawDeg = yaw;
-        if (!bs.lockPitch) {
-            t.pitchDeg = Math.max(-85, Math.min(85, pitch));
-        }
-        if (!bs.lockRoll) t.rollDeg = roll;
+        app.placementEdit(activePiece + 1, () -> {   // D221 rigid carry
+            if (!bs.lockYaw) t.yawDeg = yaw;
+            if (!bs.lockPitch) t.pitchDeg = pitch;   // no clamp (D224)
+            if (!bs.lockRoll) t.rollDeg = roll;
+        });
         app.markDirty();
         if (bs.optMode == BridgeSection.OPT_POS) {
             double d = bs.optLen
@@ -3260,6 +3395,42 @@ class GraphEditor extends Region {
      *  padlocked row; unlock to type a custom one), NO speed
      *  conflict in the result. Apply = one undo step; Cancel
      *  restores exactly. */
+    /** MAKE SMOOTHING REAL through the density preview (v19.3, D232 —
+     *  the reversal pattern: pvOp re-applies per density against the
+     *  pristine restore; Apply = one undo step, Cancel exact). The
+     *  editor lands on the new window section (the upstream piece's
+     *  last). */
+    void makeSmoothingRealPreview(int followerIdx) {
+        cancelDensityPreview();          // one preview at a time
+        int fp = followerIdx;
+        Section sPrev = app.coaster.pieces.get(fp - 1).sections
+            .get(app.coaster.pieces.get(fp - 1).sections.size() - 1);
+        pvDist = sPrev.domain() == Section.Domain.DISTANCE;
+        pvRevSamples = null;             // no reversal guides here
+        pvRef = null;
+        pvBefore = snapshot();
+        pvOp = (sp, tol) -> {
+            String why = app.coaster.makeSmoothingReal(fp,
+                FvdDesigner.INTEGRATE_DT, sp, tol);
+            if (why != null) app.statsLabel.setText(
+                "Make smoothing real refused — " + why);
+            return why == null;
+        };
+        pvActivate = () -> {
+            activePiece = fp - 1;
+            activeSection = Math.max(0,
+                app.coaster.pieces.get(fp - 1).sections.size() - 1);
+        };
+        if (!pvRerun()) {
+            clearPv(false);
+            redraw();
+            return;
+        }
+        viewT0 = 0;
+        viewT1 = -1;                     // structure changed: re-fit
+        openPvPopup();
+    }
+
     void reverseActivePiece() {
         for (Section s : sections()) {
             if (s instanceof BridgeSection) {
@@ -3571,11 +3742,15 @@ class GraphEditor extends Region {
                 // piece-firsts survive the reconcile), and downstream
                 // track re-chains with only the fit-residual
                 // reorientation. Only a direct bridge still blocks.
+                // labels re-specced v19.5 (D234, user): the fit op
+                // CONVERTS the real curves into the design ("Make
+                // graphs real" until then), the re-freeze SETS the
+                // design speed to the real one
                 MenuItem real = new MenuItem(
-                    "Make graphs real (keep shape)…");
+                    "Convert Real to Design (keep track shape)…");
                 real.setOnAction(ev -> makeGraphsReal(k));
                 MenuItem refr = new MenuItem(
-                    "Set Design Speed to Real (keep graphs, reshape)");
+                    "Set Design to Real (keep graphs, reshape)");
                 refr.setOnAction(ev -> refreezeSpeed(k));
                 resolve.getItems().addAll(real, refr);
             }
@@ -3971,7 +4146,7 @@ class GraphEditor extends Region {
         sync.run();
         dlg.setScene(new Scene(grid));
         dlg.show();
-        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
+        app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
     }
 
     /** Small gray caption under a dialog button (v16.7). */
@@ -4563,7 +4738,7 @@ class GraphEditor extends Region {
         cancel.setOnAction(ev -> dlg.close());
         dlg.setScene(new Scene(grid));
         dlg.show();
-        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
+        app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
     }
 
     /** Append a lane section with the dialog's full option set
@@ -5017,7 +5192,9 @@ class GraphEditor extends Region {
     }
 
     /** An s/c blend-band EDGE within grab range (v17.4): the element
-     *  whose entry blend it belongs to; −1 = none. */
+     *  whose entry blend it belongs to; 0 = the ENTRY-ease band's
+     *  far edge (v19.5, D234 — the strict-seam pattern: the band is
+     *  grabbable, not just its diamond); −1 = none. */
     private int scEdgeHit(double x, double y) {
         StraightCurveSection sc = activeSc();
         if (sc == null || y < MARGIN_TOP
@@ -5030,6 +5207,17 @@ class GraphEditor extends Region {
                     || Math.abs(x
                         - tToX(scAxisAtS(sc, b[j] + prof.half[j]))) <= 4) {
                 return j;
+            }
+        }
+        // the entry-ease band ends at s = ease; its edge drags the
+        // ease absolutely (the same elDragSmooth == 0 branch as the
+        // entry diamond)
+        if (!sc.elements.isEmpty()) {
+            double ease = Math.min(sc.elements.get(0).smoothIn,
+                sc.elements.get(0).arcLen());
+            if (ease > 1e-9
+                    && Math.abs(x - tToX(scAxisAtS(sc, ease))) <= 4) {
+                return 0;
             }
         }
         return -1;
@@ -5930,16 +6118,22 @@ class GraphEditor extends Region {
                 double bx = x0 + 4, by = MARGIN_TOP + 4;
                 boolean isActive = rs.piece() == activePiece
                     && rs.section() == activeSection;
-                gc.setGlobalAlpha(isActive ? 0.85 : 0.45);
-                gc.setFill(Color.rgb(45, 50, 62));
+                // HOVER highlight (D223, user spec — "make it obvious
+                // it can be clicked"): the seam-line pattern —
+                // brighter fill/edge + full alpha under the cursor
+                boolean hot = k == hoverBadge;
+                gc.setGlobalAlpha(hot ? 1.0 : isActive ? 0.85 : 0.45);
+                gc.setFill(hot ? Color.rgb(72, 80, 100)
+                               : Color.rgb(45, 50, 62));
                 gc.fillRoundRect(bx, by, bw, 15, 7, 7);
                 // a dirty bridge wears the warning color (v13.0)
                 gc.setStroke(dirty ? Color.rgb(255, 140, 90)
-                                   : Color.rgb(150, 156, 175));
-                gc.setLineWidth(1);
+                    : hot ? Color.rgb(225, 230, 245)
+                          : Color.rgb(150, 156, 175));
+                gc.setLineWidth(hot ? 1.5 : 1);
                 gc.strokeRoundRect(bx, by, bw, 15, 7, 7);
                 gc.setFill(dirty ? Color.rgb(255, 170, 130)
-                                 : Color.rgb(205, 210, 220));
+                    : hot ? Color.WHITE : Color.rgb(205, 210, 220));
                 gc.fillText(label, bx + bw / 2, by + 8);
                 badgeRects.add(new double[]{ bx, by, bw, 15, k });
             }
@@ -6108,7 +6302,8 @@ class GraphEditor extends Region {
         StraightCurveSection sc = activeSc();
         if (sc == null) return -1;
         double[] b = scBoundsS(sc);
-        for (int j = 1; j < b.length - 1; j++) {
+        // j = 0 is the SECTION-ENTRY ease diamond (v19.4, D233)
+        for (int j = 0; j < b.length - 1; j++) {
             if (Math.hypot(x - tToX(scAxisAtS(sc, b[j])), y - scDiamondY()) <= 7) {
                 return j;
             }
@@ -6224,6 +6419,32 @@ class GraphEditor extends Region {
                 gc.setGlobalAlpha(1.0);
             }
         }
+        // the SECTION-ENTRY roll ease (v19.4, D233): its own band
+        // [0, ease] + a diamond ON the entry boundary — the same
+        // surface as every internal blend
+        {
+            double ease = Math.min(sc.elements.get(0).smoothIn,
+                sc.elements.get(0).arcLen());
+            if (ease > 1e-9) {
+                double za = tToX(scAxisAtS(sc, 0));
+                double zb = tToX(scAxisAtS(sc, ease));
+                gc.setFill(Color.rgb(255, 255, 255, 0.07));
+                gc.fillRect(Math.min(za, zb), top, Math.abs(zb - za), bot - top);
+            }
+            double bx = tToX(scAxisAtS(sc, 0));
+            double dy = scDiamondY();
+            gc.setGlobalAlpha(0.85);
+            gc.beginPath();
+            gc.moveTo(bx, dy - 5);
+            gc.lineTo(bx + 5, dy);
+            gc.lineTo(bx, dy + 5);
+            gc.lineTo(bx - 5, dy);
+            gc.closePath();
+            if (ease > 1e-9) { gc.setFill(Color.WHITE); gc.fill(); }
+            gc.setStroke(Color.WHITE);
+            gc.stroke();
+            gc.setGlobalAlpha(1.0);
+        }
         for (int j = 1; j < b.length; j++) {
             double bx = tToX(scAxisAtS(sc, b[j]));
             boolean internal = j < b.length - 1;
@@ -6265,6 +6486,11 @@ class GraphEditor extends Region {
                 ? String.format(Locale.US, "length %.1f m", e.length)
                 : String.format(Locale.US, "arc %.1f m  (%.0f°)", e.arcLen(), e.angleDeg);
             rx = tToX(scAxisAtS(sc, b[elDragBoundary + 1]));
+        } else if (elDragSmooth == 0 && !sc.elements.isEmpty()) {
+            double sm = sc.elements.get(0).smoothIn;
+            readout = sm < 1e-9 ? "entry ease off"
+                : String.format(Locale.US, "entry ease %.1f m", sm);
+            rx = tToX(scAxisAtS(sc, 0));
         } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
             double sm = sc.elements.get(elDragSmooth).smoothIn;
             readout = sm < 1e-9 ? "smooth off"
@@ -6354,7 +6580,7 @@ class GraphEditor extends Region {
     private void scPrimaryPressed(MouseEvent e) {
         StraightCurveSection sc = activeSc();
         int d = hitScDiamond(e.getX(), e.getY());
-        if (d >= 1) {
+        if (d >= 0) {   // 0 = the entry-ease diamond (D233)
             beginGesture();
             elDragSmooth = d;
             lastDragX = e.getX();
@@ -6388,7 +6614,7 @@ class GraphEditor extends Region {
         // the element select (which would otherwise eat every click)
         if (seamEdgePressed(e)) return;
         int je = scEdgeHit(e.getX(), e.getY());
-        if (je >= 1) {
+        if (je >= 0) {   // 0 = the entry-ease band edge (D234)
             beginGesture();
             elDragSmooth = je;
             lastDragX = e.getX();
@@ -6446,6 +6672,16 @@ class GraphEditor extends Region {
             }
             applyElemLen(sc.elements.get(elDragBoundary),
                 Math.max(MIN_ELEM_LEN, newLen));
+        } else if (elDragSmooth == 0 && !sc.elements.isEmpty()) {
+            // the ENTRY ease (D233): absolute — the ease runs [0, len]
+            // INTO the section; snaps shut near zero (0 = sharp)
+            double len = Math.max(0, sAuth);
+            if (snap) {
+                double step = app.settings.snapLen();
+                len = Math.round(len / step) * step;
+            }
+            len = Math.min(len, sc.elements.get(0).arcLen());
+            sc.elements.get(0).smoothIn = len < 0.2 ? 0 : len;
         } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
             double len = 2 * Math.abs(sAuth - b[elDragSmooth]);
             if (snap) {
@@ -6600,10 +6836,18 @@ class GraphEditor extends Region {
         Label rollL = new Label("Roll value");
         grid.addRow(row++, rollL, rollF);
         if (idx == 0) {
-            smF.setDisable(true);
-            smL.setDisable(true);
+            // EDITABLE since v19.3 (D232, user spec — "the small
+            // smooth transition at the start"): element 0's value is
+            // the SECTION-ENTRY roll-ease length (global-bank
+            // elements ease from the incoming bank over it; default
+            // 2 m while 0). The κ profile's entry stays sharp — the
+            // seam's geometric continuity comes from the chain.
+            smL.setText("Entry roll ease (m)");
             smL.setTooltip(new Tooltip(
-                "Element 0's entry is the section seam — always sharp"));
+                "The bank ease at the SECTION's entry (global-roll\n"
+                + "elements blend from the incoming bank over this\n"
+                + "length; 0 = the default 2 m). The curvature seam\n"
+                + "itself is always sharp — the chain carries it."));
         }
         for (javafx.scene.Node c : grid.getChildren()) {
             if (c instanceof TextField tf) {
@@ -6652,7 +6896,8 @@ class GraphEditor extends Region {
                 el.angleDeg = ang;
                 el.dirDeg = parseOr(dirF, el.dirDeg);
             }
-            if (idx > 0) el.smoothIn = Math.max(0, parseOr(smF, el.smoothIn));
+            el.smoothIn = Math.max(0, parseOr(smF, el.smoothIn));   // elem 0
+                // = the entry roll ease since v19.3 (D232)
             el.rollMode = rbGlob.isSelected()
                 ? StraightCurveSection.RollMode.GLOBAL
                 : StraightCurveSection.RollMode.RATE;
@@ -6667,7 +6912,7 @@ class GraphEditor extends Region {
 
         dlg.setScene(new Scene(grid));
         dlg.show();
-        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
+        app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
     }
 
     private static final int LANES = 3;
@@ -6769,6 +7014,9 @@ class GraphEditor extends Region {
     // cursor, and the one whose menu is open (stays highlighted)
     private int hoverSeam = -1;
     private int openSeam = -1;
+    // BADGE hover (D223): the runLayout index whose section-settings
+    // badge is under the cursor
+    private int hoverBadge = -1;
     private int hoverNodeIdx = -1;        // grey ring + readout (v16.15)
     private boolean hoverSlope = false;   // Shift while hovering: show the slope
 
@@ -7226,6 +7474,14 @@ class GraphEditor extends Region {
                 hoverSeam = hs;
                 redraw();
             }
+            // BADGE hover (D223): the section settings button lights
+            // up + hand cursor, same rules as the seam line
+            int hb = pcSec >= 0 ? -1 : hitBadge(e.getX(), e.getY());
+            if (hb != hoverBadge) {
+                hoverBadge = hb;
+                redraw();
+            }
+            boolean hand = hs >= 0 || hb >= 0;
             if (pcLine || hitSeamDiamond(e.getX(), e.getY()) >= 0
                     || seamEdgeHit(e.getX(), e.getY()) >= 0) {
                 // the split line + the seam smoothing diamond/edges
@@ -7233,16 +7489,16 @@ class GraphEditor extends Region {
                 canvas.setCursor(Cursor.H_RESIZE);
             } else if (activeSc() != null) {   // grab cursor over drag targets
                 boolean grab = hitScBoundary(e.getX(), e.getY()) >= 1
-                    || hitScDiamond(e.getX(), e.getY()) >= 1
-                    || scEdgeHit(e.getX(), e.getY()) >= 1;
+                    || hitScDiamond(e.getX(), e.getY()) >= 0
+                    || scEdgeHit(e.getX(), e.getY()) >= 0;
                 canvas.setCursor(grab ? Cursor.H_RESIZE
-                    : hs >= 0 ? Cursor.HAND : Cursor.DEFAULT);
+                    : hand ? Cursor.HAND : Cursor.DEFAULT);
             } else if (activeBridge() != null) {   // the end line drags
                 canvas.setCursor(hitBridgeEnd(e.getX(), e.getY())
                     ? Cursor.H_RESIZE
-                    : hs >= 0 ? Cursor.HAND : Cursor.DEFAULT);
+                    : hand ? Cursor.HAND : Cursor.DEFAULT);
             } else {
-                canvas.setCursor(hs >= 0 ? Cursor.HAND : Cursor.DEFAULT);
+                canvas.setCursor(hand ? Cursor.HAND : Cursor.DEFAULT);
             }
             // node under the cursor (v16.15): grey ring + the drag
             // readout's numbers, without the click
@@ -7269,7 +7525,10 @@ class GraphEditor extends Region {
                     double best = 8;
                     for (int comp = 1; comp <= 3; comp++) {
                         if (!resCompOn(comp)) continue;
-                        double v = resValueAt(i, comp);
+                        final int fc = comp;
+                        // interpolated (D233): the dot follows the
+                        // drawn curve, not the nearest sample's step
+                        double v = interpAtAxis(gt, j -> resValueAt(j, fc));
                         double d = Math.abs(e.getY() - resToY(comp, v));
                         if (d < best) { best = d; rc = comp; rt = gt; rv = v; }
                     }
@@ -7296,7 +7555,9 @@ class GraphEditor extends Region {
                 if (gt > tOff + trim && gt < tOff + dur - trim) {
                     double bestPx = 8;
                     for (int L = 0; L < LANES; L++) {
-                        double v = derivedAt(i, L);
+                        final int fl = L;
+                        // interpolated (D233) — see the overlay hover
+                        double v = interpAtAxis(gt, j -> derivedAt(j, fl));
                         double d = Math.abs(e.getY() - valToY(L, v));
                         if (d < bestPx) {
                             bestPx = d;
@@ -7322,12 +7583,15 @@ class GraphEditor extends Region {
         });
         canvas.setOnMouseExited(e -> {
             if (!Double.isNaN(hoverT) || hoverResComp != 0
-                    || hoverDerLane >= 0 || hoverNodeIdx >= 0) {
+                    || hoverDerLane >= 0 || hoverNodeIdx >= 0
+                    || hoverBadge >= 0 || hoverSeam >= 0) {
                 hoverT = Double.NaN;
                 hoverRawT = Double.NaN;
                 hoverResComp = 0;
                 hoverDerLane = -1;
                 hoverNodeIdx = -1;
+                hoverBadge = -1;
+                hoverSeam = -1;
                 redraw();
             }
         });
@@ -7359,7 +7623,7 @@ class GraphEditor extends Region {
                 seamDragTo(e.getX(), e.isControlDown());
                 return;
             }
-            if ((elDragBoundary >= 0 || elDragSmooth >= 1 || bridgeDragGap)
+            if ((elDragBoundary >= 0 || elDragSmooth >= 0 || bridgeDragGap)
                     && e.isPrimaryButtonDown()) {
                 commitGestureSnapshot();
                 lastDragX = e.getX();
@@ -7450,7 +7714,17 @@ class GraphEditor extends Region {
                         e.getY() - seamPressY) <= 3) {
                 int fp = seamDragPiece;
                 seamDragPiece = -1;
-                showStrictSeamSettings(fp);
+                // the diamond's clean click opens the full SEAM MENU
+                // since v19.3 (D232, user clarification — it went
+                // straight to the settings pop-out before)
+                List<RunSec> rl = runLayout();
+                for (int b = 0; b + 1 < rl.size(); b++) {
+                    if (rl.get(b + 1).piece() == fp
+                            && rl.get(b + 1).section() == 0) {
+                        showSeamMenu(b, e.getScreenX(), e.getScreenY());
+                        break;
+                    }
+                }
                 return;
             }
             seamDragPiece = -1;
@@ -7518,6 +7792,97 @@ class GraphEditor extends Region {
     protected void layoutChildren() {
         canvas.setWidth(getWidth());
         canvas.setHeight(getHeight());
+        // the START SCREEN overlay covers the whole editor (D226)
+        if (startPanel != null) {
+            startPanel.resizeRelocate(0, 0, getWidth(), getHeight());
+        }
+        if (noCoasterPanel != null) {
+            noCoasterPanel.resizeRelocate(0, 0, getWidth(), getHeight());
+        }
+        redraw();
+    }
+
+    // -----------------------------------------------------------------
+    // START SCREEN hosting (v19.1, D226): a JavaFX panel over the
+    // canvas; while up, the graph's key actions are dead (the shell's
+    // convert-UI rule) and canvas mouse never fires (it's covered)
+    // -----------------------------------------------------------------
+    private StartPanel startPanel;
+
+    void showStartPanel(StartPanel p) {
+        if (startPanel == p) return;   // idempotent (the sync calls it often)
+        hideStartPanel();
+        startPanel = p;
+        getChildren().add(p);
+        // MIN HEIGHT while the wizard shows (D231, user spec): the
+        // editor never shrinks below the panel's comfortable size —
+        // and grows to it at once when it was smaller
+        setMinHeight(StartPanel.MIN_HEIGHT);
+        if (getHeight() < StartPanel.MIN_HEIGHT) app.growEditorTo(StartPanel.MIN_HEIGHT);
+        requestLayout();
+    }
+
+    void hideStartPanel() {
+        if (startPanel == null) return;
+        getChildren().remove(startPanel);
+        startPanel = null;
+        setMinHeight(0);
+        redraw();
+    }
+
+    boolean startPanelActive() { return startPanel != null; }
+
+    // ---- NO-COASTER placeholder (v19.2, D230): the document holds no
+    // coaster — the canvas is covered by a hint + "New coaster…" ----
+    private StackPane noCoasterPanel;
+
+    void setNoCoaster(boolean on) {
+        if (on == (noCoasterPanel != null)) return;
+        if (on) {
+            Label l = new Label("No coaster in this file");
+            l.setTextFill(Color.WHITE);
+            l.setStyle("-fx-font-size: 16px; -fx-font-weight: bold;");
+            Label s = new Label("Coaster ▸ New coaster… adds one (Ctrl+Z restores a deleted one).");
+            s.setTextFill(Color.rgb(160, 168, 190));
+            s.setStyle("-fx-font-size: 11px;");
+            Button b = new Button("New coaster…");
+            b.setFocusTraversable(false);
+            b.setOnAction(e -> app.openNewCoasterWizard(true));
+            VBox box = new VBox(8, l, s, b);
+            box.setAlignment(Pos.CENTER);
+            noCoasterPanel = new StackPane(box);
+            noCoasterPanel.setStyle("-fx-background-color: rgb(20,22,28);");
+            getChildren().add(noCoasterPanel);
+        } else {
+            getChildren().remove(noCoasterPanel);
+            noCoasterPanel = null;
+        }
+        requestLayout();
+    }
+
+    boolean noCoaster() { return app.coaster.pieces.isEmpty(); }
+
+    /** Re-point the editing lanes at the (possibly replaced) active
+     *  section — the wizard swaps section objects under the editor. */
+    void repointActive() {
+        if (app.coaster.pieces.isEmpty()) return;
+        activePiece = (int) FvdDesigner.clamp(activePiece, 0,
+            app.coaster.pieces.size() - 1);
+        activeSection = (int) FvdDesigner.clamp(activeSection, 0,
+            sections().size() - 1);
+        app.lanes = lanesFor(sections().get(activeSection));
+        selIdx = -1;
+        selSet.clear();
+        elSel = -1;
+        axisLock = 0;
+        handleViewExpand = false;
+        viewT0 = 0;
+        viewT1 = -1;
+        hoverT = Double.NaN;      // a swapped section under a live hover
+        hoverRawT = Double.NaN;
+        hoverNodeIdx = -1;
+        syncLaneButtons();
+        refreshOffset();
         redraw();
     }
 
@@ -7540,6 +7905,7 @@ class GraphEditor extends Region {
 
     /** Sync the 3D node markers with this editor's lane/selection. */
     void refreshMarkers() {
+        if (app.coaster.pieces.isEmpty()) return;   // no coaster (D230)
         refreshOffset();
         // per-node GLOBAL RIDE TIMES (v16.0): distance-domain lanes'
         // node x is meters — the viewport needs the model's clock,
@@ -7680,6 +8046,7 @@ class GraphEditor extends Region {
      *  toggles); otherwise extend the ride end by 1 s — ACTIVE lane only
      *  (the others keep their dotted hold, no nodes added). */
     void appendAction() {
+        if (noCoaster() || startPanel != null) return;   // D230/D231
         StraightCurveSection sc = activeSc();
         if (sc != null) {   // A appends an element instead of a second
             insertElement(elSel >= 0 ? elSel + 1 : sc.elements.size(), true);
@@ -10241,7 +10608,7 @@ class GraphEditor extends Region {
         pop.show(canvas.getScene().getWindow(), sx + 12, sy - 40);
         // ride/fly keys keep working while the panel holds key focus
         // (v18.1 — the pv popup's forwarder)
-        app.installViewKeys(pop.getScene());
+        app.installDocUndoKeys(pop.getScene());   // D227: global undo + ride keys
         hookSpFocus();
     }
 
@@ -10295,8 +10662,8 @@ class GraphEditor extends Region {
      *  creation. The ride entry (piece 0, section 0) writes through
      *  the Start-speed spinner (v0 coupling + its own undo); any
      *  other section pins (a deliberate conflict, exactly like the
-     *  Add dialog's unlocked padlock). "Set Design Speed to Real" =
-     *  the resolve op's refreeze, verbatim. */
+     *  Add dialog's unlocked padlock). "Set Design to Real" = the
+     *  resolve op's refreeze, verbatim (renamed with it, D234). */
     private void showInitSpeedDialog(int k) {
         List<Section> secs = sections();
         if (k >= secs.size()) return;
@@ -10309,7 +10676,7 @@ class GraphEditor extends Region {
             String.format(Locale.US, "%.2f", sec.vDesign()));
         vf.setPrefColumnCount(7);
         vf.setTextFormatter(FvdDesigner.numFormatter());   // v18.1
-        Button toReal = new Button("Set Design Speed to Real");
+        Button toReal = new Button("Set Design to Real");
         toReal.setFocusTraversable(false);
         toReal.setOnAction(ev -> {
             dlg.close();
@@ -10349,7 +10716,7 @@ class GraphEditor extends Region {
         box.setPadding(new javafx.geometry.Insets(12));
         dlg.setScene(new javafx.scene.Scene(box));
         dlg.show();
-        app.installViewKeys(dlg.getScene());
+        app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
     }
 
 
@@ -10398,12 +10765,43 @@ class GraphEditor extends Region {
 
     private void applySnapshot(FvdDesigner.DocState snap) {
         app.applyDocState(snap);
+        if (app.coaster.pieces.isEmpty()) {   // restored an EMPTY document
+            selIdx = -1;
+            selSet.clear();
+            app.markDirty();
+            app.rebuildTrack();
+            redraw();
+            app.syncWizardPanel();
+            return;
+        }
         if (selIdx >= active().size()) selIdx = -1;
         selSet.removeIf(i -> i >= active().size());
         app.markDirty();
         app.rebuildTrack();   // spans first: s/c strip layout needs them
         redraw();
+        // open LIVE panels re-read the restored model (D227): the node
+        // editor's boxes, the strict-seam pop-out (rebuilt in place —
+        // its closures captured the replaced piece object)
+        for (Runnable r : new ArrayList<>(docRestoreHooks)) r.run();
+        if (seamPopup != null && seamPopup.isShowing() && seamPopupIdx >= 0) {
+            double sx = seamPopup.getX(), sy = seamPopup.getY();
+            int idx = seamPopupIdx;
+            seamPopup.hide();
+            seamPopup = null;
+            if (idx < app.coaster.pieces.size()
+                    && app.coaster.pieces.get(idx).followPrev) {
+                seamPopupReopenAt = new double[]{ sx, sy };
+                showStrictSeamSettings(idx);
+                seamPopupReopenAt = null;
+            }
+        }
     }
+
+    /** Refresh callbacks of live dialogs (D227) — run after every
+     *  undo/redo restore; a dialog removes its own on close. */
+    final List<Runnable> docRestoreHooks = new ArrayList<>();
+    private int seamPopupIdx = -1;
+    private double[] seamPopupReopenAt;
 
     /** New document: history starts over. */
     void clearHistory() {
@@ -12771,107 +13169,306 @@ class GraphEditor extends Region {
         grid.setVgap(8);
         grid.setPadding(new Insets(14));
 
-        TextField dtField = null, valField, v0Field = null;
-        TextField inField = null, outField = null, initField = null;
+        // LIVE EDITING (v19.1, D225 — user spec: "instead of an Apply
+        // button, make the track update while editing each value"):
+        // every box is a LiveNum — a text field with ▲/▼ steppers and
+        // wheel stepping — whose every PARSEABLE text change applies
+        // to the track at once (a blank/unparseable box holds, exactly
+        // like the old Apply's parseOr fallback); each edit is a
+        // GLOBAL undo step, bursts within 0.8 s on the same box
+        // coalescing into one. The node is re-resolved BY INDEX per
+        // apply on the captured surface, so Ctrl+Z (which swaps the
+        // lane objects) leaves the box live; a section/lane switch
+        // makes it inert instead of writing elsewhere.
+        final int dPiece = activePiece, dSec = activeSection,
+            dLane = activeLane;
+        // re-enter the captured surface around a lane read/write
+        java.util.function.Consumer<Runnable> onSurf = r -> {
+            if (dSurf) {
+                boolean os = surfStrip;
+                SpeedControl oc = surfCtl;
+                RunSec orr = surfRs;
+                surfCtl = dCtl;
+                surfRs = dRs;
+                surfStrip = true;
+                try {
+                    r.run();
+                } finally {
+                    surfStrip = os;
+                    surfCtl = oc;
+                    surfRs = orr;
+                }
+            } else {
+                if (activePiece != dPiece || activeSection != dSec
+                        || activeLane != dLane) {
+                    return;   // the dialog's node is no longer on screen
+                }
+                r.run();
+            }
+        };
+        // the live node (null = gone: structure changed under us)
+        java.util.function.Supplier<BezierBaker.Node> liveNode = () -> {
+            List<BezierBaker.Node> ln = active();
+            return idx < ln.size() ? ln.get(idx) : null;
+        };
+        final String[] undoKey = { null };
+        final long[] undoNanos = { 0 };
+        java.util.function.Consumer<String> liveUndo = key -> {
+            long now = System.nanoTime();
+            if (!key.equals(undoKey[0]) || now - undoNanos[0] > 800_000_000L) {
+                pushUndoSnapshot();
+            }
+            undoKey[0] = key;
+            undoNanos[0] = now;
+        };
+        double vStep = snapVal(activeLane);
+        double tStep = activeDistNative() ? 0.5 : 0.1;
+
+        LiveNum dtBox = null, v0Box = null, inBox = null, outBox = null,
+            initBox = null;
         int row = 0;
         if (prev != null) {
-            dtField = new TextField(String.format(Locale.US, "%.3f", n.t - prev.t));
+            dtBox = new LiveNum(n.t - prev.t, tStep, minGap(), 1e6);
             // computed twin (v16.15, user spec): the ABSOLUTE display-
             // axis position this transition lands the node at — live
             // as you type; grey like the hover readouts
             Label dtAbs = new Label();
             dtAbs.setStyle("-fx-text-fill: rgb(140,145,158);");
-            final TextField fDtL = dtField;
-            final BezierBaker.Node fPrev = prev;
+            final LiveNum fDtL = dtBox;
             Runnable dtSync = () -> {
-                try {
-                    double d = Double.parseDouble(fDtL.getText().trim());
-                    boolean os = surfStrip;
-                    SpeedControl oc = surfCtl;
-                    RunSec orr = surfRs;
-                    if (dSurf) {
-                        surfCtl = dCtl;
-                        surfRs = dRs;
-                        surfStrip = true;
-                    }
-                    try {
-                        dtAbs.setText(String.format(Locale.US,
-                            "(= %.3f %s abs)",
-                            tOff + warpFwd(fPrev.t + d),
-                            axisDist() ? "m" : "s"));
-                    } finally {
-                        surfStrip = os;
-                        surfCtl = oc;
-                        surfRs = orr;
-                    }
-                } catch (NumberFormatException ex) {
-                    dtAbs.setText("");
+                Double d = fDtL.parsed();
+                BezierBaker.Node[] pv = { null };
+                if (d != null) {
+                    onSurf.accept(() -> {
+                        List<BezierBaker.Node> ln = active();
+                        if (idx - 1 < ln.size() && idx >= 1) {
+                            pv[0] = ln.get(idx - 1);
+                            dtAbs.setText(String.format(Locale.US,
+                                "(= %.3f %s abs)",
+                                tOff + warpFwd(pv[0].t + d),
+                                axisDist() ? "m" : "s"));
+                        }
+                    });
                 }
+                if (d == null || pv[0] == null) dtAbs.setText("");
             };
-            fDtL.textProperty().addListener((o, a, b) -> dtSync.run());
+            fDtL.field.textProperty().addListener((o, a, b) -> dtSync.run());
             dtSync.run();
             // NATIVE units — a distance-domain section's transitions
             // are meters of track (v16.0)
             grid.addRow(row++, new Label(activeDistNative()
                 ? "Transition length (m)" : "Transition time (s)"),
-                dtField, dtAbs);
+                dtBox.node, dtAbs);
         } else if (!dSurf && activePiece == 0 && activeSection == 0
                 && activeInfl() == null) {
             // node 0 of the FIRST section: the ride's start speed lives
             // here too (same value as the Coaster-menu spinner). Not on
             // the influence surface — its node 0 is just a delta.
-            v0Field = new TextField(String.format(Locale.US, "%.3f", app.coaster.v0));
-            grid.addRow(row++, new Label("Start speed (m/s)"), v0Field);
+            v0Box = new LiveNum(app.coaster.v0, 1, 1, 100);
+            grid.addRow(row++, new Label("Start speed (m/s)"), v0Box.node);
         } else if (!dSurf && activeInfl() == null) {
             // node 0 of any LATER section (v18.2, user spec — his
             // completed sentence): the INITIAL DESIGN SPEED is typed
             // here; a change PINS a deliberate conflict (the D162
             // badge-dialog semantics). The ride entry (piece 0,
             // section 0) keeps its Start-speed row above.
-            initField = new TextField(String.format(Locale.US, "%.3f",
-                sections().get(activeSection).vDesign()));
+            initBox = new LiveNum(sections().get(activeSection).vDesign(),
+                1, 1, 100);
             grid.addRow(row++, new Label("Initial design speed (m/s)"),
-                initField);
+                initBox.node);
         }
         // vertical axis is the GLOBAL value, not a delta — except on
         // the influence surface, where the value IS the delta
-        valField = new TextField(String.format(Locale.US, "%.3f", n.val));
+        LiveNum valBox = new LiveNum(n.val, vStep, -1e9, 1e9);
         // computed twin (v16.15): the CHANGE from the previous node
         Label valDelta = new Label();
         valDelta.setStyle("-fx-text-fill: rgb(140,145,158);");
         if (prev != null) {
-            final TextField fValL = valField;
-            final BezierBaker.Node fPrev = prev;
+            final LiveNum fValL = valBox;
             Runnable vSync = () -> {
-                try {
-                    double v = Double.parseDouble(fValL.getText().trim());
-                    valDelta.setText(String.format(Locale.US, "(Δ %+.3f%s)",
-                        v - fPrev.val, dUnit));
-                } catch (NumberFormatException ex) {
-                    valDelta.setText("");
+                Double v = fValL.parsed();
+                BezierBaker.Node[] pv = { null };
+                if (v != null) {
+                    onSurf.accept(() -> {
+                        List<BezierBaker.Node> ln = active();
+                        if (idx >= 1 && idx - 1 < ln.size()) {
+                            pv[0] = ln.get(idx - 1);
+                            valDelta.setText(String.format(Locale.US,
+                                "(Δ %+.3f%s)", v - pv[0].val, dUnit));
+                        }
+                    });
                 }
+                if (v == null || pv[0] == null) valDelta.setText("");
             };
-            fValL.textProperty().addListener((o, a, b) -> vSync.run());
+            fValL.field.textProperty().addListener((o, a, b) -> vSync.run());
             vSync.run();
         }
         grid.addRow(row++, new Label((activeInfl() != null ? "Delta ("
             : "Value (") + laneUnit(activeLane).trim() + ")"),
-            valField, valDelta);
+            valBox.node, valDelta);
+        // HANDLE SLOPES (v19.2, D228 — user spec): the handles' dv/dx
+        // in lane units per axis unit, typed directly; a SMOOTH node
+        // (both handles collinear) shows ONE slope box driving both,
+        // a broken node one per handle. Slope edits keep the handle
+        // LENGTH (fraction) — dv := slope × the handle's x run.
+        String slopeUnit = laneUnit(activeLane).trim() + "/"
+            + (activeDistNative() ? "m" : "s");
+        boolean oneSlope = prev != null && hasOut && n.smooth;
+        double inSl = 0, outSl = 0;
         if (prev != null) {
-            inField = new TextField(String.format(Locale.US, "%.3f", n.inFrac));
-            grid.addRow(row++, new Label("In handle"), inField);
+            double dtIn = BezierBaker.effInDt(prev, n);
+            inSl = Math.abs(dtIn) < 1e-12 ? 0 : n.inDv / dtIn;
         }
         if (hasOut) {
-            outField = new TextField(String.format(Locale.US, "%.3f", n.outFrac));
-            grid.addRow(row++, new Label("Out handle"), outField);
+            double dtOut = BezierBaker.effOutDt(n, lane.get(idx + 1));
+            outSl = Math.abs(dtOut) < 1e-12 ? 0 : n.outDv / dtOut;
         }
-        for (javafx.scene.Node c : grid.getChildren()) {
-            if (c instanceof TextField tf) {
-                tf.setPrefColumnCount(7);
-                // numeric-only entry (v18.1, user spec — every number
-                // box accepts digits, sign and period alone)
-                tf.setTextFormatter(FvdDesigner.signedNumFormatter());
+        LiveNum inSlopeBox = null, outSlopeBox = null, slopeBox = null;
+        if (prev != null) {
+            inBox = new LiveNum(n.inFrac, 0.05, MIN_FRAC, BezierBaker.MAX_FRAC);
+            if (oneSlope) {
+                grid.addRow(row++, new Label("In handle length"), inBox.node);
+            } else {
+                inSlopeBox = new LiveNum(inSl, vStep, -1e9, 1e9);
+                grid.addRow(row++, new Label("In handle length"), inBox.node,
+                    new Label("slope (" + slopeUnit + ")"), inSlopeBox.node);
             }
+        }
+        if (hasOut) {
+            outBox = new LiveNum(n.outFrac, 0.05, MIN_FRAC, BezierBaker.MAX_FRAC);
+            if (oneSlope) {
+                grid.addRow(row++, new Label("Out handle length"), outBox.node);
+            } else {
+                outSlopeBox = new LiveNum(outSl, vStep, -1e9, 1e9);
+                grid.addRow(row++, new Label("Out handle length"), outBox.node,
+                    new Label("slope (" + slopeUnit + ")"), outSlopeBox.node);
+            }
+        }
+        if (oneSlope) {
+            slopeBox = new LiveNum(outSl, vStep, -1e9, 1e9);
+            grid.addRow(row++, new Label("Handle slope (" + slopeUnit + ")"),
+                slopeBox.node);
+        }
+        final LiveNum fInSl = inSlopeBox, fOutSl = outSlopeBox, fSl = slopeBox;
+        // slope sinks: dv := slope × run (fraction untouched)
+        java.util.function.BiConsumer<Double, Boolean> writeInSlope = (s, both) ->
+            onSurf.accept(() -> {
+                List<BezierBaker.Node> ln2 = active();
+                if (idx < 1 || idx >= ln2.size()) return;
+                BezierBaker.Node nn = ln2.get(idx), pv = ln2.get(idx - 1);
+                double dtIn = BezierBaker.effInDt(pv, nn);
+                double ndv = s * dtIn;
+                boolean chIn = ndv != nn.inDv;
+                boolean chOut = false;
+                double ndvOut = 0;
+                if (both && idx + 1 < ln2.size()) {
+                    ndvOut = s * BezierBaker.effOutDt(nn, ln2.get(idx + 1));
+                    chOut = ndvOut != nn.outDv;
+                }
+                if (!chIn && !chOut) return;
+                liveUndo.accept("slope");
+                if (chIn) nn.inDv = ndv;
+                if (chOut) nn.outDv = ndvOut;
+                redraw();
+                app.rebuildTrack();
+            });
+        if (fInSl != null) fInSl.onValue = v -> writeInSlope.accept(v, false);
+        if (fSl != null) fSl.onValue = v -> writeInSlope.accept(v, true);
+        if (fOutSl != null) {
+            fOutSl.onValue = v -> onSurf.accept(() -> {
+                List<BezierBaker.Node> ln2 = active();
+                if (idx + 1 >= ln2.size()) return;
+                BezierBaker.Node nn = ln2.get(idx);
+                double ndv = v * BezierBaker.effOutDt(nn, ln2.get(idx + 1));
+                if (ndv == nn.outDv) return;
+                liveUndo.accept("slope");
+                nn.outDv = ndv;
+                redraw();
+                app.rebuildTrack();
+            });
+        }
+
+        // ---- the live sinks ----
+        final LiveNum fDt = dtBox, fVal = valBox, fV0 = v0Box;
+        final LiveNum fIn = inBox, fOut = outBox, fInit = initBox;
+        // position/value: through moveNode (ripple toggles, level runs,
+        // slope-keeping dv rescale — the drag path)
+        Runnable applyPos = () -> onSurf.accept(() -> {
+            BezierBaker.Node ln = liveNode.get();
+            if (ln == null) return;
+            Double v = fVal.parsed();
+            double val = v != null ? v : ln.val;
+            List<BezierBaker.Node> lane2 = active();
+            if (idx > 0 && fDt != null) {
+                Double d = fDt.parsed();
+                double dt = d != null ? Math.max(minGap(), d)
+                                      : ln.t - lane2.get(idx - 1).t;
+                if (Math.abs(lane2.get(idx - 1).t + dt - ln.t) < 1e-12
+                        && val == ln.val) return;
+                liveUndo.accept("pos");
+                moveNode(idx, lane2.get(idx - 1).t + dt, val);
+            } else {
+                if (val == ln.val) return;
+                liveUndo.accept("pos");
+                moveNode(idx, ln.t, val);
+            }
+        });
+        if (fDt != null) fDt.onValue = v -> applyPos.run();
+        fVal.onValue = v -> applyPos.run();
+        // typed fractions SLIDE the knob along its current line (S
+        // semantics): dv scales with the length, angle preserved
+        if (fIn != null) {
+            fIn.onValue = v -> onSurf.accept(() -> {
+                BezierBaker.Node ln = liveNode.get();
+                if (ln == null) return;
+                double nf = FvdDesigner.clamp(v, MIN_FRAC, BezierBaker.MAX_FRAC);
+                if (nf == ln.inFrac) return;
+                liveUndo.accept("in");
+                if (ln.inFrac > 1e-9) ln.inDv *= nf / ln.inFrac;
+                ln.inFrac = nf;
+                redraw();
+                app.rebuildTrack();
+            });
+        }
+        if (fOut != null) {
+            fOut.onValue = v -> onSurf.accept(() -> {
+                BezierBaker.Node ln = liveNode.get();
+                if (ln == null) return;
+                double nf = FvdDesigner.clamp(v, MIN_FRAC, BezierBaker.MAX_FRAC);
+                if (nf == ln.outFrac) return;
+                liveUndo.accept("out");
+                if (ln.outFrac > 1e-9) ln.outDv *= nf / ln.outFrac;
+                ln.outFrac = nf;
+                redraw();
+                app.rebuildTrack();
+            });
+        }
+        if (fV0 != null) {
+            // through the spinner so the menu shows it and the track
+            // rebuilds (start speed is per-coaster; the spinner's own
+            // wiring pushes the document undo step)
+            fV0.onValue = v -> app.startSpeedSpinner.getValueFactory()
+                .setValue(FvdDesigner.clamp(v, 1, 100));
+        }
+        if (fInit != null) {
+            final int dlgSec = activeSection;
+            fInit.onValue = v -> {
+                if (activePiece != dPiece || dlgSec >= sections().size()) {
+                    return;
+                }
+                // a changed initial design speed PINS (v18.2 — the
+                // D162 deliberate-conflict semantics; the reconcile
+                // leaves it alone, B lines the real graphs up)
+                Section s0 = sections().get(dlgSec);
+                double nv = FvdDesigner.clamp(v, 1, 100);
+                if (Math.abs(nv - s0.vDesign()) <= 1e-9) return;
+                liveUndo.accept("init");
+                s0.vDesign(nv);
+                s0.vPinned(true);
+                app.markDirty();
+                app.rebuildTrack();
+                redraw();
+            };
         }
 
         // section-edge nodes: the boundary return lives here too (same
@@ -12888,82 +13485,145 @@ class GraphEditor extends Region {
             grid.add(match, 0, row++, 2, 1);
         }
 
-        Button ok = new Button("Apply");
-        ok.setDefaultButton(true);
-        Button cancel = new Button("Cancel");
-        cancel.setCancelButton(true);
-        HBox buttons = new HBox(8, ok, cancel);
+        Button close = new Button("Close");
+        close.setDefaultButton(true);
+        close.setCancelButton(true);
+        close.setOnAction(ev -> dlg.close());
+        HBox buttons = new HBox(8, close);
         buttons.setAlignment(Pos.CENTER_RIGHT);
-        grid.add(buttons, 0, row, 2, 1);
+        grid.add(buttons, 0, row, 3, 1);
 
-        final TextField fDt = dtField, fVal = valField, fV0 = v0Field;
-        final TextField fIn = inField, fOut = outField, fInit = initField;
-        final int dlgSec = activeSection;
-        Runnable okCore = () -> {
-            pushUndoSnapshot();
-            // typed fractions SLIDE the knob along its current line (S
-            // semantics): dv scales with the length, angle preserved
-            if (fIn != null) {
-                double nf = FvdDesigner.clamp(parseOr(fIn, n.inFrac), MIN_FRAC, BezierBaker.MAX_FRAC);
-                if (n.inFrac > 1e-9) n.inDv *= nf / n.inFrac;
-                n.inFrac = nf;
+        // UNDO RESYNC (D227): after a global undo/redo the boxes re-read
+        // the restored node (muted — no re-apply); the hook dies with
+        // the dialog
+        final LiveNum fDtR = dtBox, fValR = valBox, fInR = inBox,
+            fOutR = outBox, fV0R = v0Box, fInitR = initBox;
+        final int rSec = activeSection;
+        Runnable refresh = () -> onSurf.accept(() -> {
+            undoKey[0] = null;   // a restore ends any coalescing burst
+            List<BezierBaker.Node> ln2 = active();
+            if (idx >= ln2.size()) return;
+            BezierBaker.Node nn = ln2.get(idx);
+            BezierBaker.Node pv = idx > 0 ? ln2.get(idx - 1) : null;
+            BezierBaker.Node nx = idx + 1 < ln2.size() ? ln2.get(idx + 1) : null;
+            if (fDtR != null && pv != null) fDtR.set(nn.t - pv.t);
+            fValR.set(nn.val);
+            if (fInR != null) fInR.set(nn.inFrac);
+            if (fOutR != null) fOutR.set(nn.outFrac);
+            if (pv != null) {
+                double dtIn = BezierBaker.effInDt(pv, nn);
+                double s = Math.abs(dtIn) < 1e-12 ? 0 : nn.inDv / dtIn;
+                if (fInSl != null) fInSl.set(s);
+                if (fSl != null) fSl.set(s);
             }
-            if (fOut != null) {
-                double nf = FvdDesigner.clamp(parseOr(fOut, n.outFrac), MIN_FRAC, BezierBaker.MAX_FRAC);
-                if (n.outFrac > 1e-9) n.outDv *= nf / n.outFrac;
-                n.outFrac = nf;
+            if (nx != null && fOutSl != null) {
+                double dtOut = BezierBaker.effOutDt(nn, nx);
+                fOutSl.set(Math.abs(dtOut) < 1e-12 ? 0 : nn.outDv / dtOut);
             }
-            if (fV0 != null) {
-                // through the spinner so the menu shows it and the track
-                // rebuilds (start speed is per-coaster, not in lane undo)
-                app.startSpeedSpinner.getValueFactory().setValue(
-                    FvdDesigner.clamp(parseOr(fV0, app.coaster.v0), 1, 100));
+            if (fV0R != null) fV0R.set(app.coaster.v0);
+            if (fInitR != null && rSec < sections().size()) {
+                fInitR.set(sections().get(rSec).vDesign());
             }
-            if (fInit != null && dlgSec < sections().size()) {
-                // a changed initial design speed PINS (v18.2 — the
-                // D162 deliberate-conflict semantics; the reconcile
-                // leaves it alone, B lines the real graphs up)
-                Section s0 = sections().get(dlgSec);
-                double nv = FvdDesigner.clamp(
-                    parseOr(fInit, s0.vDesign()), 1, 100);
-                if (Math.abs(nv - s0.vDesign()) > 1e-9) {
-                    s0.vDesign(nv);
-                    s0.vPinned(true);
-                }
-            }
-            double val = parseOr(fVal, n.val);
-            if (prev != null) {
-                double dt = Math.max(minGap(), parseOr(fDt, n.t - prev.t));
-                moveNode(idx, prev.t + dt, val);   // honors ripple toggles
-            } else {
-                moveNode(idx, n.t, val);
-            }
-        };
-        ok.setOnAction(ev -> {
-            if (dSurf) {   // re-enter the captured strip surface
-                boolean os = surfStrip;
-                SpeedControl oc = surfCtl;
-                RunSec orr = surfRs;
-                surfCtl = dCtl;
-                surfRs = dRs;
-                surfStrip = true;
-                try {
-                    okCore.run();
-                } finally {
-                    surfStrip = os;
-                    surfCtl = oc;
-                    surfRs = orr;
-                }
-            } else {
-                okCore.run();
-            }
-            dlg.close();
         });
-        cancel.setOnAction(ev -> dlg.close());
+        docRestoreHooks.add(refresh);
+        dlg.setOnHidden(ev -> docRestoreHooks.remove(refresh));
 
         dlg.setScene(new Scene(grid));
         dlg.show();
-        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
+        app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
+    }
+
+    /** A LIVE number box (D225): TextField + ▲/▼ steppers + mouse
+     *  wheel (Shift ×10, Ctrl ×0.1). TEXT-DRIVEN: every parseable text
+     *  change calls onValue (clamped to [min, max] for the steppers;
+     *  typed values pass through as typed and the sink clamps); a
+     *  blank/unparseable box calls nothing — the value holds. */
+    private static final class LiveNum {
+        final TextField field = new TextField();
+        final HBox node;
+        final double step, min, max;
+        java.util.function.DoubleConsumer onValue;
+        private boolean muted;
+
+        LiveNum(double init, double step, double min, double max) {
+            this.step = step;
+            this.min = min;
+            this.max = max;
+            field.setPrefColumnCount(7);
+            // numeric-only entry (v18.1, user spec — every number box
+            // accepts digits, sign and period alone)
+            field.setTextFormatter(FvdDesigner.signedNumFormatter());
+            field.setText(fmt(init));
+            Button up = stepBtn("▲"), dn = stepBtn("▼");
+            up.setOnAction(e -> nudge(1));
+            dn.setOnAction(e -> nudge(-1));
+            VBox arrows = new VBox(up, dn);
+            arrows.setSpacing(0);
+            node = new HBox(2, field, arrows);
+            node.setAlignment(Pos.CENTER_LEFT);
+            field.setOnScroll(e -> {
+                double d = e.getDeltaY() != 0 ? e.getDeltaY() : e.getDeltaX();
+                if (d == 0) return;
+                double k = e.isShiftDown() ? 10 : e.isControlDown() ? 0.1 : 1;
+                nudge(d > 0 ? k : -k);
+                e.consume();
+            });
+            field.textProperty().addListener((o, a, b) -> {
+                if (muted || onValue == null) return;
+                Double v = parsed();
+                if (v != null) onValue.accept(v);
+            });
+        }
+
+        private static Button stepBtn(String glyph) {
+            Button b = new Button(glyph);
+            b.setFocusTraversable(false);
+            b.setStyle("-fx-font-size: 6px; -fx-padding: 0 4 0 4;");
+            b.setMinHeight(11);
+            b.setPrefHeight(11);
+            b.setMaxHeight(11);
+            return b;
+        }
+
+        static String fmt(double v) {
+            return String.format(Locale.US, "%.3f", v);
+        }
+
+        /** The box's number, or null while blank/unparseable. */
+        Double parsed() {
+            try {
+                String t = field.getText().trim();
+                if (t.isEmpty() || t.equals("-") || t.equals(".")
+                        || t.equals("-.")) {
+                    return null;
+                }
+                return Double.parseDouble(t);
+            } catch (NumberFormatException ex) {
+                return null;
+            }
+        }
+
+        /** ±k steps from the current number (a blank box steps from
+         *  0), clamped, formatted — the text change applies it. */
+        void nudge(double k) {
+            Double cur = parsed();
+            double base = cur != null ? cur : 0;
+            double v = Math.round((base + k * step) / (step * 0.001))
+                * (step * 0.001);   // kill float dust at 3 decimals of step
+            v = FvdDesigner.clamp(v, min, max);
+            field.setText(fmt(v));
+            field.positionCaret(field.getText().length());
+        }
+
+        /** Programmatic set that does NOT apply. */
+        void set(double v) {
+            muted = true;
+            try {
+                field.setText(fmt(v));
+            } finally {
+                muted = false;
+            }
+        }
     }
 
     /** Auto-fit each lane's value axis to the curve within the current
@@ -12972,7 +13632,7 @@ class GraphEditor extends Region {
      *  during drags so the scale doesn't shift under the cursor. */
     private void updateScale() {
         if (dragNodeIdx >= 0 || dragHandleIdx >= 0
-                || elDragBoundary >= 0 || elDragSmooth >= 1
+                || elDragBoundary >= 0 || elDragSmooth >= 0
                 || bridgeDragGap) return;
         double t0 = viewStart(), t1 = viewEnd();
         if (activeSc() != null || activeBridge() != null) {
@@ -13404,6 +14064,14 @@ class GraphEditor extends Region {
         }
         GraphicsContext gc = canvas.getGraphicsContext2D();
         double w = canvas.getWidth(), h = canvas.getHeight();
+        if (app.coaster.pieces.isEmpty()) {   // NO COASTER (D230): blank —
+            // BEFORE any plot geometry (marginRight reads the lanes)
+            if (w > 0 && h > 0) {
+                gc.setFill(Color.rgb(20, 22, 28));
+                gc.fillRect(0, 0, w, h);
+            }
+            return;
+        }
         if (w <= 0 || h <= 0 || plotWidth() <= 0 || plotHeight() <= 0) return;
         enforceLocks();           // before updateScale sees the handles
         // an AXIS DOMAIN change re-scales the whole x-axis: a manual
@@ -14117,7 +14785,9 @@ class GraphEditor extends Region {
         // insert preview: translucent white dot riding the curve, with
         // the lane's value at that point alongside (the DISPLAYED
         // curve: base+delta in the influence Resulting view)
-        if (!Double.isNaN(hovT)) {
+        if (!Double.isNaN(hovT) && !lane.isEmpty()) {   // (a lane-less
+                                                       // section swap under a
+                                                       // live hover, D231)
             double hv = dispVal(activeLane, hovT,
                 BezierBaker.evalAt(lane, hovT));
             double hx = ltToX(hovT);
@@ -14179,13 +14849,20 @@ class GraphEditor extends Region {
                     sampleIdxAtAxis(tOff + warpFwd(hovT)),
                     activeLane, hoverSlope);
             }
-            // CTRL (v16.16, user spec): the snapped spot's GLOBAL
-            // axis position leads the readout — you see exactly
-            // where the grid point sits before clicking to insert
+            // CTRL: the snapped spot's Δ from the PREVIOUS NODE leads
+            // the readout since v19.3 (D232, user spec — was the
+            // absolute axis position, v16.16): it reads as the
+            // transition length an insert there would create
             if (ctrlHover) {
-                hovTxt = String.format("%s=%.2f%s  ",
+                List<BezierBaker.Node> hl = active();
+                double prevT = 0;
+                for (BezierBaker.Node nd : hl) {
+                    if (nd.t <= hovT) prevT = nd.t;
+                    else break;
+                }
+                hovTxt = String.format("Δ%s=%.2f%s  ",
                     axisDist() ? "s" : "t",
-                    tOff + warpFwd(hovT), xUnit()) + hovTxt;
+                    warpFwd(hovT) - warpFwd(prevT), xUnit()) + hovTxt;
             }
             double[] hp = clampHover(hovTxt, hx + 8, hy - 6,
                 editL(), editR(), editT(), editB());
