@@ -3661,6 +3661,42 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     to Real". Headless: InflSplitGate (13, NEW) + SmoothRealGate
     (15) + the whole battery.
 
+152. v19.6 (D235): batch 20. (a) EXACT INFLUENCE SPLIT: split an
+    influenced section with live deltas anywhere — the track stays
+    put (mm class), the resulting graphs are continuous at the new
+    seam, both halves stay influenced; the right half's pair reads
+    divergent (the anchor — by design). Re-split the halves, save/
+    load, Ctrl+Z — all stable. (b) B/Shift+B on an influenced
+    section's design-lane edge nodes line the TRUE curves up with
+    the neighbor (a press or two). (c) SPEED CONTROLS work on
+    influenced sections (add a lift/brake — the ride obeys) and
+    CONVERTS carry controls across type/domain flips (complex
+    graphs included). Reverse piece with controls grays/explains.
+    (d) BAKE INFLUENCE at any density: no oscillation (nodes ride
+    the curve); the bake keeps the section's domain/axis flags.
+    (e) DELETE the FIRST section of a piece: the remaining track
+    does not move at all (bitwise; v0 follows on the ride entry).
+    (f) STRICT SEAMS: every creation arrives all-three-locked
+    (direct attach: yaw unlocked); locking never snaps; ↺ returns
+    the window-open value (or, for an axis locked this session,
+    the stored placement's angle — pre-attach for attached
+    pieces); the pop-out is "Strict seam orientation…" and hides/
+    returns with app focus. (g) TYPING in any text box never fires
+    shortcuts (space in the rename box, digits, B, Delete…);
+    Ctrl+S/Z still work. Delete works on speed controls even with
+    the wizard open. (h) FLY/POV capture hides open tool windows
+    and brings them back on release; the mouse never pops onto a
+    dialog mid-flight. (i) CLOSING the app with unsaved changes
+    asks Save / Don't Save / Cancel. (j) GRAY-OUT sweep: every
+    prevented action is grayed with a short reason (menu
+    parentheticals / hover tooltips) — e.g. "Make smoothing
+    real… (speed control in window)". (k) Smoothed-seam RESULTING
+    graphs show across the whole window from either neighbor.
+    Headless: InflSplitGate (19), ReanchorGate (3, NEW),
+    SmoothRealGate (15), CtlConvProbe/BakeOscProbe + the whole
+    battery; DomainGate 40d + Phase3Gate 49d re-baselined (see
+    D235.5/.7).
+
 ## Debugging heuristics learned the hard way
 
 - Wild 3D output after math edits → check the frame-rotation sign (`−ωU·R`)

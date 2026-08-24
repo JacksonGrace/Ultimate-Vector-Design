@@ -177,7 +177,7 @@ final class StartPanel extends StackPane {
         cancel.setFocusTraversable(false);
         cancel.setStyle("-fx-font-size: 11px;");
         cancel.setOnAction(e -> app.wizardCancel());
-        Button done = new Button(newC ? "Start designing  ✓" : "Add piece  ✓");
+        Button done = new Button(newC ? "Create Coaster  ✓" : "Create Track Piece  ✓");
         done.setDefaultButton(true);
         done.setFocusTraversable(false);
         done.setStyle("-fx-font-size: 12px; -fx-font-weight: bold;"

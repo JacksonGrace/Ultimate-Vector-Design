@@ -152,13 +152,18 @@ public class Coaster {
      *  (the un-influenced path is untouched code). */
     public static void discardInfluence(LaneSection ls) {
         if (!ls.influenced()) return;
-        ls.vDesign = ls.vAuthored;
+        // an ANCHORED half (v19.6, D235) keeps its OPERATING speed on
+        // discard — its vAuthored is the parent ref's speed at the
+        // cut, not a frozen authored speed to return to
+        if (ls.inflRefTilt == null) ls.vDesign = ls.vAuthored;
         ls.vAuthored = Double.NaN;
         ls.deltaLanes = null;
         ls.baseCurves = null;
         ls.editInfluence = false;
         ls.inflRollGlobal = false;
         ls.inflYawPitchGlobal = false;
+        ls.inflRefTilt = null;
+        ls.inflVStarK = 1;
     }
 
     /** SPLIT a piece before section sectionIdx (v12.0, D70; exact
@@ -219,6 +224,51 @@ public class Coaster {
         return pieceIdx + 1;
     }
 
+    /** RE-ANCHOR a piece at a compiled section boundary (v19.6, D235
+     *  — deleting a piece's FIRST section must leave the remaining
+     *  track exactly where it was, user spec): the splitPiece pose
+     *  recipe written onto the EXISTING piece — position + full
+     *  orientation from the boundary Span, the canonical pair for
+     *  bitwise chain arithmetic (D199), a tilted parent handing the
+     *  DESIGN chain + the tilt as the piece's own true-tier deltas
+     *  (D224). Callers skip strict-seam FOLLOWERS (their entry is
+     *  glued to the seam — the stored placement matters only when
+     *  orphaned). */
+    public void reanchorAtBoundary(TrackPiece p,
+                                   TrackCompiler.Span boundarySpan) {
+        TrackPose boundary = boundarySpan.exit();
+        p.x = boundary.pos().x();
+        p.y = boundary.pos().y();
+        p.z = boundary.pos().z();
+        p.baseOrient = boundary.orient();
+        p.canonOrient = null;
+        p.canonPsiDeg = 0;
+        p.yawDeg = 0;
+        p.pitchDeg = 0;
+        p.rollDeg = 0;
+        p.designPitchDeg = 0;
+        p.designRollDeg = 0;
+        boolean pair = boundarySpan.exitCanon() != null;
+        if (pair) {
+            p.canonPsiDeg = boundarySpan.exitPsi();
+            p.canonOrient = boundarySpan.exitCanon();
+        }
+        Quat tilt = boundarySpan.exitTilt();
+        if (pair && tilt != null && tilt != Quat.IDENTITY) {
+            Quat design = tilt.conjugate().mul(boundary.orient());
+            double[] d = TrackPiece.decomposeNear(design, boundary.orient(),
+                0, 0, 0);
+            if (d != null) {
+                p.baseOrient = design;
+                p.yawDeg = d[0];
+                p.pitchDeg = d[1];
+                p.rollDeg = d[2];
+            } else {
+                p.canonOrient = null;   // re-solve from the world pose
+            }
+        }
+    }
+
     /** REVERSE PIECE = a CONVERT (v17.0, D134 — user re-spec,
      *  replacing both the D71 model transformation and the short-lived
      *  D133 design-direction scheme): the piece's compiled geometry is
@@ -249,7 +299,9 @@ public class Coaster {
             if (s instanceof BridgeSection) return false;
             // SPEED CONTROLS refuse reversal (v18.0, D160): a lift/
             // brake acting on the mirrored flow is ill-defined —
-            // remove the controls first (the editor explains)
+            // remove the controls first (the editor PRE-CHECKS with
+            // its own reason since v19.6, D235 — this false return
+            // used to fall through misattributed as "too short")
             if (!s.speedControls().isEmpty()) return false;
         }
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
@@ -616,9 +668,9 @@ public class Coaster {
         if (np < 0) return -1;
         TrackPiece f = pieces.get(np);
         f.followPrev = true;
-        f.sLockYaw = false;      // heading follows (bridge convention);
-        f.sLockPitch = true;     // pitch/roll DISCONTINUOUS at the
-        f.sLockRoll = true;      //   original values (editable, D136)
+        f.sLockYaw = true;       // ALL THREE locked at creation (v19.6,
+        f.sLockPitch = true;     // D235 — user spec; the seeds are the
+        f.sLockRoll = true;      // current angles, so nothing moves)
         seedStrictValues(f, f.entryPose().orient());
         return np;
     }
@@ -711,6 +763,21 @@ public class Coaster {
      *  too small to have engaged. */
     public String makeSmoothingReal(int followerIdx, double dt,
                                     double spacing, double adaptTol) {
+        return makeSmoothingReal(followerIdx, dt, spacing, adaptTol,
+            false);
+    }
+
+    /** DRY-RUN check (v19.6, D235 — the seam menu GRAYS the item with
+     *  the reason instead of failing on click, the user's "never let
+     *  a click do nothing" rule): every refusal above the fit runs,
+     *  nothing mutates. null = would apply (up to fit degeneracy). */
+    public String makeSmoothingRealWhy(int followerIdx, double dt) {
+        return makeSmoothingReal(followerIdx, dt, 0.1, 0, true);
+    }
+
+    public String makeSmoothingReal(int followerIdx, double dt,
+                                    double spacing, double adaptTol,
+                                    boolean dryRun) {
         if (!followerActive(followerIdx)) return "not a strict seam";
         TrackPiece B = pieces.get(followerIdx);
         TrackPiece A = pieces.get(followerIdx - 1);
@@ -732,8 +799,11 @@ public class Coaster {
         if ((lPrev.influenced() && lPrev.vAuthored != lPrev.vDesign)
                 || (lNext.influenced()
                     && lNext.vAuthored != lNext.vDesign)) {
-            return "a legacy divergent-speed influence pair sits on "
-                + "the seam — bake or discard its influence first";
+            // split-anchored halves (D235) and legacy hand-edited
+            // pairs both land here — their authored clock genuinely
+            // differs from the operating one
+            return "a divergent-speed influence pair sits on the "
+                + "seam — bake or discard its influence first";
         }
         if (lPrev.reversed() || lNext.reversed()) {
             return "legacy reversed sections refuse — rebuild them "
@@ -851,6 +921,7 @@ public class Coaster {
                 + "smoothing window — zero them there or bake the "
                 + "influence first";
         }
+        if (dryRun) return null;   // every check passed (D235)
         // the FIT (may be refused by degenerate geometry — do it
         // before mutating anything)
         LaneSection W = fitLanes(w, vW, lPrev instanceof GeoSection,
@@ -921,10 +992,9 @@ public class Coaster {
         B.designPitchDeg = 0;
         B.designRollDeg = 0;
         B.sSmoothLen = 0;
-        B.sLockYaw = false;
-        B.sLockPitch = true;
-        B.sLockRoll = true;
-        B.sSeenSettings = false;
+        B.sLockYaw = true;    // ALL THREE locked at creation (v19.6,
+        B.sLockPitch = true;  // D235 — user spec; direct attach is
+        B.sLockRoll = true;   // the one yaw-unlocked exception)
         seedStrictValues(B, worldCut);
         // ---- the trailing seam auto-removes when the joint is
         // essentially exact (see the doc above) ----
@@ -3093,6 +3163,26 @@ public class Coaster {
         for (int k = 0; k < nn; k++) best[k] = lane.get(k).val;
         double bestCum = Double.MAX_VALUE;
         double prevWorst = Double.MAX_VALUE;
+        // POINTWISE GUARD (v19.6, D235 — the user's "oscillations in
+        // baking influence", reproduced on ANY sharply-stepped data
+        // at coarse uniform spacing): the cumulative-area metric
+        // alone PREFERS an alternating solution wherever segments
+        // genuinely can't hold the data's area (a 0.2 s step inside
+        // 0.15 s segments) — ±2 g node ringing through FLAT
+        // stretches shipped as the "best" state. A pass's state may
+        // now win only while its BAKED CURVE stays pointwise close
+        // to the data relative to the raw fit's own miss — ringing
+        // swings the curve far off the data where it is flat, while
+        // a legitimate coarse-fit area correction keeps the curve
+        // inside the data's own envelope (the D111 coarse
+        // convergence survives, gated 40d).
+        double dLo = Double.MAX_VALUE, dHi = -Double.MAX_VALUE;
+        for (double[] row : val) {
+            dLo = Math.min(dLo, row[c]);
+            dHi = Math.max(dHi, row[c]);
+        }
+        double devSlack = 0.02 * Math.max(1e-6, dHi - dLo);
+        double rawCurveDev = -1;   // pass 0 (the raw fit) records it
         // 9th pass measures the 8th application; nothing unmeasured
         for (int pass = 0; pass < 9; pass++) {
             // bake THIS lane exactly as the compiler will (the
@@ -3128,7 +3218,23 @@ public class Coaster {
             // 0.19 m on an adaptive force→geo fit). Every pass's
             // measurement competes; the best state is what ships, so
             // a lane the matcher can't help keeps its pointwise fit.
-            if (maxCum < bestCum) {
+            // Since v19.6 (D235) a state must ALSO pass the pointwise
+            // curve guard above to win.
+            double curveDev = 0;
+            for (FVDIntegrator.Keyframe kf : kfs) {
+                double t = kf.t();
+                if (t < lane.get(0).t || t > lane.get(nn - 1).t) continue;
+                curveDev = Math.max(curveDev,
+                    Math.abs(kf.Gv() - valAtT(tG, val, c, t)));
+            }
+            if (rawCurveDev < 0) rawCurveDev = curveDev;   // pass 0
+            if (System.getProperty("fvd.dbgArea") != null) {
+                System.err.printf(java.util.Locale.US,
+                    "AREA c=%d pass=%d nn=%d range=%.3f raw=%.3f cur=%.3f cum=%.4f%n",
+                    c, pass, nn, dHi - dLo, rawCurveDev, curveDev, maxCum);
+            }
+            if (maxCum < bestCum
+                    && curveDev <= rawCurveDev * 1.3 + devSlack) {
                 bestCum = maxCum;
                 for (int k = 0; k < nn; k++) best[k] = lane.get(k).val;
             }
@@ -3791,25 +3897,21 @@ public class Coaster {
      *  profile absorbed at the boundary; ~2 cm path shift on the
      *  gate's violent fixture, invisible against the 14 cm rails).
      *  Axis/rate/roll flags and the vPinned conflict ride onto
-     *  both halves. INFLUENCED sections split too since v19.5
-     *  (D234 — user re-spec lifting the D98 refusal, which dated
-     *  from when deltas had to start at zero): both halves come
-     *  out influenced — the delta lanes cut at the same coordinate
-     *  as the authored lanes (legit under the D102 mirrored pair:
-     *  the delta axis t* matches the authored clock to the
-     *  trapezoid's µs; DISTANCE axes are identical outright) and
-     *  each half's pair mirrors (vAuthored := its vDesign).
-     *  ACCEPTED CORNER: with non-zero deltas BEFORE the cut the
-     *  right half's base re-anchors at the cut's RESULTING frame
-     *  (the influence contract — ref runs from the section's own
-     *  entry), so the tail re-solves by roughly tail-length x the
-     *  prefix deltas' integrated rotation (gated: ~1.8 m for a
-     *  1 °/s nudge, ~12 m for a violent 6 °/s bump on the torture
-     *  hill — InflSplitGate c2/c4); deltas that are zero up to the
-     *  cut split in the normal seam class (gated 0.0003 m).
-     *  LEGACY divergent pairs (vAuthored != vDesign, hand-edited
-     *  files) refuse — their delta axis is a genuinely different
-     *  clock and the cut would mis-register.
+     *  both halves. INFLUENCED sections split EXACTLY since v19.6
+     *  (D235, superseding D234's proportional-tail corner): the cut
+     *  maps through the section's own REF + operating profile
+     *  (TrackCompiler.refProfile — the compile's arithmetic), the
+     *  delta lanes cut at the exact operating coordinate t*(xc),
+     *  and the RIGHT half receives a SPLIT ANCHOR — inflRefTilt
+     *  (the parent authored chain's frame at the cut relative to
+     *  the resulting frame), vAuthored = the parent ref profile's
+     *  speed there, inflVStarK = the parent operating profile's
+     *  speed as a ratio of the half's vDesign — so its ref/base
+     *  CONTINUES the parent's exactly and the resulting tail stays
+     *  put (seam class, gated) whatever the deltas did before the
+     *  cut. The left half keeps the parent's anchor fields.
+     *  Divergent legacy pairs split correctly too (the map handles
+     *  the re-timed delta axis).
      *  Refuses reversed, s/c and bridge
      *  sections and cuts at the very ends. The editor's "Split
      *  section/track piece here" both ride on this (the piece
@@ -3819,8 +3921,7 @@ public class Coaster {
                                   double dt) {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
-        if (!(sec instanceof LaneSection ls) || sec.reversed()
-                || (ls.influenced() && ls.vAuthored != ls.vDesign)) {
+        if (!(sec instanceof LaneSection ls) || sec.reversed()) {
             return false;
         }
         double end = BezierBaker.rideEnd(ls.lanes);
@@ -3835,9 +3936,67 @@ public class Coaster {
         int i1 = Math.min(sp.i1(), r.samples().size() - 1);
         if (i1 - sp.i0() < 1) return false;
         List<FVDIntegrator.Sample> s = r.samples().subList(sp.i0(), i1 + 1);
-        FVDIntegrator.Sample cs = ls.domain() == Section.Domain.DISTANCE
-            ? sampleAtArc(s, sp.s0() + xc)
-            : sampleAtTime(s, sp.t0() + xc);
+        boolean da = ls.domain() == Section.Domain.DISTANCE;
+        FVDIntegrator.Sample cs;
+        double xStar = xc;          // the delta-axis cut coordinate
+        Quat refAnchor = null;      // the right half's ref anchor
+        double vRefCut = Double.NaN;
+        double vStarCut = Double.NaN;
+        if (ls.influenced()) {
+            // EXACT influence cut (v19.6, D235): rebuild the ref +
+            // operating profile with the compiler's own arithmetic
+            // and read the cut off it — arc, ref frame/speed,
+            // operating clock/speed. The entry orientation is the
+            // DESIGN-chain frame (Span.exitTilt canonization, the
+            // make-real precedent; heading drops out of everything
+            // read here).
+            int ei = spanIdx == 0 ? sp.i0() : sp.i0() - 1;
+            FVDIntegrator.Sample es = r.samples().get(ei);
+            Quat tw = sp.exitTilt();
+            boolean tilted = tw != null && tw != Quat.IDENTITY;
+            Quat entryQ = Quat.fromFrame(es.T(), es.U());
+            if (tilted) entryQ = tw.conjugate().mul(entryQ).normalize();
+            TrackCompiler.RefProfile rp = TrackCompiler.refProfile(ls,
+                new TrackPose(es.pos(), entryQ), dt,
+                ls instanceof GeoSection, fric(),
+                BezierBaker.bake(ls.lanes, da ? 0.05 : 0.01));
+            List<FVDIntegrator.Sample> rf = rp.ref();
+            if (rf.size() < 2) return false;
+            int lo = 0;
+            while (lo + 2 < rf.size()
+                    && (da ? rf.get(lo + 1).s() : rf.get(lo + 1).t()) <= xc) {
+                lo++;
+            }
+            double x0 = da ? rf.get(lo).s() : rf.get(lo).t();
+            double x1 = da ? rf.get(lo + 1).s() : rf.get(lo + 1).t();
+            double u = x1 - x0 < 1e-12 ? 0
+                : Math.max(0, Math.min(1, (xc - x0) / (x1 - x0)));
+            vRefCut = rf.get(lo).v()
+                + u * (rf.get(lo + 1).v() - rf.get(lo).v());
+            vStarCut = rp.vStar()[lo]
+                + u * (rp.vStar()[lo + 1] - rp.vStar()[lo]);
+            xStar = da ? xc
+                : rp.tStar()[lo] + u * (rp.tStar()[lo + 1] - rp.tStar()[lo]);
+            Quat refCutQ = nlerp(
+                Quat.fromFrame(rf.get(lo).T(), rf.get(lo).U()),
+                Quat.fromFrame(rf.get(lo + 1).T(), rf.get(lo + 1).U()), u);
+            // the right half's entry = where the parent RESULTING
+            // chain cuts: pass 2 consumes the synth rows by its own
+            // clock (TIME rows) / its own arc (DISTANCE rows), so
+            // the boundary sits at operating time t*(xc) — NOT at
+            // the ref arc, whose resulting position drifts with the
+            // deltas. The anchor is the ref frame relative to that
+            // sample (design-chain frame; the piece tilt cancels
+            // inside the relative rotation anyway).
+            cs = da ? sampleAtArc(s, sp.s0() + xc)
+                    : sampleAtTime(s, sp.t0() + xStar);
+            Quat csC = Quat.fromFrame(cs.T(), cs.U());
+            if (tilted) csC = tw.conjugate().mul(csC).normalize();
+            refAnchor = csC.conjugate().mul(refCutQ).normalize();
+        } else {
+            cs = da ? sampleAtArc(s, sp.s0() + xc)
+                    : sampleAtTime(s, sp.t0() + xc);
+        }
         // plain math — FvdDesigner.clamp would drag JavaFX into the
         // headless gates through its static Color fields
         double vCut = Math.max(1, Math.min(100, cs.v()));
@@ -3857,9 +4016,15 @@ public class Coaster {
             h.rollAbsolute = ls.rollAbsolute;
             h.vPinned(ls.vPinned());
         }
-        if (ls.influenced()) {   // both halves stay influenced (D234)
-            carryInfluence(ls, a, xc, false);
-            carryInfluence(ls, b, xc, true);
+        if (ls.influenced()) {   // both halves stay influenced (D234);
+                                 // deltas cut at the OPERATING
+                                 // coordinate + the right half takes
+                                 // the split anchor (D235)
+            carryInfluence(ls, a, xStar, false);
+            carryInfluence(ls, b, xStar, true);
+            b.inflRefTilt = refAnchor;
+            b.vAuthored = Math.max(0.1, vRefCut);
+            b.inflVStarK = vStarCut / vCut;
         }
         // speed controls partition at the cut, native axis — exact
         // (v18.0, D160; straddling controls clip into two)
@@ -4062,20 +4227,40 @@ public class Coaster {
         return out;
     }
 
-    /** Carry INFLUENCE onto a split half (v19.5, D234): the delta
-     *  lanes cut at the same coordinate as the authored lanes (the
-     *  mirrored-pair invariant makes the two axes agree — divergent
-     *  pairs refuse upstream), the influence axis flags copy, and
-     *  the half's pair mirrors (vAuthored := its own vDesign, the
-     *  D102 rule — the right half's constructor already took the
-     *  cut speed). editInfluence stays off — re-check "Edit
-     *  influence" to edit the half's deltas. */
+    /** Carry INFLUENCE onto a split half (v19.5 D234; anchors v19.6
+     *  D235): the delta lanes cut at the given DELTA-AXIS coordinate,
+     *  the influence axis flags copy. The LEFT half keeps the
+     *  parent's anchor + authored speed (its ref is the parent's
+     *  truncated); the RIGHT half starts on the mirror — the split
+     *  overrides it with the computed anchor, make-real's
+     *  zero-deltas-in-window cut keeps the mirror (ref == resulting
+     *  at such a cut, so no anchor is needed). editInfluence stays
+     *  off — re-check "Edit influence" to edit the half's deltas. */
     private static void carryInfluence(LaneSection src, LaneSection dst,
                                        double xc, boolean keepRight) {
         dst.deltaLanes = splitLanes(src.deltaLanes, xc, keepRight);
         dst.inflRollGlobal = src.inflRollGlobal;
         dst.inflYawPitchGlobal = src.inflYawPitchGlobal;
-        dst.vAuthored = dst.vDesign;
+        if (keepRight) {
+            dst.vAuthored = dst.vDesign;
+        } else {
+            dst.inflRefTilt = src.inflRefTilt;
+            dst.inflVStarK = src.inflVStarK;
+            dst.vAuthored = src.vAuthored;
+        }
+    }
+
+    /** Normalized lerp between two NEARBY unit quats (adjacent
+     *  integration samples — indistinguishable from slerp there;
+     *  sign-corrected for the double cover). */
+    private static Quat nlerp(Quat a, Quat b, double u) {
+        double d = a.w() * b.w() + a.x() * b.x()
+            + a.y() * b.y() + a.z() * b.z();
+        double sg = d < 0 ? -1 : 1;
+        return new Quat(a.w() + u * (sg * b.w() - a.w()),
+                        a.x() + u * (sg * b.x() - a.x()),
+                        a.y() + u * (sg * b.y() - a.y()),
+                        a.z() + u * (sg * b.z() - a.z())).normalize();
     }
 
     /** True when every delta lane evaluates to (essentially) zero
@@ -4341,9 +4526,13 @@ public class Coaster {
             TrackPiece next = pieces.get(pieceIdx + 1);
             if (strictSeam) {
                 next.followPrev = true;
-                next.sLockYaw = bs.lockYaw;
-                next.sLockPitch = bs.lockPitch;
-                next.sLockRoll = bs.lockRoll;
+                // ALL THREE locked at creation (v19.6, D235 — user
+                // spec: "after a bridge is converted, yaw locked
+                // too"; the seeds are the current angles, nothing
+                // moves; was the bridge's own locks)
+                next.sLockYaw = true;
+                next.sLockPitch = true;
+                next.sLockRoll = true;
                 seedStrictValues(next, next.entryPose().orient());
                 // smoothing defaults ON at 10 m after a bridge convert
                 // (v17.4, D141 — user spec: the joint replaces a

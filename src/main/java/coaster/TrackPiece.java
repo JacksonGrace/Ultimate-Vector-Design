@@ -141,11 +141,8 @@ public final class TrackPiece {
      *  (bitwise-historic). Persisted as `piece` field 18. */
     public double sSmoothLen;
 
-    /** Has this seam's SETTINGS pop-out been opened before (v17.8,
-     *  D145)? First open: Discontinuous toggles seed the creation
-     *  angle; later opens capture the current one. Interaction
-     *  history — deliberately NOT persisted and NOT in undo. */
-    public boolean sSeenSettings;
+    // (the v17.8 sSeenSettings first-open flag is GONE, v19.6 D235 —
+    // locking an axis always holds the CURRENT angle now)
 
     public final List<Section> sections = new ArrayList<>();
 

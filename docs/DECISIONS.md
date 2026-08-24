@@ -9218,3 +9218,137 @@ conflict). Dev hook -Dfvd.devshot renders pick / lane / s-c.
    dialog's button renames to match ("Set Design to Real" — the
    D162 verbatim-match rule), the Add dialog's short "Set to
    Real" stays.
+
+## D235 (v19.6) — Batch 20: the EXACT influence split (anchor), influence + speed controls, area-match ringing fix, delete-first re-anchor, seam-lock rework, typed-text/key isolation, capture-hide windows, the gray-out rule
+
+1. THE INFLUENCE SPLIT IS EXACT (user file "Split Influence not
+   lining up": the D234 split left a resulting-value step at the
+   seam and moved the tail — the documented proportional corner,
+   now CLOSED). Root cause: the right half's ref/base re-derived
+   from the cut's RESULTING frame at the mirrored speed. Fix — the
+   SPLIT ANCHOR on LaneSection: inflRefTilt (the parent authored
+   chain's frame at the cut, relative to the resulting frame,
+   composed onto the entry for the REF integration), vAuthored :=
+   the parent ref profile's speed at the cut (the D102 mirror skips
+   anchored sections), inflVStarK := the parent operating profile's
+   speed as a ratio of vDesign. splitSectionAt maps the cut through
+   TrackCompiler.refProfile — the compiler's own ref+profile
+   arithmetic factored out — locating the boundary at operating
+   time t*(xc) (pass 2 consumes rows by ITS clock; the first
+   attempt anchored at ref arc and left 2.3 m), and cuts the delta
+   lanes at exactly t*(xc). Violent-prefix fixture: 11.8 m to
+   0.0002 m; resulting felt continuous (0.011 g); divergent LEGACY
+   pairs split correctly now too (the refusal dropped — the map
+   handles their re-timed axis; ~7 cm dur-rounding class at
+   +5 m/s). IO: `infl` fields 4-8 = the anchor quat + K
+   (Double.toString, loaded WITHOUT re-normalize — a divide by
+   0.999… would flip compile bits); undo SecState carries both.
+   discardInfluence keeps an anchored half's OPERATING speed (its
+   vAuthored is no return target). makeSmoothingReal still refuses
+   divergent pairs (anchored halves included) — its cuts don't run
+   the map.
+2. B ON AN INFLUENCED SECTION'S DESIGN SURFACE LINES UP THE TRUE
+   CURVES (user report: it aligned the AUTHORED curve with the
+   neighbor's true curve — resulting ended up offset by the edge
+   delta): applyBoundaryMatch gains a CORRECTION branch — authored
+   edge += (neighbor target − what our resulting curve currently
+   does at the seam, read by ownEdgeState: the neighbor-tail recipe
+   pointed inward, per-meter wrapper included). Re-press converges
+   (the standing pattern). The delta surface keeps D209.
+3. INFLUENCED SECTIONS TAKE SPEED CONTROLS (user ask; the D160
+   exclusion existed because the two-pass IGNORED controls = a
+   silent lift-drop on entry): speedControllable() drops
+   !influenced(); the two-pass now drives its REF, its operating
+   profile (drive+snap per step — the passD twins, x on the
+   operating clock) and PASS 2 with the same Ctl. Gated: a 12 m/s
+   clamp inside a live-delta section drives the profile to 12.00.
+4. CONVERTS ALREADY CARRIED SPEED CONTROLS (the user's "can't
+   convert with a control" was a MISATTRIBUTION): every convert
+   path has carried controls since v18.0 — type flips, domain
+   flips (x0/len + complex-graph nodes remapped through the
+   section map), partial cuts, make-real (CtlConvProbe verifies).
+   What he actually hit: reversePiece's control refusal surfacing
+   as the density preview's "too short to re-fit" — the UI now
+   PRE-CHECKS with the honest reason and the panel's Reverse
+   button grays with a hover explanation. The influence-bake also
+   kept resetting domain/axis flags to TIME/local (the 2-arg
+   convertSection) — it passes the section's own flags now.
+5. AREA-MATCH RINGING (user file "Oscillations in baking
+   influence" + screenshot; reproduced: ±2 g alternating nodes on
+   ANY sharply-stepped data at coarse uniform spacing, influence
+   or not): matchSegmentAreas' best-state metric (peak cumulative
+   area error) PREFERS an alternating solution wherever segments
+   cannot hold a step's area — the ringing state genuinely wins
+   that metric. Fix: the POINTWISE CURVE GUARD — a pass's state
+   may only ship while its baked curve stays within 1.3× the raw
+   fit's own pointwise miss (+2% of range). His bake: 24 flips to
+   0. The trade: coarse 2.0-spacing domain round-trips re-baseline
+   0.02 to ~3.2 m (the same mechanism was buying that; nobody
+   converts at 2.0 — D104's "converges with density" story), FINE
+   fits improved 0.24 to 0.046 m (gate 40d re-derived).
+6. DELETE-FIRST-SECTION RE-ANCHOR (user spec): deleting a piece's
+   first section re-anchors the piece at the old section-0/1
+   boundary via Coaster.reanchorAtBoundary — the splitPiece pose
+   recipe (canonical pair, D224 tilt handoff) written onto the
+   existing piece — so the remaining track NEVER moves: BITWISE
+   plain, 1e-13 tilted (ReanchorGate). The ride entry's v0 follows
+   the new first section's design speed (spinner re-synced without
+   a history push). Strict-seam FOLLOWERS skip (their entry is
+   glued to the seam — the remaining sections re-chain there, the
+   only geometry-consistent reading).
+7. STRICT-SEAM LOCK REWORK (user spec): (a) EVERY seam creation
+   locks ALL THREE axes (makeSeamStrict, bridge-convert strict,
+   make-real reseed — seeds are the current angles, nothing moves;
+   Phase3Gate 49d re-baselined: strict-vs-classic divergence now
+   includes the heading lever, the un-strict identity unchanged);
+   direct attach stays yaw-unlocked (the one exception), the
+   zero-distance-bridge YES keeps carrying the bridge's locks.
+   (b) LOCKING an axis ALWAYS holds the CURRENT angle — the D145
+   first-open creation-angle snap is REMOVED (sSeenSettings
+   deleted). (c) ↺ returns the value from WHEN THE WINDOW WAS
+   OPENED; an axis unlocked at open (locked during the session)
+   falls back to the STORED placement's angle — for a direct
+   attach that is the pre-attach orientation, the user's exact
+   ask. (d) The pop-out is "Strict seam orientation…" now, and it
+   HIDES on app focus loss + returns on refocus (the pv pattern's
+   third copy — it used to float over other applications).
+8. TYPED TEXT NEVER FIRES ACTIONS (user report: a space typed into
+   the rename box toggled POV): handleKey and forwardViewKey both
+   return early while a TextInputControl holds focus and no
+   shortcut modifier is down — bare keys type, Ctrl+combos still
+   act. The wizard's key gate also allows DELETE now (its
+   placeholder piece is live track — the user's "couldn't delete
+   speed controls" was the wizard eating the key), and
+   spDeleteSelected deletes a selected control even when a stray
+   node index is live (stripHasNodeSel routed real node deletions
+   earlier anyway).
+9. CAPTURE-HIDE (user report: a modeless dialog under the warped
+   hidden fly cursor stole the mouse stream — the view froze and
+   the cursor popped onto the window): while any pane owns the
+   mouse (fly / captured POV), every open tool window hides
+   (FvdDesigner.syncCaptureWindows — owned Stages + non-autohide
+   Popups, positions kept); release brings them back. External
+   applications stay untouched (his explicit carve-out).
+10. EXIT GATE: closing the app runs the same Unsaved-changes
+   dialog as New/Load (Save / Don't Save close, Cancel keeps it
+   open).
+11. THE GRAY-OUT RULE (user spec, STANDING): anything prevented
+   must be GRAYED with a short reason — 6 words ideally, 10 max —
+   menu items carry a "(reason)" parenthetical (tooltips can't
+   ride them), controls take GraphEditor.grayHint (new Node-row +
+   live-Supplier overloads). Swept: Make smoothing real is
+   PRE-CHECKED at menu build (makeSmoothingRealWhy dry-run + the
+   shortWhy compressor), silent-false ops post stats reasons
+   (un-strict, detach, make-strict, refreeze, s/c make-real,
+   piece split), plus-menu items/delete-section/delete-element/
+   view-rates/influence items wear parentheticals, bridge-panel
+   rows + mode radio + decel-linked + lane buttons + Resulting
+   roll + seam spinners + comb dots wear grayHint tooltips.
+   Never ship a click that silently does nothing.
+12. Smaller (user list): resulting smoothing graphs draw across
+   the WHOLE window when EITHER seam neighbor is active
+   (drawTrueStrokes collects both sides' spans; matching units
+   required on the far side); "Resolve speed conflict" renamed
+   "Resolve conflict"; wizard button "Create Coaster"/"Create
+   Track Piece"; a separator between Coaster Options… and New
+   Coaster….

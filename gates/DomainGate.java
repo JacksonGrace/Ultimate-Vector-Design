@@ -80,16 +80,19 @@ public class DomainGate {
 
         // ---- 40d/e (v16.1 rework, D104): domain conversion is a
         // REFIT that CONVERGES with density ----
-        // v16.5 (D111): the AREA-MATCHED fit dominates the residual
-        // now, so round trips land at cm scale at every density but
-        // are no longer density-MONOTONE (the floor is the carpet's
-        // structural freedom, not spacing): coarse fell 3.47 ->
-        // ~0.02 m, fine 0.24 -> ~0.27 (a dist-source 0.05 s carpet's
-        // node/bake-grid alignment). Both bounds hold the new story.
+        // v16.5 (D111): the AREA-MATCHED fit dominated the residual
+        // (coarse ~0.02 m) — by letting the matcher swing the curve
+        // POINTWISE far off the data (5x the raw fit's miss at 2.0
+        // spacing), the same trade that RANG stepped carpets with
+        // alternating +-2 g nodes (the user's 2026-08-24 bake
+        // oscillation). v19.6 (D235) guards the matcher pointwise:
+        // coarse round trips re-baseline to the D104 "converges with
+        // density" story (~3.2 m at 2.0 — nobody converts there),
+        // FINE fits improved 0.24 -> ~0.05 m and never ring.
         double devCoarse = domainRoundDev(2.0, 0.1);
         double devFine = domainRoundDev(0.7, 0.05);
-        check("40d area-matched refit: round trips at cm scale",
-            devCoarse < 0.1 && devFine < 0.35,
+        check("40d area-matched refit: fine at cm scale, coarse converges",
+            devCoarse < 4.0 && devFine < 0.1,
             String.format("coarse=%.3f fine=%.3f m", devCoarse, devFine));
 
         // ---- 40f: conversion carries vDesign + vPinned ----

@@ -285,6 +285,8 @@ class Viewport3D {
                     // one capture across all panes (v18.10)
                     if (povCaptured) app.releaseOtherCaptures(this);
                     syncPovLabel();   // the "(A)" hint is capture-only
+                    app.syncCaptureWindows();   // D235: tool windows
+                                                // hide while captured
                 } else {
                     toggleFly();
                 }
@@ -1032,6 +1034,7 @@ class Viewport3D {
         if (app.editor != null) app.editor.refreshMarkers();
         syncPovLabel();        // backward indicator (v16.16)
         syncViewMode();        // top-left mode label (v18.8)
+        app.syncCaptureWindows();   // D235: tool windows follow capture
     }
 
     void toggleFly() {
@@ -1075,6 +1078,8 @@ class Viewport3D {
             updateGridLOD(camPivot.getX() + gridCamX0, camPivot.getZ() + gridCamZ0);
         }
         refreshGizmo(false);   // gizmos STAY in fly (v16.12) — rescale
+        app.syncCaptureWindows();   // tool windows hide while captured
+                                    // (v19.6, D235)
     }
 
     /** Mouse look: measure the offset from the viewport centre, then warp
@@ -2197,6 +2202,7 @@ class Viewport3D {
             sub.setCursor(Cursor.DEFAULT);
             syncPovLabel();   // the "(A)" hint is capture-only
         }
+        app.syncCaptureWindows();   // D235: reshow hidden tool windows
     }
 
     /** Stop this pane's timers before removal (v18.10). */

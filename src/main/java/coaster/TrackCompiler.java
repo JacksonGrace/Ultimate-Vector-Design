@@ -1231,6 +1231,107 @@ public final class TrackCompiler {
             FVDIntegrator.Friction.NONE);
     }
 
+    /** REF + operating profile of an influenced section (v19.6,
+     *  D235): the two-pass's first half, factored out so
+     *  Coaster.splitSectionAt maps cuts with the compile's own
+     *  arithmetic. Applies the SPLIT ANCHOR (LaneSection.inflRefTilt
+     *  composes onto the entry orientation, inflVStarK scales the
+     *  operating entry — anchorless sections are BITWISE the
+     *  historic block) and the section's SPEED CONTROLS (drive +
+     *  snap on the operating profile, the passD twins; the ref
+     *  integrates under the same Ctl — controls' x live on the
+     *  operating axis, which the mirrored pair makes the authored
+     *  clock too). */
+    record RefProfile(List<FVDIntegrator.Sample> ref, double[] tStar,
+                      double[] vStar) {}
+
+    static RefProfile refProfile(LaneSection ls, TrackPose entry,
+                                 double dt, boolean isGeo,
+                                 FVDIntegrator.Friction fric,
+                                 List<FVDIntegrator.Keyframe> kfs) {
+        boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
+        Vec3 pos0 = ls.reversed ? new Vec3(0, entry.pos().y(), 0) : entry.pos();
+        Quat q0 = ls.reversed ? Quat.IDENTITY : entry.orient();
+        Quat qr = ls.inflRefTilt == null ? q0
+            : q0.mul(ls.inflRefTilt).normalize();
+        SpeedControl.Ctl ctl = ls.reversed ? null
+            : SpeedControl.Ctl.of(ls.speedCtls);
+        List<FVDIntegrator.Sample> ref;
+        if (isGeo) {
+            ref = distAxis
+                ? GeoIntegrator.integrateDist(kfs, dt, ls.vAuthored, pos0, qr,
+                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter, false,
+                    fric, ctl)
+                    .samples()
+                : GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, qr,
+                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter, false,
+                    fric, ctl)
+                    .samples();
+        } else {
+            FVDIntegrator.Options opts = new FVDIntegrator.Options();
+            opts.dt = dt;
+            opts.v0 = ls.vAuthored;
+            opts.pos0 = pos0;
+            opts.fric = fric;
+            opts.rollGlobal = ls.rollGlobal;
+            opts.rollPerMeter = ls.ratePerMeter;
+            opts.ctl = ctl;
+            if (!ls.reversed) {
+                TrackPose er = ls.inflRefTilt == null ? entry
+                    : new TrackPose(entry.pos(), qr);
+                opts.startHeading = er.T();
+                opts.startUp = er.U();
+            }
+            ref = distAxis ? FVDIntegrator.integrateTrackDist(kfs, opts)
+                           : FVDIntegrator.integrateTrack(kfs, opts);
+        }
+        int n = ref.size();
+        // operating profile (+ the re-timed clock for TIME sections;
+        // a DISTANCE section's axis IS the arc — no re-time). The
+        // profile carries its OWN friction deficit over ref's arc
+        // (v17.0 — Heun march; skipped entirely when loss-free) and
+        // the section's speed-control drives/snaps (v19.6, D235).
+        double yEntry = ref.get(0).pos().y();
+        double vApply = Math.max(0.5, ls.vDesign * ls.inflVStarK);
+        double[] tStar = new double[n];
+        double[] vStar = new double[n];
+        double lossStar = 0;
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                double dsF = ref.get(i).s() - ref.get(i - 1).s();
+                double xPrev = distAxis ? ref.get(i - 1).s() : tStar[i - 1];
+                double drv = ctl == null ? Double.NaN
+                    : ctl.drive(xPrev, vStar[i - 1]);
+                if (!Double.isNaN(drv)) {
+                    // driven interval (the passD twin): loss' is the
+                    // control's ∓2gA — friction absorbed by the drive
+                    lossStar += drv * dsF;
+                } else if (!fric.off()) {
+                    double f0 = fric.dLossDs(vStar[i - 1]);
+                    double vp = Math.max(0.5, FVDIntegrator.speedAt(
+                        ref.get(i).pos(), vApply, yEntry, lossStar + f0 * dsF));
+                    lossStar += (f0 + fric.dLossDs(vp)) / 2 * dsF;
+                }
+                if (ctl != null) {
+                    double vA = Math.max(0.1, FVDIntegrator.speedAt(
+                        ref.get(i).pos(), vApply, yEntry, lossStar));
+                    double dl = ctl.snap(xPrev, vStar[i - 1], vA,
+                        !Double.isNaN(drv));
+                    if (dl != 0) lossStar += dl;
+                }
+            }
+            vStar[i] = Math.max(0.1,
+                FVDIntegrator.speedAt(ref.get(i).pos(), vApply, yEntry,
+                    lossStar));
+            if (i > 0) {
+                double ds = ref.get(i).s() - ref.get(i - 1).s();
+                tStar[i] = tStar[i - 1]
+                    + ds / Math.max(0.5, (vStar[i] + vStar[i - 1]) / 2);
+            }
+        }
+        return new RefProfile(ref, tStar, vStar);
+    }
+
     static Centerline influencedLane(LaneSection ls, TrackPose entry,
                                      double dt, boolean isGeo,
                                      FVDIntegrator.Friction fric) {
@@ -1261,7 +1362,9 @@ public final class TrackCompiler {
         boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs =
             BezierBaker.bake(ls.lanes, distAxis ? 0.05 : 0.01);   // D151
-        if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored) {
+        if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored
+                && ls.inflRefTilt == null) {   // anchored halves never
+                                               // fast-path (D235)
             Centerline line = isGeo ? geoLane((GeoSection) ls, entry, dt, fric)
                                     : forceLane((ForceSection) ls, entry, dt, fric);
             // base guides off the very samples on show (identity
@@ -1271,63 +1374,17 @@ public final class TrackCompiler {
                     distAxis);
             return line;
         }
-        // REF at the AUTHORED speed (canonical frame when reversed,
-        // the D67 rule), under the section's OWN axis flags
+        // pass 2's entry pose (canonical frame when reversed, D67)
         Vec3 pos0 = ls.reversed ? new Vec3(0, entry.pos().y(), 0) : entry.pos();
         Quat q0 = ls.reversed ? Quat.IDENTITY : entry.orient();
-        List<FVDIntegrator.Sample> ref;
-        if (isGeo) {
-            ref = distAxis
-                ? GeoIntegrator.integrateDist(kfs, dt, ls.vAuthored, pos0, q0,
-                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter, false,
-                    fric)
-                    .samples()
-                : GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, q0,
-                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter, false,
-                    fric)
-                    .samples();
-        } else {
-            FVDIntegrator.Options opts = new FVDIntegrator.Options();
-            opts.dt = dt;
-            opts.v0 = ls.vAuthored;
-            opts.pos0 = pos0;
-            opts.fric = fric;
-            opts.rollGlobal = ls.rollGlobal;
-            opts.rollPerMeter = ls.ratePerMeter;
-            if (!ls.reversed) {
-                opts.startHeading = entry.T();
-                opts.startUp = entry.U();
-            }
-            ref = distAxis ? FVDIntegrator.integrateTrackDist(kfs, opts)
-                           : FVDIntegrator.integrateTrack(kfs, opts);
-        }
+        // REF + operating profile — factored into refProfile (v19.6,
+        // D235) so Coaster.splitSectionAt maps cuts with the compile's
+        // own arithmetic; applies the split anchor + speed controls
+        RefProfile rp = refProfile(ls, entry, dt, isGeo, fric, kfs);
+        List<FVDIntegrator.Sample> ref = rp.ref();
         int n = ref.size();
-        // operating profile (+ the re-timed clock for TIME sections;
-        // a DISTANCE section's axis IS the arc — no re-time). The
-        // profile carries its OWN friction deficit over ref's arc
-        // (v17.0 — Heun march; skipped entirely when loss-free).
-        double yEntry = ref.get(0).pos().y();
-        double vApply = Math.max(0.5, ls.vDesign);
-        double[] tStar = new double[n];
-        double[] vStar = new double[n];
-        double lossStar = 0;
-        for (int i = 0; i < n; i++) {
-            if (i > 0 && !fric.off()) {
-                double dsF = ref.get(i).s() - ref.get(i - 1).s();
-                double f0 = fric.dLossDs(vStar[i - 1]);
-                double vp = Math.max(0.5, FVDIntegrator.speedAt(
-                    ref.get(i).pos(), vApply, yEntry, lossStar + f0 * dsF));
-                lossStar += (f0 + fric.dLossDs(vp)) / 2 * dsF;
-            }
-            vStar[i] = Math.max(0.1,
-                FVDIntegrator.speedAt(ref.get(i).pos(), vApply, yEntry,
-                    lossStar));
-            if (i > 0) {
-                double ds = ref.get(i).s() - ref.get(i - 1).s();
-                tStar[i] = tStar[i - 1]
-                    + ds / Math.max(0.5, (vStar[i] + vStar[i - 1]) / 2);
-            }
-        }
+        double[] tStar = rp.tStar();
+        double[] vStar = rp.vStar();
         double[][] base = buildBase(ref, kfs, ls, isGeo,
             distAxis ? null : tStar, vStar, distAxis);
         // TIME durations land ON the dt grid (the convert rounding
@@ -1357,6 +1414,10 @@ public final class TrackCompiler {
             LaneSection.baseAt(base, 1, dur) + polyAt(d1, dur),
             LaneSection.baseAt(base, 2, dur) + polyAt(d2, dur)));
         ls.baseCurves = base;
+        // the section's controls drive pass 2 too (v19.6, D235 —
+        // design and real move equally, the D160 contract)
+        SpeedControl.Ctl ctl2 = ls.reversed ? null
+            : SpeedControl.Ctl.of(ls.speedCtls);
         // pass 2: the OTHER mode's integrator at the operating speed,
         // under the INFLUENCE axis flags (v16.5, D112)
         if (isGeo) {   // geo section + felt-G deltas → force integrator
@@ -1365,6 +1426,7 @@ public final class TrackCompiler {
             o2.v0 = ls.vDesign;
             o2.pos0 = pos0;
             o2.fric = fric;
+            o2.ctl = ctl2;
             o2.rollGlobal = ls.inflRollGlobal;
             o2.rollPerMeter = ls.ratePerMeter;
             if (!ls.reversed) {
@@ -1383,10 +1445,10 @@ public final class TrackCompiler {
         GeoIntegrator.Result r2 = distAxis
             ? GeoIntegrator.integrateDist(synth, dt, ls.vDesign, pos0, q0,
                 ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter,
-                false, fric)
+                false, fric, ctl2)
             : GeoIntegrator.integrate(synth, dt, ls.vDesign, pos0, q0,
                 ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter,
-                false, fric);
+                false, fric, ctl2);
         if (ls.reversed) return reverseAndPlace(r2.samples(), entry);
         FVDIntegrator.Sample last = r2.samples().get(r2.samples().size() - 1);
         return new Centerline(r2.samples(), new TrackPose(last.pos(), r2.qEnd(),

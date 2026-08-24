@@ -114,10 +114,14 @@ public sealed abstract class LaneSection implements Section
 
     @Override public List<Double> speedMarks() { return speedMarks; }
 
-    /** Lane sections take controls unless legacy-reversed or
-     *  influenced (both refuse UI-side; the compiler skips them). */
+    /** Lane sections take controls unless legacy-reversed.
+     *  INFLUENCED sections take them too since v19.6 (D235 — user
+     *  spec lifting the D160 exclusion): the two-pass drives its
+     *  ref, operating profile and pass 2 with the same Ctl, so a
+     *  lift/brake shapes the influenced ride exactly like a plain
+     *  one. */
     @Override public boolean speedControllable() {
-        return !reversed && !influenced();
+        return !reversed;
     }
 
     // ---------- INFLUENCE (v15.0, D98; SECTIONS-DESIGN §5.4) ----------
@@ -141,6 +145,21 @@ public sealed abstract class LaneSection implements Section
     /** UI: the strip edits the DELTA lanes (true) vs the design lanes.
      *  Session state — snapshotted in DocState, never saved to file. */
     public boolean editInfluence = false;
+
+    /** SPLIT-CONTINUATION anchor (v19.6, D235 — the EXACT influence
+     *  split, closing the D234 tail-re-solve corner): set only by
+     *  Coaster.splitSectionAt when a section with influence history
+     *  is cut. inflRefTilt composes onto the entry orientation for
+     *  the REF integration — the parent's AUTHORED chain's frame at
+     *  the cut, relative to the resulting frame — and inflVStarK
+     *  scales the operating profile's entry (vApply = vDesign × K:
+     *  the parent's operating profile over REF heights at the cut,
+     *  as a ratio so reconcile moves stay coherent). With an anchor
+     *  the vAuthored/vDesign pair legitimately DIVERGES (ref runs
+     *  at the parent's authored-profile speed), so the D102 mirror
+     *  skips anchored sections. null / 1 = classic, bitwise. */
+    public Quat inflRefTilt = null;
+    public double inflVStarK = 1;
 
     /** Last compile's BASE curves — rows {t*, lane0, lane1, lane2} in
      *  the delta lanes' units on the section-local operating clock
@@ -270,8 +289,11 @@ public sealed abstract class LaneSection implements Section
         // re-freeze, the D95 reconcile, resolve ops) — the section
         // then behaves exactly like a normal one (ref re-derives at
         // the new speed, deltas ride on top). The pair only diverges
-        // in hand-edited files, which the compiler still honors.
-        if (influenced()) vAuthored = v;
+        // in hand-edited files, which the compiler still honors —
+        // and in SPLIT-ANCHORED sections (v19.6, D235): their
+        // vAuthored is the parent ref's speed at the cut, an
+        // independent stored quantity the mirror must not clobber.
+        if (influenced() && inflRefTilt == null) vAuthored = v;
     }
 
     @Override public boolean vPinned() { return vPinned; }

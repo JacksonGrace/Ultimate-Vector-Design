@@ -2,19 +2,21 @@ import coaster.*;
 
 import java.util.*;
 
-/** D234 gate — INFLUENCED sections SPLIT (v19.5, user re-spec
- *  lifting the D98 refusal).
- *  a) structure: both halves influenced, mirrored pairs, axis flags
- *     carried, delta lanes cut continuously at the boundary.
- *  b) deltas ZERO up to the cut: the split holds the track in the
- *     normal seam class (the right half's base re-anchors at the
- *     cut's resulting frame == the ref frame there).
- *  c) deltas NON-ZERO before the cut: the tail re-solves slightly
- *     (the ACCEPTED CORNER — base is defined from the section's own
- *     entry); measured and bounded.
+/** D234/D235 gate — INFLUENCED sections SPLIT (v19.5 lifted the D98
+ *  refusal; v19.6 made the split EXACT via the ref anchor).
+ *  a) structure: both halves influenced, axis flags carried, delta
+ *     lanes cut continuously; the RIGHT half carries the SPLIT
+ *     ANCHOR (inflRefTilt + divergent vAuthored + inflVStarK).
+ *  b) deltas ZERO up to the cut: seam-class exact.
+ *  c) deltas NON-ZERO before the cut: ALSO seam-class exact since
+ *     D235 (the anchor continues the parent's ref/base — the D234
+ *     proportional-tail corner is CLOSED); the resulting felt is
+ *     continuous across the new seam.
  *  d) the piece-split chain (section split + D71 boundary split)
  *     adds nothing on top of the section split.
- *  e) a LEGACY divergent pair (vAuthored != vDesign) refuses.
+ *  e) a LEGACY divergent pair (vAuthored != vDesign) splits
+ *     correctly too (the map handles the re-timed delta axis).
+ *  f) an anchored half SAVE/LOAD round-trips to the same compile.
  */
 public class InflSplitGate {
 
@@ -115,10 +117,13 @@ public class InflSplitGate {
         LaneSection b = (LaneSection) c.pieces.get(0).sections.get(1);
         check(a.influenced() && b.influenced(),
             "a1 both halves come out influenced");
-        check(a.vAuthored == a.vDesign && b.vAuthored == b.vDesign,
-            "a2 both halves keep the mirrored pair (D102)",
-            String.format("left %.2f/%.2f right %.2f/%.2f",
-                a.vAuthored, a.vDesign, b.vAuthored, b.vDesign));
+        check(a.vAuthored == a.vDesign && a.inflRefTilt == null
+                && b.inflRefTilt != null && !Double.isNaN(b.vAuthored)
+                && b.inflVStarK > 0.1 && b.inflVStarK < 10,
+            "a2 left keeps the mirror, right carries the ANCHOR (D235)",
+            String.format("left %.2f/%.2f right %.2f/%.2f K %.4f",
+                a.vAuthored, a.vDesign, b.vAuthored, b.vDesign,
+                b.inflVStarK));
         check(a.inflRollGlobal == false && b.inflRollGlobal == false
                 && a.deltaLanes != null && b.deltaLanes != null,
             "a3 influence axis flags + delta lanes carried");
@@ -145,43 +150,97 @@ public class InflSplitGate {
             "d2 the D71 boundary split adds nothing",
             String.format("worst dev %.2e m", dev2));
 
-        // ---- (c) deltas NON-ZERO before the cut: the ACCEPTED
-        // CORNER (documented in splitSectionAt + CLAUDE.md). The
-        // right half's base re-derives from the cut's RESULTING
-        // frame — a force-mode base re-solves against gravity
-        // there, so the tail moves ~ tail-length x the prefix
-        // deltas' integrated rotation (the violent fixture's
-        // 6 deg/s bump = ~4.5 deg -> ~11.8 m over ~170 m at D234;
-        // a 1 deg/s nudge = ~0.75 deg -> ~1.8 m). c2/c4 are
-        // REGRESSION bounds on those measurements. ----
+        // ---- (c) deltas NON-ZERO before the cut: seam-class EXACT
+        // since D235 (the right half's SPLIT ANCHOR continues the
+        // parent's ref/base — at D234 this fixture measured 11.8 m
+        // of tail re-solve, the closed corner). ----
         Coaster c2 = fixture(1.0, 2.5);
         TrackCompiler.Result q0 = rebuild(c2);
         check(c2.splitSectionAt(0, 0, 3.0, DT),
             "c1 splits with deltas before the cut");
         TrackCompiler.Result q1 = rebuild(c2);
         double dev3 = pathDev(q0.samples(), q1.samples());
-        check(dev3 < 15.0,
-            "c2 violent-prefix tail re-solve (regression bound)",
+        check(dev3 < 0.01,
+            "c2 violent prefix: seam-class exact (D235 anchor)",
             String.format("worst dev %.4f m", dev3));
+        // resulting felt continuous across the new seam (his
+        // "slight jump in resulting values")
+        TrackCompiler.Span sL = q1.spans().get(0);
+        int ib = sL.i1();
+        double gJump = Math.abs(q1.samples().get(ib + 1).Gv()
+            - q1.samples().get(ib).Gv());
+        check(gJump < 0.05,
+            "c3 resulting felt continuous at the seam",
+            String.format("Gv step %.4f g", gJump));
         Coaster c4 = fixture(1.0, 2.5);
         LaneSection ls4 = (LaneSection) c4.pieces.get(0).sections.get(0);
         ls4.deltaLanes.set(0, lane(new double[][]{ {0, 0}, {1.0, 0},
             {1.75, 1}, {2.5, 0}, {6, 0} }));   // a 1 °/s nudge
         TrackCompiler.Result g0 = rebuild(c4);
         check(c4.splitSectionAt(0, 0, 3.0, DT),
-            "c3 gentle-prefix split applies");
+            "c4 gentle-prefix split applies");
         TrackCompiler.Result g1 = rebuild(c4);
         double dev4 = pathDev(g0.samples(), g1.samples());
-        check(dev4 < 3.0,
-            "c4 gentle prefix stays in its measured class",
+        check(dev4 < 0.01,
+            "c5 gentle prefix: seam-class exact",
             String.format("worst dev %.4f m", dev4));
 
-        // ---- (e) divergent legacy pair refuses ----
+        // ---- (e) divergent legacy pair SPLITS correctly (D235 —
+        // the map handles the re-timed delta axis) ----
         Coaster c3 = fixture(4.0, 5.5);
         LaneSection ls3 = (LaneSection) c3.pieces.get(0).sections.get(0);
         ls3.vAuthored = ls3.vDesign + 5;
-        check(!c3.splitSectionAt(0, 0, 3.0, DT),
-            "e1 divergent vAuthored/vDesign pair refuses");
+        TrackCompiler.Result e0 = rebuild(c3);
+        check(c3.splitSectionAt(0, 0, 3.0, DT),
+            "e1 divergent legacy pair splits");
+        TrackCompiler.Result e1r = rebuild(c3);
+        double devE = pathDev(e0.samples(), e1r.samples());
+        // the divergent pair's cut lands between two genuinely
+        // different clocks — the dur-rounding class scales with the
+        // speed gap (~7 cm measured on the +5 m/s legacy fixture)
+        check(devE < 0.15,
+            "e2 divergent split holds the track",
+            String.format("worst dev %.4f m", devE));
+
+        // ---- (f) anchored half IO round-trip ----
+        java.io.StringWriter sw = new java.io.StringWriter();
+        DesignIO.save(c2, DesignIO.Cosmetics.defaults(),
+            new java.io.PrintWriter(sw));
+        Coaster back = DesignIO.load(new java.io.BufferedReader(
+            new java.io.StringReader(sw.toString()))).coasters().get(0);
+        LaneSection rb = (LaneSection) back.pieces.get(0).sections.get(1);
+        check(rb.influenced() && rb.inflRefTilt != null
+                && rb.inflRefTilt.equals(((LaneSection) c2.pieces.get(0)
+                    .sections.get(1)).inflRefTilt),
+            "f1 the anchor round-trips bit-exactly");
+        TrackCompiler.Result q2 = rebuild(back);
+        double devIo = pathDev(q1.samples(), q2.samples());
+        check(devIo < 1e-9,
+            "f2 anchored save/load compiles to the same track",
+            String.format("worst dev %.2e m", devIo));
+
+        // ---- (g) SPEED CONTROLS on an influenced section (v19.6,
+        // D235 — the D160 exclusion lifted): a const-speed clamp
+        // acts on the two-pass ride ----
+        Coaster cg = fixture(2.0, 3.5);   // live deltas → real two-pass
+        LaneSection lg = (LaneSection) cg.pieces.get(0).sections.get(0);
+        SpeedControl gctl = new SpeedControl(4.0, 1.5);
+        gctl.speed = 12;   // hard clamp well below the natural ~17
+        lg.speedCtls.add(gctl);
+        check(lg.speedControllable(),
+            "g1 influenced sections take speed controls");
+        TrackCompiler.Result rg = rebuild(cg);
+        double vMid = Double.NaN;
+        TrackCompiler.Span sg = rg.spans().get(0);
+        for (int i = sg.i0(); i <= sg.i1(); i++) {
+            if (rg.samples().get(i).t() - sg.t0() >= 5.0) {
+                vMid = rg.samples().get(i).v();
+                break;
+            }
+        }
+        check(Math.abs(vMid - 12) < 0.6,
+            "g2 the control drives the influenced design profile",
+            String.format("v@mid-control %.2f (want 12)", vMid));
 
         System.out.println();
         System.out.println(fail == 0

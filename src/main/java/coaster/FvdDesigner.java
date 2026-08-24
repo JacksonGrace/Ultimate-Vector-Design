@@ -275,7 +275,10 @@ public class FvdDesigner extends Application {
                     boolean rateM, boolean rollAbs,
                     // speed controls + speed-line diamonds (v18.0,
                     // D160 — path data, deep-copied like lanes)
-                    List<SpeedControl> sctls, List<Double> smarks) {}
+                    List<SpeedControl> sctls, List<Double> smarks,
+                    // the influence split anchor (v19.6, D235 — it
+                    // shapes the compile, so undo must restore it)
+                    Quat inflRef, double inflVK) {}
 
     /** Deep copy of a 3-lane node-list set (null-safe). */
     private static List<List<BezierBaker.Node>> copyLanes(
@@ -358,6 +361,15 @@ public class FvdDesigner extends Application {
             wizardState);
     }
 
+    /** Re-sync the (off-scene) Start-speed spinner to coaster.v0
+     *  without a history push (v19.6, D235 — the delete-first-
+     *  section re-anchor moves v0 onto the new first section). */
+    void syncStartSpeedSpinner() {
+        docApplying = true;
+        startSpeedSpinner.getValueFactory().setValue(coaster.v0);
+        docApplying = false;
+    }
+
     /** A coaster's look — its stash, or the shell's for the active one,
      *  or defaults. */
     DesignIO.Cosmetics lookOf(Coaster c) {
@@ -375,7 +387,7 @@ public class FvdDesigner extends Application {
                         bs.reversed, false, bs.copy(),
                         null, Double.NaN, false, false, false,
                         false, false, false, false, false, false,
-                        null, null));
+                        null, null, null, 1));
                     continue;
                 }
                 if (s instanceof StraightCurveSection sc) {
@@ -387,7 +399,7 @@ public class FvdDesigner extends Application {
                         true, sc.viewOtherDomain, false, false,
                         false, false, false, false,
                         SpeedControl.copyList(sc.speedCtls),
-                        new ArrayList<>(sc.speedMarks)));
+                        new ArrayList<>(sc.speedMarks), null, 1));
                     continue;
                 }
                 LaneSection fs = (LaneSection) s;
@@ -400,7 +412,8 @@ public class FvdDesigner extends Application {
                     fs.inflRollGlobal, fs.inflYawPitchGlobal,
                     fs.ratePerMeter, fs.rollAbsolute,
                     SpeedControl.copyList(fs.speedCtls),
-                    new ArrayList<>(fs.speedMarks)));
+                    new ArrayList<>(fs.speedMarks),
+                    fs.inflRefTilt, fs.inflVStarK));
             }
             ps.add(new PieceState(secs, piece.x, piece.y, piece.z,
                 piece.yawDeg, piece.pitchDeg, piece.rollDeg,
@@ -539,6 +552,8 @@ public class FvdDesigner extends Application {
                         ls.editInfluence = st.editInfl();
                         ls.inflRollGlobal = st.inflRollG();
                         ls.inflYawPitchGlobal = st.inflYpG();
+                        ls.inflRefTilt = st.inflRef();   // D235 anchor
+                        ls.inflVStarK = st.inflVK();
                     }
                 } else if (sec instanceof StraightCurveSection scv) {
                     scv.viewOtherDomain = st.viewOther();
@@ -1245,14 +1260,25 @@ public class FvdDesigner extends Application {
             // (D222: the D221 orientation-link rows LEFT this branch
             // on user spec — bridge orientations work classically;
             // the next piece's own Track Piece panel is the surface)
-            box.getChildren().addAll(bridgeModeRow, bridgeLenRow,
+            box.getChildren().addAll(bridgeModeRow, bridgeLenRowWrap,
                 bridgeYawRow, bridgePitchRow, bridgeRollRow,
-                bridgePosRow);
+                bridgePosRowWrap);
         } else {
             syncPlacementSpinners();   // lock states follow the piece
             Button rev = new Button("Reverse piece…");
             rev.setFocusTraversable(false);
             rev.setStyle("-fx-font-size: 11px;");
+            // grayed = explained (D235): the two model refusals
+            boolean revCtls = false, revBridge = false;
+            if (hasCoaster() && editor.activePiece()
+                    < coaster.pieces.size()) {
+                for (Section s : coaster.pieces
+                        .get(editor.activePiece()).sections) {
+                    if (s instanceof BridgeSection) revBridge = true;
+                    if (!s.speedControls().isEmpty()) revCtls = true;
+                }
+            }
+            rev.setDisable(revCtls || revBridge);
             rev.setOnAction(ev2 -> {
                 pop.hide();
                 placementPopup = null;
@@ -1269,7 +1295,9 @@ public class FvdDesigner extends Application {
                 box.getChildren().add(
                     lockShapeRows(coaster.pieces.get(ai), ai));
             }
-            box.getChildren().add(rev);
+            box.getChildren().add(GraphEditor.grayHint(rev,
+                revBridge ? "Delete or convert the bridge first."
+                          : "Remove the speed controls first."));
             syncDesignReadout();
         }
         double[] grab = new double[2];
@@ -1412,6 +1440,17 @@ public class FvdDesigner extends Application {
      *  them to the viewport so the camera keeps moving. The popup's
      *  field is numeric-only, so consuming letters costs nothing. */
     void forwardViewKey(KeyEvent e, boolean pressed) {
+        // typed text never fires actions (v19.6, D235): with a text
+        // box focused in the dialog (the Coaster Options name field),
+        // Space must type a space, not toggle POV, and digits must
+        // type — the movement forwarding below only matters while a
+        // pane is CAPTURED, which never coexists with dialog typing
+        // (capture hides the tool windows, D235).
+        if (!e.isShortcutDown() && e.getSource() instanceof Scene ssc
+                && ssc.getFocusOwner()
+                    instanceof javafx.scene.control.TextInputControl) {
+            return;
+        }
         // the VIEW-MODE toggles work from any window too (v18.2, user
         // report: right-click into fly with the Speed Control panel
         // open, then Space did nothing) — POV and the ortho views are
@@ -1896,6 +1935,7 @@ public class FvdDesigner extends Application {
     // bridge placement modes (v13.5): the Placement dropdown edits the
     // NEXT piece through the bridge — mode radios + per-mode spinners
     private VBox bridgeModeRow;
+    private StackPane bridgeLenRowWrap, bridgePosRowWrap;   // D235 hints
     private HBox bridgeLenRow, bridgeYawRow, bridgePitchRow,
         bridgeRollRow, bridgePosRow;
     private RadioButton bridgeModePY, bridgeModeP, bridgeModeN;
@@ -2108,6 +2148,48 @@ public class FvdDesigner extends Application {
     void releaseOtherCaptures(Viewport3D except) {
         for (Viewport3D vp : viewports) {
             if (vp != except) vp.releaseCapture();
+        }
+    }
+
+    /** CAPTURE-HIDE (v19.6, D235 — user report: a modeless dialog
+     *  under the warped hidden fly cursor stole the mouse-move
+     *  stream, the look froze and the cursor re-appeared over the
+     *  window — the D189 overlay problem at OS-window scale): while
+     *  a pane owns the mouse (fly / captured POV) every open TOOL
+     *  window hides; release brings them back where they were.
+     *  External applications (Alt-Tab, the Windows key) are
+     *  untouched — the focus-loss story stays as it was. Idempotent;
+     *  every capture entry/exit calls it. */
+    private final List<Object[]> captureHidden = new ArrayList<>();
+
+    void syncCaptureWindows() {
+        boolean captured = capturedViewport() != null;
+        if (captured) {
+            if (!captureHidden.isEmpty()) return;   // already hidden
+            for (javafx.stage.Window w
+                    : new ArrayList<>(javafx.stage.Window.getWindows())) {
+                if (w == stage || !w.isShowing()) continue;
+                if (w instanceof javafx.stage.Popup p) {
+                    // auto-hide popups die on the capture click by
+                    // themselves — reviving one would leave a zombie
+                    if (p.isAutoHide()) continue;
+                    captureHidden.add(new Object[]{ p, p.getX(), p.getY() });
+                    p.hide();
+                } else if (w instanceof Stage s && s.getOwner() == stage) {
+                    captureHidden.add(new Object[]{ s, null, null });
+                    s.hide();
+                }
+            }
+        } else if (!captureHidden.isEmpty()) {
+            List<Object[]> back = new ArrayList<>(captureHidden);
+            captureHidden.clear();
+            for (Object[] rec : back) {
+                if (rec[0] instanceof javafx.stage.Popup p) {
+                    p.show(stage, (Double) rec[1], (Double) rec[2]);
+                } else if (rec[0] instanceof Stage s) {
+                    s.show();
+                }
+            }
         }
     }
 
@@ -2337,7 +2419,11 @@ public class FvdDesigner extends Application {
                 (int) (lc.getRed() * 255), (int) (lc.getGreen() * 255), (int) (lc.getBlue() * 255)));
             b.setOnAction(e -> editor.setActiveLane(lane));
             laneButtons[i] = b;
-            toolbar.getChildren().add(b);
+            // grayed = explained on hover (v19.6, D235): the reason
+            // re-resolves live (s/c / bridge / influence roll)
+            final int bi = i;
+            toolbar.getChildren().add(GraphEditor.grayHint(b,
+                () -> editor.laneDisableWhy(bi)));
         }
         laneButtons[0].setSelected(true);
 
@@ -2403,7 +2489,9 @@ public class FvdDesigner extends Application {
         // spec) — the startup document counts as an open too
         clearResultingPicks();
         VBox resBox = new VBox(8, resPitchCheck, resYawCheck,
-            resRollCheck, resSet);
+            GraphEditor.grayHint(resRollCheck,
+                "Duplicates the active section's own roll lane."),
+            resSet);
         resBox.setPadding(new Insets(10, 16, 10, 12));
         resBox.setStyle("-fx-background-color: rgb(38,42,53);"
             + " -fx-background-radius: 6;"
@@ -2655,6 +2743,12 @@ public class FvdDesigner extends Application {
             }
         });
         updateTitle();   // "Untitled — FVD Coaster Designer" until saved/loaded
+        // closing the app runs the SAME unsaved-changes gate as New/
+        // Load (v19.6, D235 — user spec): Save/Don't Save close,
+        // Cancel keeps the app open
+        stage.setOnCloseRequest(e -> {
+            if (!confirmSaveDiscard()) e.consume();
+        });
         stage.setScene(scene);
         stage.show();
         stage.centerOnScreen();
@@ -2809,6 +2903,16 @@ public class FvdDesigner extends Application {
     }
 
     private void handleKey(KeyEvent e) {
+        // TYPED TEXT NEVER FIRES ACTIONS (v19.6, D235 — user rule:
+        // a space typed into the rename box switched the viewport):
+        // with any text box focused, bare keys TYPE; only shortcut-
+        // modified combos (Ctrl+S, Ctrl+Z…) still act. Capture pulls
+        // focus to the canvas, so ride keys are unaffected.
+        if (!e.isShortcutDown() && stage.getScene() != null
+                && stage.getScene().getFocusOwner()
+                    instanceof javafx.scene.control.TextInputControl) {
+            return;
+        }
         // S (held, unmodified) = slide constraint for node/handle drags;
         // never while a camera mode owns WASD (uncaptured POV does not).
         // MID-DRAG the modifier check is waived: Ctrl is already held for
@@ -2873,11 +2977,16 @@ public class FvdDesigner extends Application {
                 : stage.getScene().getFocusOwner();
             if (fo instanceof javafx.scene.control.TextInputControl) return;
             // undo/redo stay live — every wizard setting is a document
-            // step (D231) — plus file ops and the view keys
+            // step (D231) — plus file ops, the view keys and DELETE
+            // (v19.6, D235: the wizard's placeholder piece is live
+            // track — Delete on a selected speed control/node worked
+            // by mouse but died here, the user's "couldn't delete
+            // speed controls" bug)
             if (matches("undo", e)) editor.undo();
             else if (matches("redo", e)) editor.redo();
             else if (matches("save", e)) saveDesign(false);
             else if (matches("pov", e)) togglePov();
+            else if (matches("delNode", e)) editor.deleteSelected();
             else if (handleViewDigit(e)) { /* view keys stay live */ }
             return;
         }
@@ -3393,7 +3502,9 @@ public class FvdDesigner extends Application {
             });
         }
         bridgeModeRow = new VBox(4, bridgeModeLbl,
-            bridgeModePY, bridgeModeP, bridgeModeN);
+            GraphEditor.grayHint(bridgeModePY,
+                "Unlock at least one axis to optimize orientation."),
+            bridgeModeP, bridgeModeN);
         bridgeGapLbl.setStyle("");
         bridgeGapLbl.setTextFill(Color.WHITE);   // dark popup since
         // v17.8 — the panel text is white to contrast (v17.10, user
@@ -3416,9 +3527,13 @@ public class FvdDesigner extends Application {
             + "transition is (near-)as smooth as any longer one. Pieces\n"
             + "split at a smooth spot collapse to zero — the app then\n"
             + "offers to connect them directly."));
-        bridgeLenRow = new HBox(8, bridgeGapLbl, bridgeGapSpinner,
+        bridgeLenRow = new HBox(8, bridgeGapLbl,
+            GraphEditor.grayHint(bridgeGapSpinner,
+                "Uncheck Optimize length to type a length."),
             bridgeOptLenCheck);
         bridgeLenRow.setAlignment(Pos.CENTER_LEFT);
+        bridgeLenRowWrap = GraphEditor.grayHint((javafx.scene.Node)
+            bridgeLenRow, "No-optimization mode has no length to run.");
         // (v13.10-dev briefly exposed three per-bridge optimizer
         // spinners here — REMOVED in the same version, D84: the user
         // found them confusing and unpredictable; the optimizer's
@@ -3443,7 +3558,10 @@ public class FvdDesigner extends Application {
         bridgeLockYawBtn = bridgeLockBtn(0);
         bridgeLockPitchBtn = bridgeLockBtn(1);
         bridgeLockRollBtn = bridgeLockBtn(2);
-        bridgeYawRow = new HBox(8, bYawLbl, bridgeYawSpinner,
+        bridgeYawRow = new HBox(8, bYawLbl,
+            GraphEditor.grayHint(bridgeYawSpinner, () ->
+                editor.bridgeLock(0) ? "Click the padlock to unlock."
+                    : "The optimize mode owns this axis."),
             bridgeLockYawBtn);
         bridgeYawRow.setAlignment(Pos.CENTER_LEFT);
         Label bPitchLbl = new Label("Next piece pitch (°)");
@@ -3455,7 +3573,10 @@ public class FvdDesigner extends Application {
         bridgePitchSpinner.valueProperty().addListener((obs, o, v) -> {
             if (!docApplying) editor.setBridgeTargetOrient(1, v);
         });
-        bridgePitchRow = new HBox(8, bPitchLbl, bridgePitchSpinner,
+        bridgePitchRow = new HBox(8, bPitchLbl,
+            GraphEditor.grayHint(bridgePitchSpinner, () ->
+                editor.bridgeLock(1) ? "Click the padlock to unlock."
+                    : "The optimize mode owns this axis."),
             bridgeLockPitchBtn);
         bridgePitchRow.setAlignment(Pos.CENTER_LEFT);
         Label bRollLbl = new Label("Next piece roll (°)");
@@ -3467,7 +3588,10 @@ public class FvdDesigner extends Application {
         bridgeRollSpinner.valueProperty().addListener((obs, o, v) -> {
             if (!docApplying) editor.setBridgeTargetOrient(2, v);
         });
-        bridgeRollRow = new HBox(8, bRollLbl, bridgeRollSpinner,
+        bridgeRollRow = new HBox(8, bRollLbl,
+            GraphEditor.grayHint(bridgeRollSpinner, () ->
+                editor.bridgeLock(2) ? "Click the padlock to unlock."
+                    : "The optimize mode owns this axis."),
             bridgeLockRollBtn);
         bridgeRollRow.setAlignment(Pos.CENTER_LEFT);
         Label bPosLbl = new Label("Next piece x/y/z (m)");
@@ -3478,6 +3602,9 @@ public class FvdDesigner extends Application {
         bridgePosRow = new HBox(8, bPosLbl,
             bridgeXSpinner, bridgeYSpinner, bridgeZSpinner);
         bridgePosRow.setAlignment(Pos.CENTER_LEFT);
+        bridgePosRowWrap = GraphEditor.grayHint((javafx.scene.Node)
+            bridgePosRow, "The optimize mode places the piece — "
+            + "switch to No optimization.");
         // the Start-speed row LEFT the Coaster menu in v18.6 (D175,
         // user spec) — the spinner remains the v0 write-through choke
         // (undo + rebuild wiring): the ride entry's node-0 dialog and
@@ -3586,12 +3713,14 @@ public class FvdDesigner extends Application {
         pickRow.setAlignment(Pos.CENTER_LEFT);
         CustomMenuItem pickItem = new CustomMenuItem(pickRow, false);
 
-        MenuItem options = new MenuItem("Coaster Options…");
+        MenuItem options = new MenuItem("Coaster Options…"
+            + (hasCoaster() ? "" : " (no coaster yet)"));
         options.setDisable(!hasCoaster());
         options.setOnAction(ev -> showCoasterOptionsDialog());
         MenuItem add = new MenuItem("New Coaster…");
         add.setOnAction(ev -> openNewCoasterWizard(true));
-        MenuItem del = new MenuItem("Delete Coaster");
+        MenuItem del = new MenuItem("Delete Coaster"
+            + (hasCoaster() ? "" : " (no coaster yet)"));
         del.setDisable(!hasCoaster());
         del.setOnAction(ev -> {
             // CONFIRM by name (D232, user spec)
@@ -3610,7 +3739,8 @@ public class FvdDesigner extends Application {
         });
         MenuItem rail = new MenuItem("Rail Settings…");
         rail.setOnAction(ev -> dialogs.showRailSettingsDialog());
-        coasterMenu.getItems().setAll(pickItem, options, add, del,
+        coasterMenu.getItems().setAll(pickItem, options,
+            new SeparatorMenuItem(), add, del,
             new SeparatorMenuItem(), rail);
         // the D227 undo rule needs the popup's scene — available only
         // once a row is attached; runLater lands after the show

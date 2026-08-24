@@ -770,11 +770,11 @@ public class Phase3Gate {
             Section.Domain.TIME, false, false, false, false, true);
         check(didC && didS && cc.pieces.size() == 1
                 && cs.pieces.size() == 2 && cs.pieces.get(1).followPrev
-                && cs.pieces.get(1).sLockPitch   // the bridge's locks
+                && cs.pieces.get(1).sLockPitch   // ALL locked (D235)
                 && cs.pieces.get(1).sLockRoll
-                && !cs.pieces.get(1).sLockYaw,
-            "49d strict bridge-convert keeps the follower (bridge locks "
-            + "carried); classic attaches");
+                && cs.pieces.get(1).sLockYaw,
+            "49d strict bridge-convert keeps the follower (all axes "
+            + "locked at creation, D235); classic attaches");
         TrackCompiler.Result rs = TrackCompiler.compile(cs, 0.01);
         double dev = 0;
         int n = Math.min(rc.samples().size(), rs.samples().size());
@@ -784,9 +784,10 @@ public class Phase3Gate {
         }
         // the two paths absorb the lanes' FIT RESIDUAL differently:
         // classic re-chains the target fully continuous through it,
-        // strict holds locked pitch/roll at the original — they agree
-        // to the residual's lever arm, and EXACTLY once un-stricted
-        check(dev < 0.6, String.format(
+        // strict holds ALL locked angles at the originals (yaw too
+        // since D235) — they agree to the residual's lever arm
+        // (heading included now), and EXACTLY once un-stricted
+        check(dev < 2.0, String.format(
             "49d strict vs classic convert agree to the fit residual "
             + "at creation (dev %.3f m)", dev));
 
