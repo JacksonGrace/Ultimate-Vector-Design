@@ -76,8 +76,10 @@ final class StartPanel extends StackPane {
     private VBox tileSc, tileLane;
     private VBox typeOptions;
     private RadioButton mForce, mGeo, dTime, dDist, uSec, uMet,
-        yLocal, yGlobal, rLocal, rGlobal, aRate, aAbs;
+        yLocal, yGlobal, rLocal, rGlobal, aRate, aAbs, pRate, pAbs;
     private Spinner<Double> sx, sy, sz, sYaw, sPitch, sRoll, sV, sMu, sK;
+    private Spinner<Double> sLen;   // Initial size (v19.7, D236)
+    private Label sizeLbl;
     private TextField nameField;
     private boolean muted;   // syncFromModel writes → no apply
 
@@ -169,7 +171,18 @@ final class StartPanel extends StackPane {
         HBox tiles = new HBox(10, tileLane, tileSc);
         tiles.setAlignment(Pos.CENTER_LEFT);
         typeOptions = new VBox(6);
-        secCard.getChildren().addAll(tiles, typeOptions);
+        // Initial size (v19.7, D236): the first section's length, in
+        // the surface's own axis units — PER-DOMAIN memory (an edited
+        // 6 s survives a domain round-trip; s/c shares meters)
+        sLen = spin(FvdDesigner.NEW_START_LEN, 0.1, 10000, 1, false,
+            v -> { if (!muted) applySize(); });
+        sizeLbl = new Label("Initial size (s)");
+        sizeLbl.setTextFill(Color.rgb(200, 205, 218));
+        sizeLbl.setStyle("-fx-font-size: 11px;");
+        sizeLbl.setMinWidth(118);
+        HBox sizeRow = new HBox(6, sizeLbl, sLen);
+        sizeRow.setAlignment(Pos.CENTER_LEFT);
+        secCard.getChildren().addAll(tiles, typeOptions, sizeRow);
         buildLaneOptions();
 
         // ---- footer ----
@@ -223,7 +236,11 @@ final class StartPanel extends StackPane {
         ToggleGroup ag = new ToggleGroup();
         aRate = radio("Roll rate", ag, true);
         aAbs = radio("Absolute bank (°)", ag, false);
-        for (ToggleGroup g : new ToggleGroup[]{ tg, dg, ug, yg, rg, ag }) {
+        ToggleGroup pg = new ToggleGroup();
+        pRate = radio("Rate", pg, true);
+        pAbs = radio("Absolute angles (°)", pg, false);
+        for (ToggleGroup g : new ToggleGroup[]{ tg, dg, ug, yg, rg, ag,
+                pg }) {
             g.selectedToggleProperty().addListener((o, a, b) -> {
                 if (b != null && !muted) applyLaneOptions();
             });
@@ -239,6 +256,14 @@ final class StartPanel extends StackPane {
         if (!rgl && aAbs.isSelected()) {
             muted = true;
             aRate.setSelected(true);
+            muted = false;
+        }
+        // absolute yaw/pitch needs Geometric + global (v19.8, D237)
+        boolean ypa = g && yGlobal.isSelected();
+        pAbs.setDisable(!ypa);
+        if (!ypa && pAbs.isSelected()) {
+            muted = true;
+            pRate.setSelected(true);
             muted = false;
         }
     }
@@ -279,12 +304,27 @@ final class StartPanel extends StackPane {
     }
 
     private Section buildSection(boolean sc) {
+        return buildSection(sc, Double.NaN);
+    }
+
+    /** lenOverride = the Initial-size spinner's live value on a size
+     *  edit; NaN = the wizard record's per-domain memory (v19.7,
+     *  D236 — a domain/type flip lands on the TARGET domain's
+     *  remembered size, not the outgoing surface's spinner). */
+    private Section buildSection(boolean sc, double lenOverride) {
         double speed = sV.getValue();
-        if (sc) return StraightCurveSection.straight(10, speed);
+        FvdDesigner.WizardState ws = app.wizardState;
+        if (sc) {
+            double lenSc = !Double.isNaN(lenOverride) ? lenOverride
+                : ws != null ? ws.lenDist() : Coaster.CONT_HOLD_DIST;
+            return StraightCurveSection.straight(lenSc, speed);
+        }
         boolean geo = mGeo.isSelected();
         boolean dist = dDist.isSelected();
         boolean rollG = rGlobal.isSelected();
-        double len = dist ? Coaster.CONT_HOLD_DIST : FvdDesigner.NEW_START_LEN;
+        double len = !Double.isNaN(lenOverride) ? lenOverride
+            : ws != null ? (dist ? ws.lenDist() : ws.lenTime())
+            : dist ? Coaster.CONT_HOLD_DIST : FvdDesigner.NEW_START_LEN;
         List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(
             geo ? 0 : 1, 0, 0, len);
         LaneSection s = geo ? new GeoSection(lanes, speed)
@@ -294,6 +334,8 @@ final class StartPanel extends StackPane {
         s.yawPitchGlobal = geo && yGlobal.isSelected();
         s.ratePerMeter = uMet.isSelected();
         s.rollAbsolute = rollG && aAbs.isSelected();
+        s.ypAbsolute = geo && yGlobal.isSelected()
+            && pAbs.isSelected();   // v19.8, D237
         return s;
     }
 
@@ -302,6 +344,16 @@ final class StartPanel extends StackPane {
         if (ws == null || !ws.picked() || ws.sc()) return;
         syncGray();
         app.wizardReplaceSection(buildSection(false));
+        syncFromModel();   // size spinner/label follow a domain flip
+    }
+
+    /** The Initial-size spinner's sink (v19.7, D236): rebuild the
+     *  section at the typed size — one undo step; the record's
+     *  per-domain memory updates inside wizardReplaceSection. */
+    private void applySize() {
+        FvdDesigner.WizardState ws = app.wizardState;
+        if (ws == null || !ws.picked()) return;
+        app.wizardReplaceSection(buildSection(ws.sc(), sLen.getValue()));
     }
 
     private void applyPlace() {
@@ -343,6 +395,14 @@ final class StartPanel extends StackPane {
             // tiles + options (a type is always picked since D232)
             tileSc.setStyle(ws.sc() ? TILE_ON : TILE);
             tileLane.setStyle(!ws.sc() ? TILE_ON : TILE);
+            // Initial size: the current surface's per-domain memory
+            boolean distNow = ws.sc()
+                || (!p.sections.isEmpty()
+                    && p.sections.get(0) instanceof LaneSection lsd
+                    && lsd.domain() == Section.Domain.DISTANCE);
+            sizeLbl.setText(distNow ? "Initial size (m)" : "Initial size (s)");
+            sLen.getValueFactory().setValue(
+                distNow ? ws.lenDist() : ws.lenTime());
             typeOptions.getChildren().clear();
             if (ws.sc()) {
                 Label note = new Label(
@@ -360,6 +420,7 @@ final class StartPanel extends StackPane {
                     (ls.yawPitchGlobal ? yGlobal : yLocal).setSelected(true);
                     (ls.rollGlobal ? rGlobal : rLocal).setSelected(true);
                     (ls.rollAbsolute ? aAbs : aRate).setSelected(true);
+                    (ls.ypAbsolute ? pAbs : pRate).setSelected(true);
                 }
                 syncGray();
                 // TWO-COLUMN grid (D232; label|radios as SEPARATE grid
@@ -374,6 +435,10 @@ final class StartPanel extends StackPane {
                     optLbl("Roll axis", 14), optPair(rLocal, rGlobal));
                 og.addRow(2, optLbl("Rate units", 0), optPair(uSec, uMet),
                     optLbl("Roll behavior", 14), optPair(aRate, aAbs));
+                // v19.8 (D237): the absolute yaw/pitch pick, below
+                // the Yaw/pitch axis column
+                og.addRow(3, optLbl("Yaw/pitch behavior", 0),
+                    optPair(pRate, pAbs));
                 typeOptions.getChildren().add(og);
             }
         } finally {

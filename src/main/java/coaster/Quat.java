@@ -48,6 +48,13 @@ public record Quat(double w, double x, double y, double z) {
 
     public Quat conjugate() { return new Quat(w, -x, -y, -z); }
 
+    /** Conjugation by the z-negating reflection Mz = diag(1,1,−1)
+     *  (v19.8, D237 — the Mirror-piece op): the rotation of the
+     *  horizontally mirrored frame, Mz·R·Mz. aboutY(θ) ↦ aboutY(−θ)
+     *  (heading negates), roll about X negates, rotation about Z
+     *  (canonical pitch) is preserved. Exact — pure sign flips. */
+    public Quat mirrorZ() { return new Quat(w, -x, -y, z); }
+
     // component-wise helpers for RK4 quaternion integration (GeoIntegrator
     // steps q' = ½·(0,ω)·q); results are NOT unit — normalize after combining
     public Quat add(Quat o) { return new Quat(w + o.w, x + o.x, y + o.y, z + o.z); }

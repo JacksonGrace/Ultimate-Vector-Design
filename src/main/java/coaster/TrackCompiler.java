@@ -1101,6 +1101,22 @@ public final class TrackCompiler {
         return out;
     }
 
+    /** exactRoll's twin for ABSOLUTE yaw/pitch lanes (v19.8, D237 —
+     *  the same D121 rule: the ride differentiates absolute lanes,
+     *  so their knots must sit exactly ON the Bezier). Fires only
+     *  under the flag — historic paths bitwise. */
+    private static List<FVDIntegrator.Keyframe> exactYp(
+            List<FVDIntegrator.Keyframe> kfs,
+            List<BezierBaker.Node> lane0, List<BezierBaker.Node> lane1) {
+        List<FVDIntegrator.Keyframe> out = new ArrayList<>(kfs.size());
+        for (FVDIntegrator.Keyframe k : kfs) {
+            out.add(new FVDIntegrator.Keyframe(k.t(),
+                BezierBaker.exactAt(lane0, k.t()),
+                BezierBaker.exactAt(lane1, k.t()), k.rollRateDeg()));
+        }
+        return out;
+    }
+
     /** The plain FORCE path (extracted v15.0 — the influence fast path
      *  reuses it verbatim; zero added arithmetic on the D50 gate).
      *  DISTANCE-domain sections (v16.0, D103) bake onto an s-grid and
@@ -1109,6 +1125,17 @@ public final class TrackCompiler {
     private static Centerline forceLane(ForceSection fs, TrackPose entry,
                                         double dt,
                                         FVDIntegrator.Friction fric) {
+        return forceLane(fs, entry, dt, fric, null, false);
+    }
+
+    /** dInfl = influence GEO-RATE delta keyframes on the lanes' own
+     *  axis (v19.7, D236 — the one-pass hybrid); null = the plain
+     *  path, bitwise. */
+    private static Centerline forceLane(ForceSection fs, TrackPose entry,
+                                        double dt,
+                                        FVDIntegrator.Friction fric,
+                                        List<FVDIntegrator.Keyframe> dInfl,
+                                        boolean dYpG) {
         boolean dist = fs.domain() == Section.Domain.DISTANCE;
         // bake grid in the lane's own axis units: TIME lanes at 0.01 s
         // since v17.11 (D151 — knots on every RK4 step boundary; the
@@ -1130,6 +1157,8 @@ public final class TrackCompiler {
         if (fs.speedControllable()) {
             opts.ctl = SpeedControl.Ctl.of(fs.speedCtls);
         }
+        opts.dInfl = dInfl;               // influence hybrid (D236)
+        opts.dInflYpGlobal = dYpG;
         if (fs.reversed) {
             // canonical frame at the ENTRY HEIGHT: energy is
             // height-relative but float rounding is not — this keeps
@@ -1157,21 +1186,31 @@ public final class TrackCompiler {
      *  domain v16.0 like forceLane). */
     private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt,
                                       FVDIntegrator.Friction fric) {
+        return geoLane(gs, entry, dt, fric, null);
+    }
+
+    /** dInfl = influence FELT delta keyframes (ΔGv/ΔGl) on the
+     *  lanes' own axis (v19.7, D236); null = plain, bitwise. */
+    private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt,
+                                      FVDIntegrator.Friction fric,
+                                      List<FVDIntegrator.Keyframe> dInfl) {
         boolean dist = gs.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs =
             BezierBaker.bake(gs.lanes, dist ? 0.05 : 0.01);   // D151
         boolean gAbs = gs.rollAbsolute && gs.rollGlobal;   // v16.7
         if (gAbs) kfs = exactRoll(kfs, gs.lanes.get(2));
+        boolean gYpAbs = gs.ypAbsolute && gs.yawPitchGlobal;   // v19.8, D237
+        if (gYpAbs) kfs = exactYp(kfs, gs.lanes.get(0), gs.lanes.get(1));
         if (gs.reversed) {
             GeoIntegrator.Result rr = dist
                 ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                     new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
                     gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
-                    gAbs, fric)
+                    gAbs, fric, null, dInfl, gYpAbs)
                 : GeoIntegrator.integrate(kfs, dt,
                     gs.vDesign, new Vec3(0, entry.pos().y(), 0), Quat.IDENTITY,
                     gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
-                    gAbs, fric);
+                    gAbs, fric, null, dInfl, gYpAbs);
             return reverseAndPlace(rr.samples(), entry);
         }
         // quaternion-native (the §2 amendment): the exit orientation
@@ -1183,276 +1222,93 @@ public final class TrackCompiler {
             ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
                 gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
-                gAbs, fric, ctl)
+                gAbs, fric, ctl, dInfl, gYpAbs)
             : GeoIntegrator.integrate(kfs, dt, gs.vDesign,
                 entry.pos(), entry.orient(),
                 gs.rollGlobal, gs.yawPitchGlobal, gs.ratePerMeter,
-                gAbs, fric, ctl);
+                gAbs, fric, ctl, dInfl, gYpAbs);
         FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
         TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
             entry.s0() + last.s(), entry.t0() + last.t());
         return new Centerline(r.samples(), exit);
     }
 
-    /** INFLUENCE two-pass (v15.0, D98; SECTIONS-DESIGN §5.4): the
-     *  section's RESULTING other-mode graphs become base + delta.
-     *
-     *    ref     = integrate(authored lanes, vAuthored, entry) —
-     *              the section's old shape, fresh every compile (the
-     *              base can never feed on its own output)
-     *    v*(s)   = energy from the OPERATING vDesign over ref's
-     *              heights; t* = ∫ds/v* (trapezoid, the convert
-     *              re-time recipe)
-     *    base    = the other mode's quantities along ref at v*,
-     *              ANALYTIC per sample (rates ω = g(G−axis.y)/v
-     *              scaled by v* / v_d — κ is fixed; felt via the
-     *              §5.1 identity; roll = the authored bake at the
-     *              same scale) — exact at the edges, no differencing
-     *    result  = integrate(base + delta curves, vDesign, entry) as
-     *              the OTHER mode (force section → GeoIntegrator,
-     *              geo section → FVDIntegrator), so the resulting
-     *              graphs equal base + delta BY CONSTRUCTION and the
-     *              felt records stay honest at the operating profile.
-     *
-     *  FAST PATH (do-no-harm, gated bitwise): all-zero deltas at
-     *  vDesign == vAuthored take the plain single-pass route — a
-     *  freshly-entered influence moves nothing; discarding restores
-     *  the un-influenced document exactly. Reversed sections run
-     *  both passes CANONICALLY and reverseAndPlace the result, like
-     *  every lane mode (influence editing is refused on them
-     *  UI-side; the geometry stays well-defined under piece
-     *  reversal). Shape is vDesign-invariant by construction (rates
-     *  at v* retrace the same spatial curve — only the clock moves),
-     *  which is what lets the operating speed reconcile without
-     *  reshaping. */
+    /** INFLUENCE — the ONE-PASS HYBRID (v19.7, D236 — user re-spec,
+     *  superseding the v15.0 two-pass AND its D235 split anchor):
+     *  the section integrates its OWN mode — force targets keep
+     *  re-solving against gravity live — with the delta lanes
+     *  injected per RK4 stage AT THE CURRENT STATE: a force
+     *  section's Δpitch/Δyaw join Ω as extra rates (local body or
+     *  global heading/elevation per inflYawPitchGlobal), a geo
+     *  section's ΔGv/ΔGl become Δω = ±g·ΔG/v. Where the deltas
+     *  are zero the solve IS the plain one — felt == the authored
+     *  targets, no residual laterals, no leftover conflict ("the
+     *  influence adjusts the value that much; back at zero
+     *  everything behaves per the original graphs" — the user's
+     *  2026-08-25 re-spec; the old two-pass replayed the ref's
+     *  rates in whatever frame the deltas had left the track in,
+     *  which read as phantom laterals after the delta window, and
+     *  its splits needed a stored ref anchor). resulting == base +
+     *  delta holds EXACTLY by linearity — the integrators' felt
+     *  records add the deltas' contribution analytically — and
+     *  baseCurves := resulting − delta on the section's OWN axis
+     *  (no re-timed t* clock exists any more: the delta axis IS
+     *  the authoring axis). vAuthored stays a mirrored file-compat
+     *  field; splits are exact by the Markov property alone; speed
+     *  controls ride the single integration like any section.
+     *  ABSOLUTE-ROLL sections still take no influence; the
+     *  all-zero-deltas fast path is the plain route, bitwise. */
     static Centerline influencedLane(LaneSection ls, TrackPose entry,
                                      double dt, boolean isGeo) {
         return influencedLane(ls, entry, dt, isGeo,
             FVDIntegrator.Friction.NONE);
     }
 
-    /** REF + operating profile of an influenced section (v19.6,
-     *  D235): the two-pass's first half, factored out so
-     *  Coaster.splitSectionAt maps cuts with the compile's own
-     *  arithmetic. Applies the SPLIT ANCHOR (LaneSection.inflRefTilt
-     *  composes onto the entry orientation, inflVStarK scales the
-     *  operating entry — anchorless sections are BITWISE the
-     *  historic block) and the section's SPEED CONTROLS (drive +
-     *  snap on the operating profile, the passD twins; the ref
-     *  integrates under the same Ctl — controls' x live on the
-     *  operating axis, which the mirrored pair makes the authored
-     *  clock too). */
-    record RefProfile(List<FVDIntegrator.Sample> ref, double[] tStar,
-                      double[] vStar) {}
-
-    static RefProfile refProfile(LaneSection ls, TrackPose entry,
-                                 double dt, boolean isGeo,
-                                 FVDIntegrator.Friction fric,
-                                 List<FVDIntegrator.Keyframe> kfs) {
-        boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
-        Vec3 pos0 = ls.reversed ? new Vec3(0, entry.pos().y(), 0) : entry.pos();
-        Quat q0 = ls.reversed ? Quat.IDENTITY : entry.orient();
-        Quat qr = ls.inflRefTilt == null ? q0
-            : q0.mul(ls.inflRefTilt).normalize();
-        SpeedControl.Ctl ctl = ls.reversed ? null
-            : SpeedControl.Ctl.of(ls.speedCtls);
-        List<FVDIntegrator.Sample> ref;
-        if (isGeo) {
-            ref = distAxis
-                ? GeoIntegrator.integrateDist(kfs, dt, ls.vAuthored, pos0, qr,
-                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter, false,
-                    fric, ctl)
-                    .samples()
-                : GeoIntegrator.integrate(kfs, dt, ls.vAuthored, pos0, qr,
-                    ls.rollGlobal, ls.yawPitchGlobal, ls.ratePerMeter, false,
-                    fric, ctl)
-                    .samples();
-        } else {
-            FVDIntegrator.Options opts = new FVDIntegrator.Options();
-            opts.dt = dt;
-            opts.v0 = ls.vAuthored;
-            opts.pos0 = pos0;
-            opts.fric = fric;
-            opts.rollGlobal = ls.rollGlobal;
-            opts.rollPerMeter = ls.ratePerMeter;
-            opts.ctl = ctl;
-            if (!ls.reversed) {
-                TrackPose er = ls.inflRefTilt == null ? entry
-                    : new TrackPose(entry.pos(), qr);
-                opts.startHeading = er.T();
-                opts.startUp = er.U();
-            }
-            ref = distAxis ? FVDIntegrator.integrateTrackDist(kfs, opts)
-                           : FVDIntegrator.integrateTrack(kfs, opts);
-        }
-        int n = ref.size();
-        // operating profile (+ the re-timed clock for TIME sections;
-        // a DISTANCE section's axis IS the arc — no re-time). The
-        // profile carries its OWN friction deficit over ref's arc
-        // (v17.0 — Heun march; skipped entirely when loss-free) and
-        // the section's speed-control drives/snaps (v19.6, D235).
-        double yEntry = ref.get(0).pos().y();
-        double vApply = Math.max(0.5, ls.vDesign * ls.inflVStarK);
-        double[] tStar = new double[n];
-        double[] vStar = new double[n];
-        double lossStar = 0;
-        for (int i = 0; i < n; i++) {
-            if (i > 0) {
-                double dsF = ref.get(i).s() - ref.get(i - 1).s();
-                double xPrev = distAxis ? ref.get(i - 1).s() : tStar[i - 1];
-                double drv = ctl == null ? Double.NaN
-                    : ctl.drive(xPrev, vStar[i - 1]);
-                if (!Double.isNaN(drv)) {
-                    // driven interval (the passD twin): loss' is the
-                    // control's ∓2gA — friction absorbed by the drive
-                    lossStar += drv * dsF;
-                } else if (!fric.off()) {
-                    double f0 = fric.dLossDs(vStar[i - 1]);
-                    double vp = Math.max(0.5, FVDIntegrator.speedAt(
-                        ref.get(i).pos(), vApply, yEntry, lossStar + f0 * dsF));
-                    lossStar += (f0 + fric.dLossDs(vp)) / 2 * dsF;
-                }
-                if (ctl != null) {
-                    double vA = Math.max(0.1, FVDIntegrator.speedAt(
-                        ref.get(i).pos(), vApply, yEntry, lossStar));
-                    double dl = ctl.snap(xPrev, vStar[i - 1], vA,
-                        !Double.isNaN(drv));
-                    if (dl != 0) lossStar += dl;
-                }
-            }
-            vStar[i] = Math.max(0.1,
-                FVDIntegrator.speedAt(ref.get(i).pos(), vApply, yEntry,
-                    lossStar));
-            if (i > 0) {
-                double ds = ref.get(i).s() - ref.get(i - 1).s();
-                tStar[i] = tStar[i - 1]
-                    + ds / Math.max(0.5, (vStar[i] + vStar[i - 1]) / 2);
-            }
-        }
-        return new RefProfile(ref, tStar, vStar);
-    }
-
     static Centerline influencedLane(LaneSection ls, TrackPose entry,
                                      double dt, boolean isGeo,
                                      FVDIntegrator.Friction fric) {
-        // GLOBAL-AXIS sections take influence since v16.5 (D112): the
-        // ref runs under the section's OWN flags, the base rows come
-        // out in the INFLUENCE flags' semantics (worldRates + the
-        // transport term convert between roll representations), and
-        // pass 2 integrates under the influence flags — any section ×
-        // influence orientation combination compiles.
-        // DISTANCE sections run the two-pass over ARC (v16.1, D107 —
-        // the v16.0 mutual exclusion lifted): base rows and delta
-        // lanes key by section-local METERS, and no re-time exists at
-        // all (arc is speed-invariant — the operating profile only
-        // moves the values, never the axis).
-        // ABSOLUTE-ROLL sections take no influence (v16.7, D118 —
-        // the roll channel of the two-pass is rate-shaped); the UI
-        // refuses entry, hand-edited files fall back to plain.
-        if (ls.rollAbsolute && ls.rollGlobal) {
+        if ((ls.rollAbsolute && ls.rollGlobal)
+                || (ls.ypAbsolute && ls.yawPitchGlobal)) {
+            // absolute-angle sections take no influence (deltas are
+            // RATES — the projection would silently erase them;
+            // ypAbsolute joins in v19.8, D237)
             ls.baseCurves = null;
             return isGeo ? geoLane((GeoSection) ls, entry, dt, fric)
                          : forceLane((ForceSection) ls, entry, dt, fric);
         }
-        // PER-METER sections influence too since v16.7 (D117): the
-        // base rows and the delta lanes speak °/m — per-meter rates
-        // are speed-INVARIANT (angle per meter of a fixed shape), so
-        // the operating-speed re-expression is the identity there —
-        // and pass 2 integrates under the perMeter flag.
         boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs =
             BezierBaker.bake(ls.lanes, distAxis ? 0.05 : 0.01);   // D151
-        if (ls.deltasAllZero() && ls.vDesign == ls.vAuthored
-                && ls.inflRefTilt == null) {   // anchored halves never
-                                               // fast-path (D235)
+        if (ls.deltasAllZero()) {
             Centerline line = isGeo ? geoLane((GeoSection) ls, entry, dt, fric)
                                     : forceLane((ForceSection) ls, entry, dt, fric);
-            // base guides off the very samples on show (identity
-            // re-time); reversed strips never edit influence — skip
+            // base guides off the very samples on show; reversed
+            // strips never edit influence — skip
             ls.baseCurves = ls.reversed ? null
                 : buildBase(line.samples(), kfs, ls, isGeo, null, null,
                     distAxis);
             return line;
         }
-        // pass 2's entry pose (canonical frame when reversed, D67)
-        Vec3 pos0 = ls.reversed ? new Vec3(0, entry.pos().y(), 0) : entry.pos();
-        Quat q0 = ls.reversed ? Quat.IDENTITY : entry.orient();
-        // REF + operating profile — factored into refProfile (v19.6,
-        // D235) so Coaster.splitSectionAt maps cuts with the compile's
-        // own arithmetic; applies the split anchor + speed controls
-        RefProfile rp = refProfile(ls, entry, dt, isGeo, fric, kfs);
-        List<FVDIntegrator.Sample> ref = rp.ref();
-        int n = ref.size();
-        double[] tStar = rp.tStar();
-        double[] vStar = rp.vStar();
-        double[][] base = buildBase(ref, kfs, ls, isGeo,
-            distAxis ? null : tStar, vStar, distAxis);
-        // TIME durations land ON the dt grid (the convert rounding
-        // recipe — lane integration drops fractional tails); DISTANCE
-        // sections Newton-land, so the arc is exact
-        double dur = distAxis
-            ? Math.max(0.1, ref.get(n - 1).s())
-            : Math.max(dt,
-                Math.round(Math.max(0.1, tStar[n - 1]) / dt) * dt)
-                * (1 + 1e-9);
-        // synthesized keyframes: base + the delta CURVES (bakeLane's
-        // polylines with held ends — exactly what the editor draws)
+        // delta keyframes on the section's OWN axis (Gv slot = lane 0,
+        // Gl slot = lane 1; roll takes no deltas)
+        List<FVDIntegrator.Keyframe> dKfs =
+            BezierBaker.bake(ls.deltaLanes, distAxis ? 0.05 : 0.01);
+        Centerline line = isGeo
+            ? geoLane((GeoSection) ls, entry, dt, fric, dKfs)
+            : forceLane((ForceSection) ls, entry, dt, fric, dKfs,
+                ls.inflYawPitchGlobal);
+        // base rows for the editor's guides: resulting − delta —
+        // exact by the linearity of the records
+        double[][] base = buildBase(line.samples(), kfs, ls, isGeo,
+            null, null, distAxis);
         List<double[]> d0 = BezierBaker.polyline(ls.deltaLanes.get(0));
         List<double[]> d1 = BezierBaker.polyline(ls.deltaLanes.get(1));
-        List<double[]> d2 = BezierBaker.polyline(ls.deltaLanes.get(2));
-        List<FVDIntegrator.Keyframe> synth = new ArrayList<>(n + 1);
-        for (int i = 0; i < n && base[i][0] < dur; i++) {
-            if (i > 0 && base[i][0] <= base[i - 1][0] + 1e-12) continue;
-            synth.add(new FVDIntegrator.Keyframe(base[i][0],
-                base[i][1] + polyAt(d0, base[i][0]),
-                base[i][2] + polyAt(d1, base[i][0]),
-                base[i][3] + polyAt(d2, base[i][0])));
+        for (double[] row : base) {
+            row[1] -= polyAt(d0, row[0]);
+            row[2] -= polyAt(d1, row[0]);
         }
-        // final keyframe exactly at the end
-        synth.add(new FVDIntegrator.Keyframe(dur,
-            LaneSection.baseAt(base, 0, dur) + polyAt(d0, dur),
-            LaneSection.baseAt(base, 1, dur) + polyAt(d1, dur),
-            LaneSection.baseAt(base, 2, dur) + polyAt(d2, dur)));
-        ls.baseCurves = base;
-        // the section's controls drive pass 2 too (v19.6, D235 —
-        // design and real move equally, the D160 contract)
-        SpeedControl.Ctl ctl2 = ls.reversed ? null
-            : SpeedControl.Ctl.of(ls.speedCtls);
-        // pass 2: the OTHER mode's integrator at the operating speed,
-        // under the INFLUENCE axis flags (v16.5, D112)
-        if (isGeo) {   // geo section + felt-G deltas → force integrator
-            FVDIntegrator.Options o2 = new FVDIntegrator.Options();
-            o2.dt = dt;
-            o2.v0 = ls.vDesign;
-            o2.pos0 = pos0;
-            o2.fric = fric;
-            o2.ctl = ctl2;
-            o2.rollGlobal = ls.inflRollGlobal;
-            o2.rollPerMeter = ls.ratePerMeter;
-            if (!ls.reversed) {
-                o2.startHeading = entry.T();
-                o2.startUp = entry.U();
-            }
-            List<FVDIntegrator.Sample> out = distAxis
-                ? FVDIntegrator.integrateTrackDist(synth, o2)
-                : FVDIntegrator.integrateTrack(synth, o2);
-            if (ls.reversed) return reverseAndPlace(out, entry);
-            FVDIntegrator.Sample last = out.get(out.size() - 1);
-            return new Centerline(out, new TrackPose(last.pos(),
-                Quat.fromFrame(last.T(), last.U()),
-                entry.s0() + last.s(), entry.t0() + last.t()));
-        }
-        GeoIntegrator.Result r2 = distAxis
-            ? GeoIntegrator.integrateDist(synth, dt, ls.vDesign, pos0, q0,
-                ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter,
-                false, fric, ctl2)
-            : GeoIntegrator.integrate(synth, dt, ls.vDesign, pos0, q0,
-                ls.inflRollGlobal, ls.inflYawPitchGlobal, ls.ratePerMeter,
-                false, fric, ctl2);
-        if (ls.reversed) return reverseAndPlace(r2.samples(), entry);
-        FVDIntegrator.Sample last = r2.samples().get(r2.samples().size() - 1);
-        return new Centerline(r2.samples(), new TrackPose(last.pos(), r2.qEnd(),
-            entry.s0() + last.s(), entry.t0() + last.t()));
+        ls.baseCurves = ls.reversed ? null : base;
+        return line;
     }
 
     /** BASE rows {x, lane0, lane1, lane2} in the delta lanes' units

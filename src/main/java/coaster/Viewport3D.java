@@ -358,6 +358,16 @@ class Viewport3D {
             FVDIntegrator.Sample hit = pickTrackSample(e.getScreenX(), e.getScreenY());
             if (hit != null) {
                 app.editor.activateAt(hit.t());
+            } else {
+                // a click on an INACTIVE coaster's track offers the
+                // switch (v19.7, D236, user spec)
+                Object[] other = pickOtherCoaster(e.getScreenX(),
+                    e.getScreenY());
+                if (other != null) {
+                    showSwitchPrompt((Coaster) other[0],
+                        (FVDIntegrator.Sample) other[1],
+                        e.getScreenX(), e.getScreenY());
+                }
             }
             // (the v16.13 empty-click gizmo hide is gone — gizmos are
             // always on for the active piece since v17.7, D144; the
@@ -674,6 +684,14 @@ class Viewport3D {
      *  dots fell through the 25 px disc). */
     FVDIntegrator.Sample pickTrackSample(double screenX, double screenY) {
         if (app.lastSamples == null || app.lastSamples.isEmpty()) return null;
+        return pickSampleIn(app.lastSamples, screenX, screenY);
+    }
+
+    /** The pickTrackSample math over ANY compiled sample list (v19.7,
+     *  D236 — the inactive-coaster click reuses it verbatim). */
+    private FVDIntegrator.Sample pickSampleIn(
+            java.util.List<FVDIntegrator.Sample> smps,
+            double screenX, double screenY) {
         javafx.scene.Camera cam = sub.getCamera();
         Point3D eye = cam.localToScene(0, 0, 0);
         Point3D fwd = cam.localToScene(0, 0, 1).subtract(eye).normalize();
@@ -683,8 +701,8 @@ class Viewport3D {
         FVDIntegrator.Sample prev = null;
         double px = 0, py = 0;
         boolean prevOk = false;
-        for (int i = 0; i < app.lastSamples.size(); i += 5) {
-            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+        for (int i = 0; i < smps.size(); i += 5) {
+            FVDIntegrator.Sample sm = smps.get(i);
             Vec3 p = sm.pos();
             Point3D sceneP = world.localToScene(p.x(), -p.y(), p.z());
             Point2D s = sceneP.subtract(eye).dotProduct(fwd) > 0
@@ -721,6 +739,58 @@ class Viewport3D {
             prev = sm;
         }
         return bestSample;
+    }
+
+    /** A clean click on an INACTIVE coaster's track (v19.7, D236):
+     *  the same screen-space pick over every other coaster's cached
+     *  compile. Returns {Coaster, Sample} or null. */
+    private Object[] pickOtherCoaster(double screenX, double screenY) {
+        for (Object[] b : app.otherCoasterRenders()) {
+            @SuppressWarnings("unchecked")
+            java.util.List<FVDIntegrator.Sample> smp =
+                (java.util.List<FVDIntegrator.Sample>) b[0];
+            FVDIntegrator.Sample hit = pickSampleIn(smp, screenX, screenY);
+            if (hit != null) return new Object[]{ b[2], hit };
+        }
+        return null;
+    }
+
+    /** "Switch to editing X" (v19.7, D236, user spec): a small dark
+     *  popup at the click — Switch activates that coaster with the
+     *  clicked piece selected; Cancel/click-off leaves everything
+     *  put. */
+    private void showSwitchPrompt(Coaster c, FVDIntegrator.Sample hit,
+                                  double screenX, double screenY) {
+        javafx.stage.Popup pop = new javafx.stage.Popup();
+        pop.setAutoHide(true);
+        Label msg = new Label("Switch to editing \"" + c.name + "\"?");
+        msg.setTextFill(Color.WHITE);
+        Button ok = new Button("Switch");
+        ok.setFocusTraversable(false);
+        ok.setStyle("-fx-font-size: 11px;"
+            + " -fx-background-color: rgb(78,140,220);"
+            + " -fx-text-fill: white; -fx-background-radius: 4;");
+        ok.setOnAction(ev -> {
+            pop.hide();
+            int idx = app.coasters.indexOf(c);
+            if (idx < 0) return;
+            app.switchCoaster(idx);
+            app.editor.activateAt(hit.t());
+        });
+        Button cancel = new Button("Cancel");
+        cancel.setFocusTraversable(false);
+        cancel.setStyle("-fx-font-size: 11px;");
+        cancel.setOnAction(ev -> pop.hide());
+        HBox btns = new HBox(8, ok, cancel);
+        btns.setAlignment(Pos.CENTER_LEFT);
+        VBox box = new VBox(8, msg, btns);
+        box.setPadding(new Insets(10, 14, 10, 12));
+        box.setStyle("-fx-background-color: rgb(38,42,53);"
+            + " -fx-background-radius: 6;"
+            + " -fx-border-color: rgb(95,102,120);"
+            + " -fx-border-radius: 6;");
+        pop.getContent().add(box);
+        pop.show(sub.getScene().getWindow(), screenX + 6, screenY + 6);
     }
 
     /** Shift+click (or C+click) in orbit mode: re-center the orbit pivot

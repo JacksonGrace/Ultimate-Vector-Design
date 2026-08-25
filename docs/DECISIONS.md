@@ -9352,3 +9352,367 @@ conflict). Dev hook -Dfvd.devshot renders pick / lane / s-c.
    "Resolve conflict"; wizard button "Create Coaster"/"Create
    Track Piece"; a separator between Coaster Options… and New
    Coaster….
+
+## D236 (v19.7) — Batch 21: the ONE-PASS HYBRID influence model, ctl-aware convert re-time, the ridge area solve, menu tooltips, wizard polish, coaster-switch click
+
+Date: 2026-08-25. His batch-21 list (14 items) with two attached
+files ("influence bake and conversion not working well with speed
+section 8.25.26.fvd", "Odd influence behavior 8.25.26.fvd"). No
+commit requested — awaiting his hand-test.
+
+1. THE ONE-PASS HYBRID INFLUENCE MODEL (his re-spec: "at any
+   point, if the original graphs result in a certain resulting
+   value, the influence adjusts that value that much, and then
+   naturally when the influence graphs return to zero everything
+   behaves as it should be according to the original graphs.
+   There should not be any speed/orientation conflict once
+   influence is back to zero" — plus "the corner didn't quite
+   make sense to me conceptually: why there was a 'frame'
+   specific to the influence section"). His file 2 showed the
+   symptom: after a Δyaw bump returned to zero, RESIDUAL LATERALS
+   persisted for the rest of the section. ROOT CAUSE = the v15.0
+   TWO-PASS ARCHITECTURE itself: the ref pass integrated the
+   authored lanes in their own frame, the base re-expressed those
+   rates along the DELTA-BENT track — so after the delta window
+   the base replayed the ref's rates in whatever frame the deltas
+   had left the track in, and a force section's re-solve against
+   gravity no longer matched its own authored targets (phantom
+   laterals, leftover conflicts, and the D235 split ANCHOR
+   existed only to pin down which ref frame a split half should
+   continue). REPLACED WHOLESALE: influence is now ONE
+   integration of the section's OWN mode with the delta lanes
+   injected PER RK4 STAGE at the current state —
+   - a FORCE section's Δpitch/Δyaw (geo rates) join Ω inside
+     FVDIntegrator.deriv (GeoIntegrator.inflOmega — local body
+     axes or global heading/elevation per inflYawPitchGlobal;
+     injected BEFORE the roll term so global-roll feed-forward
+     sees the whole turn; °/m sections scale by v);
+   - a GEO section's ΔGv/ΔGl (felt) become Δω = ±g·ΔG/v inside
+     GeoIntegrator.deriv;
+   - the felt/rate RECORDS add the deltas' contribution
+     analytically (force: gv += dk.Gv() etc.; geo: the −Ω·axis
+     identity), so resulting == base + delta EXACTLY by
+     linearity, and baseCurves := resulting − delta on the
+     section's OWN axis (no re-timed t* clock exists — the delta
+     axis IS the authoring axis).
+   Where the deltas are zero the solve IS the plain one: felt ==
+   the authored targets bitwise (his file 2 probes 0.0 over all
+   554 zero-delta samples — OddInflProbe), no residual laterals,
+   no leftover ≠v (the reconcile sees the natural continuation).
+   CONSEQUENCES, all deliberate: vAuthored is INERT (a mirrored
+   file-compat field — a hand-edited divergent pair now compiles
+   at vDesign like a plain section, gated bitwise in Phase2Gate
+   influence(b)/DomainGate 45b); the operating-speed-invariance
+   property of the two-pass is GONE (an influenced force section's
+   shape depends on vDesign exactly like a normal force section —
+   "behave exactly like a normal section, just with nudges",
+   D102); SPLITS ARE EXACT BY THE MARKOV PROPERTY ALONE — the
+   D235 split anchor (LaneSection.inflRefTilt/inflVStarK,
+   TrackCompiler.refProfile, infl-line fields 4-8) is DELETED,
+   splitSectionAt cuts influenced sections like plain ones
+   (native-axis cut + carryInfluence), and the split residual
+   improved from D235's 0.0002 m to the MACHINE class (1.4e-12 m,
+   InflSplitGate a-e); anchored files from the one v19.6 build
+   load with fields 4-8 ignored and self-heal via the reconcile;
+   makeSmoothingReal's divergent-pair refusal is gone (the window
+   check deltasZeroOn remains). The all-zero-deltas fast path
+   compiles BITWISE == uninfluenced (gate z1); speed controls
+   ride the single solve (gate g). InflSplitGate rewritten (22
+   checks incl. the new h/z acceptance series).
+
+2. CONVERTS/BAKES WITH A SPEED CONTROL ON THE SOURCE (his file 1:
+   bake-influence moved the track 10.9 m): convertToLanes' re-time
+   march was ENERGY-ONLY — blind to the source's speed controls
+   (his 29 m/s launch drive vs ~17 energy → (v/vG)² ≈ 2.9 felt
+   distortion + the clock stretch). The fit's march now takes the
+   SOURCE section's Ctl (drive + snap per sample, the passD
+   twins) keyed by the source-native coordinate — new widest
+   convertToLanes overload (srcCtl, srcOff, srcDist) + the
+   fitLanes(…, Section src, Span sp) instance wrapper; call
+   sites: convertDomain, bakeAxes, partialConvertSection,
+   convertWholeSection, makeGraphsReal. File 1 case A pathDev
+   10.864 → 0.011 m (CtlBakeProbe).
+
+3. THE RIDGE AREA SOLVE (his remaining bake oscillations at 0.11
+   spacing/non-optimal placement): matchSegmentAreas' EXACT
+   per-segment area constraints DEMAND node-to-node alternation
+   on data with features finer than a segment (measured −0.93
+   lag-1 autocorrelation of node deviations — and the
+   positionally-good coarse solutions rang identically, so no
+   discriminator exists; the D235 pointwise guard capped the
+   amplitude at ±0.19 g but kept the mode). The exact least-norm
+   Thomas solve is replaced by RIDGE least-squares:
+   min ‖A·δv − E‖² + μ‖δv‖² + λ‖D₁·δv‖² (λ = 1.0, μ = 1e-4 of
+   the mean c² scale) — the first-difference penalty suppresses
+   exactly the alternating mode; AᵀA + λD₁ᵀD₁ + μI stays
+   tridiagonal SPD (same O(N) Thomas). Damping/best-state/curve
+   guard unchanged. File 1 case B: 20 flips ±0.19 g → 0 flips
+   0.041 g; 40d/49d and the whole battery green unchanged.
+
+4. WIZARD LOCKOUTS: the Track Piece toolbar dropdown GRAYS while
+   the start panel shows (grayHint "Placement is edited in the
+   start screen…"; showPlacementPopup guards ALL routes — ball
+   double-clicks included — with a stats reason), and Coaster
+   Options… grays during ITS coaster's NEW_COASTER wizard
+   ("Finish the start screen first.").
+
+5. GIZMO → WIZARD LIVE SYNC: FvdDesigner.placementEdit (the choke
+   every viewport placement write runs through) now ends with
+   wizardPanel.syncFromModel() — dragging the entry gizmo/ball
+   updates the wizard's Placement spinners live (muted, no
+   feedback).
+
+6. CTRL+Z REOPENS THE WIZARD (user spec): applyDocState sets
+   wizardOpen = (restored wizard != null) — undo right after
+   Create Coaster/Track Piece brings the panel back with its
+   picks (wizardFinish snapshots BEFORE clearing); redo past the
+   finish closes it again. (Replaces the D231 "session flag stays
+   closed unless un-picked" rule.)
+
+7. COASTER-SWITCH CLICK (user spec): a clean 3D click that misses
+   the active coaster now runs the SAME screen-space pick over
+   every inactive coaster's cached compile (Viewport3D
+   pickSampleIn — pickTrackSample's math list-generic — over
+   otherCoasterRenders). A hit opens a small dark popup at the
+   click: `Switch to editing "<name>"?` [Switch] [Cancel] —
+   Switch = switchCoaster + activateAt(hit.t()) (the clicked
+   piece + section selected); Cancel/click-off leaves everything
+   put. Inactive meshes stay mouse-transparent — no mesh picking.
+
+8. CAPTURE-HIDE KEEPS STAGE BOUNDS: syncCaptureWindows stores
+   x/y/width/height for owned Stages and re-applies them before
+   show() (a re-shown Stage otherwise re-centers/re-sizes to its
+   scene) — hidden tool windows return at the same place AND
+   size. Popups already re-anchored exactly (content-sized).
+
+9. WIZARD "INITIAL SIZE" SPINNER (user spec): a new row under the
+   Section Type options — the first section's length in the
+   surface's own units ("Initial size (s)"/"(m)"), applied live
+   as one undo step. PER-DOMAIN MEMORY rides the WizardState
+   record (lenTime/lenDist, s/c shares the distance slot): a 6 s
+   edit survives a Time→Distance→Time round-trip
+   (wizardWithLen folds every built section's length back into
+   the record; buildSection reads the TARGET domain's memory on a
+   flip and the live spinner on a size edit).
+
+10. MENU-ITEM GRAY REASONS RIDE HOVER TOOLTIPS (user spec,
+   program-wide — supersedes D235's "(reason)" parentheticals
+   and retires the shortWhy ≤6-word compressor): a disabled
+   MenuItem swallows hover, so GraphEditor.grayItem builds the
+   grayed row as an ENABLED CustomMenuItem holding a gray Label
+   with an installed Tooltip (300 ms delay, hideOnClick false —
+   clicks do nothing and never close the menu). Converted: Make
+   smoothing real (the FULL makeSmoothingRealWhy sentence is the
+   tooltip now), Enable smoothing on s/c edges, Connect sections,
+   the '+' menu's bridge-blocked adds + Bridge to piece + Attach
+   floating piece (the "Piece ends with a bridge" hint row is
+   folded into the tooltips), Delete section/element, Bridge
+   properties, View rates, the influence enter/edit/bake items,
+   Convert…, and the Coaster menu's Options/Delete. Always-
+   disabled info rows whose LABEL is the reason stay as-is.
+
+11. Rail Settings… sits DIRECTLY under Coaster Options… in the
+   Coaster menu (was below the New/Delete block).
+
+12. SMOOTHED-WINDOW HOVER SHOWS THE BLENDED VALUE (user spec):
+   trueSuffix's split test compared derived-vs-true, and inside a
+   smoothing window BOTH read the compiled blend — the " (true …)"
+   suffix never showed without a ≠v. The reference is now the
+   AUTHORED lane inside a smoothed strict seam's window (the
+   drawTrueStrokes recipe, factored into smoothedWindowParts and
+   shared), so hovering the window shows the real/blended value
+   whenever it visibly differs (TRUE_SPLIT_PX = the "negligible"
+   threshold).
+
+## D237 (v19.8) — Batch 22: the unresolvable-conflict root cause, ABSOLUTE YAW/PITCH, Mirror piece, Switch Coaster, global spinner steps, visible capture windows, seam-diamond UX
+
+Date: 2026-08-25, right on top of D236 (both uncommitted until now —
+committed together at his "please commit"). His 15-item batch with
+the "Conflict not getting resolved 8.25.26.fvd" file.
+
+1. THE PHANTOM UNRESOLVABLE ≠v (his file; "conceptually there
+   should not be a speed conflict… the fix should be about whatever
+   is causing it"): a strict follower's FIRST section carried a
+   stale design speed 0.155 m/s off the arriving energy — UNDER
+   DRIFT_EPS 0.2, so no badge anywhere at the seam — but a seam gap
+   is a constant ENERGY offset (~2·v·dv), and at the next section's
+   10 m/s crest it reads 0.357 m/s: the badge lit on section B "out
+   of the blue". Both resolve ops DID anchor B to true — and the
+   reconcile's REAL-ANCHOR recognition gate (Coaster
+   reconcileChainedSpeeds) tested the SEAM gap against the same 0.2
+   constant, refused the anchor, and snapped B back onto the design
+   chain every rebuild. Two tests measuring different quantities
+   with one constant; every entry gap in (0.2/amplification, 0.2)
+   was a badge no resolve could clear. FIX: the anchor gate is
+   AMPLIFICATION-AWARE — the seam gap scales by vTrue/vMin over the
+   section's own span (the same quantity the D106 whole-span badge
+   measures); flat sections reduce to the historic test bitwise.
+   SWEEP (the same mechanism elsewhere): GraphEditor
+   refreezeSeamSpeed's twin gate got the same fix; its [1,100]
+   clamp violated the D198 admit rule (a near-stall refreeze wrote
+   1.0) → [0.1, 1e4]; the B-matcher's real-split test gained the
+   whole-span fallback (sectionDrifted on either side); and
+   makeGraphsReal/refreezeSpeed now anchor at the SEAM sample the
+   reconcile itself reads (they read one dt inside — resolves
+   moved by mm/s dust each rebuild; now a BITWISE fixed point).
+   ConflictGate (8, the file embedded verbatim): resolves stick
+   (0.357 → 0.00002, bit-stable), source-refreeze clears the chain.
+
+2. ABSOLUTE YAW/PITCH (the "major addition" — the rollAbsolute
+   twin for geo lanes 0/1 under GLOBAL yaw/pitch; ypAbsolute,
+   section-line field 10, missing = rate): lane 0 IS the ELEVATION
+   angle (°), lane 1 the HEADING (°, reported-left, unwrapped past
+   ±180; SECTION-ENTRY-RELATIVE — every section generates with its
+   entry heading stripped per D199, so 0 = straight on; elevation
+   is a world angle and authors within ±90 — a loop needs rate
+   lanes, the dialogs say so). Machinery mirrored off the whole
+   D118–D122 playbook up front (every trap pre-fixed, none waited
+   for a report):
+   - FVDIntegrator.angleHermite = bankHermite slot-generalized
+     (bitwise for roll) + headingOfT/elevationOfT (bankOfTU's
+     twins, NaN heading on vertical);
+   - GeoIntegrator.projectYp — elevation about the horizontal-
+     right axis FIRST, heading about world-Y second (a world-Y
+     rotation preserves the just-set elevation EXACTLY), wrapped-
+     difference correction, vertical hold-off, run BEFORE the roll
+     blocks so the bank contract still lands exactly; per-stage
+     slope feed-forward through omegaFor's new absTheta/absPsi
+     (°/m-style ×v in the distance domain); the felt records read
+     the SLOPES, never the angles (the "50° read as 50°/s" trap);
+   - TrackCompiler.exactYp (the D121 knot-exact resample — the
+     staircase pre-fixed: heading-rate steps gate at 0.33 °/s);
+   - Coaster convert tower: toYpAbs through every overload —
+     extraction = elevation + entry-relative UNWRAPPED heading
+     (vertical holds the last defined, the lastBank pattern), the
+     °/m division EXEMPTS the angle lanes (the D213 trap — gated
+     under °/m day one), area-match skips them, the roll-only
+     preserve requires matching ypAbs;
+   - SPLITS REBASE the heading lane at the cut (−value_at_cut; the
+     first gate run caught 44 m of re-aim before this) with
+     mergeSections carrying the exact inverse lift — round-trips
+     lossless; partialConvert's kept-right half and
+     makeSmoothingReal's window-right half rebase the same way;
+     residual = the absolute lanes' one-sided Hermite class at a
+     cut (~1e-4 m, == authored-as-two, the D118 acceptance);
+   - editor: laneIsRate/laneRatePM/laneUnit/defaults (elev ±90,
+     heading ±180)/badge " · abs yaw/pitch"/snap = the roll step
+     read as degrees (D122's rule); B on a ypAbs edge = the D120
+     recipe (absYpTarget: NEIGHBOR-side sample + worldRates slope
+     + entry-heading subtraction + unwrap-to-current; vertical
+     refuses with the reason); B TOWARD a ypAbs neighbor refuses
+     on every lane (nextAbsYp, the D122 choice); the authored
+     fast path requires matching ypAbs (the copy-an-angle-as-a-
+     rate guard); influence refuses absolute-angle sections (the
+     deltas are rates; compiler + menu gray both);
+   - the "Yaw/pitch behavior: Rate | Absolute angles (°)" row sits
+     DIRECTLY BELOW "Yaw/pitch axis" (user spec) in the Convert
+     dialog, the Add-section dialog and the START WIZARD, double-
+     interlocked (Geometric + Global) with the grayHint reason;
+     switching Yaw/pitch to Local clears the flag (the D118 rule);
+     the '+' hold: elevation holds the current angle, heading
+     holds 0 (= continue straight, entry-relative);
+   - undo snapshots (SecState.ypAbs — the D89 lesson), FVDD field
+     10, byte-identical round-trip. YpAbsGate (15). DELIBERATE
+     SCOPE LINE: the Resulting-overlay settings did NOT grow a
+     resYpAbs row (comps 1/2 are the shared overlay scale — the
+     D214 own-scale problem squared; add on request).
+
+3. MIRROR PIECE ("Track Piece ▾" beside Reverse): flip the piece
+   horizontally about the vertical plane through its entry heading
+   — same start position/heading/elevation, the bank mirrors. A
+   pure ONE-TO-ONE GRAPH NEGATION (Coaster.mirrorPiece, no refit):
+   force Gl + the roll lane (rate or absolute bank), geo yaw,
+   influence delta lane 1, s/c angle+dirDeg+rollVal, piece roll
+   deltas, held seam bank; the orientation conjugates by the
+   z-reflection (Quat.mirrorZ, the canonical pair kept exact —
+   heading 0 is mirror-invariant). Every integrator arithmetic
+   path is sign-symmetric, so the compile is BITWISE the z-negated
+   track in the canonical entry frame — MirrorGate (20): force/
+   geo/s-c/influenced/tilted-entry all bitwise, mirror² == the
+   original bitwise. Pieces ending with a bridge refuse (the
+   bridge re-solves against BOTH pieces).
+
+4. SWITCH COASTER… (beside Mirror): move the active piece under
+   another coaster with the SAME friction — the compile reads only
+   pieces + friction, so the piece stays BITWISE identical (rail
+   color/heartline/gauge are the parent's cosmetics). The picker
+   grays different-friction coasters with the reason (grayItem);
+   bridge-connected pieces gray (trailing bridge / bridged-in);
+   strict follows BAKE in place first (detachStrictSeam — nothing
+   moves); v0 mirrors both ride entries (the D235 re-anchor rule);
+   both compile caches invalidate; the view follows the piece.
+
+5. GLOBAL SPINNER STEPS (every spinner, present and future —
+   installed inside numericEditor, the one route all 26
+   construction sites take): the WHEEL steps any spinner by its
+   increment (always consumed — spinners sit over the plot and in
+   menu popups), CTRL steps at ONE TENTH, SHIFT SNAPS to the next
+   round multiple of the (possibly Ctrl-scaled) increment — 0.435
+   → 0.5 → 0.6. Arrow clicks with modifiers intercept in the
+   capture phase (the skin never arms auto-repeat; plain clicks
+   keep it); Shift+wheel's Windows deltaX fallback is load-bearing
+   (Shift IS the snap modifier). The 1-2-5 snap-step walkers keep
+   their series (the wheel drives them directly). The node
+   editor's LiveNum boxes adopt the same conventions (its old
+   Shift = ×10 wheel gave way to Shift = snap — the D225 mapping
+   superseded by the global rule).
+
+6. CAPTURE KEEPS TOOL WINDOWS VISIBLE (superseding D235's hide +
+   D236's bounds restore — his "actually make all menus stay
+   visible… if possible"): while a pane owns the mouse, every
+   non-autohide Popup's and owned Stage's scene hides its cursor
+   and FORWARDS mouse moves into the capturing pane's look handler
+   (flyLook reads screen coordinates only — a window under the
+   warped hidden cursor no longer starves the view, the D235
+   freeze), a RIGHT-click over a window releases the capture, and
+   presses/scrolls are swallowed. Windows live-update throughout —
+   placementEdit syncs the Track Piece rows per gizmo event now
+   (docApplying-guarded, the wizard-panel pattern).
+
+7. SEAM DIAMOND ALWAYS VISIBLE (strict seams): hollow while
+   smoothing is off — DRAGGING the hollow diamond ENABLES
+   smoothing at the dragged length (the enable path is the drag
+   itself; s/c edges still refuse, the D232 ban, via the factored
+   seamScEdge); hover grows a gray center dot in the hollow
+   diamond + small ◀ ▶ carets beside it in BOTH states (drawCaretH,
+   the drag affordance); a clean click still opens the seam menu.
+   And the CURSOR now respects press priority: a node sitting on a
+   smoothing-window edge shows the normal cursor, not H_RESIZE
+   (the node outranks the band edge at press time — the hover test
+   moved above the cursor decision).
+
+8. SPEED POPUP: a fresh control's target = the ENTER speed to TWO
+   decimals (was whole m/s); "Start:" renamed "Enter:" and made
+   CLICKABLE — target := enter speed, with a layout-stable hover
+   outline (constant transparent border) + the tooltip "Make
+   control speed equal to enter speed"; complex SPEED controls
+   keep it a plain readout (their graph IS the speed).
+
+9. WIZARD FIXES: (a) the Track Piece button stayed STUCK DISABLED
+   after Create (his "intermittent… redo makes it adjustable") —
+   wizardFinish/wizardCancel bypassed syncWizardPanel, the one
+   place the D236 lockout recomputes; both call it now (the
+   adjacent-cause sweep found no other bypass — open/switch/
+   applyDocState all called it already). (b) The wizard piece
+   creates with shapeLocked=false + OPEN pitch/roll padlocks, so
+   the entry gizmo's pitch/roll RINGS build and write BOTH tiers
+   (as if Lock Track Shape were off — the panel's own rows'
+   parity; local and global rings both route through the same
+   unlocked tier writes, no conflict can open); Done restores the
+   default locks. PieceState already carried all three flags.
+
+10. ATTACH FLOATING PIECE locks pitch AND roll at the PRE-ATTACH
+   angles always (was: seeded from the placement padlocks, D153) —
+   yaw stays following. seedStrictValues already reads the
+   pre-attach orientation, so a conflict-free layout stays
+   conflict-free; only the honest speed split remains (his spec
+   verbatim).
+
+11. Smaller: "Influence orientation settings…" sits directly below
+   "Edit influence" while editing influence (was up in the
+   section-settings block); the toolbar POV button REMOVED
+   (redundant with Space + the view dropdown); grayItem rows
+   align + size exactly like native MenuItems now (the D236
+   padding doubled the container's — measured by menu-snapshot
+   probe) and their tooltip fires over the WHOLE highlighted row
+   (installed on the .menu-item container via the parent hook).

@@ -90,6 +90,14 @@ public sealed abstract class LaneSection implements Section
      *  refuses absolute-roll sections for now. */
     public boolean rollAbsolute = false;
 
+    /** ABSOLUTE yaw/pitch (v19.8, D237 — the rollAbsolute twin for
+     *  lanes 0/1, GEO sections with GLOBAL yaw/pitch only): lane 0
+     *  holds the ELEVATION angle (°), lane 1 the HEADING (°,
+     *  reported-left, unwrapped past ±180) — the integration
+     *  projects onto the lane values with slope feed-forward.
+     *  Section-line field 10; missing = rate. */
+    public boolean ypAbsolute = false;
+
     /** INFLUENCE axis semantics (v16.5, D112 — user spec): how the
      *  two-pass integrates base + delta AS the other mode. A force
      *  section's geo influence picks roll and yaw/pitch axes; a geo
@@ -146,20 +154,10 @@ public sealed abstract class LaneSection implements Section
      *  Session state — snapshotted in DocState, never saved to file. */
     public boolean editInfluence = false;
 
-    /** SPLIT-CONTINUATION anchor (v19.6, D235 — the EXACT influence
-     *  split, closing the D234 tail-re-solve corner): set only by
-     *  Coaster.splitSectionAt when a section with influence history
-     *  is cut. inflRefTilt composes onto the entry orientation for
-     *  the REF integration — the parent's AUTHORED chain's frame at
-     *  the cut, relative to the resulting frame — and inflVStarK
-     *  scales the operating profile's entry (vApply = vDesign × K:
-     *  the parent's operating profile over REF heights at the cut,
-     *  as a ratio so reconcile moves stay coherent). With an anchor
-     *  the vAuthored/vDesign pair legitimately DIVERGES (ref runs
-     *  at the parent's authored-profile speed), so the D102 mirror
-     *  skips anchored sections. null / 1 = classic, bitwise. */
-    public Quat inflRefTilt = null;
-    public double inflVStarK = 1;
+    // (the v19.6/D235 split-anchor fields inflRefTilt/inflVStarK are
+    // GONE, v19.7 D236 — the one-pass hybrid influence model needs
+    // no ref frame: splits are exact by the Markov property alone.
+    // The loader ignores the short-lived `infl` fields 4-8.)
 
     /** Last compile's BASE curves — rows {t*, lane0, lane1, lane2} in
      *  the delta lanes' units on the section-local operating clock
@@ -285,15 +283,12 @@ public sealed abstract class LaneSection implements Section
     @Override public void vDesign(double v) {
         vDesign = v;
         // v15.4 (D102): while influenced the authored speed MIRRORS
-        // the operating speed through every consumer (spinner, B
-        // re-freeze, the D95 reconcile, resolve ops) — the section
-        // then behaves exactly like a normal one (ref re-derives at
-        // the new speed, deltas ride on top). The pair only diverges
-        // in hand-edited files, which the compiler still honors —
-        // and in SPLIT-ANCHORED sections (v19.6, D235): their
-        // vAuthored is the parent ref's speed at the cut, an
-        // independent stored quantity the mirror must not clobber.
-        if (influenced() && inflRefTilt == null) vAuthored = v;
+        // the operating speed through every consumer — the section
+        // behaves exactly like a normal one. Under the v19.7 hybrid
+        // (D236) vAuthored is inert compile-side (file compat only);
+        // the mirror keeps old readers pairing lanes with the speed
+        // they run at.
+        if (influenced()) vAuthored = v;
     }
 
     @Override public boolean vPinned() { return vPinned; }

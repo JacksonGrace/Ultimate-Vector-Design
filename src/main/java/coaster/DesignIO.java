@@ -334,7 +334,9 @@ public final class DesignIO {
                 // ignore the extra fields)
                 // field 8 (v16.6, D115): per-meter rate units;
                 // field 9 (v16.7, D118): absolute roll; missing = 0
-                out.printf(Locale.US, "section %s %s %s %d %d %d %d %d %d%n",
+                // field 10 (v19.8, D237): absolute yaw/pitch; missing = 0
+                out.printf(Locale.US,
+                    "section %s %s %s %d %d %d %d %d %d %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
                     d(fs.influenced() ? fs.vAuthored : fs.vDesign),
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
@@ -343,7 +345,8 @@ public final class DesignIO {
                     fs.rollGlobal ? 1 : 0,
                     fs.yawPitchGlobal ? 1 : 0,
                     fs.ratePerMeter ? 1 : 0,
-                    fs.rollAbsolute ? 1 : 0);
+                    fs.rollAbsolute ? 1 : 0,
+                    fs.ypAbsolute ? 1 : 0);
                 for (int lane = 0; lane < 3; lane++) {
                     out.println("lane " + lane);
                     for (BezierBaker.Node n : fs.lanes.get(lane)) {
@@ -359,25 +362,13 @@ public final class DesignIO {
                     // section loads uninfluenced (old files, old apps).
                     // Fields 2-3 (v16.5, D112): the influence axis
                     // flags — missing = local (historic), old readers
-                    // ignore extra fields on known lines. Fields 4-8
-                    // (v19.6, D235): the SPLIT ANCHOR — ref-tilt quat
-                    // + the vStar ratio, written only when set so
-                    // anchorless files stay byte-identical
-                    // (Double.toString: they shape the track).
-                    if (fs.inflRefTilt != null || fs.inflVStarK != 1) {
-                        Quat q = fs.inflRefTilt == null
-                            ? Quat.IDENTITY : fs.inflRefTilt;
-                        out.printf(Locale.US, "infl %s %d %d %s %s %s %s %s%n",
-                            d(fs.vDesign),
-                            fs.inflRollGlobal ? 1 : 0,
-                            fs.inflYawPitchGlobal ? 1 : 0,
-                            d(q.w()), d(q.x()), d(q.y()), d(q.z()),
-                            d(fs.inflVStarK));
-                    } else {
-                        out.printf(Locale.US, "infl %s %d %d%n", d(fs.vDesign),
-                            fs.inflRollGlobal ? 1 : 0,
-                            fs.inflYawPitchGlobal ? 1 : 0);
-                    }
+                    // ignore extra fields on known lines. (The
+                    // short-lived D235 anchor fields 4-8 are no
+                    // longer written — D236's hybrid needs none —
+                    // and load as ignored extras.)
+                    out.printf(Locale.US, "infl %s %d %d%n", d(fs.vDesign),
+                        fs.inflRollGlobal ? 1 : 0,
+                        fs.inflYawPitchGlobal ? 1 : 0);
                     for (int lane = 0; lane < 3; lane++) {
                         out.println("dlane " + lane);
                         for (BezierBaker.Node n : fs.deltaLanes.get(lane)) {
@@ -690,6 +681,9 @@ public final class DesignIO {
                         // v16.7 absolute roll; missing = rate
                         ls6.rollAbsolute = parts.length > 9
                             && parts[9].equals("1");
+                        // v19.8 absolute yaw/pitch; missing = rate
+                        ls6.ypAbsolute = parts.length > 10
+                            && parts[10].equals("1");
                     }
                     curPiece.sections.add(curSection);
                     curLane = -1;
@@ -774,19 +768,9 @@ public final class DesignIO {
                         && parts[2].equals("1");
                     ls.inflYawPitchGlobal = parts.length > 3
                         && parts[3].equals("1");
-                    // v19.6 (D235) split anchor; missing = none. The
-                    // quat loads BIT-EXACTLY (no re-normalize — the
-                    // writer stored a normalized one and a division
-                    // by 0.999… would flip compile bits, D198)
-                    if (parts.length > 8) {
-                        Quat q = new Quat(Double.parseDouble(parts[4]),
-                            Double.parseDouble(parts[5]),
-                            Double.parseDouble(parts[6]),
-                            Double.parseDouble(parts[7]));
-                        ls.inflRefTilt = q.equals(Quat.IDENTITY) ? null : q;
-                        double k = Double.parseDouble(parts[8]);
-                        ls.inflVStarK = k > 0.01 && k < 100 ? k : 1;
-                    }
+                    // (fields 4-8 = the short-lived D235 split anchor
+                    // — ignored since v19.7 D236, the hybrid model
+                    // needs no ref frame)
                     // scaffolding only: the dlane blocks that follow
                     // replace these; a file with no dn lines heals to
                     // lone (0,0) nodes in the post-load validation

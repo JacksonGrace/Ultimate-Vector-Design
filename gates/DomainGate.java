@@ -445,22 +445,22 @@ public class DomainGate {
             String.format("entry=%b discard=%b defaults=%b",
                 bit5, bit5d, defMirror));
 
-        // ---- 45b: zero-delta two-pass at a SHIFTED operating speed
-        // keeps the global-roll shape (the divergent-pair path) ----
+        // ---- 45b: vAuthored INERT (v19.7, D236 — the one-pass
+        // hybrid retired the two-pass ref frame): a hand-edited
+        // divergent pair compiles at the OPERATING speed alone —
+        // zero deltas at vDesign 28 == the plain section at 28 ----
         Coaster.enterInfluence(i5s, 8);
         i5s.vDesign = 28;   // FIELD write: hand-edited-file pair split
         TrackCompiler.Result i5v = TrackCompiler.compile(i5, dt);
-        double dev5 = trackDev(i5b, i5v);
-        // 0.08 m / 83 m at a 17% pair split = the bank-projection
-        // cadence class (D110); the UI path never diverges the pair
-        // (the vDesign setter mirrors it) - this is the hand-edited-
-        // file corner engaging at global axes at all
-        check("45b global-roll influence: shape v-invariant (2-pass)",
-            dev5 < 0.12,
-            String.format("dev=%.4f m over %.0f m", dev5,
-                i5b.samples().get(i5b.samples().size() - 1).s()));
+        Coaster.discardInfluence(i5s);   // vDesign := vAuthored (24)
+        i5s.vDesign = 28;
+        TrackCompiler.Result i5p = TrackCompiler.compile(i5, dt);
+        double dev5 = trackDev(i5p, i5v);
+        check("45b divergent zero-delta pair == plain at vDesign (D236)",
+            dev5 < 1e-12,
+            String.format("dev=%.2e m over %.0f m", dev5,
+                i5v.samples().get(i5v.samples().size() - 1).s()));
         i5s.vDesign = 24;
-        Coaster.discardInfluence(i5s);
 
         // ---- 45c: GLOBAL yaw/pitch influence - a +10 deg/s heading
         // delta on a CLIMBING force section turns exactly 60 deg of

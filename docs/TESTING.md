@@ -3696,6 +3696,79 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     SmoothRealGate (15), CtlConvProbe/BakeOscProbe + the whole
     battery; DomainGate 40d + Phase3Gate 49d re-baselined (see
     D235.5/.7).
+153. v19.7 (D236): batch 21. (a) HYBRID INFLUENCE: sculpt a delta
+    bump that returns to zero — after the window the resulting
+    felt curves sit EXACTLY on the authored graphs (no residual
+    laterals, his "Odd influence behavior" file) and the next
+    section carries no ≠v; discard/all-zero stays bitwise.
+    (b) Bake/convert an influenced section CARRYING a speed
+    control — the track holds (his file: 10.9 m → 0.011 m).
+    (c) Bake at coarse spacing (0.11, optimal OFF) — no
+    alternating oscillation (ridge solve; 20 flips → 0).
+    (d) Split an influenced section anywhere (deltas before the
+    cut included) — machine-exact, no anchor. (e) WIZARD: Track
+    Piece dropdown grays while the panel shows (hover reason),
+    ball double-click posts the stats reason instead of the
+    popup; gizmo drags update the Placement spinners LIVE;
+    Coaster Options grays during a New-Coaster wizard; Ctrl+Z
+    after Create Coaster REOPENS the wizard with its picks.
+    (f) INITIAL SIZE spinner under Section Type — edit 6 s,
+    flip to Distance (shows 10 m), flip back → 6 s again; s/c
+    shares the meters slot. (g) Click an INACTIVE coaster's
+    track → "Switch to editing …?" popup; Switch activates that
+    coaster with the clicked piece selected, Cancel/click-off
+    does nothing. (h) Fly/POV capture hides tool windows and
+    returns them at the SAME position AND size. (i) Grayed menu
+    items carry hover TOOLTIPS (full sentences), no more
+    "(reason)" parentheticals; Rail Settings sits directly under
+    Coaster Options. (j) Hover inside a smoothed strict-seam
+    window — the " (true …)" readout shows the blended value
+    even without a speed conflict. Headless: InflSplitGate (22,
+    rewritten — h/z acceptance series), OddInflProbe,
+    CtlBakeProbe, Phase2Gate influence(b) + DomainGate 45b
+    re-speced for the inert vAuthored, whole battery green.
+
+154. v19.8 (D237): batch 22. (a) THE PHANTOM CONFLICT (his
+    "Conflict not getting resolved" file): section B's ≠v badge now
+    RESOLVES — both resolve ops stick bitwise through rebuilds
+    (0.357 → 0.00002 m/s; the reconcile's real-anchor gate is
+    amplification-aware, the badge's own measure); refreezing the
+    source section clears the whole chain. ConflictGate (8, file
+    embedded). (b) ABSOLUTE YAW/PITCH: a geo section under global
+    yaw/pitch takes "Yaw/pitch behavior: Absolute angles" —
+    lane 0 = elevation °, lane 1 = heading ° (+ = left, entry-
+    relative, past ±180 fine); constant angles hold exactly, a
+    +50° ramp turns left and lands 50.000000, rates stay smooth
+    (no D121 staircase), converts to/from it work incl. °/m (the
+    D213 trap gated), splits/merges/IO exact, influence refuses,
+    B works on and refuses toward it like absolute bank. The row
+    sits below "Yaw/pitch axis" in Convert/Add/wizard. YpAbsGate
+    (15). (c) MIRROR PIECE: Track Piece ▾ > Mirror piece — the
+    track flips horizontally BITWISE (force/geo/s-c/influence/
+    tilted entries all gated; mirror twice = the original
+    bitwise); bridge-ending pieces gray. MirrorGate (20).
+    (d) SWITCH COASTER…: moves the piece under a same-friction
+    coaster bitwise (different friction grays with the reason;
+    bridge connections gray; follows bake in place). (e) SPINNERS
+    everywhere: wheel steps by the increment, Ctrl = tenth steps,
+    Shift = snap to round multiples (0.435 → 0.5 → 0.6) — arrows
+    and wheel, node-editor boxes included. (f) Fly/POV capture
+    keeps tool windows VISIBLE + live (look works over them;
+    right-click over one releases). (g) Strict-seam diamond always
+    shows (hollow = off; DRAG enables smoothing; hover = gray
+    center + side carets); node-over-band-edge shows the normal
+    cursor. (h) Speed popup: fresh target = enter speed to 2
+    decimals; "Enter:" clickable (sets the target; outline on
+    hover; complex speed excluded). (i) Wizard: Track Piece button
+    re-enables after Create (the stuck-disabled bug); the entry
+    gizmo grows pitch/roll rings that edit both tiers. (j) Attach
+    floating piece: pitch+roll always lock at the pre-attach
+    angles. (k) Influence orientation settings sits below Edit
+    influence; POV toolbar button gone; gray menu rows align
+    exactly + tooltip over the whole row. Full battery green
+    (DetermGates, Phase2/3, Domain, InflSplit, Mirror, YpAbs,
+    Conflict, all suites).
+
 
 ## Debugging heuristics learned the hard way
 

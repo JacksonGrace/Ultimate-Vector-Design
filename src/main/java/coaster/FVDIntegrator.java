@@ -102,6 +102,17 @@ public class FVDIntegrator {
          *  distance path) — step drives + post-step snaps on the loss
          *  deficit. Null = none = every historic path bitwise. */
         public SpeedControl.Ctl ctl = null;
+        /** INFLUENCE delta rates (v19.7, D236 — the ONE-PASS hybrid
+         *  influence model): other-mode delta keyframes on the SAME
+         *  axis as the lanes (Gv slot = Δpitch, Gl slot = Δyaw,
+         *  °/s — or °/m under rollPerMeter), added to Ω per stage
+         *  at the CURRENT state and to the felt RECORD, so the
+         *  resulting graphs == the solve + delta exactly and a
+         *  zero-delta stretch IS the plain force solve. null =
+         *  bitwise. dInflYpGlobal reads the deltas as heading/
+         *  elevation rates (the influence axis flag). */
+        public java.util.List<Keyframe> dInfl = null;
+        public boolean dInflYpGlobal = false;
     }
 
     /** Signed bank of U vs the level up at T (rad; roll-lane sign),
@@ -112,6 +123,23 @@ public class FVDIntegrator {
         if (horiz2 < 1e-6) return Double.NaN;
         Vec3 ul = new Vec3(-T.y() * T.x(), horiz2, -T.y() * T.z()).normalize();
         return Math.atan2(ul.cross(U).dot(T), U.dot(ul));
+    }
+
+    /** REPORTED-left heading of T (rad — the D185/D186 sign the yaw
+     *  lanes, yaw spinners and worldRates all speak: a left turn
+     *  grows it), or NaN on near-vertical track. v19.8, D237 — the
+     *  absolute yaw/pitch feature's bankOfTU twin. */
+    static double headingOfT(Vec3 T) {
+        double horiz2 = T.x() * T.x() + T.z() * T.z();
+        if (horiz2 < 1e-6) return Double.NaN;
+        return Math.atan2(T.z(), T.x());
+    }
+
+    /** Elevation of T (rad, + = climbing). Always defined; its
+     *  correction AXIS vanishes on vertical track — callers hold
+     *  off with the heading. */
+    static double elevationOfT(Vec3 T) {
+        return Math.asin(Math.max(-1, Math.min(1, T.y())));
     }
 
     /** The GLOBAL-roll projection: rotate U about T so the bank vs
@@ -180,16 +208,19 @@ public class FVDIntegrator {
                                boolean rollPM, boolean rollAbs,
                                Friction fric) {
         return deriv(st, t, kfs, v0, y0, rollGlobal, rollPM, rollAbs,
-            fric, Double.NaN);
+            fric, Double.NaN, null, false);
     }
 
     /** drive = a speed control's d(loss)/ds for this step (replaces
      *  friction — the drive supplies/absorbs whatever the felt-G
-     *  contract needs); NaN = natural. */
+     *  contract needs); NaN = natural. dInfl = influence GEO-RATE
+     *  deltas (v19.7, D236 — the one-pass hybrid), added to Ω at
+     *  the current state; null = bitwise. */
     private static Deriv deriv(State st, double t, List<Keyframe> kfs,
                                double v0, double y0, boolean rollGlobal,
                                boolean rollPM, boolean rollAbs,
-                               Friction fric, double drive) {
+                               Friction fric, double drive,
+                               List<Keyframe> dInfl, boolean dYpG) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T); // frame convention: T x R = U, R x U = T, U x T = R
@@ -203,6 +234,13 @@ public class FVDIntegrator {
         // negates into the historic left-positive internal relation
         double omegaR = -(G0 * (kf.Gl() + R.y())) / vSafe;
         Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU));
+        if (dInfl != null) {
+            // influence deltas join Ω BEFORE the roll term so the
+            // global-roll feed-forward sees the whole turn (D236)
+            Keyframe dk = interpAt(dInfl, t);
+            omega = omega.add(GeoIntegrator.inflOmega(dk.Gv(), dk.Gl(),
+                T, U, R, dYpG, rollPM ? v : 1));
+        }
         omega = omega.add(T.scale(rollAbs && rollGlobal
             ? rollTermPhi(Math.toRadians(rollSlopeAt(kfs, t)), T, omega)
             : rollTerm(kf, T, omega, rollGlobal, rollPM ? v : 1)));
@@ -260,15 +298,25 @@ public class FVDIntegrator {
      *  bank C1, rate continuous. Returns {bank°, slope °/axis-unit};
      *  clamps flat outside the grid. */
     static double[] bankHermite(List<Keyframe> kfs, double x) {
+        return angleHermite(kfs, x, 2);
+    }
+
+    /** The bankHermite body slot-generalized (v19.8, D237 — the
+     *  absolute yaw/pitch lanes read their angles through the SAME
+     *  C1 machinery): slot 0 = the Gv keyframe slot (elevation °),
+     *  1 = the Gl slot (heading °, reported-left), 2 = the roll
+     *  slot (bank °). Identical arithmetic to the historic
+     *  bankHermite — bitwise for slot 2. */
+    static double[] angleHermite(List<Keyframe> kfs, double x, int slot) {
         int n = kfs.size();
         if (n < 2) {
-            return new double[]{ n == 0 ? 0 : kfs.get(0).rollRateDeg(), 0 };
+            return new double[]{ n == 0 ? 0 : slotVal(kfs.get(0), slot), 0 };
         }
         if (x <= kfs.get(0).t()) {
-            return new double[]{ kfs.get(0).rollRateDeg(), 0 };
+            return new double[]{ slotVal(kfs.get(0), slot), 0 };
         }
         if (x >= kfs.get(n - 1).t()) {
-            return new double[]{ kfs.get(n - 1).rollRateDeg(), 0 };
+            return new double[]{ slotVal(kfs.get(n - 1), slot), 0 };
         }
         int lo = 0, hi = n - 1;
         while (hi - lo > 1) {
@@ -277,14 +325,14 @@ public class FVDIntegrator {
         }
         double t0 = kfs.get(lo).t(), t1 = kfs.get(hi).t();
         double h = t1 - t0;
-        double v0 = kfs.get(lo).rollRateDeg();
-        double v1 = kfs.get(hi).rollRateDeg();
+        double v0 = slotVal(kfs.get(lo), slot);
+        double v1 = slotVal(kfs.get(hi), slot);
         if (h < 1e-12) return new double[]{ v0, 0 };
         double m0 = lo == 0 ? (v1 - v0) / h
-            : (v1 - kfs.get(lo - 1).rollRateDeg())
+            : (v1 - slotVal(kfs.get(lo - 1), slot))
               / (t1 - kfs.get(lo - 1).t());
         double m1 = hi == n - 1 ? (v1 - v0) / h
-            : (kfs.get(hi + 1).rollRateDeg() - v0)
+            : (slotVal(kfs.get(hi + 1), slot) - v0)
               / (kfs.get(hi + 1).t() - t0);
         double u = (x - t0) / h, u2 = u * u, u3 = u2 * u;
         double val = (2 * u3 - 3 * u2 + 1) * v0
@@ -296,6 +344,10 @@ public class FVDIntegrator {
             + (-6 * u2 + 6 * u) * v1
             + (3 * u2 - 2 * u) * h * m1) / h;
         return new double[]{ val, slope };
+    }
+
+    private static double slotVal(Keyframe k, int slot) {
+        return slot == 0 ? k.Gv() : slot == 1 ? k.Gl() : k.rollRateDeg();
     }
 
     /** The absolute lane's bank target at x (°, C1). */
@@ -349,8 +401,20 @@ public class FVDIntegrator {
         double t = 0;
         while (true) {
             Keyframe kf = interpAt(keyframes, t);
+            double sgv = kf.Gv(), sgl = kf.Gl();
+            if (opts.dInfl != null) {
+                // the RECORD carries the influence deltas' felt
+                // contribution exactly (v19.7, D236 — resulting ==
+                // the solve's targets + Δω·v/g, by linearity)
+                Keyframe dk = interpAt(opts.dInfl, t);
+                Vec3 dOm = GeoIntegrator.inflOmega(dk.Gv(), dk.Gl(),
+                    T, U, R, opts.dInflYpGlobal,
+                    opts.rollPerMeter ? vRec : 1);
+                sgv += -dOm.dot(R) * vRec / G0;
+                sgl += -dOm.dot(U) * vRec / G0;
+            }
             samples.add(new Sample(t, s, pos, T, U, R, vRec,
-                kf.Gv(), kf.Gl()));
+                sgv, sgl));
 
             // END LANDING (v17.10, D147): the closing step is sized to
             // land the last sample EXACTLY on the authored end. The
@@ -372,10 +436,10 @@ public class FVDIntegrator {
             double drv = opts.ctl == null ? Double.NaN
                 : opts.ctl.drive(t, v);
             State y = new State(pos, T, U, loss);
-            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
-            Deriv k2 = deriv(advance(y, k1, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
-            Deriv k3 = deriv(advance(y, k2, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
-            Deriv k4 = deriv(advance(y, k3, h), t + h, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
+            Deriv k1 = deriv(y, t, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv, opts.dInfl, opts.dInflYpGlobal);
+            Deriv k2 = deriv(advance(y, k1, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv, opts.dInfl, opts.dInflYpGlobal);
+            Deriv k3 = deriv(advance(y, k2, h / 2), t + h / 2, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv, opts.dInfl, opts.dInflYpGlobal);
+            Deriv k4 = deriv(advance(y, k3, h), t + h, keyframes, opts.v0, y0, rG, opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv, opts.dInfl, opts.dInflYpGlobal);
 
             Vec3 newPos = pos.add(
                 k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
@@ -469,13 +533,14 @@ public class FVDIntegrator {
                                     boolean rollPM, boolean rollAbs,
                                     Friction fric) {
         return derivDist(st, kfs, v0, y0, rollGlobal, rollPM, rollAbs,
-            fric, Double.NaN);
+            fric, Double.NaN, null, false);
     }
 
     private static DDeriv derivDist(DState st, List<Keyframe> kfs,
                                     double v0, double y0, boolean rollGlobal,
                                     boolean rollPM, boolean rollAbs,
-                                    Friction fric, double drive) {
+                                    Friction fric, double drive,
+                                    List<Keyframe> dInfl, boolean dYpG) {
         Vec3 T = st.T().normalize();
         Vec3 U = st.U().sub(T.scale(st.U().dot(T))).normalize();
         Vec3 R = U.cross(T);
@@ -486,6 +551,11 @@ public class FVDIntegrator {
         double omegaU = (G0 * (kf.Gv() - U.y())) / v;
         double omegaR = -(G0 * (kf.Gl() + R.y())) / v;   // +Gl = right (D184)
         Vec3 omega = U.scale(omegaR).add(R.scale(-omegaU));
+        if (dInfl != null) {   // influence deltas join Omega (D236)
+            Keyframe dk = interpAt(dInfl, st.s());
+            omega = omega.add(GeoIntegrator.inflOmega(dk.Gv(), dk.Gl(),
+                T, U, R, dYpG, rollPM ? v : 1));
+        }
         omega = omega.add(T.scale(rollAbs && rollGlobal
             // slope per METER on an arc axis: phi' = slope x v
             ? rollTermPhi(Math.toRadians(rollSlopeAt(kfs, st.s())) * v,
@@ -518,10 +588,20 @@ public class FVDIntegrator {
                                   boolean rollGlobal, boolean rollPM,
                                   boolean rollAbs, Friction fric,
                                   double drive) {
-        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive);
-        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive);
-        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive);
-        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive);
+        return rk4Dist(y, kfs, v0, y0, h, rollGlobal, rollPM, rollAbs,
+            fric, drive, null, false);
+    }
+
+    private static DState rk4Dist(DState y, List<Keyframe> kfs,
+                                  double v0, double y0, double h,
+                                  boolean rollGlobal, boolean rollPM,
+                                  boolean rollAbs, Friction fric,
+                                  double drive,
+                                  List<Keyframe> dInfl, boolean dYpG) {
+        DDeriv k1 = derivDist(y, kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive, dInfl, dYpG);
+        DDeriv k2 = derivDist(advanceDist(y, k1, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive, dInfl, dYpG);
+        DDeriv k3 = derivDist(advanceDist(y, k2, h / 2), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive, dInfl, dYpG);
+        DDeriv k4 = derivDist(advanceDist(y, k3, h), kfs, v0, y0, rollGlobal, rollPM, rollAbs, fric, drive, dInfl, dYpG);
         Vec3 pos = y.pos().add(
             k1.dPos().add(k2.dPos().scale(2)).add(k3.dPos().scale(2)).add(k4.dPos())
                 .scale(h / 6));
@@ -540,12 +620,28 @@ public class FVDIntegrator {
 
     private static void addSampleDist(List<Sample> samples, DState st, double t,
                                       List<Keyframe> kfs, double v0, double y0) {
+        addSampleDist(samples, st, t, kfs, v0, y0, null, false, false);
+    }
+
+    private static void addSampleDist(List<Sample> samples, DState st, double t,
+                                      List<Keyframe> kfs, double v0, double y0,
+                                      List<Keyframe> dInfl, boolean dYpG,
+                                      boolean rollPM) {
         Vec3 T = st.T();
         Vec3 U = st.U();
         Keyframe kf = interpAt(kfs, st.s());
         double v = speedAt(st.pos(), v0, y0, st.loss());
+        double sgv = kf.Gv(), sgl = kf.Gl();
+        if (dInfl != null) {   // resulting == solve + delta (D236)
+            Keyframe dk = interpAt(dInfl, st.s());
+            Vec3 R = U.cross(T);
+            Vec3 dOm = GeoIntegrator.inflOmega(dk.Gv(), dk.Gl(),
+                T, U, R, dYpG, rollPM ? v : 1);
+            sgv += -dOm.dot(R) * v / G0;
+            sgl += -dOm.dot(U) * v / G0;
+        }
         samples.add(new Sample(t, st.s(), st.pos(), T, U, U.cross(T),
-            v, kf.Gv(), kf.Gl()));   // honest record (v18.6, D175)
+            v, sgv, sgl));   // honest record (v18.6, D175)
     }
 
     /** DISTANCE-domain run: keyframes over arc length (meters in the
@@ -569,7 +665,8 @@ public class FVDIntegrator {
         double cumRoll = 0;
 
         while (st.s() < totalLen - 1e-9 && guard++ < 500_000) {
-            addSampleDist(samples, st, t, keyframes, opts.v0, y0);
+            addSampleDist(samples, st, t, keyframes, opts.v0, y0,
+                opts.dInfl, opts.dInflYpGlobal, opts.rollPerMeter);
             double v = Math.max(0.5, speedAt(st.pos(), opts.v0, y0, st.loss()));
             double sPrev = st.s();
             // speed control (v18.0): drive decided at the step-start
@@ -579,7 +676,8 @@ public class FVDIntegrator {
             double hUsed;
             if (st.s() + v * dt < totalLen - 1e-12) {
                 st = rk4Dist(st, keyframes, opts.v0, y0, dt, rG,
-                    opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv);
+                    opts.rollPerMeter, opts.rollAbsolute, opts.fric, drv,
+                    opts.dInfl, opts.dInflYpGlobal);
                 t += dt;
                 hUsed = dt;
             } else {
@@ -590,7 +688,7 @@ public class FVDIntegrator {
                 for (int it = 0; it < 3; it++) {
                     end = rk4Dist(st, keyframes, opts.v0, y0, h, rG,
                         opts.rollPerMeter, opts.rollAbsolute, opts.fric,
-                        drv);
+                        drv, opts.dInfl, opts.dInflYpGlobal);
                     double vEnd = Math.max(0.5,
                         speedAt(end.pos(), opts.v0, y0, end.loss()));
                     h += (totalLen - end.s()) / vEnd;
@@ -642,7 +740,8 @@ public class FVDIntegrator {
                 }
             }
         }
-        addSampleDist(samples, st, t, keyframes, opts.v0, y0);
+        addSampleDist(samples, st, t, keyframes, opts.v0, y0,
+            opts.dInfl, opts.dInflYpGlobal, opts.rollPerMeter);
         return samples;
     }
 

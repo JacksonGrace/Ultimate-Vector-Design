@@ -416,31 +416,29 @@ class GraphEditor extends Region {
             // by default on hand-made strict seams; bridge converts
             // and piece connects arrive with it ON at 1 m
             TrackPiece fsm = app.coaster.pieces.get(right.piece());
-            MenuItem smTog = new MenuItem(fsm.sSmoothLen > 0.01
-                ? "Disable smoothing"
-                : "Enable smoothing (10 m)");
             // smoothing is NOT an option on the edge of an s/c
             // section (v19.3, D232 — user spec: its own entry ease
             // conflicts and the window has no lane form); an already-
-            // smoothed old file can still DISABLE
-            List<Section> aSecs =
-                app.coaster.pieces.get(right.piece() - 1).sections;
-            boolean scEdge = (!aSecs.isEmpty()
-                    && aSecs.get(aSecs.size() - 1)
-                        instanceof StraightCurveSection)
-                || app.coaster.pieces.get(right.piece()).sections.get(0)
-                    instanceof StraightCurveSection;
+            // smoothed old file can still DISABLE. Gray reasons ride
+            // hover tooltips since v19.7 (D236, grayItem).
+            boolean scEdge = seamScEdge(right.piece());
+            MenuItem smTog;
             if (scEdge && fsm.sSmoothLen <= 0.01) {
-                smTog.setDisable(true);
-                smTog.setText("Enable smoothing — not on an s/c edge");
+                smTog = grayItem("Enable smoothing",
+                    "Smoothing cannot be enabled on a straight/curve"
+                    + " edge — the s/c entry ease owns that seam.");
+            } else {
+                smTog = new MenuItem(fsm.sSmoothLen > 0.01
+                    ? "Disable smoothing"
+                    : "Enable smoothing (10 m)");
+                smTog.setOnAction(ev -> {
+                    pushUndoSnapshot();
+                    fsm.sSmoothLen = fsm.sSmoothLen > 0.01 ? 0 : 10;
+                    app.markDirty();
+                    app.rebuildTrack();
+                    redraw();
+                });
             }
-            smTog.setOnAction(ev -> {
-                pushUndoSnapshot();
-                fsm.sSmoothLen = fsm.sSmoothLen > 0.01 ? 0 : 10;
-                app.markDirty();
-                app.rebuildTrack();
-                redraw();
-            });
             // MAKE SMOOTHING REAL (v19.3, D232): the blend window
             // becomes authored lanes of the upstream section's type,
             // guarded by a fresh strict seam at the window's end —
@@ -448,14 +446,20 @@ class GraphEditor extends Region {
             // PRE-CHECKED at menu build since v19.6 (D235, user rule
             // "never a click that does nothing"): the dry-run's
             // refusal grays the item with a SHORT reason.
-            String smWhy = fsm.sSmoothLen <= 0.01 ? "no smoothing yet"
-                : shortWhy(app.coaster.makeSmoothingRealWhy(
-                    right.piece(), FvdDesigner.INTEGRATE_DT));
-            MenuItem smReal = new MenuItem("Make smoothing real…"
-                + (smWhy != null ? " (" + smWhy + ")" : ""));
-            smReal.setDisable(smWhy != null);
-            smReal.setOnAction(ev ->
-                makeSmoothingRealPreview(right.piece()));
+            String smWhy = fsm.sSmoothLen <= 0.01
+                ? "Enable smoothing on this seam first."
+                : app.coaster.makeSmoothingRealWhy(
+                    right.piece(), FvdDesigner.INTEGRATE_DT);
+            MenuItem smReal;
+            if (smWhy != null) {
+                // the FULL dry-run sentence rides the tooltip now
+                // (D236 — shortWhy's ≤6-word compression retired)
+                smReal = grayItem("Make smoothing real…", smWhy);
+            } else {
+                smReal = new MenuItem("Make smoothing real…");
+                smReal.setOnAction(ev ->
+                    makeSmoothingRealPreview(right.piece()));
+            }
             MenuItem un = new MenuItem("Un-strict seam");   // (D232:
                 // the explainer parenthetical left the label)
             un.setOnAction(ev -> {
@@ -514,17 +518,22 @@ class GraphEditor extends Region {
                 && la.yawPitchGlobal == lb.yawPitchGlobal
                 && la.ratePerMeter == lb.ratePerMeter
                 && la.rollAbsolute == lb.rollAbsolute
+                && la.ypAbsolute == lb.ypAbsolute
                 && !sa.reversed() && !sb.reversed()
                 && !la.influenced() && !lb.influenced();
-            MenuItem conn = new MenuItem(like
-                ? "Connect sections (merge into one)"
-                : "Connect sections — needs two LIKE sections");
-            conn.setDisable(!like);
-            final int rp = right.piece(), rk = right.section();
-            conn.setOnAction(ev -> {
-                activateRunSec(rp, rk);
-                connectSections(rk - 1);
-            });
+            MenuItem conn;
+            if (like) {
+                conn = new MenuItem("Connect sections (merge into one)");
+                final int rp = right.piece(), rk = right.section();
+                conn.setOnAction(ev -> {
+                    activateRunSec(rp, rk);
+                    connectSections(rk - 1);
+                });
+            } else {
+                conn = grayItem("Connect sections (merge into one)",
+                    "Needs two adjacent sections of the same type,"
+                    + " domain and axis settings.");
+            }
             cm.getItems().add(conn);
             MenuItem make = new MenuItem(
                 "Make seam strict (freeze downstream shape)…");
@@ -676,26 +685,9 @@ class GraphEditor extends Region {
         return new double[]{ f.sYawDeg, f.sPitchDeg, f.sRollDeg };
     }
 
-    /** Compress a model refusal reason into a ≤6-word menu
-     *  parenthetical (v19.6, D235 — the gray-out rule: menu items
-     *  can't carry tooltips, so the short form rides the label; the
-     *  full sentence still posts to the stats bar on an actual
-     *  refusal). null in = null out (= enabled). */
-    private static String shortWhy(String why) {
-        if (why == null) return null;
-        if (why.contains("speed control")) return "speed control in window";
-        if (why.contains("speed mark")) return "speed mark in window";
-        if (why.contains("influence deltas")) return "influence in window";
-        if (why.contains("divergent-speed")) return "divergent influence speeds";
-        if (why.contains("reversed")) return "legacy reversed section";
-        if (why.contains("stalls")) return "stall in window";
-        if (why.contains("too small") || why.contains("too short")) {
-            return "window too small";
-        }
-        if (why.contains("no smoothing")) return "no smoothing yet";
-        if (why.contains("force/geo")) return "needs force/geo neighbors";
-        return "not available here";
-    }
+    // (shortWhy — D235's ≤6-word parenthetical compressor — retired
+    // in v19.7, D236: grayItem rows carry the FULL dry-run sentence
+    // on a hover tooltip instead.)
 
     /** Hide the seam pop-out while the APP loses OS focus and bring
      *  it back on refocus (v19.6, D235 — the pv pattern's third
@@ -1415,6 +1407,9 @@ class GraphEditor extends Region {
      *  are always rates; an absolute roll lane never is) */
     private boolean laneIsRate(LaneSection ls, int lane) {
         if (lane == 2 && ls.rollAbsolute && ls.rollGlobal) return false;
+        // absolute yaw/pitch lanes hold ANGLES (v19.8, D237)
+        if (lane < 2 && ls.ypAbsolute && ls.yawPitchGlobal
+                && ls instanceof GeoSection) return false;
         if (activeInfl() != null) return true;
         return ls instanceof GeoSection || lane == 2;
     }
@@ -1463,6 +1458,7 @@ class GraphEditor extends Region {
             return surfCtl.type == SpeedControl.ACCEL ? " g" : " m/s";
         }
         if (lane == 2 && activeRollAbs()) return " °";
+        if (lane < 2 && activeYpAbs()) return " °";   // D237
         if (laneShownPM(lane)) return " °/m";
         return activeGeo() ? " °/s" : LANE_UNITS[lane];
     }
@@ -1494,6 +1490,15 @@ class GraphEditor extends Region {
         if (surfStrip) return false;
         return sections().get(activeSection) instanceof LaneSection ls
             && ls.rollAbsolute && ls.rollGlobal;
+    }
+
+    /** Is the ACTIVE section's yaw/pitch pair ABSOLUTE angles
+     *  (v19.8, D237)? Geo + global yaw/pitch only; the influence
+     *  surface never is (abs sections refuse influence). */
+    private boolean activeYpAbs() {
+        if (surfStrip || activeInfl() != null) return false;
+        return sections().get(activeSection) instanceof GeoSection ls
+            && ls.ypAbsolute && ls.yawPitchGlobal;
     }
 
     /** The active section's roll lane is an ABSOLUTE bank — the
@@ -1531,8 +1536,11 @@ class GraphEditor extends Region {
      *  D115)? Rate lanes only — geo pitch/yaw/roll, force roll. */
     static boolean laneRatePM(LaneSection ls, int lane) {
         // an ABSOLUTE roll lane holds degrees — rate units don't
-        // apply to it (v16.7, D118)
+        // apply to it (v16.7, D118); absolute yaw/pitch lanes the
+        // same (v19.8, D237 — the D213 rule editor-side)
         if (lane == 2 && ls.rollAbsolute && ls.rollGlobal) return false;
+        if (lane < 2 && ls.ypAbsolute && ls.yawPitchGlobal
+                && ls instanceof GeoSection) return false;
         return ls.ratePerMeter
             && (ls instanceof GeoSection || lane == 2);
     }
@@ -1572,11 +1580,13 @@ class GraphEditor extends Region {
         // degrees, default ±90. The DISPLAYED units govern (the
         // cross-rate view rescales).
         if (lane == 2 && activeRollAbs()) return -90;
+        if (lane < 2 && activeYpAbs()) return lane == 0 ? -90 : -180;
         if (laneShownPM(lane)) return -5;
         return modeDefMin(activeGeo())[lane];
     }
     private double defMax(int lane) {
         if (lane == 2 && activeRollAbs()) return 90;
+        if (lane < 2 && activeYpAbs()) return lane == 0 ? 90 : 180;
         if (laneShownPM(lane)) return 5;
         return modeDefMax(activeGeo())[lane];
     }
@@ -1788,10 +1798,16 @@ class GraphEditor extends Region {
         // ONE combined lane-section entry since v16.2 (user spec): the
         // dialog holds every option — force/geo, domain, axes, the
         // conflict fork, and the (lockable) starting design speed
-        MenuItem lane = new MenuItem("Add force/geometric section…"
-            + (endsBridge ? " (piece ends with a bridge)" : ""));
-        lane.setDisable(endsBridge);
-        lane.setOnAction(ev -> showAddLaneDialog());
+        // gray reasons ride hover TOOLTIPS since v19.7 (D236, grayItem)
+        String bridgeWhy = "This piece ends with a bridge — its end is"
+            + " glued to the next piece; extend the NEXT piece instead.";
+        MenuItem lane;
+        if (endsBridge) {
+            lane = grayItem("Add force/geometric section…", bridgeWhy);
+        } else {
+            lane = new MenuItem("Add force/geometric section…");
+            lane.setOnAction(ev -> showAddLaneDialog());
+        }
         if (!endsBridge && pieceEndDrifted()) {
             // ONE s/c entry even over a conflicted end since v16.5
             // (user spec — two top-level items doubled the menu):
@@ -1805,11 +1821,15 @@ class GraphEditor extends Region {
             sc.getItems().addAll(scC, scR);
             cm.getItems().addAll(lane, sc);
         } else {
-            MenuItem sc = new MenuItem(
-                "Add straight/curve section (10 m straight)"
-                + (endsBridge ? " (piece ends with a bridge)" : ""));
-            sc.setOnAction(ev -> addSection(2));
-            sc.setDisable(endsBridge);
+            MenuItem sc;
+            if (endsBridge) {
+                sc = grayItem("Add straight/curve section (10 m straight)",
+                    bridgeWhy);
+            } else {
+                sc = new MenuItem(
+                    "Add straight/curve section (10 m straight)");
+                sc.setOnAction(ev -> addSection(2));
+            }
             cm.getItems().addAll(lane, sc);
         }
         List<TrackPiece> pieces = app.coaster.pieces;
@@ -1819,9 +1839,7 @@ class GraphEditor extends Region {
         int rs = runStart(), re = runEnd();
         boolean hasOutside = pieces.size() > re - rs + 1;
         if (endsBridge) {
-            MenuItem hint = new MenuItem("Piece ends with a bridge — extend the NEXT piece");
-            hint.setDisable(true);
-            cm.getItems().add(hint);
+            cm.getItems().add(grayItem("Bridge to piece", bridgeWhy));
         } else if (hasOutside) {
             // ANY outside piece (v13.1): the chosen one reorders to come
             // next on the timeline — connecting MEANS "this one follows"
@@ -1838,30 +1856,31 @@ class GraphEditor extends Region {
             }
             cm.getItems().add(bridge);
         } else {
-            MenuItem bridge = new MenuItem("Bridge — needs another piece");
-            bridge.setDisable(true);
-            cm.getItems().add(bridge);
+            cm.getItems().add(grayItem("Bridge to piece",
+                "Needs another piece outside this run to bridge to."));
         }
         if (!hasOutside) {
-            MenuItem none = new MenuItem("Attach floating piece — none to attach");
-            none.setDisable(true);
-            cm.getItems().add(none);
+            cm.getItems().add(grayItem("Attach floating piece",
+                "No detached piece exists to attach."));
         } else {
             // attaching = the floating piece's sections CONTINUE this
             // piece's chain (its own placement is discarded — §0 keeps
             // every section's local shape)
-            Menu attach = new Menu("Attach floating piece"
-                + (endsBridge ? " (piece ends with a bridge)" : ""));
-            attach.setDisable(endsBridge);
-            for (int p = 0; p < pieces.size(); p++) {
-                if (p >= rs && p <= re) continue;
-                MenuItem it = new MenuItem(String.format(Locale.US,
-                    "Piece %d — %s", p + 1, app.pieceLengthLabel(p)));
-                final int idx = p;
-                it.setOnAction(ev -> attachFloating(idx));
-                attach.getItems().add(it);
+            if (endsBridge) {
+                cm.getItems().add(
+                    grayItem("Attach floating piece", bridgeWhy));
+            } else {
+                Menu attach = new Menu("Attach floating piece");
+                for (int p = 0; p < pieces.size(); p++) {
+                    if (p >= rs && p <= re) continue;
+                    MenuItem it = new MenuItem(String.format(Locale.US,
+                        "Piece %d — %s", p + 1, app.pieceLengthLabel(p)));
+                    final int idx = p;
+                    it.setOnAction(ev -> attachFloating(idx));
+                    attach.getItems().add(it);
+                }
+                cm.getItems().add(attach);
             }
-            cm.getItems().add(attach);
         }
         // ADD FLOATING SECTION (v19.1, D226; below Attach since v19.2 —
         // user order): the start screen minus friction — a new detached
@@ -1953,6 +1972,15 @@ class GraphEditor extends Region {
     private void convertSection(int k, boolean toGeo, Section.Domain dom,
                                 boolean rollG, boolean ypG, boolean rateM,
                                 boolean rollAbs, boolean strictSeam) {
+        convertSection(k, toGeo, dom, rollG, ypG, rateM, rollAbs,
+            strictSeam, false);
+    }
+
+    /** + ABSOLUTE yaw/pitch target (v19.8, D237). */
+    private void convertSection(int k, boolean toGeo, Section.Domain dom,
+                                boolean rollG, boolean ypG, boolean rateM,
+                                boolean rollAbs, boolean strictSeam,
+                                boolean ypAbs) {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()) return;
         Section sec = secs.get(k);
@@ -1968,7 +1996,7 @@ class GraphEditor extends Region {
             (sp, tol) ->
             app.coaster.convertWholeSection(piece, k, toGeo,
                 FvdDesigner.INTEGRATE_DT, sp, tol, dom, rollG, ypG, rateM,
-                rollAbs, strictSeam),
+                rollAbs, strictSeam, ypAbs),
             () -> {
                 activePiece = piece;
                 activeSection = k;
@@ -2560,7 +2588,7 @@ class GraphEditor extends Region {
     private boolean pcToGeo;          // requested lane mode
     // requested output settings (v16.6, D116 — the Convert dialog)
     private Section.Domain pcDom = Section.Domain.TIME;
-    private boolean pcRollG, pcYpG, pcRateM, pcRollAbs;
+    private boolean pcRollG, pcYpG, pcRateM, pcRollAbs, pcYpAbs;
     private double pcFrac = 0.5;      // split fraction (arc or time)
     private boolean pcLeft = true;    // which side converts
     private boolean pcDragLine = false;
@@ -2587,6 +2615,14 @@ class GraphEditor extends Region {
     void beginPartialConvert(int k, boolean toGeo, Section.Domain dom,
                              boolean rollG, boolean ypG, boolean rateM,
                              boolean rollAbs) {
+        beginPartialConvert(k, toGeo, dom, rollG, ypG, rateM, rollAbs,
+            false);
+    }
+
+    /** + ABSOLUTE yaw/pitch target (v19.8, D237). */
+    void beginPartialConvert(int k, boolean toGeo, Section.Domain dom,
+                             boolean rollG, boolean ypG, boolean rateM,
+                             boolean rollAbs, boolean ypAbs) {
         if (k < 0 || k >= sections().size()) return;
         Section sec = sections().get(k);
         if (sec.reversed()) return;
@@ -2603,6 +2639,7 @@ class GraphEditor extends Region {
         pcYpG = ypG;
         pcRateM = rateM;
         pcRollAbs = rollAbs;
+        pcYpAbs = ypAbs;
         pcFrac = 0.5;
         pcLeft = true;
         pcDragLine = false;
@@ -2630,14 +2667,14 @@ class GraphEditor extends Region {
         boolean bridge = sections().get(k) instanceof BridgeSection;
         Section.Domain dom = pcDom;
         boolean rollG = pcRollG, ypG = pcYpG, rateM = pcRateM;
-        boolean rollAbs = pcRollAbs;
+        boolean rollAbs = pcRollAbs, ypAbs = pcYpAbs;
         ConvertOp op = bridge
             ? (sp, tol) -> app.coaster.partialConvertBridge(piece, k,
                 frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol,
-                dom, rollG, ypG, rateM, rollAbs)
+                dom, rollG, ypG, rateM, rollAbs, ypAbs)
             : (sp, tol) -> app.coaster.partialConvertSection(piece, k,
                 frac, left, toGeo, FvdDesigner.INTEGRATE_DT, sp, tol,
-                dom, rollG, ypG, rateM, rollAbs);
+                dom, rollG, ypG, rateM, rollAbs, ypAbs);
         beginDensityPreview(k, toGeo, false,
             dom == Section.Domain.DISTANCE, op, () -> {
             if (bridge && !left
@@ -3352,19 +3389,19 @@ class GraphEditor extends Region {
 
     /** Connect floating piece p after the ACTIVE piece (v12.0;
      *  a STRICT SEAM since v17.1, D135): the piece reorders to come
-     *  next, snaps onto this piece's end fully continuous (all axes
-     *  unlocked) with its SHAPE frozen rigid, and the seam settings
-     *  pop up — lock axes there to freeze parts of its orientation.
-     *  One undo step. */
+     *  next, snaps onto this piece's end with yaw following and its
+     *  SHAPE frozen rigid, and the seam settings pop up. One undo
+     *  step. */
     private void attachFloating(int p) {
         pushUndoSnapshot();
-        // seam Discontinuous defaults = the floating piece's placement
-        // PADLOCKS (v17.12, D153, user spec: locked pitch/roll stay
-        // held at the piece's own angles; yaw has no padlock =
-        // continuous)
-        TrackPiece fp = app.coaster.pieces.get(p);
+        // PITCH + ROLL always LOCK at the piece's PRE-ATTACH angles
+        // (v19.8, D237, user spec — superseding D153's padlock
+        // seeding): the attached piece keeps exactly the orientation
+        // it had, so a conflict-free layout stays conflict-free —
+        // only the honest speed split at the seam remains. Yaw stays
+        // unlocked (follows the seam heading, the attach semantics).
         int np = app.coaster.connectStrict(activePiece, p,
-            false, fp.uiLockPitch, fp.uiLockRoll);
+            false, true, true);
         if (p < activePiece) activePiece--;   // list shifted under us
         app.rebuildTrack();
         app.updatePieceButton();
@@ -3696,7 +3733,7 @@ class GraphEditor extends Region {
             : drifted && !(sec instanceof BridgeSection)
                 ? " · true splits inside" : "";
         MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s%s%s%s%s%s%s%s",
+            "%s section %d — design %.1f m/s%s%s%s%s%s%s%s%s",
             modeName(sec), k + 1, sec.vDesign(),
             sec instanceof LaneSection ili && ili.influenced()
                 ? String.format(Locale.US, " (authored %.1f)", ili.vAuthored)
@@ -3712,6 +3749,8 @@ class GraphEditor extends Region {
                 ? " · rates °/m" : "",
             sec instanceof LaneSection lab && lab.rollAbsolute
                 && lab.rollGlobal ? " · abs roll" : "",
+            sec instanceof LaneSection lyp && lyp.ypAbsolute
+                && lyp.yawPitchGlobal ? " · abs yaw/pitch" : "",
             drift, extra));
         info.setDisable(true);
         // the per-section Reversed check moved to piece scope in v12.1
@@ -3721,10 +3760,14 @@ class GraphEditor extends Region {
         // deletes the piece itself when others remain (v12.0)
         boolean delBlocked = sections().size() <= 1
             && app.coaster.pieces.size() <= 1;
-        MenuItem del = new MenuItem("Delete section"
-            + (delBlocked ? " (the only section)" : ""));
-        del.setDisable(delBlocked);
-        del.setOnAction(ev -> deleteSection(k));
+        MenuItem del;
+        if (delBlocked) {
+            del = grayItem("Delete section",
+                "The document's only section cannot be deleted.");
+        } else {
+            del = new MenuItem("Delete section");
+            del.setOnAction(ev -> deleteSection(k));
+        }
         // ("Split piece before this section" and "Connect with
         // previous section" left the badge menu in D136 — user spec:
         // they live on the SEAM (click the boundary line) and on the
@@ -3746,10 +3789,15 @@ class GraphEditor extends Region {
             // is active by the time this menu shows; an orphaned
             // bridge has nothing to place (grayed, the badge-menu
             // discoverability rule, D132).
-            MenuItem props = new MenuItem("Bridge properties…"
-                + (bridgeOrphan(bsp) ? " (no following piece)" : ""));
-            props.setDisable(bridgeOrphan(bsp));
-            props.setOnAction(ev -> app.showPlacementPopup());
+            MenuItem props;
+            if (bridgeOrphan(bsp)) {
+                props = grayItem("Bridge properties…",
+                    "No following piece — the bridge is frozen at"
+                    + " its last shape.");
+            } else {
+                props = new MenuItem("Bridge properties…");
+                props.setOnAction(ev -> app.showPlacementPopup());
+            }
             cm.getItems().add(props);
         }
         if (!(sec instanceof BridgeSection)) {
@@ -3772,33 +3820,39 @@ class GraphEditor extends Region {
             // native lanes untouched, edits write back through it
             if (sec instanceof LaneSection lrv
                     && !(lrv.rollAbsolute && lrv.rollGlobal
-                        && !(lrv instanceof GeoSection))) {
-                CheckMenuItem viewRate = new CheckMenuItem(
-                    "View rates in " + (lrv.ratePerMeter
-                        ? "°/s" : "°/m")
-                    + (k != activeSection
-                        ? " (activate the section first)" : ""));
-                viewRate.setSelected(lrv.viewOtherRate);
-                viewRate.setOnAction(ev -> {
-                    if (k == activeSection) {
+                        && !(lrv instanceof GeoSection))
+                    // a geo section with BOTH abs yp and abs roll has
+                    // no rate lane left to view-warp (v19.8, D237)
+                    && !(lrv instanceof GeoSection
+                        && lrv.ypAbsolute && lrv.yawPitchGlobal
+                        && lrv.rollAbsolute && lrv.rollGlobal)) {
+                if (k != activeSection) {
+                    cm.getItems().add(grayItem("View rates in "
+                        + (lrv.ratePerMeter ? "°/s" : "°/m"),
+                        "Activate the section first."));
+                } else {
+                    CheckMenuItem viewRate = new CheckMenuItem(
+                        "View rates in " + (lrv.ratePerMeter
+                            ? "°/s" : "°/m"));
+                    viewRate.setSelected(lrv.viewOtherRate);
+                    viewRate.setOnAction(ev -> {
                         lrv.viewOtherRate = !lrv.viewOtherRate;
                         refreshOffset();
                         redraw();
-                    }
-                });
-                viewRate.setDisable(k != activeSection);
-                cm.getItems().add(viewRate);
+                    });
+                    cm.getItems().add(viewRate);
+                }
             }
             // ORIENTATION SETTINGS (v16.4, user spec): the axis
             // radios + bake actions condensed into ONE dialog.
             // While the strip EDITS INFLUENCE (v16.5, D112 — user
             // spec) the same entry relabels and configures the
-            // INFLUENCE integration's axes instead.
-            if (sec instanceof LaneSection lor) {
-                boolean inflSurf = lor.influenced() && lor.editInfluence;
-                MenuItem orient = new MenuItem(inflSurf
-                    ? "Influence orientation settings…"
-                    : "Orientation settings…");
+            // INFLUENCE integration's axes instead — and then sits
+            // DIRECTLY below "Edit influence" (v19.8, D237, user
+            // spec) instead of up here.
+            if (sec instanceof LaneSection lor
+                    && !(lor.influenced() && lor.editInfluence)) {
+                MenuItem orient = new MenuItem("Orientation settings…");
                 orient.setOnAction(ev -> showOrientationDialog(k));
                 cm.getItems().add(orient);
             }
@@ -3905,47 +3959,74 @@ class GraphEditor extends Region {
                 // distance sections take influence since v16.1 (the
                 // two-pass runs over arc); GLOBAL-AXIS sections since
                 // v16.5 (D112 — the base converts representations)
-                boolean absRoll = lsec.rollAbsolute && lsec.rollGlobal;
+                boolean absRoll = (lsec.rollAbsolute && lsec.rollGlobal)
+                    || (lsec.ypAbsolute && lsec.yawPitchGlobal);
                 // SPEED CONTROLS no longer block entry (v19.6, D235 —
-                // the two-pass drives ref/profile/pass-2 with the
-                // same Ctl now, D160's silent-reshape reason is gone)
-                MenuItem enter = new MenuItem((geoSec
+                // one Ctl drives the whole solve, D160's reason gone)
+                String enterLbl = geoSec
                     ? "Influence felt force graphs"
-                    : "Influence resulting geo graphs")
-                    + (absRoll ? " (roll-rate sections only)"
-                        : lsec.reversed
-                            ? " (legacy reversed section)" : ""));
-                enter.setDisable(lsec.reversed || absRoll);
-                enter.setOnAction(ev -> enterInfluenceUi(k));
+                    : "Influence resulting geo graphs";
+                MenuItem enter;
+                if (absRoll) {
+                    enter = grayItem(enterLbl,
+                        "Absolute-angle sections take no influence —"
+                        + " rate sections only.");
+                } else if (lsec.reversed) {
+                    enter = grayItem(enterLbl,
+                        "Legacy reversed sections take no influence.");
+                } else {
+                    enter = new MenuItem(enterLbl);
+                    enter.setOnAction(ev -> enterInfluenceUi(k));
+                }
                 cm.getItems().add(enter);
             } else {
-                CheckMenuItem editInf = new CheckMenuItem((geoSec
+                String revWhy = "Legacy reversed sections lock their"
+                    + " influence editing.";
+                String editLbl = geoSec
                     ? "Edit influence (felt force deltas)"
-                    : "Edit influence (geo rate deltas)")
-                    + (lsec.reversed ? " (legacy reversed section)" : ""));
-                editInf.setSelected(lsec.editInfluence);
-                editInf.setDisable(lsec.reversed);
-                editInf.setOnAction(ev ->
-                    setEditInfluence(k, !lsec.editInfluence));
+                    : "Edit influence (geo rate deltas)";
+                MenuItem editInf;
+                if (lsec.reversed) {
+                    editInf = grayItem(editLbl, revWhy);
+                } else {
+                    CheckMenuItem ei = new CheckMenuItem(editLbl);
+                    ei.setSelected(lsec.editInfluence);
+                    ei.setOnAction(ev ->
+                        setEditInfluence(k, !lsec.editInfluence));
+                    editInf = ei;
+                }
                 // (the Influence/Resulting VIEW radios were REMOVED in
                 // v17.17, D158 — user verdict: the resulting view's
                 // edge cases (opposite orientations, inverted
                 // stretches) read buggy/unintuitive; ONE view now —
                 // deltas edit around zero with the resulting curves
                 // dotted behind)
-                MenuItem bake = new MenuItem(
-                    "Bake influence into design graphs…"
-                    + (lsec.reversed ? " (legacy reversed section)" : ""));
-                bake.setDisable(lsec.reversed);
-                // the bake keeps the section's OWN domain and axis
-                // flags (v19.6, D235 — the 2-arg overload reset them
-                // to TIME/local, silently re-domaining the section)
-                bake.setOnAction(ev -> convertSection(k, geoSec,
-                    lsec.domain(), lsec.rollGlobal, lsec.yawPitchGlobal,
-                    lsec.ratePerMeter));
+                MenuItem bake;
+                if (lsec.reversed) {
+                    bake = grayItem("Bake influence into design graphs…",
+                        revWhy);
+                } else {
+                    bake = new MenuItem(
+                        "Bake influence into design graphs…");
+                    // the bake keeps the section's OWN domain and axis
+                    // flags (v19.6, D235 — the 2-arg overload reset
+                    // them to TIME/local, silently re-domaining)
+                    bake.setOnAction(ev -> convertSection(k, geoSec,
+                        lsec.domain(), lsec.rollGlobal,
+                        lsec.yawPitchGlobal, lsec.ratePerMeter));
+                }
                 MenuItem disc = new MenuItem("Discard influence");
                 disc.setOnAction(ev -> discardInfluenceUi(k));
-                cm.getItems().addAll(editInf, bake, disc);
+                if (lsec.editInfluence) {
+                    // the influence surface's axis dialog rides right
+                    // below "Edit influence" (v19.8, D237, user spec)
+                    MenuItem iOrient = new MenuItem(
+                        "Influence orientation settings…");
+                    iOrient.setOnAction(ev -> showOrientationDialog(k));
+                    cm.getItems().addAll(editInf, iOrient, bake, disc);
+                } else {
+                    cm.getItems().addAll(editInf, bake, disc);
+                }
             }
         }
         // CONVERT (v13.7 D81; whole + partial for EVERY convertible
@@ -3964,10 +4045,15 @@ class GraphEditor extends Region {
         // dialog holds every output setting — whole/part, type,
         // domain, axes, rate units — and every combination converts
         // to every other in one engine call
-        MenuItem convOne = new MenuItem("Convert…"
-            + (sec.reversed() ? " (reversed sections refuse)" : ""));
-        convOne.setDisable(sec.reversed());
-        convOne.setOnAction(ev -> showConvertDialog(k));
+        MenuItem convOne;
+        if (sec.reversed()) {
+            convOne = grayItem("Convert…",
+                "Legacy reversed sections cannot convert — their"
+                + " lanes author the opposite direction.");
+        } else {
+            convOne = new MenuItem("Convert…");
+            convOne.setOnAction(ev -> showConvertDialog(k));
+        }
         cm.getItems().add(convOne);
         showMenu(cm, screenX, screenY);
     }
@@ -3981,7 +4067,8 @@ class GraphEditor extends Region {
         if (k < 0 || k >= secs.size()
                 || !(secs.get(k) instanceof LaneSection ls)
                 || ls.influenced() || ls.reversed
-                || (ls.rollAbsolute && ls.rollGlobal)) return;
+                || (ls.rollAbsolute && ls.rollGlobal)
+                || (ls.ypAbsolute && ls.yawPitchGlobal)) return;
         pushUndoSnapshot();
         if (k != activeSection) setActiveSection(k);
         // speeds untouched (v15.4, D102); the delta lanes span the
@@ -4121,6 +4208,9 @@ class GraphEditor extends Region {
         // ABSOLUTE roll has no local meaning (v16.7, D118): switching
         // roll to local reverts the lane to a RATE reading
         if (!nr) ls.rollAbsolute = false;
+        // same rule for absolute yaw/pitch (v19.8, D237): local
+        // yaw/pitch reverts lanes 0/1 to RATE readings
+        if (!ny) ls.ypAbsolute = false;
         app.rebuildTrack();
         refreshOffset();
         redraw();
@@ -4289,6 +4379,11 @@ class GraphEditor extends Region {
 
     /** Shared gray-out explainer (v16.10): why Absolute bank grays
      *  in the Convert and Add-section dialogs. */
+    private static final String YP_ABS_HOW = "Absolute angles target "
+        + "the heading/elevation vs the world — set Type to Geometric "
+        + "and Yaw/pitch axis to Global to enable them. Elevation "
+        + "authors within ±90° (a loop needs rate lanes).";
+
     private static final String ABS_HOW = "Absolute bank targets the "
         + "bank vs the horizon — set Roll axis to Global to enable it.";
 
@@ -4398,6 +4493,33 @@ class GraphEditor extends Region {
         mg.selectedToggleProperty().addListener((o, w, n2) -> syncYp.run());
         yg.selectedToggleProperty().addListener((o, w, n2) -> syncYp.run());
         syncYp.run();
+
+        // YAW/PITCH BEHAVIOR (v19.8, D237 — the D118 twin for lanes
+        // 0/1, directly below the Yaw/pitch axis per user spec):
+        // absolute needs Geometric type AND global yaw/pitch
+        boolean curYpAbsF = ls != null && ls.ypAbsolute
+            && ls.yawPitchGlobal;
+        ToggleGroup yag = new ToggleGroup();
+        RadioButton yaRate = new RadioButton("Rate");
+        RadioButton yaAbs = new RadioButton("Absolute angles (°)");
+        yaRate.setToggleGroup(yag);
+        yaAbs.setToggleGroup(yag);
+        (curYpAbsF ? yaAbs : yaRate).setSelected(true);
+        Button yaRst = resetBtn(() ->
+            (curYpAbsF ? yaAbs : yaRate).setSelected(true));
+        wireOriginal(yag, curYpAbsF ? yaAbs : yaRate, yaRst);
+        grid.addRow(row++, new Label("Yaw/pitch behavior"),
+            new HBox(10, yaRate, grayHint(yaAbs, YP_ABS_HOW)), yaRst);
+        Runnable syncYpAbs = () -> {
+            boolean on = mGeo.isSelected() && yGlobal.isSelected();
+            yaAbs.setDisable(!on);
+            if (!on && yaAbs.isSelected()) yaRate.setSelected(true);
+        };
+        mg.selectedToggleProperty().addListener(
+            (o, w, n2) -> syncYpAbs.run());
+        yg.selectedToggleProperty().addListener(
+            (o, w, n2) -> syncYpAbs.run());
+        syncYpAbs.run();
         ToggleGroup rg = new ToggleGroup();
         RadioButton rLocal = new RadioButton("Local");
         RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
@@ -4467,6 +4589,7 @@ class GraphEditor extends Region {
             boolean ypG = toGeo && yGlobal.isSelected();
             boolean rateM = uMet.isSelected();
             boolean rollAbs = aAbs.isSelected() && rollG;
+            boolean ypAbsSel = yaAbs.isSelected() && ypG;   // D237
             boolean strict = strictRef != null && strictRef.isSelected();
             // a ROLL-ONLY convert (v18.2, user spec): only the roll
             // axis/behavior changes — lanes 0/1 are preserved node-
@@ -4474,16 +4597,16 @@ class GraphEditor extends Region {
             // opens ON the roll lane, the one that moves
             if (ls != null && !influenced && toGeo == curGeo
                     && dom == sec.domain() && rateM == curRateM
-                    && ypG == curYpG
+                    && ypG == curYpG && ypAbsSel == curYpAbsF
                     && (rollG != curRollG || rollAbs != curAbs)) {
                 setActiveLane(2);
             }
             if (sWhole.isSelected()) {
                 convertSection(k, toGeo, dom, rollG, ypG, rateM, rollAbs,
-                    strict);
+                    strict, ypAbsSel);
             } else {
                 beginPartialConvert(k, toGeo, dom, rollG, ypG, rateM,
-                    rollAbs);
+                    rollAbs, ypAbsSel);
             }
         });
         cancel.setOnAction(ev -> dlg.close());
@@ -4582,6 +4705,33 @@ class GraphEditor extends Region {
         c.disabledProperty().addListener((o, was, dis) -> sync.run());
         sync.run();
         return wrap;
+    }
+
+    /** A grayed MENU row with a HOVER reason (v19.7, D236 — the
+     *  program-wide successor to the D235 label parenthetical): a
+     *  disabled MenuItem swallows hover so its tooltip can never
+     *  fire — the row is instead an ENABLED CustomMenuItem holding
+     *  a gray Label. The tooltip carries the full reason, clicks do
+     *  nothing and never close the menu (hideOnClick false). */
+    static MenuItem grayItem(String label, String why) {
+        Label l = new Label(label);
+        l.setStyle("-fx-text-fill: #999;");
+        // NO padding of our own — the .menu-item container already
+        // carries the row padding, and doubling it misaligned + fattened
+        // the row (v19.8, D237, user report)
+        l.setPadding(Insets.EMPTY);
+        l.setMaxWidth(Double.MAX_VALUE);
+        Tooltip tip = new Tooltip(why);
+        tip.setShowDelay(Duration.millis(300));
+        Tooltip.install(l, tip);
+        // the tooltip must fire over the WHOLE highlighted row, not
+        // just the text — install on the .menu-item container once
+        // the skin parents the label (D237)
+        l.parentProperty().addListener((o, was, par) -> {
+            if (par != null) Tooltip.install(par, tip);
+            if (was != null) Tooltip.uninstall(was, tip);
+        });
+        return new CustomMenuItem(l, false);
     }
 
     /** Why lane button i is disabled right now (D235 hover reasons —
@@ -4818,6 +4968,29 @@ class GraphEditor extends Region {
             yGlobal.setDisable(!geoOn);
         };
         syncYp.run();
+
+        // YAW/PITCH BEHAVIOR (v19.8, D237): rate vs ABSOLUTE
+        // heading/elevation angles — needs Geometric + global
+        // yaw/pitch, directly below the axis row (user spec)
+        ToggleGroup yag = new ToggleGroup();
+        RadioButton ypaRate = new RadioButton("Rate");
+        RadioButton ypaAbs = new RadioButton("Absolute angles (°)");
+        ypaRate.setToggleGroup(yag);
+        ypaAbs.setToggleGroup(yag);
+        boolean prevYpAbs = prev != null && prev.ypAbsolute
+            && prev.yawPitchGlobal;
+        (prevYpAbs ? ypaAbs : ypaRate).setSelected(true);
+        wireOriginal(yag, prevYpAbs ? ypaAbs : ypaRate, null);
+        grid.addRow(row++, new Label("Yaw/pitch behavior"),
+            new HBox(10, ypaRate, grayHint(ypaAbs, YP_ABS_HOW)));
+        Runnable syncYpA = () -> {
+            boolean on = mGeo.isSelected() && yGlobal.isSelected();
+            ypaAbs.setDisable(!on);
+            if (!on && ypaAbs.isSelected()) ypaRate.setSelected(true);
+        };
+        mGeo.selectedProperty().addListener((o, w, n2) -> syncYpA.run());
+        yGlobal.selectedProperty().addListener((o, w, n2) -> syncYpA.run());
+        syncYpA.run();
         ToggleGroup rg = new ToggleGroup();
         RadioButton rLocal = new RadioButton("Local");
         RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
@@ -4916,7 +5089,10 @@ class GraphEditor extends Region {
                 rGlobal.isSelected(),
                 mGeo.isSelected() && yGlobal.isSelected(),
                 uMet.isSelected(),
-                aAbs.isSelected() && rGlobal.isSelected(), vCustom);
+                aAbs.isSelected() && rGlobal.isSelected(),
+                ypaAbs.isSelected() && mGeo.isSelected()
+                    && yGlobal.isSelected(),
+                vCustom);
             dlg.close();
         });
         cancel.setOnAction(ev -> dlg.close());
@@ -4935,8 +5111,10 @@ class GraphEditor extends Region {
      *  conflict the reconcile must not close). */
     private void addLaneSection(boolean geo, boolean real, boolean dist,
                                 boolean rollG, boolean ypG, boolean rateM,
-                                boolean rollAbs, double vCustom) {
+                                boolean rollAbs, boolean ypAbs,
+                                double vCustom) {
         pushUndoSnapshot();
+        ypAbs = ypAbs && geo && ypG;   // geo + global only (D237)
         List<Section> secs = sections();
         Section prevSec = secs.get(secs.size() - 1);
         LaneSection prev = prevSec instanceof LaneSection pl ? pl : null;
@@ -4956,6 +5134,17 @@ class GraphEditor extends Region {
         if (rollAbs && end != null) {
             double b = FVDIntegrator.bankOfTU(end.T(), end.U());
             if (!Double.isNaN(b)) bankEnd = Math.toDegrees(b);
+        }
+        // ABSOLUTE yaw/pitch hold (v19.8, D237): the elevation lane
+        // holds the CURRENT angle; the HEADING lane holds ZERO — it
+        // is SECTION-ENTRY-relative (each section generates with its
+        // entry heading stripped, D199), and 0 = continue straight
+        // at the incoming heading. Angles are speed-invariant — no
+        // κ-scale, no °/m division.
+        double elevEnd = 0;
+        if (ypAbs && end != null) {
+            elevEnd = Math.toDegrees(
+                FVDIntegrator.elevationOfT(end.T()));
         }
         // the end state's WORLD-angle rates (v17.6, D143 — user
         // re-spec of D108's straight-continuation zeros: "the graphs
@@ -4994,7 +5183,11 @@ class GraphEditor extends Region {
             && !prev.influenced() && geo == prev instanceof GeoSection
             && prev.rollGlobal == rollG
             && prev.yawPitchGlobal == (geo && ypG)
-            && prev.ratePerMeter == rateM;
+            && prev.ratePerMeter == rateM
+            // abs-angle lanes hold degrees, rate lanes rates — an
+            // authored copy only means the same thing when the
+            // behaviors match too (v19.8, D237)
+            && (prev.ypAbsolute && prev.yawPitchGlobal) == ypAbs;
         if (cleanSame) {
             // same mode + same flags: the exact authored copy wins
             // (bitwise; before v17.6 the ypG zero-hold outranked it)
@@ -5052,7 +5245,8 @@ class GraphEditor extends Region {
             if (rollFromRates) rollEnd /= vDiv;
         }
         List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(
-            v0h, v1h, rollAbs ? bankEnd : rollEnd,
+            ypAbs ? elevEnd : v0h, ypAbs ? 0 : v1h,
+            rollAbs ? bankEnd : rollEnd,
             dist ? Coaster.CONT_HOLD_DIST : 1);
         LaneSection added = geo ? new GeoSection(lanes, vEnd)
                                 : new ForceSection(lanes, vEnd);
@@ -5061,6 +5255,7 @@ class GraphEditor extends Region {
         added.yawPitchGlobal = geo && ypG;
         added.ratePerMeter = rateM;
         added.rollAbsolute = rollAbs;
+        added.ypAbsolute = ypAbs;
         if (!Double.isNaN(vCustom) && Math.abs(vCustom - vAuto) > 1e-6) {
             added.vPinned = true;   // deliberate conflict — keep it
         }
@@ -5126,6 +5321,8 @@ class GraphEditor extends Region {
                         && ls.ratePerMeter == actPM
                         && (ls.rollAbsolute && ls.rollGlobal)
                             == activeRollAbs()
+                        && (ls.ypAbsolute && ls.yawPitchGlobal)
+                            == activeYpAbs()
                         // authored lanes draw directly only when their
                         // native domain IS the plot's axis (v16.0) —
                         // otherwise the compiled samples carry the
@@ -5299,6 +5496,18 @@ class GraphEditor extends Region {
         gc.setLineWidth(1);
     }
 
+    /** drawCaret's sideways twin (v19.8, D237 — the seam diamond's
+     *  hover drag affordance): a small ◀/▶ chevron. Caller sets
+     *  stroke/alpha/width. */
+    private static void drawCaretH(GraphicsContext gc, double cx,
+                                   double cy, boolean left) {
+        double w = 3;
+        double h = 2.5 * (left ? 1 : -1);
+        gc.strokePolyline(
+            new double[]{ cx + h, cx - h, cx + h },
+            new double[]{ cy - w, cy, cy + w }, 3);
+    }
+
     // ---------- strict-seam SMOOTHING widget (v17.3, D140 -- the s/c
     // diamond pattern: drag the diamond ON the seam to size the
     // geometric blend; Ctrl snaps by the element-length step; under
@@ -5330,19 +5539,43 @@ class GraphEditor extends Region {
                                        // clean click = open settings)
 
     /** Which strict seam's smoothing diamond is under (x, y); -1 =
-     *  none. */
+     *  none. Since v19.8 (D237) DISABLED seams hit too — dragging
+     *  the hollow diamond ENABLES smoothing at the dragged length —
+     *  except on s/c edges, where smoothing is banned (D232). */
     private int hitSeamDiamond(double x, double y) {
         List<RunSec> rl = runLayout();
         for (int i = 0; i < rl.size() - 1; i++) {
             if (!seamStrict(rl, i)) continue;
             if (app.coaster.pieces.get(rl.get(i + 1).piece())
-                    .sSmoothLen <= 0.01) continue;   // enable via menu
+                        .sSmoothLen <= 0.01
+                    && seamScEdge(rl.get(i + 1).piece())) {
+                continue;   // the menu's grayed row explains
+            }
             double bx = tToX(rl.get(i).t0() + rl.get(i).dur());
             if (Math.hypot(x - bx, y - seamDiaYAt(bx)) <= 7) {
                 return i;
             }
         }
         return -1;
+    }
+
+    /** Is the strict seam INTO followerPiece an s/c edge (either side
+     *  a StraightCurveSection)? Smoothing cannot be enabled there
+     *  (D232) — factored from the seam menu in v19.8. */
+    private boolean seamScEdge(int followerPiece) {
+        if (followerPiece <= 0
+                || followerPiece >= app.coaster.pieces.size()) {
+            return false;
+        }
+        List<Section> aSecs =
+            app.coaster.pieces.get(followerPiece - 1).sections;
+        List<Section> bSecs =
+            app.coaster.pieces.get(followerPiece).sections;
+        return (!aSecs.isEmpty()
+                && aSecs.get(aSecs.size() - 1)
+                    instanceof StraightCurveSection)
+            || (!bSecs.isEmpty()
+                && bSecs.get(0) instanceof StraightCurveSection);
     }
 
     /** A strict seam's blend-band EDGE within grab range (v17.4,
@@ -5570,19 +5803,22 @@ class GraphEditor extends Region {
         return smcVal;
     }
 
-    /** The diamond itself (filled = smoothing on) + the live readout
-     *  while its drag runs. */
+    /** The diamond itself (filled = smoothing on, HOLLOW while off —
+     *  always drawn on strict seams since v19.8, D237, user spec: a
+     *  drag from the hollow diamond ENABLES smoothing; hover shows a
+     *  gray center dot while off plus small side carets both ways)
+     *  + the live readout while its drag runs. */
     private void drawSeamDiamond(GraphicsContext gc, List<RunSec> rl,
                                  int i, double bx) {
         TrackPiece f = app.coaster.pieces.get(rl.get(i + 1).piece());
-        // the widget shows only while smoothing is ENABLED (v17.4,
-        // D141 — the seam menu's Enable smoothing toggles it; a drag
-        // that snapped shut keeps its readout until release)
-        if (f.sSmoothLen <= 0.01
-                && seamDragPiece != rl.get(i + 1).piece()) {
+        // the one seam that still hides it: an s/c edge, where
+        // smoothing cannot be enabled at all (D232)
+        if (f.sSmoothLen <= 0.01 && seamScEdge(rl.get(i + 1).piece())) {
             return;
         }
         double dy = seamDiaYAt(bx);
+        boolean hov = i == hoverSeamDia
+            && seamDragPiece != rl.get(i + 1).piece();
         gc.setGlobalAlpha(0.85);
         gc.beginPath();
         gc.moveTo(bx, dy - 5);
@@ -5593,10 +5829,22 @@ class GraphEditor extends Region {
         if (f.sSmoothLen > 0.01) {
             gc.setFill(Color.WHITE);
             gc.fill();
+        } else if (hov) {
+            // gray center in the hollow diamond: "clickable" (D237)
+            gc.setFill(Color.rgb(150, 156, 175));
+            gc.fillOval(bx - 2, dy - 2, 4, 4);
         }
         gc.setStroke(Color.WHITE);
         gc.setLineWidth(1);
         gc.stroke();
+        if (hov) {
+            // drag affordance: ◀ ▶ beside the diamond (both states)
+            gc.setGlobalAlpha(0.7);
+            gc.setStroke(Color.WHITE);
+            gc.setLineWidth(1.2);
+            drawCaretH(gc, bx - 11, dy, true);
+            drawCaretH(gc, bx + 11, dy, false);
+        }
         gc.setGlobalAlpha(1.0);
         if (seamDragPiece == rl.get(i + 1).piece()) {
             String txt = f.sSmoothLen < 0.01 ? "smoothing off"
@@ -5875,6 +6123,19 @@ class GraphEditor extends Region {
             double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
             return Double.isNaN(b) ? 0 : Math.toDegrees(b);
         }
+        if (L < 2 && activeYpAbs()) {
+            // absolute yaw/pitch view (v19.8, D237): the ANGLE at
+            // the sample — elevation (L 0) / heading (L 1, principal
+            // — an inactive strip crossing ±180 shows the wrap wall,
+            // the abs-bank precedent)
+            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+            if (L == 0) {
+                return Math.toDegrees(
+                    FVDIntegrator.elevationOfT(sm.T()));
+            }
+            double hd = FVDIntegrator.headingOfT(sm.T());
+            return Double.isNaN(hd) ? 0 : Math.toDegrees(hd);
+        }
         // a WORLD-axis active lane shows every strip in ITS quantity
         // (v18.9, user report: a smooth ypG seam read as a visual
         // step against derived BODY rates): elevation'/heading' for
@@ -5922,6 +6183,19 @@ class GraphEditor extends Region {
             FVDIntegrator.Sample sm = app.lastSamples.get(i);
             double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
             return Double.isNaN(b) ? 0 : Math.toDegrees(b);
+        }
+        if (L < 2 && activeYpAbs()) {
+            // absolute yaw/pitch view (v19.8, D237): the ANGLE at
+            // the sample — elevation (L 0) / heading (L 1, principal
+            // — an inactive strip crossing ±180 shows the wrap wall,
+            // the abs-bank precedent)
+            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+            if (L == 0) {
+                return Math.toDegrees(
+                    FVDIntegrator.elevationOfT(sm.T()));
+            }
+            double hd = FVDIntegrator.headingOfT(sm.T());
+            return Double.isNaN(hd) ? 0 : Math.toDegrees(hd);
         }
         // world-axis active lanes: the TRUE curve in the same world
         // quantities (v18.9 — derivedAt's sibling branch)
@@ -5974,6 +6248,19 @@ class GraphEditor extends Region {
             FVDIntegrator.Sample sm = app.lastSamples.get(i);
             double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
             return Double.isNaN(b) ? 0 : Math.toDegrees(b);
+        }
+        if (L < 2 && activeYpAbs()) {
+            // absolute yaw/pitch view (v19.8, D237): the ANGLE at
+            // the sample — elevation (L 0) / heading (L 1, principal
+            // — an inactive strip crossing ±180 shows the wrap wall,
+            // the abs-bank precedent)
+            FVDIntegrator.Sample sm = app.lastSamples.get(i);
+            if (L == 0) {
+                return Math.toDegrees(
+                    FVDIntegrator.elevationOfT(sm.T()));
+            }
+            double hd = FVDIntegrator.headingOfT(sm.T());
+            return Double.isNaN(hd) ? 0 : Math.toDegrees(hd);
         }
         if (activeGeo()) return (real ? app.trueRates
                                       : app.resultRates)[i][L + 1];
@@ -6083,47 +6370,8 @@ class GraphEditor extends Region {
         // clip to the active span, so each side only ever showed
         // its own half). The neighbor's half needs matching units
         // (same mode + axis flags) to read its authored lanes.
-        List<Object[]> smParts = null;   // {lo, hi, Span, LaneSection}
-        if (inflDesign == null && activeInfl() == null
-                && sections().get(activeSection) instanceof LaneSection lsA
-                && !lsA.reversed() && !lsA.influenced()) {
-            List<RunSec> rl = runLayout();
-            for (int j = 0; j + 1 < rl.size(); j++) {
-                if (!seamStrict(rl, j)) continue;
-                boolean actA = rl.get(j).piece() == activePiece
-                    && rl.get(j).section() == activeSection;
-                boolean actB = rl.get(j + 1).piece() == activePiece
-                    && rl.get(j + 1).section() == activeSection;
-                if (!actA && !actB) continue;
-                int[] w = seamWindow(rl, j);
-                if (w == null) continue;
-                for (int side = 0; side < 2; side++) {
-                    RunSec rs = rl.get(j + side);
-                    TrackCompiler.Span sp = spanAt(rs.piece(), rs.section());
-                    Section sec = app.coaster.pieces.get(rs.piece())
-                        .sections.get(rs.section());
-                    if (sp == null
-                            || !(sec instanceof LaneSection ls2)
-                            || ls2.reversed() || ls2.influenced()) {
-                        continue;
-                    }
-                    // foreign units can't feed the active plot
-                    if ((ls2 instanceof GeoSection)
-                                != (lsA instanceof GeoSection)
-                            || ls2.rollGlobal != lsA.rollGlobal
-                            || ls2.yawPitchGlobal != lsA.yawPitchGlobal
-                            || ls2.ratePerMeter != lsA.ratePerMeter
-                            || ls2.rollAbsolute != lsA.rollAbsolute) {
-                        continue;
-                    }
-                    int lo = Math.max(w[0], sp.i0());
-                    int hi2 = Math.min(w[1], sp.i1());
-                    if (lo > hi2) continue;
-                    if (smParts == null) smParts = new ArrayList<>();
-                    smParts.add(new Object[]{ lo, hi2, sp, ls2 });
-                }
-            }
-        }
+        List<Object[]> smParts = inflDesign == null && activeInfl() == null
+            ? smoothedWindowParts() : null;
         gc.setLineWidth(1);
         // the ACTIVE lane's true stroke draws at full strength; the
         // other lanes' fade like their design curves do (v16.2, user
@@ -6193,6 +6441,57 @@ class GraphEditor extends Region {
         gc.setLineWidth(2);
     }
 
+    /** The smoothed-strict-seam windows touching the ACTIVE section
+     *  whose authored lanes can feed the active plot — {lo, hi, Span,
+     *  LaneSection} rows, both sides from either neighbor (D235).
+     *  Factored out of drawTrueStrokes in v19.7 (D236) so the hover's
+     *  true-suffix shares the same authored-reference override.
+     *  Null = none. */
+    private List<Object[]> smoothedWindowParts() {
+        if (activeSection >= sections().size()
+                || !(sections().get(activeSection) instanceof LaneSection lsA)
+                || lsA.reversed() || lsA.influenced()) return null;
+        List<Object[]> smParts = null;
+        List<RunSec> rl = runLayout();
+        for (int j = 0; j + 1 < rl.size(); j++) {
+            if (!seamStrict(rl, j)) continue;
+            boolean actA = rl.get(j).piece() == activePiece
+                && rl.get(j).section() == activeSection;
+            boolean actB = rl.get(j + 1).piece() == activePiece
+                && rl.get(j + 1).section() == activeSection;
+            if (!actA && !actB) continue;
+            int[] w = seamWindow(rl, j);
+            if (w == null) continue;
+            for (int side = 0; side < 2; side++) {
+                RunSec rs = rl.get(j + side);
+                TrackCompiler.Span sp = spanAt(rs.piece(), rs.section());
+                Section sec = app.coaster.pieces.get(rs.piece())
+                    .sections.get(rs.section());
+                if (sp == null
+                        || !(sec instanceof LaneSection ls2)
+                        || ls2.reversed() || ls2.influenced()) {
+                    continue;
+                }
+                // foreign units can't feed the active plot
+                if ((ls2 instanceof GeoSection)
+                            != (lsA instanceof GeoSection)
+                        || ls2.rollGlobal != lsA.rollGlobal
+                        || ls2.yawPitchGlobal != lsA.yawPitchGlobal
+                        || ls2.ratePerMeter != lsA.ratePerMeter
+                        || ls2.rollAbsolute != lsA.rollAbsolute
+                        || ls2.ypAbsolute != lsA.ypAbsolute) {
+                    continue;
+                }
+                int lo = Math.max(w[0], sp.i0());
+                int hi2 = Math.min(w[1], sp.i1());
+                if (lo > hi2) continue;
+                if (smParts == null) smParts = new ArrayList<>();
+                smParts.add(new Object[]{ lo, hi2, sp, ls2 });
+            }
+        }
+        return smParts;
+    }
+
     /** " (true …)" hover suffix at compiled sample i on lane L — empty
      *  until the true curve visibly splits from the design curve
      *  there (round A, §5.2). slope = the Shift readout, differenced
@@ -6200,6 +6499,26 @@ class GraphEditor extends Region {
     private String trueSuffix(int i, int L, boolean slope) {
         if (!trueArraysReady()) return "";
         double dv = derivedDisp(i, L), tv = trueDisp(i, L);
+        // inside a smoothed strict seam's window the reference is the
+        // AUTHORED lane (v19.7, D236, user spec — the drawTrueStrokes
+        // rule): the compiled samples ARE the blend there, so the old
+        // derived-vs-true test never split without a ≠v conflict and
+        // the hover hid the blended value the stroke was drawing
+        List<Object[]> smParts = smoothedWindowParts();
+        if (smParts != null && i < app.resultRates.length) {
+            double t = app.resultRates[i][0];
+            for (Object[] w : smParts) {
+                if (i >= (Integer) w[0] && i <= (Integer) w[1]) {
+                    TrackCompiler.Span wsp = (TrackCompiler.Span) w[2];
+                    LaneSection wls = (LaneSection) w[3];
+                    dv = BezierBaker.evalAt(wls.lanes.get(L),
+                        wls.domain() == Section.Domain.DISTANCE
+                            ? app.lastSamples.get(i).s() - wsp.s0()
+                            : t - wsp.t0());
+                    break;
+                }
+            }
+        }
         if (Math.abs(valToY(L, tv) - valToY(L, dv)) <= TRUE_SPLIT_PX) return "";
         if (!slope) return String.format(" (true %.2f)", tv);
         int[] w2 = slopeWin(i, 2);   // span-clamped (D207)
@@ -6934,10 +7253,14 @@ class GraphEditor extends Region {
         insSA.setOnAction(ev -> insertElement(i + 1, true));
         MenuItem insCA = new MenuItem("Insert curve after");
         insCA.setOnAction(ev -> insertElement(i + 1, false));
-        MenuItem del = new MenuItem("Delete element"
-            + (sc.elements.size() <= 1 ? " (the only element)" : ""));
-        del.setDisable(sc.elements.size() <= 1);
-        del.setOnAction(ev -> deleteElement(i));
+        MenuItem del;
+        if (sc.elements.size() <= 1) {
+            del = grayItem("Delete element",
+                "The section's only element cannot be deleted.");
+        } else {
+            del = new MenuItem("Delete element");
+            del.setOnAction(ev -> deleteElement(i));
+        }
         cm.getItems().addAll(edit, new SeparatorMenuItem(),
             insSB, insCB, insSA, insCA, new SeparatorMenuItem(), del);
         showMenu(cm, screenX, screenY);
@@ -7223,6 +7546,8 @@ class GraphEditor extends Region {
     // cursor, and the one whose menu is open (stays highlighted)
     private int hoverSeam = -1;
     private int openSeam = -1;
+    // seam-DIAMOND hover (v19.8, D237): gray center + side carets
+    private int hoverSeamDia = -1;
     // BADGE hover (D223): the runLayout index whose section-settings
     // badge is under the cursor
     private int hoverBadge = -1;
@@ -7690,9 +8015,26 @@ class GraphEditor extends Region {
                 hoverBadge = hb;
                 redraw();
             }
+            // seam-DIAMOND hover (v19.8, D237): the hollow diamond
+            // grows its gray center + side carets
+            int hd = pcSec >= 0 ? -1 : hitSeamDiamond(e.getX(), e.getY());
+            if (hd != hoverSeamDia) {
+                hoverSeamDia = hd;
+                redraw();
+            }
+            // node/knob computed BEFORE the cursor (D237, user
+            // report): nodes outrank the band edge at PRESS time, so
+            // the cursor must not read H_RESIZE over a node sitting
+            // on a smoothing-window edge
+            int hn = activeSc() == null && activeBridge() == null
+                ? hitNode(e.getX(), e.getY()) : -1;
+            boolean overKnob = hn < 0 && selIdx >= 0
+                && activeSc() == null && activeBridge() == null
+                && hitKnob(e.getX(), e.getY()) != 0;
             boolean hand = hs >= 0 || hb >= 0;
-            if (pcLine || hitSeamDiamond(e.getX(), e.getY()) >= 0
-                    || seamEdgeHit(e.getX(), e.getY()) >= 0) {
+            if (pcLine || (hn < 0 && !overKnob
+                    && (hd >= 0
+                        || seamEdgeHit(e.getX(), e.getY()) >= 0))) {
                 // the split line + the seam smoothing diamond/edges
                 // (v17.3/v17.4)
                 canvas.setCursor(Cursor.H_RESIZE);
@@ -7709,10 +8051,6 @@ class GraphEditor extends Region {
             } else {
                 canvas.setCursor(hand ? Cursor.HAND : Cursor.DEFAULT);
             }
-            // node under the cursor (v16.15): grey ring + the drag
-            // readout's numbers, without the click
-            int hn = activeSc() == null && activeBridge() == null
-                ? hitNode(e.getX(), e.getY()) : -1;
             double t = (activeSc() == null && activeBridge() == null
                     && hn < 0
                     && (selIdx < 0 || hitKnob(e.getX(), e.getY()) == 0))
@@ -7793,7 +8131,8 @@ class GraphEditor extends Region {
         canvas.setOnMouseExited(e -> {
             if (!Double.isNaN(hoverT) || hoverResComp != 0
                     || hoverDerLane >= 0 || hoverNodeIdx >= 0
-                    || hoverBadge >= 0 || hoverSeam >= 0) {
+                    || hoverBadge >= 0 || hoverSeam >= 0
+                    || hoverSeamDia >= 0) {
                 hoverT = Double.NaN;
                 hoverRawT = Double.NaN;
                 hoverResComp = 0;
@@ -7801,6 +8140,7 @@ class GraphEditor extends Region {
                 hoverNodeIdx = -1;
                 hoverBadge = -1;
                 hoverSeam = -1;
+                hoverSeamDia = -1;
                 redraw();
             }
         });
@@ -9971,8 +10311,8 @@ class GraphEditor extends Region {
                 if (hi - lo >= minLen - 1e-9) {
                     commitGestureSnapshot();
                     SpeedControl c = new SpeedControl(lo, hi - lo);
-                    c.speed = Math.max(0.5,
-                        Math.round(spDesignSpeedAt(nrs, lo)));
+                    c.speed = Math.max(0.5,   // 2 decimals (D237)
+                        Math.round(spDesignSpeedAt(nrs, lo) * 100) / 100.0);
                     s.speedControls().add(c);
                     final double mLo = lo, mHi = hi;
                     s.speedMarks().removeIf(
@@ -10181,7 +10521,9 @@ class GraphEditor extends Region {
         if (push) pushUndoSnapshot();
         SpeedControl c = new SpeedControl(lo, hi - lo);
         // target defaults to the design speed arriving at the control
-        c.speed = Math.max(0.5, Math.round(spDesignSpeedAt(rs, lo)));
+        // — TWO decimals since v19.8 (D237; was whole m/s)
+        c.speed = Math.max(0.5,
+            Math.round(spDesignSpeedAt(rs, lo) * 100) / 100.0);
         s.speedControls().add(c);
         // the boundary marks become the control's own diamonds
         if (hiMark != null && loMark != null) {
@@ -10574,14 +10916,43 @@ class GraphEditor extends Region {
 
         Label startSpdLbl = new Label();
         startSpdLbl.setTextFill(Color.rgb(160, 220, 170));
-        startSpdLbl.setStyle("-fx-font-size: 11px;");
+        // constant transparent border so the hover outline never
+        // shifts the layout (v19.8, D237)
+        String enterBase = "-fx-font-size: 11px; -fx-border-width: 1;"
+            + " -fx-border-radius: 3; -fx-padding: 0 3 0 3;"
+            + " -fx-border-color: transparent;";
+        String enterHot = "-fx-font-size: 11px; -fx-border-width: 1;"
+            + " -fx-border-radius: 3; -fx-padding: 0 3 0 3;"
+            + " -fx-border-color: rgb(160,220,170);";
+        startSpdLbl.setStyle(enterBase);
+        // CLICK = set the control's target speed to the enter speed
+        // (v19.8, D237, user spec) — not for complex SPEED controls
+        // (their graph IS the speed; the label stays a plain readout)
+        Tooltip enterTip = new Tooltip(
+            "Make control speed equal to enter speed");
+        enterTip.setShowDelay(Duration.millis(300));
+        java.util.function.Supplier<Boolean> enterClickable = () ->
+            !(c.complex && c.type != SpeedControl.ACCEL);
+        startSpdLbl.setOnMouseEntered(ev -> {
+            if (enterClickable.get()) startSpdLbl.setStyle(enterHot);
+        });
+        startSpdLbl.setOnMouseExited(ev ->
+            startSpdLbl.setStyle(enterBase));
         Label endLbl = new Label();
         endLbl.setTextFill(Color.rgb(160, 220, 170));
         endLbl.setStyle("-fx-font-size: 11px;");
-        // Start + End on ONE line, Start first (v18.8, user spec —
-        // they were stacked rows in v18.7)
+        // Enter + End on ONE line, Enter first (v18.8, user spec —
+        // they were stacked rows in v18.7; renamed Start → Enter in
+        // v19.8, D237)
         HBox refRow = new HBox(14, startSpdLbl, endLbl);
         refRow.setAlignment(Pos.CENTER_LEFT);
+        startSpdLbl.setOnMouseClicked(ev -> {
+            if (!enterClickable.get()) return;
+            double[] sv = spCtlSpeeds(rs, c, false);
+            if (Double.isNaN(sv[0])) return;
+            speedSp.getValueFactory().setValue(Math.max(0.5,
+                Math.round(sv[0] * 100) / 100.0));
+        });
 
         // wrap ONCE (grayHint hooks disabledProperty — wrapping inside
         // the relayout would stack a listener per sync)
@@ -10654,11 +11025,18 @@ class GraphEditor extends Region {
             minC.setSelected(c.minLimit);
             startSp.getValueFactory().setValue(c.x0);
             lenSp.getValueFactory().setValue(c.len);
-            // Start + End reference readouts (v18.7, D176 — his
-            // exact labels)
-            startSpdLbl.setText(spSpeedLbl("Start",
+            // Enter + End reference readouts (v18.7, D176; renamed
+            // v19.8, D237 — Enter is CLICKABLE: target := enter
+            // speed, except complex SPEED controls)
+            startSpdLbl.setText(spSpeedLbl("Enter",
                 spCtlSpeeds(rs, c, false)));
             endLbl.setText(spSpeedLbl("End", spCtlSpeeds(rs, c, true)));
+            if (enterClickable.get()) {
+                Tooltip.install(startSpdLbl, enterTip);
+            } else {
+                Tooltip.uninstall(startSpdLbl, enterTip);
+                startSpdLbl.setStyle(enterBase);
+            }
             relayout.run();
             syncing[0] = false;
         };
@@ -11112,6 +11490,21 @@ class GraphEditor extends Region {
             && nl.rollAbsolute && nl.rollGlobal;
     }
 
+    /** ... and the ABSOLUTE-yaw/pitch twin (v19.8, D237): the D122
+     *  rule for lanes 0/1 — matching toward an absolute-angle
+     *  neighbor refuses on every lane. */
+    private boolean nextAbsYp() {
+        List<Section> secs = sections();
+        return activeSection + 1 < secs.size()
+            && secs.get(activeSection + 1) instanceof GeoSection nl
+            && nl.ypAbsolute && nl.yawPitchGlobal;
+    }
+
+    private static final String YP_NEXT_HINT = "The next section's "
+        + "absolute yaw/pitch sets the seam state at its own start — "
+        + "press B/Shift+B on the OTHER side of the boundary (its "
+        + "first node) to smooth this transition.";
+
     private static final String ABS_NEXT_HINT = "The next section's "
         + "absolute bank sets the seam state at its own start — press "
         + "B/Shift+B on the OTHER side of the boundary (its first "
@@ -11135,8 +11528,9 @@ class GraphEditor extends Region {
                 + "neighboring section on that side.");
             return;
         }
-        if (!infl && end && !start && nextAbsRoll()) {
-            app.statsLabel.setText(ABS_NEXT_HINT);
+        if (!infl && end && !start && (nextAbsRoll() || nextAbsYp())) {
+            app.statsLabel.setText(nextAbsRoll()
+                ? ABS_NEXT_HINT : YP_NEXT_HINT);
             return;
         }
         refreshOffset();
@@ -11201,16 +11595,33 @@ class GraphEditor extends Region {
         // the '+' real fork) keeps chasing the REAL seam speed — the
         // design profile is the side it deliberately left. Which
         // anchor a section follows is read off which speed its
-        // vDesign already sits nearer.
+        // vDesign already sits nearer. AMPLIFICATION-AWARE since
+        // v19.8 (D237 — the reconcile's twin gate, same fix): a seam
+        // gap under DRIFT_EPS can still read over it at the
+        // section's slowest point (energy offset ÷ 2·vMin), and this
+        // entry-only test used to snap such a real anchor back onto
+        // the design chain.
         if (trueArraysReady() && i1 < app.trueV.length) {
             double vTrue = app.trueV[i1];
-            if (Math.abs(vTrue - v) > DRIFT_EPS
+            TrackCompiler.Span dSpan = spanOf(startEdge
+                ? activeSection : activeSection + 1);
+            double vMin = Math.max(0.1, vTrue);
+            if (dSpan != null) {
+                int e = Math.min(dSpan.i1(), app.trueV.length - 1);
+                for (int i = dSpan.i0(); i <= e; i++) {
+                    vMin = Math.min(vMin, Math.max(0.1, app.trueV[i]));
+                }
+            }
+            if (Math.abs(vTrue - v) * (Math.max(0.1, vTrue) / vMin)
+                        > DRIFT_EPS
                     && Math.abs(down.vDesign() - vTrue)
                        < Math.abs(down.vDesign() - v)) {
                 v = vTrue;
             }
         }
-        v = FvdDesigner.clamp(v, 1, 100);
+        // admit what the app itself produces (D198 — the old [1,100]
+        // clamp silently rewrote near-stall seam speeds to 1.0)
+        v = FvdDesigner.clamp(v, 0.1, 1e4);
         if (Math.abs(v - down.vDesign()) > 1e-9) down.vDesign(v);
     }
 
@@ -11240,8 +11651,9 @@ class GraphEditor extends Region {
                 + "with a neighboring section on that side.");
             return;
         }
-        if (!infl && end && !start && nextAbsRoll()) {
-            app.statsLabel.setText(ABS_NEXT_HINT);
+        if (!infl && end && !start && (nextAbsRoll() || nextAbsYp())) {
+            app.statsLabel.setText(nextAbsRoll()
+                ? ABS_NEXT_HINT : YP_NEXT_HINT);
             return;
         }
         refreshOffset();
@@ -11442,6 +11854,72 @@ class GraphEditor extends Region {
             bd += 360 * Math.round((cur - bd) / 360);
         }
         return new double[]{ bd, slope };
+    }
+
+    /** ABSOLUTE-yaw/pitch boundary target (v19.8, D237 — the D120
+     *  recipe applied to lanes 0/1): {angle°, rate} of the
+     *  NEIGHBOR's side of the seam — our own edge sample is already
+     *  the projection's snap. lane 0 = elevation, lane 1 = heading
+     *  (reported-left), the heading UNWRAPPED to the representative
+     *  nearest the edge node's current value (heading crosses ±180
+     *  on any half-turn — the D120 mirror, common case here).
+     *  Vertical seams refuse with the stats reason. */
+    private double[] absYpTarget(boolean atStart, int laneIdx) {
+        TrackCompiler.Span act = spanOf(activeSection);
+        if (act == null || app.lastSamples == null
+                || app.lastSamples.isEmpty()
+                || app.resultRates == null) return null;
+        int last = app.lastSamples.size() - 1;
+        int ib = Math.max(0, Math.min(atStart ? act.i1() + 1
+                                              : act.i0() - 1, last));
+        FVDIntegrator.Sample sm = app.lastSamples.get(ib);
+        double ang;
+        if (laneIdx == 0) {
+            ang = Math.toDegrees(FVDIntegrator.elevationOfT(sm.T()));
+        } else {
+            double hd = FVDIntegrator.headingOfT(sm.T());
+            if (Double.isNaN(hd)) {
+                matchHint = "No defined heading on vertical track — "
+                    + "the absolute yaw lane can't read this seam.";
+                return null;
+            }
+            ang = Math.toDegrees(hd);
+        }
+        int is = Math.max(0, Math.min(atStart ? ib + 3 : ib - 3,
+            Math.min(last, app.resultRates.length - 1)));
+        FVDIntegrator.Sample ss = app.lastSamples.get(is);
+        double vSafe = Math.max(0.5, ss.v());
+        double pitB = Math.toDegrees(FVDIntegrator.G0
+            * (ss.Gv() - ss.U().y()) / vSafe);
+        double yawB = Math.toDegrees(FVDIntegrator.G0
+            * (ss.Gl() + ss.R().y()) / vSafe);   // REPORTED (D184+D185)
+        double wr = Coaster.worldRates(ss, pitB, yawB,
+            app.resultRates[is][3])[laneIdx];
+        double slope = Double.isNaN(wr) ? 0
+            : domSlope(wr, false, activeDistNative(),
+                seamDesignV(atStart));
+        if (!Double.isNaN(wr)) {
+            // extrapolate onto the exact boundary time (rate × dt)
+            double tB = atStart ? act.t1() : act.t0();
+            ang += wr * (tB - sm.t());
+        }
+        if (laneIdx == 1) {
+            // heading lane values are SECTION-ENTRY-relative (the
+            // D199 heading-stripped generation): subtract OUR entry
+            // heading before the unwrap-to-current
+            FVDIntegrator.Sample e0 = app.lastSamples.get(
+                Math.max(0, Math.min(act.i0(), last)));
+            double eh = FVDIntegrator.headingOfT(e0.T());
+            if (!Double.isNaN(eh)) ang -= Math.toDegrees(eh);
+            if (sections().get(activeSection) instanceof LaneSection als
+                    && !als.lanes.get(1).isEmpty()) {
+                List<BezierBaker.Node> rl = als.lanes.get(1);
+                double cur = (atStart ? rl.get(rl.size() - 1)
+                                      : rl.get(0)).val;
+                ang += 360 * Math.round((cur - ang) / 360);
+            }
+        }
+        return new double[]{ ang, slope };
     }
 
     /** Roll {value, slope} across a seam whose sides author roll
@@ -11696,6 +12174,30 @@ class GraphEditor extends Region {
                     }
                     real = Math.abs(vTru - vOurs) > DRIFT_EPS
                         || Math.abs(vTru - vTheirs) > DRIFT_EPS;
+                    if (!real) {
+                        // WHOLE-SPAN split test (v19.8, D237 — the
+                        // badge's D106 measure): a sub-eps seam gap
+                        // can still split visibly INSIDE either
+                        // section (energy amplification at slow
+                        // spots); B aims at the REAL curves there too
+                        int tp, tk;
+                        if (atStart) {
+                            tp = followOut ? activePiece + 1 : activePiece;
+                            tk = followOut ? 0 : activeSection + 1;
+                        } else {
+                            tp = followIn ? activePiece - 1 : activePiece;
+                            tk = followIn
+                                ? app.coaster.pieces.get(activePiece - 1)
+                                    .sections.size() - 1
+                                : activeSection - 1;
+                        }
+                        real = sectionDrifted(activePiece, activeSection)
+                            || (tp >= 0 && tp < app.coaster.pieces.size()
+                                && tk >= 0
+                                && tk < app.coaster.pieces.get(tp)
+                                    .sections.size()
+                                && sectionDrifted(tp, tk));
+                    }
                     realScale = vTru / Math.max(0.1, vTheirs);
                     rReal = vOurs / vTru;
                 }
@@ -11723,6 +12225,14 @@ class GraphEditor extends Region {
         if (!inflM && laneIdx == 2 && actLs != null
                 && actLs.rollAbsolute && actLs.rollGlobal) {
             double[] ab = absRollTarget(atStart);
+            if (ab != null || matchHint != null) return ab;
+        }
+        // ABSOLUTE YAW/PITCH lanes (v19.8, D237 — the same recipe
+        // for lanes 0/1; positioned BEFORE the per-second wrapper's
+        // paths like roll's, the D122 double-divide lesson)
+        if (!inflM && laneIdx < 2 && actLs instanceof GeoSection
+                && actLs.ypAbsolute && actLs.yawPitchGlobal) {
+            double[] ab = absYpTarget(atStart, laneIdx);
             if (ab != null || matchHint != null) return ab;
         }
         // ROLL ACROSS DIFFERING ROLL ORIENTATIONS (v16.6, D114 — user
@@ -11777,7 +12287,13 @@ class GraphEditor extends Region {
                     // matter here (v16.6; a neighbor's roll flag
                     // needlessly forced the sampled path before)
                     : actLs != null
-                        && actLs.yawPitchGlobal == nb.yawPitchGlobal)) {
+                        && actLs.yawPitchGlobal == nb.yawPitchGlobal
+                        // rate vs ABSOLUTE-angle mismatch: different
+                        // quantities — sampled path (v19.8, D237,
+                        // the D120 guard's lanes-0/1 twin)
+                        && (nb.ypAbsolute && nb.yawPitchGlobal)
+                           == (actLs.ypAbsolute
+                               && actLs.yawPitchGlobal))) {
             // slopes read in the NEIGHBOR's native x units and convert
             // to OURS at the seam design speed (v16.0, D103) — values
             // are unit-identical across domains
@@ -13274,7 +13790,8 @@ class GraphEditor extends Region {
             && a.rollGlobal == b.rollGlobal
             && a.yawPitchGlobal == b.yawPitchGlobal
             && a.ratePerMeter == b.ratePerMeter
-            && a.rollAbsolute == b.rollAbsolute;
+            && a.rollAbsolute == b.rollAbsolute
+            && a.ypAbsolute == b.ypAbsolute;
     }
 
     /** CONNECT the active piece's sections leftIdx and leftIdx+1
@@ -13860,8 +14377,13 @@ class GraphEditor extends Region {
             field.setTextFormatter(FvdDesigner.signedNumFormatter());
             field.setText(fmt(init));
             Button up = stepBtn("▲"), dn = stepBtn("▼");
-            up.setOnAction(e -> nudge(1));
-            dn.setOnAction(e -> nudge(-1));
+            // the D237 global spinner conventions (mouse handlers —
+            // ActionEvent carries no modifier state): Ctrl = tenth
+            // steps, Shift = snap to round multiples
+            up.setOnMouseClicked(e -> modClick(1, e.isControlDown(),
+                e.isShiftDown()));
+            dn.setOnMouseClicked(e -> modClick(-1, e.isControlDown(),
+                e.isShiftDown()));
             VBox arrows = new VBox(up, dn);
             arrows.setSpacing(0);
             node = new HBox(2, field, arrows);
@@ -13869,8 +14391,9 @@ class GraphEditor extends Region {
             field.setOnScroll(e -> {
                 double d = e.getDeltaY() != 0 ? e.getDeltaY() : e.getDeltaX();
                 if (d == 0) return;
-                double k = e.isShiftDown() ? 10 : e.isControlDown() ? 0.1 : 1;
-                nudge(d > 0 ? k : -k);
+                // (Shift was ×10 in D225; the D237 global rule wins)
+                modClick(d > 0 ? 1 : -1, e.isControlDown(),
+                    e.isShiftDown());
                 e.consume();
             });
             field.textProperty().addListener((o, a, b) -> {
@@ -13915,6 +14438,26 @@ class GraphEditor extends Region {
             double base = cur != null ? cur : 0;
             double v = Math.round((base + k * step) / (step * 0.001))
                 * (step * 0.001);   // kill float dust at 3 decimals of step
+            v = FvdDesigner.clamp(v, min, max);
+            field.setText(fmt(v));
+            field.positionCaret(field.getText().length());
+        }
+
+        /** One D237-convention step: Ctrl = tenth increments, Shift
+         *  = snap to the next round multiple of the (possibly
+         *  Ctrl-scaled) step. */
+        void modClick(int dir, boolean ctrl, boolean shift) {
+            if (!shift) {
+                nudge(dir * (ctrl ? 0.1 : 1));
+                return;
+            }
+            double q = step * (ctrl ? 0.1 : 1);
+            Double cur = parsed();
+            double base = cur != null ? cur : 0;
+            double v = dir > 0
+                ? (Math.floor(base / q + 1e-9) + 1) * q
+                : (Math.ceil(base / q - 1e-9) - 1) * q;
+            v = Math.round(v / (q * 0.001)) * (q * 0.001);
             v = FvdDesigner.clamp(v, min, max);
             field.setText(fmt(v));
             field.positionCaret(field.getText().length());

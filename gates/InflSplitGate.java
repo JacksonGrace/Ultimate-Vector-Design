@@ -2,21 +2,24 @@ import coaster.*;
 
 import java.util.*;
 
-/** D234/D235 gate — INFLUENCED sections SPLIT (v19.5 lifted the D98
- *  refusal; v19.6 made the split EXACT via the ref anchor).
+/** D234/D236 gate — INFLUENCED sections under the ONE-PASS HYBRID
+ *  (v19.7, D236 — deltas inject into the section's own solve per RK4
+ *  stage; no ref frame, no split anchor).
  *  a) structure: both halves influenced, axis flags carried, delta
- *     lanes cut continuously; the RIGHT half carries the SPLIT
- *     ANCHOR (inflRefTilt + divergent vAuthored + inflVStarK).
- *  b) deltas ZERO up to the cut: seam-class exact.
- *  c) deltas NON-ZERO before the cut: ALSO seam-class exact since
- *     D235 (the anchor continues the parent's ref/base — the D234
- *     proportional-tail corner is CLOSED); the resulting felt is
- *     continuous across the new seam.
+ *     lanes cut continuously, vAuthored stays the plain mirror.
+ *  b) deltas ZERO up to the cut: split exact (Markov property).
+ *  c) deltas NON-ZERO before the cut: ALSO exact — no anchor needed;
+ *     the resulting felt is continuous across the new seam.
  *  d) the piece-split chain (section split + D71 boundary split)
  *     adds nothing on top of the section split.
- *  e) a LEGACY divergent pair (vAuthored != vDesign) splits
- *     correctly too (the map handles the re-timed delta axis).
- *  f) an anchored half SAVE/LOAD round-trips to the same compile.
+ *  e) a LEGACY divergent pair (vAuthored != vDesign) splits exactly
+ *     too — vAuthored is inert in the hybrid.
+ *  f) an influenced half SAVE/LOAD round-trips to the same compile.
+ *  g) speed controls drive the influenced solve (v19.6 D235 kept).
+ *  h) HYBRID acceptance: after the delta window returns to zero the
+ *     felt records equal the authored targets (no residual
+ *     laterals) and the downstream section carries no ≠v conflict.
+ *  z) all-zero deltas = the uninfluenced twin BITWISE (do-no-harm).
  */
 public class InflSplitGate {
 
@@ -117,13 +120,10 @@ public class InflSplitGate {
         LaneSection b = (LaneSection) c.pieces.get(0).sections.get(1);
         check(a.influenced() && b.influenced(),
             "a1 both halves come out influenced");
-        check(a.vAuthored == a.vDesign && a.inflRefTilt == null
-                && b.inflRefTilt != null && !Double.isNaN(b.vAuthored)
-                && b.inflVStarK > 0.1 && b.inflVStarK < 10,
-            "a2 left keeps the mirror, right carries the ANCHOR (D235)",
-            String.format("left %.2f/%.2f right %.2f/%.2f K %.4f",
-                a.vAuthored, a.vDesign, b.vAuthored, b.vDesign,
-                b.inflVStarK));
+        check(a.vAuthored == a.vDesign && b.vAuthored == b.vDesign,
+            "a2 both halves keep the plain vAuthored mirror (hybrid)",
+            String.format("left %.2f/%.2f right %.2f/%.2f",
+                a.vAuthored, a.vDesign, b.vAuthored, b.vDesign));
         check(a.inflRollGlobal == false && b.inflRollGlobal == false
                 && a.deltaLanes != null && b.deltaLanes != null,
             "a3 influence axis flags + delta lanes carried");
@@ -135,9 +135,9 @@ public class InflSplitGate {
             String.format("left %.6f right %.6f", dl, dr));
         TrackCompiler.Result r1 = rebuild(c);
         double dev = pathDev(r0.samples(), r1.samples());
-        check(dev < 0.08,
-            "b2 deltas zero before the cut: normal seam class",
-            String.format("worst dev %.4f m", dev));
+        check(dev < 1e-6,
+            "b2 deltas zero before the cut: exact split",
+            String.format("worst dev %.2e m", dev));
 
         // ---- (d) the piece-split chain on top ----
         int spanIdx = 1;
@@ -150,19 +150,18 @@ public class InflSplitGate {
             "d2 the D71 boundary split adds nothing",
             String.format("worst dev %.2e m", dev2));
 
-        // ---- (c) deltas NON-ZERO before the cut: seam-class EXACT
-        // since D235 (the right half's SPLIT ANCHOR continues the
-        // parent's ref/base — at D234 this fixture measured 11.8 m
-        // of tail re-solve, the closed corner). ----
+        // ---- (c) deltas NON-ZERO before the cut: exact WITHOUT any
+        // anchor (the hybrid's Markov property — at D234 this fixture
+        // measured 11.8 m of two-pass tail re-solve). ----
         Coaster c2 = fixture(1.0, 2.5);
         TrackCompiler.Result q0 = rebuild(c2);
         check(c2.splitSectionAt(0, 0, 3.0, DT),
             "c1 splits with deltas before the cut");
         TrackCompiler.Result q1 = rebuild(c2);
         double dev3 = pathDev(q0.samples(), q1.samples());
-        check(dev3 < 0.01,
-            "c2 violent prefix: seam-class exact (D235 anchor)",
-            String.format("worst dev %.4f m", dev3));
+        check(dev3 < 1e-6,
+            "c2 violent prefix: exact split (hybrid, no anchor)",
+            String.format("worst dev %.2e m", dev3));
         // resulting felt continuous across the new seam (his
         // "slight jump in resulting values")
         TrackCompiler.Span sL = q1.spans().get(0);
@@ -181,12 +180,13 @@ public class InflSplitGate {
             "c4 gentle-prefix split applies");
         TrackCompiler.Result g1 = rebuild(c4);
         double dev4 = pathDev(g0.samples(), g1.samples());
-        check(dev4 < 0.01,
-            "c5 gentle prefix: seam-class exact",
-            String.format("worst dev %.4f m", dev4));
+        check(dev4 < 1e-6,
+            "c5 gentle prefix: exact split",
+            String.format("worst dev %.2e m", dev4));
 
-        // ---- (e) divergent legacy pair SPLITS correctly (D235 —
-        // the map handles the re-timed delta axis) ----
+        // ---- (e) divergent legacy pair splits exactly (D236 —
+        // vAuthored is INERT in the hybrid; the split resets the
+        // mirror) ----
         Coaster c3 = fixture(4.0, 5.5);
         LaneSection ls3 = (LaneSection) c3.pieces.get(0).sections.get(0);
         ls3.vAuthored = ls3.vDesign + 5;
@@ -195,34 +195,28 @@ public class InflSplitGate {
             "e1 divergent legacy pair splits");
         TrackCompiler.Result e1r = rebuild(c3);
         double devE = pathDev(e0.samples(), e1r.samples());
-        // the divergent pair's cut lands between two genuinely
-        // different clocks — the dur-rounding class scales with the
-        // speed gap (~7 cm measured on the +5 m/s legacy fixture)
-        check(devE < 0.15,
-            "e2 divergent split holds the track",
-            String.format("worst dev %.4f m", devE));
+        check(devE < 1e-6,
+            "e2 divergent split exact (vAuthored inert)",
+            String.format("worst dev %.2e m", devE));
 
-        // ---- (f) anchored half IO round-trip ----
+        // ---- (f) influenced half IO round-trip ----
         java.io.StringWriter sw = new java.io.StringWriter();
         DesignIO.save(c2, DesignIO.Cosmetics.defaults(),
             new java.io.PrintWriter(sw));
         Coaster back = DesignIO.load(new java.io.BufferedReader(
             new java.io.StringReader(sw.toString()))).coasters().get(0);
         LaneSection rb = (LaneSection) back.pieces.get(0).sections.get(1);
-        check(rb.influenced() && rb.inflRefTilt != null
-                && rb.inflRefTilt.equals(((LaneSection) c2.pieces.get(0)
-                    .sections.get(1)).inflRefTilt),
-            "f1 the anchor round-trips bit-exactly");
+        check(rb.influenced(), "f1 the influenced half round-trips");
         TrackCompiler.Result q2 = rebuild(back);
         double devIo = pathDev(q1.samples(), q2.samples());
         check(devIo < 1e-9,
-            "f2 anchored save/load compiles to the same track",
+            "f2 save/load compiles to the same track",
             String.format("worst dev %.2e m", devIo));
 
         // ---- (g) SPEED CONTROLS on an influenced section (v19.6,
         // D235 — the D160 exclusion lifted): a const-speed clamp
-        // acts on the two-pass ride ----
-        Coaster cg = fixture(2.0, 3.5);   // live deltas → real two-pass
+        // acts on the single hybrid solve ----
+        Coaster cg = fixture(2.0, 3.5);   // live deltas
         LaneSection lg = (LaneSection) cg.pieces.get(0).sections.get(0);
         SpeedControl gctl = new SpeedControl(4.0, 1.5);
         gctl.speed = 12;   // hard clamp well below the natural ~17
@@ -241,6 +235,65 @@ public class InflSplitGate {
         check(Math.abs(vMid - 12) < 0.6,
             "g2 the control drives the influenced design profile",
             String.format("v@mid-control %.2f (want 12)", vMid));
+
+        // ---- (h) HYBRID acceptance: the user's 2026-08-25 re-spec.
+        // Δyaw bump over [1, 2.5]; after the window the felt records
+        // must equal the AUTHORED targets (no residual laterals) and
+        // the tail section must carry no ≠v conflict. ----
+        Coaster ch = new Coaster();
+        TrackPiece ph = new TrackPiece(0, 21, 0, 0);
+        ForceSection fh = new ForceSection(hillLanes(6), 26);
+        Coaster.enterInfluence(fh, 6);
+        fh.deltaLanes.set(1, lane(new double[][]{ {0, 0}, {1.0, 0},
+            {1.75, 8}, {2.5, 0}, {6, 0} }));   // Δyaw bump, °/s
+        ph.sections.add(fh);
+        ph.sections.add(new ForceSection(hillLanes(5), 26));
+        ch.pieces.add(ph);
+        TrackCompiler.Result rh = rebuild(ch);
+        TrackCompiler.Span sh = rh.spans().get(0);
+        double worstGl = 0, worstGv = 0;
+        for (int i = sh.i0(); i <= sh.i1(); i++) {
+            FVDIntegrator.Sample s = rh.samples().get(i);
+            double t = s.t() - sh.t0();
+            if (t < 2.6 || t > 5.9) continue;   // after the window
+            worstGv = Math.max(worstGv, Math.abs(s.Gv()
+                - BezierBaker.exactAt(fh.lanes.get(0), t)));
+            worstGl = Math.max(worstGl, Math.abs(s.Gl()
+                - BezierBaker.exactAt(fh.lanes.get(1), t)));
+        }
+        check(worstGl < 1e-9 && worstGv < 1e-9,
+            "h1 felt == authored targets after the delta window",
+            String.format("worst dGv %.2e dGl %.2e g", worstGv, worstGl));
+        LaneSection tail = (LaneSection) ph.sections.get(1);
+        double vSeam = rh.samples().get(sh.i1()).v();
+        check(Math.abs(tail.vDesign - vSeam) < 1e-9,
+            "h2 no leftover speed conflict downstream",
+            String.format("tail vDesign %.4f seam v %.4f",
+                tail.vDesign, vSeam));
+
+        // ---- (z) all-zero deltas == the uninfluenced twin BITWISE ----
+        Coaster cz = new Coaster();
+        TrackPiece pz = new TrackPiece(0, 21, 0, 0);
+        ForceSection fz = new ForceSection(hillLanes(6), 26);
+        Coaster.enterInfluence(fz, 6);   // deltas stay flat zero
+        pz.sections.add(fz);
+        cz.pieces.add(pz);
+        Coaster cu = new Coaster();
+        TrackPiece pu = new TrackPiece(0, 21, 0, 0);
+        pu.sections.add(new ForceSection(hillLanes(6), 26));
+        cu.pieces.add(pu);
+        TrackCompiler.Result rz = rebuild(cz);
+        TrackCompiler.Result ru = rebuild(cu);
+        boolean bit = rz.samples().size() == ru.samples().size();
+        if (bit) {
+            for (int i = 0; i < rz.samples().size(); i++) {
+                Vec3 pa = rz.samples().get(i).pos();
+                Vec3 pb = ru.samples().get(i).pos();
+                if (pa.x() != pb.x() || pa.y() != pb.y()
+                        || pa.z() != pb.z()) { bit = false; break; }
+            }
+        }
+        check(bit, "z1 all-zero deltas compile BITWISE == uninfluenced");
 
         System.out.println();
         System.out.println(fail == 0

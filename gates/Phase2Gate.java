@@ -1464,26 +1464,26 @@ public class Phase2Gate {
         check(samplesBitwise(before, TrackCompiler.compile(c, 0.01).samples()),
             "influence (a): discard restores BITWISE");
 
-        // (b) CLOSURE + OPERATING-SPEED INVARIANCE: zero deltas at a
-        // DRIFTED operating speed force the two-pass — the SPATIAL
-        // shape must survive (rates at v* retrace the same curve;
-        // only the clock moves). The 407 m default layout.
+        // (b) vAUTHORED IS INERT (v19.7, D236 — the one-pass hybrid
+        // retired the two-pass ref frame): a hand-edited DIVERGENT
+        // pair (field write; the setter mirrors since v15.4) still
+        // loads, but the compile is driven by the OPERATING speed
+        // alone — zero deltas at vDesign 29 compile BITWISE as the
+        // plain section at 29. (The two-pass held the 26-shape and
+        // re-clocked; that ref-frame concept is gone.)
         Coaster.enterInfluence(f, 13.46);
-        f.vDesign = 29;   // FIELD write: the divergent pair only
-                          // hand-edited files produce (the setter
-                          // mirrors vAuthored since v15.4)
+        f.vDesign = 29;   // FIELD write: setter-only mirror
         check(f.vAuthored == 26 && Math.abs(f.vDesign - 29) < 1e-12,
-            "influence (b): divergent-pair machinery still engages");
+            "influence (b): a field write leaves the pair divergent");
         List<FVDIntegrator.Sample> at29 =
             TrackCompiler.compile(c, 0.01).samples();
-        double[] dev = shapeDev(before, at29);
-        check(dev[0] < 0.5 && dev[1] < 0.5, String.format(   // convert-class residual: the re-time across a speed change IS the become-real mechanism (5.3 closure)
-            "influence (b): delta-0 closure at drifted speed — shape "
-            + "holds over 407 m (dev %.4f m, end %.4f m)", dev[0], dev[1]));
-        double durRatio = lastOf(at29).t() / lastOf(before).t();
-        check(durRatio < 1.0, String.format(
-            "influence (b): faster operating speed re-clocks shorter "
-            + "(dur ratio %.3f)", durRatio));
+        Coaster c29 = new Coaster();
+        TrackPiece tp29 = new TrackPiece(0, 21, 0, 0);
+        tp29.sections.add(new ForceSection(defaultLanes(), 29));
+        c29.pieces.add(tp29);
+        check(samplesBitwise(TrackCompiler.compile(c29, 0.01).samples(), at29),
+            "influence (b): vAuthored INERT — divergent zero-delta pair "
+            + "compiles BITWISE as the plain section at vDesign (D236)");
         Coaster.discardInfluence(f);
 
         // (c) ADDITIVITY, force section: a yaw-delta hump lands on the

@@ -91,6 +91,15 @@ FVDIntegrator.java  PHYSICS. Pure Java, no JavaFX. Takes keyframes
                     overloads on Geo/Sc integrate) — per-step drives
                     replace friction, post-step snaps write the loss;
                     both domains; null = every historic path bitwise.
+                    INFLUENCE deltas (v19.7, D236): Options.dInfl +
+                    dInflYpGlobal — Δpitch/Δyaw GEO-RATE keyframes
+                    injected into Ω per RK4 stage at the current
+                    state (GeoIntegrator.inflOmega, BEFORE the roll
+                    term so global-roll feed-forward sees the whole
+                    turn; °/m lanes scale by v); the felt records
+                    add the deltas' analytic contribution −ΔΩ·axis·
+                    v/g, so resulting == base + delta exactly.
+                    null = plain, bitwise.
 
 AppSettings.java    APP-WIDE PERSISTENT SETTINGS. Pure Java, no JavaFX.
                     Shortcut bindings + FOV in ~/.fvd-designer.properties
@@ -205,7 +214,35 @@ LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     TOWARD an abs NEXT neighbor refuse outright
                     with a stats hint, v16.10 D122 — its entry is
                     enforced by its OWN lane, match from ITS first
-                    node) + the
+                    node) + ABSOLUTE YAW/PITCH ypAbsolute (v19.8,
+                    D237 — the rollAbsolute twin for GEO lanes 0/1
+                    under GLOBAL yaw/pitch, section field 10: lane
+                    0 = the ELEVATION angle °, lane 1 = the HEADING
+                    ° — reported-left, SECTION-ENTRY-relative (the
+                    D199 heading-stripped generation; 0 = straight
+                    on) and unwrapped past ±180; elevation authors
+                    within ±90, a loop needs rate lanes.
+                    GeoIntegrator.projectYp targets the lane values
+                    post-step — elevation about horizontal-right
+                    FIRST, heading about world-Y second (preserves
+                    the set elevation exactly), before the roll
+                    blocks; slopes feed Ω per stage via omegaFor's
+                    absTheta/absPsi; TrackCompiler.exactYp = the
+                    D121 knot-exact resample; SPLITS REBASE the
+                    heading lane at the cut (−value_at_cut, merges
+                    lift back — lossless round-trips; residual =
+                    the abs one-sided-Hermite ~1e-4 m class);
+                    converts extract entry-relative unwrapped
+                    heading and NEVER divide angle lanes by v (the
+                    D213 rule); influence refuses; B = the D120
+                    neighbor-side recipe (absYpTarget), refusals
+                    toward abs neighbors on every lane; the
+                    "Yaw/pitch behavior" row sits directly below
+                    "Yaw/pitch axis" in Convert/Add/wizard,
+                    double-interlocked Geometric+Global; YpAbsGate.
+                    The Resulting-overlay settings deliberately
+                    have NO resYpAbs row — comps 1/2 are the
+                    shared overlay scale) + the
                     CROSS-RATE VIEW viewOtherRate (v16.7 D119,
                     COMPLETED v16.9 D121 as the user's actual spec:
                     a full edit-in-the-other-units warp — dispVal/
@@ -220,34 +257,31 @@ LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     keeps the NATIVE derivedAt/trueAt, right-edge
                     axis shows the native units; session-only,
                     auto-drops on leave).
-                    INFLUENCE state (v15.0, D98;
-                    distance sections join in v16.1 — the two-pass
-                    runs over ARC; GLOBAL-AXIS sections join in
-                    v16.5 D112, with their own influence axis flags
-                    inflRollGlobal/inflYawPitchGlobal — how the
-                    two-pass integrates base+delta AS the other
-                    mode; entry mirrors the section's roll choice):
-                    deltaLanes
+                    INFLUENCE state (v15.0, D98; the ONE-PASS HYBRID
+                    since v19.7 D236 — see TrackCompiler; GLOBAL-AXIS
+                    sections join in v16.5 D112, with their own
+                    influence axis flags inflRollGlobal/
+                    inflYawPitchGlobal — the delta Ω injects about
+                    those axes; entry mirrors the section's roll
+                    choice): deltaLanes
                     (OTHER-mode delta lanes; null = uninfluenced) +
-                    vAuthored (frozen authored speed — the vDesign
-                    FIELD stays the one OPERATING speed everything
-                    reads/writes) + editInfluence (which surface the
+                    vAuthored (INERT since D236 — a mirrored
+                    file-compat field; the vDesign FIELD is the one
+                    speed the whole solve runs at, hand-edited
+                    divergent pairs compile at vDesign like plain
+                    sections) + editInfluence (which surface the
                     strip edits; in DocState, never saved) +
-                    baseCurves (last compile's base rows {t*, L0..L2},
+                    baseCurves (last compile's base rows {x, L0..L2}
+                    on the section's OWN axis = resulting − delta,
                     transient — the editor's guides/offsets read them
                     via baseValAt/baseSlopeAt; deltasAllZero() gates
-                    the do-no-harm fast path) + the SPLIT ANCHOR
-                    inflRefTilt/inflVStarK (v19.6, D235 — set only by
-                    splits: the ref integrates from entry⊕tilt at the
-                    stored vAuthored with the operating profile
-                    entering at vDesign×K, so a split half's base
-                    CONTINUES its parent's; null/1 = classic bitwise;
-                    the D102 vAuthored mirror skips anchored
-                    sections; `infl` fields 4-8, undo carried).
-                    INFLUENCED sections TAKE SPEED CONTROLS since
-                    v19.6 (D235 — speedControllable dropped
-                    !influenced(); the two-pass drives ref, operating
-                    profile and pass 2 with the same Ctl).
+                    the do-no-harm fast path, bitwise). The D235
+                    SPLIT ANCHOR (inflRefTilt/inflVStarK) is GONE —
+                    the hybrid's splits are exact by the Markov
+                    property alone; the loader ignores the one-build
+                    `infl` fields 4-8. INFLUENCED sections TAKE
+                    SPEED CONTROLS (v19.6 D235; the one Ctl drives
+                    the single hybrid solve since D236).
 ForceSection.java   classic FVD mode: lanes = Gv / Gl / roll rate.
 GeoSection.java     Phase 2 (v10.0, D58): lanes = pitch / yaw / roll
                     rate (°/s), integrated DIRECTLY — no solver;
@@ -272,6 +306,16 @@ GeoIntegrator.java  GEO PHYSICS. Pure Java, no JavaFX. RK4 on (pos,
                     to body axes); rollGlobal = the FVDIntegrator
                     bank-projection. Felt records the BODY components
                     of Ω under global flags (local path bitwise).
+                    INFLUENCE deltas (v19.7, D236 — the one-pass
+                    hybrid): the widest integrate/integrateDist
+                    overloads take dInfl = ΔGv/ΔGl FELT keyframes;
+                    each RK4 stage adds Δω = ±g·ΔG/v to Ω at the
+                    current state and the felt records add the
+                    deltas verbatim (null = plain, bitwise). Also
+                    home of inflOmega — the Δpitch/Δyaw RATE
+                    delta → Ω mapping (local body or global
+                    heading/elevation, omegaFor without roll) that
+                    FVDIntegrator.deriv injects for force sections.
                     See PHYSICS.md §2b.
 StraightCurveSection.java  Phase 2 (v11.0, D68): the first NON-LANE
                     section — an ELEMENT list: straight (length) | arc
@@ -607,7 +651,40 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     In-document converts route through the INSTANCE
                     fitLanes wrappers (friction-aware re-time; the
                     static convertToLanes tower stays loss-free for
-                    probes — new converts MUST use fitLanes).
+                    probes — new converts MUST use fitLanes). The
+                    re-time march is SPEED-CONTROL-AWARE since v19.7
+                    (D236 — the fit's energy march was blind to the
+                    source's controls, and a launched section's bake
+                    landed 10.9 m off: (v/vG)² felt distortion + the
+                    clock stretch; the widest convertToLanes overload
+                    takes (srcCtl, srcOff, srcDist) — drive + snap
+                    per sample, the passD twins, keyed by the
+                    source-native coordinate — and fitLanes(…, src,
+                    sp) derives them; convertDomain / bakeAxes /
+                    partialConvertSection / convertWholeSection /
+                    makeGraphsReal all pass the source; CtlBakeProbe
+                    0.011 m).
+                    MIRROR PIECE (v19.8, D237 — mirrorPiece, the
+                    Track Piece panel beside Reverse): flip the
+                    piece horizontally about the vertical plane
+                    through its entry heading — a pure ONE-TO-ONE
+                    GRAPH NEGATION, no refit (force Gl + roll lane
+                    incl. abs bank, geo yaw, influence delta lane
+                    1, s/c angle+dir+roll, piece roll deltas, held
+                    seam bank; orientation conjugates by
+                    Quat.mirrorZ, the canonical pair kept exact) —
+                    the compile is BITWISE the z-negated track in
+                    the canonical entry frame (MirrorGate 20,
+                    mirror² == identity bitwise); bridge-ending
+                    pieces refuse. SWITCH COASTER
+                    (FvdDesigner.switchPieceCoaster, the panel's
+                    third button): moves the active piece under a
+                    SAME-FRICTION coaster BITWISE (compile reads
+                    only pieces+friction; different friction grays
+                    with the reason, bridge connections gray,
+                    strict follows bake in place first, v0 mirrors
+                    both ride entries, both compile caches
+                    invalidate, the view follows the piece).
                     REVERSE PIECE = a CONVERT since v17.0 (D134,
                     user re-spec replacing D71's model
                     transformation AND D133's short-lived
@@ -671,9 +748,10 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     across the window (deltasZeroOn — polyline rows
                     + held tails + an exact sweep; the kept halves
                     STAY influenced via carryInfluence); non-zero
-                    deltas inside the window refuse, and legacy
-                    divergent pairs (vAuthored != vDesign) refuse
-                    outright. Still refuses s/c-edge / legacy-
+                    deltas inside the window refuse (the D235
+                    divergent-pair refusal is GONE — vAuthored is
+                    inert under the D236 hybrid). Still refuses
+                    s/c-edge / legacy-
                     reversed / stalled-window seams with stats-bar
                     reasons; smoothing itself can no longer be
                     ENABLED on s/c edges (D232).
@@ -718,14 +796,20 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     AREA-MATCHED since v16.5 D111 —
                     matchSegmentAreas nudges node values ~1e-3 so
                     every segment's weighted integral equals the
-                    data's against the BAKED polyline: least-norm
-                    tridiagonal solve, damped re-baked passes,
+                    data's against the BAKED polyline: a RIDGE
+                    least-squares since v19.7 (D236 — the exact
+                    per-segment constraints DEMAND node-to-node
+                    alternation on sub-segment features, measured
+                    −0.93 lag-1 autocorrelation, the user's
+                    remaining bake oscillation; min ‖A·δv−E‖² +
+                    μ‖δv‖² + λ‖D₁δv‖², λ=1.0/μ=1e-4 of the mean c²
+                    scale — the first-difference penalty kills the
+                    alternating mode, still tridiagonal SPD Thomas;
+                    his 0.11-spacing bake 20 flips ±0.19 g → 0),
+                    damped re-baked passes,
                     best-state on peak cumulative error, sub-grid
-                    carpets skip — GUARDED POINTWISE since v19.6
-                    (D235, the user's bake-oscillation report: on
-                    sharply-stepped data at coarse spacing the
-                    cumulative metric PREFERRED an alternating ±2 g
-                    node solution; a state now ships only while its
+                    carpets skip — plus the POINTWISE curve guard
+                    (v19.6 D235: a state ships only while its
                     baked curve stays within 1.3× the raw fit's own
                     miss + 2% of range — fine fits improved, the
                     coarse 2.0-spacing round-trip honestly
@@ -742,20 +826,15 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     the NODE-ANCHORED SPLIT (splitSectionAt, v16.18
                     D130 — splitLanes both-halves + vDesign-at-cut;
                     == authored-as-two, gated 0.0 m; INFLUENCED
-                    sections split EXACTLY since v19.6 D235
-                    (superseding D234's proportional-tail corner):
-                    the cut maps through TrackCompiler.refProfile —
-                    the boundary sits at operating time t*(xc), the
-                    deltas cut there — and the RIGHT half takes the
-                    SPLIT ANCHOR (LaneSection.inflRefTilt + divergent
-                    vAuthored + inflVStarK) so its ref/base CONTINUES
-                    the parent's; whatever the deltas did, the tail
-                    stays put (11.8 m → 0.0002 m gated) and the
-                    resulting felt is continuous. Divergent legacy
-                    pairs split correctly too. carryInfluence copies
-                    the left half's anchor; discardInfluence keeps an
-                    anchored half's OPERATING speed. InflSplitGate)
-                    + its inverse
+                    sections split MACHINE-EXACTLY under the hybrid
+                    (v19.7 D236, superseding D235's split anchor):
+                    a plain native-axis cut — lanes AND delta lanes
+                    de Casteljau at xc, carryInfluence copies the
+                    axis flags and resets the vAuthored mirror —
+                    is exact by the Markov property, whatever the
+                    deltas did before the cut (1.4e-12 m gated,
+                    was 0.0002 m anchored / 11.8 m at D234).
+                    InflSplitGate) + its inverse
                     mergeSections (v16.19 D131 — like sections only;
                     matched seams lossless, unmatched averaged;
                     split→connect round-trips exactly, gated 0.0 m
@@ -769,8 +848,8 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     model-side so the gates drive the real thing;
                     influenced sections JOIN the reconcile like
                     normal ones since D102 — the vDesign setter
-                    mirrors vAuthored (anchored halves excepted,
-                    D235), pinned still skips; partial
+                    mirrors vAuthored unconditionally again (D236),
+                    pinned still skips; partial
                     convert refuses them) and TRANSITION-TO-REAL
                     (v15.2 D101: vDesign := true entry + lane start
                     nodes lined to the left neighbor's TRUE curves,
@@ -896,26 +975,35 @@ TrackCompiler.java  THE THREE PASSES (SECTIONS-DESIGN §1) + the
                     bridges never tilt, pieceHead feeds the tilted
                     head to the bridge capture);
                     INFLUENCED lane sections take influencedLane's
-                    TWO-PASS, v15.0 D98: ref = integrate(authored
-                    lanes, vAuthored), base = ANALYTIC other-mode
-                    values along ref at the operating profile —
-                    rates ω = g(G−axis.y)/v scaled v*over v_d, felt
-                    via the §5.1 identity, roll from the bake —
-                    re-timed by the convert trapezoid onto t*, then
-                    base+delta integrates AS the other mode
-                    (force→GeoIntegrator, geo→FVDIntegrator) under
-                    the INFLUENCE axis flags at the
-                    operating speed, so resulting == base + delta
-                    EXACTLY and shape is operating-speed-invariant;
-                    all-zero deltas at vDesign==vAuthored (and no
-                    anchor) take the plain path BITWISE — both
-                    gated. The ref+profile half is FACTORED into
-                    refProfile since v19.6 (D235) — the split maps
-                    cuts with the compile's own arithmetic — and it
-                    applies the SPLIT ANCHOR (entry⊕inflRefTilt,
-                    vApply = vDesign×K) and the section's SPEED
-                    CONTROLS (ref, profile drive/snap and pass 2
-                    share one Ctl). baseCurves
+                    ONE-PASS HYBRID (v19.7, D236 — user re-spec,
+                    REPLACING the v15.0/D98 two-pass and its D235
+                    split anchor: the two-pass replayed the ref's
+                    rates in whatever frame the deltas had left the
+                    track in — residual laterals after every delta
+                    window, leftover conflicts, and the anchor
+                    existed only to pin the ref frame for splits):
+                    ONE integration of the section's OWN mode with
+                    the delta lanes injected PER RK4 STAGE at the
+                    current state — force sections' Δpitch/Δyaw
+                    join Ω (Options.dInfl/dInflYpGlobal,
+                    GeoIntegrator.inflOmega), geo sections' ΔGv/ΔGl
+                    become Δω = ±g·ΔG/v (GeoIntegrator's dInfl
+                    overloads) — so a force section keeps re-solving
+                    its authored targets against gravity LIVE and
+                    zero deltas mean the plain solve exactly: felt
+                    == authored, no residual anything (his "Odd
+                    influence behavior" file, 0.0 gated). The felt
+                    records add the deltas' contribution
+                    analytically, so resulting == base + delta
+                    EXACTLY by linearity; baseCurves := resulting −
+                    delta on the section's OWN axis (no t* clock
+                    exists). vAuthored is INERT; the influenced
+                    shape depends on vDesign like any section (the
+                    two-pass's operating-speed invariance is gone
+                    by design); splits are exact by the Markov
+                    property (no anchor); all-zero deltas take the
+                    plain path BITWISE; one Ctl drives the single
+                    solve. baseCurves
                     export rides on LaneSection),
                     passD TRUE speed per RUN (v13.6 D79, §5.1: a
                     run = pieces chained by trailing bridges; each
@@ -1196,7 +1284,14 @@ StartPanel.java     THE START SCREEN (v19.1 D226; reworked v19.2
                     track is visible from open, Done always works)
                     and "Straight / Curve"; the lane options in a
                     TWO-COLUMN grid (Type+Yaw/pitch axis, Domain+Roll
-                    axis, Rate units+Roll behavior). Modes NEW_COASTER
+                    axis, Rate units+Roll behavior) + the INITIAL
+                    SIZE spinner (v19.7, D236: the first section's
+                    length in the surface's own units — label "(s)"/
+                    "(m)"; PER-DOMAIN memory in the WizardState
+                    record's lenTime/lenDist, s/c shares meters — a
+                    6 s edit survives a domain round-trip;
+                    wizardWithLen folds every built section's length
+                    back into the record). Modes NEW_COASTER
                     (File > New's first coaster, Coaster ▸ New
                     Coaster…) and FLOATING (⊕ > "Add floating
                     section…", 5 m past the active piece's end at its
@@ -1204,15 +1299,35 @@ StartPanel.java     THE START SCREEN (v19.1 D226; reworked v19.2
                     (FvdDesigner.WizardState) RIDES THE DOCUMENT
                     (DocState.wizard): every control change is a
                     document undo step through FvdDesigner.wizard*,
-                    and Ctrl+Z right after opening removes the piece/
-                    coaster. The panel is a VIEW (syncFromModel after
+                    Ctrl+Z right after opening removes the piece/
+                    coaster — and undo INTO any wizard-era snapshot
+                    RE-SHOWS the panel since v19.7 (D236:
+                    applyDocState sets wizardOpen = wizard != null,
+                    so Ctrl+Z right after Create re-opens with the
+                    picks intact). The panel is a VIEW (syncFromModel
+                    after
                     every restore); syncWizardPanel shows it only while
                     its coaster (and, floating, its piece) is active
                     and the session flag wizardOpen holds (Done/Cancel
-                    clear it). The editor pins minHeight to
+                    clear it) — and while it SHOWS, the Track Piece
+                    dropdown grays (grayHint) and showPlacementPopup
+                    refuses with a stats reason (every route — ball
+                    double-clicks included): the wizard's Placement
+                    rows own the piece, and the 3D gizmos write into
+                    them LIVE (placementEdit ends with
+                    wizardPanel.syncFromModel, D236). The editor pins
+                    minHeight to
                     StartPanel.MIN_HEIGHT (240) while it shows
                     (growEditorTo). Yaw/pitch/roll write BOTH tiers
-                    (no lock conflict).
+                    (no lock conflict) — and the wizard PIECE
+                    creates with shapeLocked=false + OPEN pitch/
+                    roll padlocks (v19.8, D237: the entry gizmo's
+                    rings build and edit both tiers; Done restores
+                    the default locks). wizardFinish/wizardCancel
+                    end with syncWizardPanel (D237 — bypassing it
+                    left the Track Piece button stuck disabled,
+                    the "settings not selectable after Create"
+                    bug).
 ```
 
 MULTI-COASTER DOCUMENT (v19.2, D230): FvdDesigner.coasters is the
@@ -1237,11 +1352,19 @@ rebuildCoasterMenu now runs at construction + onShowing. D233's
 submenu + its "focus grab" lesson were a misdiagnosis, expunged;
 Menu.getStyleableNode() is null on MenuBar menus — lookup
 ".menu-button" instead) · "Coaster
-Options…" (modeless dialog: rename + friction rows + statistics) ·
-"New Coaster…" · "Delete Coaster" (name-confirm) · "Rail
-Settings…" (modeless dialog: rail-color radios/swatch/G-Force
+Options…" (modeless dialog: rename + friction rows + statistics;
+grayed via grayItem while ITS coaster is still in the start
+wizard, v19.7 D236) · "Rail
+Settings…" (DIRECTLY under Options since v19.7 D236, user spec —
+modeless dialog: rail-color radios/swatch/G-Force
 Colors… + heartline + gauge + tie spacing — the future track-TYPE
-home; Dialogs.railSettingsContent superseded railColorItems). The
+home; Dialogs.railSettingsContent superseded railColorItems) ·
+"New Coaster…" · "Delete Coaster" (name-confirm). A plain 3D
+click on an INACTIVE coaster's track offers "Switch to editing
+…?" (v19.7 D236 — Viewport3D.pickOtherCoaster over
+otherCoasterRenders + a small dark Switch/Cancel popup; Switch =
+switchCoaster + the clicked piece/section activated; meshes stay
+mouse-transparent, the pick is screen-space). The
 settings ROWS are shell fields re-parenting per dialog open; both
 dialogs take installDocUndoKeys. Export has a Coaster dropdown.
 UNDO KEYS RULE (D227): every window that can change the track routes
@@ -1481,13 +1604,13 @@ source tree — they won't compile against the current time-domain API.
   HONORED for force/geo since v16.0 D103: "distance" = lane x in
   meters; every old file says "time" there and loads unchanged;
   field 8 = ratePerMeter, v16.6 D115, missing = °/s; field 9 =
-  rollAbsolute, v16.7 D118, missing = rate;
+  rollAbsolute, v16.7 D118, missing = rate; field 10 = ypAbsolute,
+  v19.8 D237, missing = rate;
   the cross-domain VIEW flag is deliberately NOT saved) holding
   `lane`/`n` lines (force/geo; an
-  INFLUENCED section, v15.0 D98, appends `infl vApply [rollG ypG
-  [qw qx qy qz vStarK]]` (fields 4-8 = the D235 SPLIT ANCHOR,
-  written only when set — anchorless files byte-identical; the quat
-  loads WITHOUT re-normalize, D198) —
+  INFLUENCED section, v15.0 D98, appends `infl vApply [rollG ypG]`
+  (the short-lived D235 anchor fields 4-8 are IGNORED on load and
+  never written since v19.7 D236 — the hybrid needs no anchor) —
   the OPERATING speed + the v16.5 influence axis flags (missing =
   local); the section line keeps the AUTHORED speed so old
   readers pair the lanes with the speed they were designed at — plus
@@ -1863,7 +1986,13 @@ translucent) and DODGING nodes rung-by-rung while staying
 edge-anchored (caretY, the '+'-ladder idea); enabled
 Resulting overlays wear theirs in the overlay palette; a
 SMOOTHED seam draws none) and — strict only, while smoothing is
-ENABLED — the SMOOTHING DIAMOND (v17.3, D140: the s/c pattern —
+ENABLED — the SMOOTHING DIAMOND — ALWAYS VISIBLE on strict seams since
+v19.8 (D237: HOLLOW while smoothing is off, dragging the hollow
+diamond ENABLES smoothing at the dragged length — s/c edges still
+refuse via seamScEdge; hover = a gray center dot in the hollow
+diamond + small ◀ ▶ carets in both states, drawCaretH; and the
+cursor respects press priority — a node on a band edge shows the
+normal cursor, not H_RESIZE) — (v17.3, D140: the s/c pattern —
 dragging ADJUSTS sSmoothLen relatively since v17.5 (D142: base + 2·Δarc from the press — right grows; edges keep absolute-to-cursor), a clean SINGLE-CLICK = the full SEAM MENU since v19.3 (D232 — was the settings pop-out, v17.17; ≤3 px press-to-release, with a matching 3 px drag deadband so a click never commits a micro-resize — the 3D seam ball keeps its double-click), and the diamond DODGES nodes down the '+'-ladder (seamDiaYAt); pre-D142 it sized twice the cursor↔seam ARC read off
 the samples, live "smoothing X m" readout, Ctrl snaps by the
 element-length step, < 0.5 m snaps shut, cap 80 m, filled =
@@ -1882,9 +2011,9 @@ opens the SEAM MENU — on section boundaries "Connect sections
 seam strict (freeze downstream shape)…" (= the D71 rigid split +
 follow; the settings auto-open) + "Split track at seam"; on strict
 ones "Strict seam orientation…" (renamed from "settings", v19.6
-D235) / "Make smoothing real… (short reason)" — PRE-CHECKED at
-menu build via the makeSmoothingRealWhy dry-run, the D235 gray-out
-rule — / "Enable smoothing (10 m)"|"Disable
+D235) / "Make smoothing real…" — PRE-CHECKED at
+menu build via the makeSmoothingRealWhy dry-run; grayed with the
+FULL reason on hover since v19.7 (D236, grayItem) — / "Enable smoothing (10 m)"|"Disable
 smoothing" (v17.4, D141 — the diamond shows only while enabled;
 hand-made seams start OFF, bridge-converts and connects start ON
 at 1 m) / "Un-strict seam (reorient
@@ -1920,9 +2049,11 @@ DOUBLE-CLICK = the settings pop-out (reveal state unchanged).
 Defaults since v19.6 (D235, user spec): EVERY strict-seam creation
 locks ALL THREE axes at the current angles (makeSeamStrict,
 bridge-convert strict, make-real's reseed — nothing moves at
-creation), EXCEPT a direct ATTACH, which keeps yaw unlocked and
-seeds pitch/roll from the floating piece's placement padlocks
-(D153); the zero-distance-bridge YES still carries the bridge's
+creation), EXCEPT a direct ATTACH, which keeps yaw unlocked and since
+v19.8 (D237, superseding D153's padlock seeding) ALWAYS locks
+pitch+roll at the piece's PRE-ATTACH angles — a conflict-free
+layout stays conflict-free, only the honest speed split remains;
+the zero-distance-bridge YES still carries the bridge's
 yaw/pitch/roll locks. The whole-bridge
 Convert dialog grows "Make following seam strict (freeze following
 track shape)" — CHECKED by default (all axes locked since D235);
@@ -2096,7 +2227,17 @@ wherever a section's design speed has DRIFTED off the energy that
 actually reaches it — since v14.1 (D95, user rule) only ACROSS
 PIECE boundaries: same-piece continuation sections re-freeze
 vDesign to their real entry speed automatically after every
-compile (Coaster.reconcileChainedSpeeds, looped with the auto
+compile (Coaster.reconcileChainedSpeeds — its REAL-ANCHOR
+recognition is AMPLIFICATION-AWARE since v19.8, D237: a seam gap
+under 0.2 m/s can read OVER 0.2 at a slow crest (energy offset ÷
+2·vMin), and the old constant entry test snapped every such user
+resolution back onto the design chain — the unresolvable phantom
+of his "Conflict not getting resolved" file; the gate now scales
+by vTrue/vMin over the section's span, the same quantity the ≠v
+badge measures, flat sections bitwise-historic; the resolve ops
+anchor at the reconcile's own SEAM sample now = bitwise fixed
+points; refreezeSeamSpeed got the twin fix + the D198 [0.1,1e4]
+clamp; ConflictGate. Looped with the auto
 re-optimize pass in rebuildTrack — to QUIESCENCE since v18.25
 D197, cap 12 was a hard 3, and the reconcile CARRIES a
 just-rewritten predecessor's speed change through the frozen
@@ -2131,7 +2272,12 @@ sides' spans/lanes, matching units required on the far side; it
 used to clip to the active span, one half at a time)). Drifted sections'
 badges wear "≠v" (DRIFT_EPS 0.2 m/s on the span's first-sample
 speeds) and their badge-menu info line gains "· entered X m/s";
-lane + derived hover readouts append " (true …)" — value and
+lane + derived hover readouts append " (true …)" — inside a
+smoothed strict seam's window the split test reads the AUTHORED
+lane as reference since v19.7 (D236, smoothedWindowParts — shared
+with drawTrueStrokes; the compiled samples ARE the blend there,
+so the old derived-vs-true test hid the blended value without a
+≠v) — value and
 Shift-slope — once the curves visibly split. POV W/S rides at TRUE
 speed (the design-time advance scales by v_true/v_design at the
 current sample) and the stats-bar top speed reads Pass D; both are
@@ -2173,11 +2319,15 @@ whole converts, partial converts pin both halves). The
 (Coaster.transitionToReal resolve op existed briefly in-session
 and was removed unshipped, D102.)
 INFLUENCE (v15.0 D98, §5 round C — user re-spec 2026-07-11; speed
-semantics + roll removal v15.4 D102): a
+semantics + roll removal v15.4 D102; the ONE-PASS HYBRID model
+v19.7 D236 — user re-spec 2026-08-25): a
 force/geo badge menu's "Influence resulting geo/felt force graphs"
 gives the section OTHER-MODE DELTA LANES that ADD to its resulting
-graphs (resulting == base + delta EXACTLY — the compiler's two-pass
-integrates base+delta AS the other mode; see TrackCompiler above).
+graphs (resulting == base + delta EXACTLY — the deltas inject into
+the section's OWN solve per RK4 stage; see TrackCompiler above.
+Wherever the deltas sit at zero the section behaves EXACTLY per
+its original graphs — no residual laterals after a delta window,
+no leftover speed/orientation conflict, the D236 headline fix).
 Deltas exist for lanes 0/1 ONLY (force → Δpitch/Δyaw, geo →
 ΔGv/ΔGl; ROLL takes none — its button disables, its strip shows
 the dotted resulting roll read-only; lane 2 stays in the model +
@@ -2187,8 +2337,8 @@ instant-reconciliation silently closed the NEXT section's conflict,
 gated now): vAuthored just mirrors vDesign from then on
 (LaneSection.vDesign(v) syncs the pair through every consumer) and
 influenced sections join the D95 reconcile like normal ones
-(pinned still skips; the divergent-pair machinery in influencedLane
-survives for hand-edited files, gated). Fresh delta lanes hold a
+(pinned still skips; a hand-edited divergent pair is INERT since
+D236 — it compiles at vDesign, gated bitwise). Fresh delta lanes hold a
 node at 0 AND at the section end (flat zero line). The strip flips
 to the other mode's
 palette/units/snap (activeGeo() flips; lane buttons wear Δ, badge
@@ -2264,9 +2414,12 @@ stretch to the next boundary into a CONTROL (consuming its marks)
 and opens the SPEED CONTROL options (movable dark popup: Constant
 Speed | Constant Acceleration radios, Complex check, speed box +
 Max/Min checks — at least one always on — accel box, Start/Length
-spinners in native units, read-only "Start:"/"End:" speed readouts
-showing true when split (both since v18.7 D176; ONE row, Start
-first, since v18.8), Edit Speed/Accel button that expands the strip and nudges
+spinners in native units, read-only "Enter:"/"End:" speed readouts
+showing true when split (one row since v18.8; "Start" renamed
+"Enter" + made CLICKABLE in v19.8 D237 — click = target := enter
+speed, layout-stable hover outline + tooltip; complex SPEED
+controls keep a plain readout; fresh controls also START at the
+enter speed to TWO decimals now, was whole m/s), Edit Speed/Accel button that expands the strip and nudges
 the popup clear); the same clicks REOPEN it. Left-click selects
 (Delete removes — strip focus rules; spFocus), start-diamond drag
 MOVES, end-diamond drag RESIZES (complex graphs stretch along,
@@ -3147,8 +3300,9 @@ works in BOTH views since v17.7 — grayed only while it would
 duplicate the active section's own roll representation,
 resRollRedundant; resulting default scales match the lane
 defaults incl. ±5 °/m and ±90 bank)),
-POV, Append (no shortcut hints on buttons; the stats-bar shortcut
-hint died with the POV line, v17.11); the Resulting overlays span the whole
+Append (the toolbar POV button LEFT in v19.8, D237 — Space and
+the view-label dropdown are the surface; no shortcut hints on
+buttons); the Resulting overlays span the whole
 RUN since v13.11 (v10.8 made them ride-wide, but the global timeline
 continues into DETACHED pieces, whose curves bled in at the window's
 right edge — overlays, true strokes, their hover and the scale fit
@@ -3363,29 +3517,44 @@ lives in DECISIONS.md, not Help).
   excursion (κ·v²): widening the window is the fix, not a bug.
   Fit ops read through the smoothing (compileForFit); reversal
   deliberately captures the smoothed truth.
-- SPLITTING an INFLUENCED section is EXACT since v19.6 (D235 — the
-  SPLIT ANCHOR closed D234's proportional-tail corner; seam-class
-  whatever the deltas, InflSplitGate). The anchored RIGHT half's
-  vAuthored/vDesign pair is legitimately DIVERGENT (its vAuthored
-  is the parent ref's speed at the cut — the D102 mirror skips
-  anchored sections); divergent pairs still refuse MAKE-REAL
-  (whose cuts don't run the map) and their own further splits land
-  in the ~cm dur-rounding class instead of mm.
+- SPLITTING an INFLUENCED section is MACHINE-EXACT since v19.7
+  (D236 — the hybrid's Markov property; 1.4e-12 m gated, no anchor,
+  InflSplitGate). vAuthored is an INERT mirror everywhere — no
+  divergent-pair corners survive.
+- GLOBAL SPINNER STEP CONVENTIONS (v19.8, D237 — STANDING, every
+  spinner present and future; installed by numericEditor so
+  nothing can miss it): the scroll WHEEL steps any spinner by its
+  increment (always consumed), CTRL — wheel or arrow click —
+  steps at ONE TENTH, SHIFT SNAPS to the next round multiple of
+  the (possibly Ctrl-scaled) increment (0.435 → 0.5 → 0.6).
+  Plain arrow clicks keep the native auto-repeat; the Windows
+  Shift+wheel deltaX fallback is load-bearing; the 1-2-5 walkers
+  keep their series. The node editor's LiveNum boxes follow the
+  same rules (D225's Shift ×10 wheel superseded).
 - NEVER SHIP A CLICK THAT SILENTLY DOES NOTHING (v19.6, D235 —
   STANDING user rule): anything prevented must be GRAYED with a
-  short reason (≤6 words ideally, 10 max) — MenuItems carry a
-  "(reason)" parenthetical, Controls/rows take GraphEditor.grayHint
+  reason on HOVER — MenuItems use GraphEditor.grayItem since v19.7
+  (D236: an enabled CustomMenuItem holding a gray tooltip'd Label,
+  full-sentence reasons — the D235 "(reason)" parentheticals and
+  the shortWhy compressor are retired), Controls/rows take
+  GraphEditor.grayHint
   (String, live Supplier, or Node-row overloads); ops that can
   still fail at apply time post the full sentence on the stats
   bar. Pre-check menu items where a dry-run exists
-  (makeSmoothingRealWhy + the shortWhy compressor is the pattern).
+  (makeSmoothingRealWhy → grayItem with the full sentence is the
+  pattern).
 - TOOL-WINDOW BEHAVIOR RULES (v19.6, D235 — STANDING): every
   non-autohide Popup takes the pv focus-hide pattern (hide on app
   focus loss, return on refocus — pvPopup/spPopup/seamPopup are
-  the three copies); ALL open tool windows hide during fly/
-  captured-POV capture and return on release
-  (FvdDesigner.syncCaptureWindows). New windows must follow both
-  unless explicitly specced otherwise. Also: typed text NEVER
+  the three copies); during fly/captured-POV capture ALL open tool
+  windows STAY VISIBLE and live-updating since v19.8 (D237,
+  superseding the D235 hide: syncCaptureWindows wires each
+  window's scene with Cursor.NONE + mouse-move FORWARDING into
+  the capturing pane's flyLook — screen-coordinate math, so a
+  window under the warped hidden cursor no longer starves the
+  look — a right-click over one releases the capture,
+  presses/scrolls swallowed; release unwires). New windows must
+  follow both unless explicitly specced otherwise. Also: typed text NEVER
   fires actions — handleKey/forwardViewKey return early while a
   TextInputControl holds focus without a shortcut modifier.
 - REVERSING a TILTED piece (pitch/roll deltas ≠ 0) bakes the tilt
