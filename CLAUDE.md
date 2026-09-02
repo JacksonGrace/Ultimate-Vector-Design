@@ -16,7 +16,8 @@ The software numerically integrates those force targets into a 3D track. This
 is the core insight of the whole project: *the designer specifies what the
 rider feels; the geometry falls out of the physics.*
 
-Written in **Java 21 + JavaFX 21**, built with **Maven**.
+Written in **Java 26 + JavaFX 26** (pom.xml is the authority — an
+older doc line said 21), built with **Maven**.
 
 ## Build & run
 
@@ -26,9 +27,14 @@ mvn compile           # compile-only error check
 mvn clean             # nuke target/ if the build gets into a weird state
 ```
 
-- Main class: `coaster.FvdDesigner` (set in pom.xml's javafx-maven-plugin config).
+- Main class: `coaster.Main` since v19.12 (D241 — a plain launcher, set
+  in pom.xml's javafx-maven-plugin config): it sets `glass.win.uiScale`
+  from AppSettings.uiScale BEFORE the toolkit initializes (an
+  Application main class gets the toolkit pre-initialized before its
+  own main() runs, so the property would arrive too late) and then
+  launches `coaster.FvdDesigner`.
 - Sources live in `src/main/java/coaster/`. Every file starts with `package coaster;`.
-- JavaFX comes from Maven (`org.openjfx:javafx-controls:21.0.2`) — no SDK
+- JavaFX comes from Maven (`org.openjfx:javafx-controls:26`) — no SDK
   download, no `--module-path` flags. Do NOT launch via a plain `java` command
   or IDE run button; only `mvn javafx:run` sets up the JavaFX modules.
 
@@ -105,6 +111,18 @@ AppSettings.java    APP-WIDE PERSISTENT SETTINGS. Pure Java, no JavaFX.
                     Shortcut bindings + FOV in ~/.fvd-designer.properties
                     (combos are strings like "Ctrl+Z"; UI parses them).
                     Per-coaster settings do NOT go here — they go in .fvd.
+                    uiScale (v19.12, D241): the Resolution Scale factor
+                    RELATIVE to the OS display scale — 1.0 = never set
+                    the glass property = today bitwise; read by
+                    coaster.Main pre-toolkit, edited in Preferences >
+                    Resolution Scale… (restart-only by platform fact:
+                    glass.win.uiScale is consumed in WinApplication's
+                    clinit; a malformed value crashes startup, so Main
+                    sanitizes hard and multiplies by the AWT-read OS
+                    scale — the property REPLACES the OS scale).
+
+Main.java           THE LAUNCHER (v19.12, D241): plain class, does NOT
+                    extend Application — see Build & run.
 
 SpeedControl.java   SPEED CONTROLS (Phase 3, v18.0 D160). Pure Java.
                     One lift/brake/launch interval on a section's OWN
@@ -218,31 +236,63 @@ LaneSection.java    abstract base of the THREE-LANE modes (v10.0, D58):
                     D237 — the rollAbsolute twin for GEO lanes 0/1
                     under GLOBAL yaw/pitch, section field 10: lane
                     0 = the ELEVATION angle °, lane 1 = the HEADING
-                    ° — reported-left, SECTION-ENTRY-relative (the
-                    D199 heading-stripped generation; 0 = straight
-                    on) and unwrapped past ±180; elevation authors
-                    within ±90, a loop needs rate lanes.
+                    ° — reported-left, PIECE-relative since v19.9
+                    (D238 — 0 = the PIECE's entry heading, one
+                    continuous zero across the piece's chain like
+                    elevation/bank, = world heading for unrotated
+                    pieces; supersedes D237's section-entry-
+                    relative "always sets the entrance angle to
+                    zero") and unwrapped past ±180; elevation
+                    authors within ±90, a loop needs rate lanes.
+                    The lanes wear their OWN colors + names since
+                    D238 — Elevation deep cyan-blue rgb(40,150,200)
+                    / Heading YELLOW-GREEN rgb(180,225,45) since
+                    v19.10 (D239 — was amber) (ELEV/HEAD_
+                    ABS_COLOR, the BANK_COLOR pattern: curves,
+                    buttons, y-axis "Elevation"/"Heading"/"Bank",
+                    resulting overlays; the abs-roll button caption
+                    is "Bank" since D239 too). The "Yaw/pitch
+                    behavior" row's RATE radio grays under Force
+                    with a hover reason since D239 (Convert/Add/
+                    wizard/Resulting — the axis row's rule).
                     GeoIntegrator.projectYp targets the lane values
                     post-step — elevation about horizontal-right
                     FIRST, heading about world-Y second (preserves
                     the set elevation exactly), before the roll
                     blocks; slopes feed Ω per stage via omegaFor's
                     absTheta/absPsi; TrackCompiler.exactYp = the
-                    D121 knot-exact resample; SPLITS REBASE the
-                    heading lane at the cut (−value_at_cut, merges
-                    lift back — lossless round-trips; residual =
-                    the abs one-sided-Hermite ~1e-4 m class);
-                    converts extract entry-relative unwrapped
-                    heading and NEVER divide angle lanes by v (the
-                    D213 rule); influence refuses; B = the D120
-                    neighbor-side recipe (absYpTarget), refusals
-                    toward abs neighbors on every lane; the
+                    D121 knot-exact resample, then the D238 SHIFT
+                    (geoLane subtracts the section entry's piece-
+                    relative heading = the chain-psi difference —
+                    generation bits, so x/y/z + yaw moves stay
+                    bitwise-rigid and piece firsts are offset-0
+                    bitwise); SPLITS/MERGES WITHIN a piece carry
+                    lane values VERBATIM (D238 — the D237
+                    cut-rebase/lift pair is gone); splitPiece /
+                    reanchorAtBoundary REBASE moved lanes by the
+                    boundary's chain-psi delta (rebaseAbsHeading,
+                    2.8e-14 m gated); converts extract PIECE-
+                    relative unwrapped heading (ypHeadDeg
+                    reference through fitLanes; entry value lands
+                    in (−180,180]) and NEVER divide angle lanes by
+                    v (the D213 rule); influence refuses; B = the
+                    D120 neighbor-side recipe (absYpTarget) minus
+                    the piece reference, landing on absRep's
+                    PRINCIPAL representative (D238 — adjacent-node
+                    escape keeps deliberately out-of-range lanes'
+                    branch; supersedes D120's unwrap-to-edge-node;
+                    absRollTarget shares it), refusals toward abs
+                    neighbors on every lane; the
                     "Yaw/pitch behavior" row sits directly below
                     "Yaw/pitch axis" in Convert/Add/wizard,
-                    double-interlocked Geometric+Global; YpAbsGate.
-                    The Resulting-overlay settings deliberately
-                    have NO resYpAbs row — comps 1/2 are the
-                    shared overlay scale) + the
+                    double-interlocked Geometric+Global; YpAbsGate
+                    22. The Resulting settings DO have a
+                    "Yaw/pitch behavior" row since D238 (resYpAbs
+                    — force view + global axis; comps 1/2 show
+                    absolute elevation/piece-relative heading in
+                    degrees, own colors, no seam carets, ±90
+                    default; a rate roll then own-scales — the
+                    D214 inverse; two abs behaviors share)) + the
                     CROSS-RATE VIEW viewOtherRate (v16.7 D119,
                     COMPLETED v16.9 D121 as the user's actual spec:
                     a full edit-in-the-other-units warp — dispVal/
@@ -1294,8 +1344,25 @@ StartPanel.java     THE START SCREEN (v19.1 D226; reworked v19.2
                     back into the record). Modes NEW_COASTER
                     (File > New's first coaster, Coaster ▸ New
                     Coaster…) and FLOATING (⊕ > "Add floating
-                    section…", 5 m past the active piece's end at its
-                    heading + true speed). The wizard's record
+                    piece…" — renamed from "…section…" in v19.10
+                    D239 — 5 m past the active piece's end at its
+                    heading + true speed; a ZERO-piece coaster —
+                    its last piece moved away via Switch Coaster —
+                    shows a centered "Add Floating Piece" button
+                    over the blank plot instead (D239,
+                    GraphEditor.setEmptyPiece, synced by
+                    syncNoCoasterPanel + rebuildTrack), the same
+                    route into this wizard, whose no-piece fallback
+                    placement is origin / y 5 / 5 m/s — WORKING
+                    since v19.11 (D240: setActivePiece's bare
+                    same-index return skipped the lane re-point on
+                    a zero-piece coaster — NO_LANES stayed under a
+                    ForceSection and redraw threw before the panel
+                    could show; the guard now also requires
+                    app.lanes == lanesFor(...), the
+                    setActiveSection rule, and BezierBaker's
+                    rideEnd/bakeLane/evalPolyline no-op on empty
+                    lanes as hardening). The wizard's record
                     (FvdDesigner.WizardState) RIDES THE DOCUMENT
                     (DocState.wizard): every control change is a
                     document undo step through FvdDesigner.wizard*,
@@ -1316,8 +1383,13 @@ StartPanel.java     THE START SCREEN (v19.1 D226; reworked v19.2
                     rows own the piece, and the 3D gizmos write into
                     them LIVE (placementEdit ends with
                     wizardPanel.syncFromModel, D236). The editor pins
-                    minHeight to
-                    StartPanel.MIN_HEIGHT (240) while it shows
+                    minHeight to the panel's REAL pref height since
+                    v19.12 (D241 — max(MIN_HEIGHT 240, prefHeight):
+                    the fixed 240 dated from D232's 3-row grid; the
+                    D237/D238 rows grew content to ~279 px and the
+                    CENTERED title rendered half above the dark
+                    background — the content box is TOP_CENTER now
+                    so overflow can only ever eat the bottom)
                     (growEditorTo). Yaw/pitch/roll write BOTH tiers
                     (no lock conflict) — and the wizard PIECE
                     creates with shapeLocked=false + OPEN pitch/
@@ -1717,10 +1789,15 @@ breaks; the old SEAM_TRIM band collapsed with D207's span-clean
 rates, and the drawn sample loops are view-culled + pixel-column
 compacted since v18.36, D208 — ColPath, coverage identical; scale
 fitted to the visible window like a lane). Every
-wide-enough strip wears a force/geo/s-c BADGE at its top-left (type
+wide-enough strip wears a Force/Geo/S/C BADGE at its top-left (type
 indicator — HOVER-LIT since v19.1 D223, hoverBadge: brighter fill/edge
 + hand cursor, the seam-line pattern, so it reads as the button it
-is; ◀ = reversed-flag set + per-section menu: info line, SPLIT
+is; NEUTRAL GRAY again since v19.14 (D243 — the D241/D242 type
+colors REVERSED on user spec) but LIGHTER than the historic fill
+(56,62,76 / hot 84,92,112) with a THICKER edge (1.6 / 2.2 hot) so
+the button stands out; labels stay capitalized; the dirty-bridge
+warning colors kept; alphas 0.6/0.9/1.0 inactive/active/hover;
+◀ = reversed-flag set + per-section menu: info line, SPLIT
 PIECE BEFORE THIS SECTION (v12.0/1) and Delete section — the section-
 level REVERSED check moved to piece scope in v12.1 (Coaster menu >
 Reverse piece); the flag itself remains reversal's per-section
@@ -1731,7 +1808,9 @@ felt Gl negates, roll rate is traversal-invariant — §3's "roll flips"
 was corrected; lanes still edit in the AUTHORED direction while
 inactive strips/B-matching/'+' holds use the compiled curves).
 Delete section is disabled at
-one document section; downstream re-chains — EXCEPT deleting a
+the COASTER's only section (one piece, one section — wording fixed
+D239; other coasters in the file don't count); downstream
+re-chains — EXCEPT deleting a
 piece's FIRST section, which RE-ANCHORS the piece at the old
 section-0/1 boundary since v19.6 (D235, Coaster.reanchorAtBoundary
 — the splitPiece pose recipe on the existing piece: the remaining
@@ -1744,7 +1823,7 @@ its predecessor; one undo step; press rank nodes/knobs > '+' > badges
 > curve insert (D57). An open '+'/badge menu dismisses on the next
 graph click (JavaFX auto-hide misses the canvas — openMenu field).
 A dashed line + circled '+' past the ride
-end opens the add-section menu (+ "Add floating section…" since
+end opens the add-section menu (+ "Add floating piece…" since
 v19.1 D226 = the START SCREEN for a new detached piece, see
 StartPanel): ONE "Add force/geometric section…"
 item since v16.2 (D108) opening a DIALOG — type, domain (the new
@@ -1900,8 +1979,9 @@ straight/curve before/after +
 deletes (clean-release rule, right-drag still pans); Delete = remove
 selected element; A = append a straight; badge menu adds length/count
 info + "Append element". New elements default 2 m entry smoothing
-(SC_SMOOTH_DEFAULT) and GLOBAL 0 roll. The toolbar button is just
-"Append" (v11.1) — seconds on lane sections, elements on s/c (the
+(SC_SMOOTH_DEFAULT) and GLOBAL 0 roll. The toolbar button is
+"Append (A)" (v11.1; the live shortcut tag + short tooltip since
+v19.12 D241) — seconds on lane sections, elements on s/c (the
 tooltip carries both meanings). Lane buttons disable (mode 2), the plot shows
 FORCE view (felt G) so other strips/overlays/B-matching read
 generically; scales fit the derived curves; s/c strip layout uses the
@@ -2098,7 +2178,10 @@ exact exit TrackPose for this); the editor follows the edited
 section onto the new piece. '+' menu "Attach floating piece" appends
 another piece's sections to the active chain and dissolves it
 (placement discarded — attach MEANS continue, and stays first-class
-alongside future bridges per user); Coaster menu "Piece
+alongside future bridges per user; ABSOLUTE heading lanes REBASE
+into the target's frame since v19.9, D238 — world headings kept,
+the splitPiece rebase's exact inverse, un-strict + bridge-stitch
+ride the same attachPiece path); Coaster menu "Piece
 x/y/z" + "Piece yaw (°)" spinners edit the ACTIVE piece (yaw is a
 DELTA on top of baseOrient — zeroing it reverts to the natural
 orientation) and re-sync
@@ -2321,7 +2404,8 @@ and was removed unshipped, D102.)
 INFLUENCE (v15.0 D98, §5 round C — user re-spec 2026-07-11; speed
 semantics + roll removal v15.4 D102; the ONE-PASS HYBRID model
 v19.7 D236 — user re-spec 2026-08-25): a
-force/geo badge menu's "Influence resulting geo/felt force graphs"
+force/geo badge menu's "Influence geo/force graphs" (the
+resulting/felt qualifiers dropped in v19.15, D244)
 gives the section OTHER-MODE DELTA LANES that ADD to its resulting
 graphs (resulting == base + delta EXACTLY — the deltas inject into
 the section's OWN solve per RK4 stage; see TrackCompiler above.
@@ -2487,10 +2571,21 @@ renders TRANSPARENT to its run's end and the POV skips it both
 ways (D163). Badge menu "Set initial design speed…" (D162) types
 a section's starting speed directly — ride entry writes the
 Start-speed spinner, elsewhere pins as a deliberate conflict; its
-"Set Design to Real" button == the resolve op, which is
-RENAMED to match (both re-specced v19.5 D234: the resolve pair
+"Set Design to Real" button only FILLS THE BOX with the true
+seam speed since v19.11 (D240, user spec — Apply then commits;
+the read is the reconcile's D237 seam-sample anchor; Apply's
+clamp widened to [0.1, 1e4] per D198 so a near-stall fill
+round-trips) — and applying that fill UNMODIFIED runs the
+SPEED-ONLY resolve since v19.13 (D242, user re-spec of D241's
+full-resolve: Coaster.refreezeSpeedOnly — exact seam value,
+un-pinned so the speed follows the real flow, but an ORIENTATION
+conflict is left standing; with none it equals the badge menu's
+resolve op, which alone bakes tilt/follow via refreezeSpeed. A
+hand-typed value, even re-typed equal, still pins as a
+deliberate conflict; the ride entry keeps the spinner write). The resolve pair
 reads "Convert Real to Design (keep track shape)…" / "Set Design
-to Real (keep graphs, reshape)" — was "Make graphs real (keep
+to Real (keep graphs, reshape)" (re-specced v19.5 D234 — was
+"Make graphs real (keep
 shape)…" / "Set Design Speed to Real …"); the Add dialog's fork
 row reads "Initial design speed"
 with "Set to Real"; the horizontal Ripple check relabels
@@ -2588,14 +2683,27 @@ scope, then Type, Domain, Rate units, Yaw/pitch axis, Roll axis,
 Roll behavior (the CANONICAL row order, v17.6 D143; axis rows
 swapped v17.9 D146 — the Add-section dialog and the Resulting
 settings share it) — each
-row pre-set to the section's current value with ↺ reset buttons,
+row pre-set to the section's current value (the per-row ↺ resets
+are GONE since v19.9, D238 — the dialog matches the Add dialog's
+format; wireOriginal's orange changed-row dot remains, and the ↺
+keeps only its reset-to-a-SETTING homes: Snapping/Shortcuts/View
+sliders, color dialogs, Export, the strict-seam pop-out),
 any combination to any other, Part carries the choices into the
 split-line mode, influenced sections gray Part, reversed refuse;
 GRAYED choices wear a hover explainer since v16.10 D122 — how to
 un-gray, via GraphEditor.grayHint: disabled controls swallow mouse
 events, so the tip rides an enabled StackPane wrapper, installed
-only while disabled; the Add-section dialog's grays + padlocked
-speed field wear the same, ↺ buttons deliberately none):
+only while disabled AND left-aligned CENTER_LEFT since v19.9
+(D238 — StackPane's CENTER default let a fill-width VBox center
+the wrapped child against its siblings, the Resulting popup's
+drifted roll check; structural, all three overloads); the
+Add-section dialog's grays + padlocked
+speed field wear the same, ↺ buttons deliberately none; graying
+the Yaw/pitch-axis row under Force also DESELECTS Global → Local
+since v19.12 (D241, Add + Convert — the behavior row's Abs→Rate
+precedent: the dot sat on a choice that no longer applied; the
+wizard was already correct via its model round-trip; the
+Resulting dialog deliberately keeps its persisted pick)):
 the pre-v16.6 menu ended with a WHOLE + PART pair per target mode — "Convert to
 geo/force section" (bridges: "Convert whole bridge to …", which
 ATTACHES the next piece so the track stays connected — the v13.7
@@ -2607,8 +2715,10 @@ modes v14.0 D89) on the strip — highlight, a
 draggable vertical line (H_RESIZE, live "% of bridge/section"
 readout,
 5–95% + rate-fit margins), click a side to pick it (tint + brief
-flash; LEFT default), canvas chips [Convert left/right part] /
-[Cancel] apply. Cuts are EXACT-FRACTION since v14.0 (D89): the cut
+flash; LEFT default), TWO chip rows since v19.10 (D239, user
+spec): [Convert left/right part] TOGGLES the side (a second way
+to flip it), [Confirm] below applies, [Cancel] to its right
+closes. Cuts are EXACT-FRACTION since v14.0 (D89): the cut
 pose interpolates between samples at exactly frac·total
 (sampleAtArc/sampleAtTime — the old nearest-sample snap shifted
 cuts by up to half a sample, the user's "the length is getting
@@ -2622,7 +2732,10 @@ transition-blend + global-roll ease windows (Coaster.scCutClamp —
 the only regions where truncating elements would reshape).
 LANE/S-C partial (Coaster.partialConvertSection): the unconverted
 side keeps its original representation EXACTLY — lanes split by
-the de Casteljau identity (locks ride along), s/c elements by
+the de Casteljau identity (locks ride along), INCLUDING its
+axis/rate/behavior flags since v19.9 (D238 sweep find: only the
+domain copied since v16.x — a global/°/m/absolute section's kept
+half silently read as local °/s), s/c elements by
 length/angle arithmetic (the right half enters sharp) — and the
 downstream side's vDesign re-freezes to the design speed AT the
 cut (same energy expression ⇒ the kept shape continues exactly;
@@ -2690,9 +2803,18 @@ conversion re-applied
 LIVE per change against a restore of the pristine state
 (re-captured per restore — applyDocState ADOPTS snapshot
 objects), the ORIGINAL compiled curves dashed behind in lane
-colors (target-mode units), node-count readout; Apply pushes the
+colors (target-mode units — FULL sample density through ColPath
+since v19.11, D240: the old 400-point stride drew visible chords
+on long sections; captured once per open, view-culled per draw;
+the reversal guides share the fix), node-count readout; Apply
+pushes the
 pre-convert state as ONE undo step, Cancel restores it exactly;
-canvas presses are consumed while open (view pan/zoom live),
+canvas presses are consumed while open (view pan/zoom live) —
+EXCEPT lane-switch clicks since v19.11 (D240: a dimmed lane's
+node/curve inside the preview's own strip switches the VIEWED
+lane, read-only — the v16.7 1/2/3-key rule extended to the
+mouse; double-clicks stay consumed so the node editor can't open
+under a live preview);
 activation changes cancel, and ALL bound key actions are dead
 while the split line or preview is up (v14.4 — an open convert is
 an open gesture; POV/ortho view keys stay live). The popup is
@@ -2720,17 +2842,27 @@ only (the ride entry: piece 0, section 0); markers and 3D
 Ctrl+click-insert route through the piece + section
 containing the clicked ride time.
 Shift+click = multi-select (group drag clamps against non-selected
-neighbors, ignores ripple; Delete removes all; F with an adjacent PAIR
-selected straightens the segment between them onto the chord; Shift+F
-("alignLock") STRAIGHT-LOCKS it — Node.straightOut on the segment's left
+neighbors, ignores ripple; Delete removes all; F straightens EVERY
+segment between consecutive selected nodes onto its chord since
+v19.12 (D241 — chordSegment over the selectedPairs set; interior
+joints whose chords DISAGREE go honestly BROKEN FIRST, else the C1
+far-handle re-angle would overwrite the neighbor chord — exactly the
+snap-back the user hypothesized; agreeing collinear runs stay smooth;
+far-handle re-angles only at chain ends; locked segments skip; two
+adjacent nodes = the classic behavior bitwise; a SINGLE selected node
+straightens to its PREVIOUS node, section-firsts no-op); Shift+F
+("alignLock") STRAIGHT-LOCKS the same set — Node.straightOut on the segment's left
 node, enforced by enforceStraightLocks() at the top of every redraw
 (re-chords facing handles; smooth endpoints keep C1 unless that side is
 itself locked), drawn as TWIN 1px lines instead of the curve stroke;
 endpoints stay draggable (line follows); the FACING knobs are HIDDEN
 and unclickable since v10.4 (knobPos null — collinear control points
 make the cubic exactly the chord, so they do nothing); Shift+F
-with a lone endpoint selected unlocks (with pairs selected the
-pair-priority rule above applies) — a joint whose two sides sit at
+with a lone endpoint selected unlocks its locked neighbor(s), or —
+nothing adjacent locked — LOCKS the segment to the PREVIOUS node
+(D241; Shift+H mirrors: level the previous node onto this one and
+level-lock; the node right-click menu carries the "with previous"
+entries, D132 hide-inapplicable rule) — a joint whose two sides sit at
 DIFFERENT slopes comes out BROKEN (a kinked "smooth" node was a lie;
 matching slopes, e.g. insert-on-the-line then unlock, stay smooth);
 inserting on a locked segment
@@ -2756,16 +2888,74 @@ section, which must be on screen). The S-slide axis constraint anchors to the no
 position (snaps back onto the original row/column). After click-inserting a node, the first press prioritizes the node
 body over its own knobs (freshInsertPriority). `subHolder.setMinSize(0,0)` is
 load-bearing: without it the SubScene's min size stops the window/divider
-from shrinking and the collapse controls go off-screen. 3D view floor: static transparent
-reference grid (1 m lines, heavier every 10 m) at ABSOLUTE GROUND y=0 —
-Start y is height above ground (default 21 so the shipped layout keeps its
-old ~2 m clearance; tracks CAN dig below the grid); it fades
-over SIX concentric bands (minor lines gone past 120 m, majors past 240 m)
-onto a solid translucent sheet (600 m, 3 cm below the lines to dodge
-z-fighting) because JavaFX 3D lacks mipmaps and distant sub-pixel lines
-shimmer. LOD: the grid group follows the active camera (orbit pivot / fly
-pos / POV sample) in 10 m quantized steps, keeping full density around the
-viewer and the pattern world-aligned.
+from shrinking and the collapse controls go off-screen. 3D view floor: the
+ADAPTIVE reference grid at ABSOLUTE GROUND y=0 (Blender-style, v19.12
+D241; REBUILT on live feedback v19.13 D242, TUNED v19.14 D243 —
+Start y is height above ground, default 21; tracks CAN dig below
+it): THREE DECADE MESHES — the coarsest spacing is CAPPED at 100 m
+(D243, user spec: 1 m/10 m/100 m grids only; base ≤ 2) — ALL lines
+each (D241's skip-10th left multiples of the coarsest spacing incl.
+the origin lines drawn by NOBODY, and its skip slots only align
+under 10q translate quanta) × 15 GEOMETRIC alpha rings each (inner
+edges q·{0,1,1.35,…}, extent 64q). EVERY ring's strength is ONE
+pure function of its projected cell size × the GRAZING factor
+dRef/dist (Viewport3D.gridAlpha, with a high-side rolloff retiring
+a decade whose sparse cells pass ~150 px) × a WIDTH-COVERAGE
+attenuation (sub-pixel-wide quads rasterize as shimmering dash
+chains; sqrt-grazing, GRAZING-AWARE thresholds since D245 and
+HEIGHT-GATED since D246: the width floor slides 0.04 px steep →
+0.008 edge-on (cell fade-in start 0.8 → 0.09 px) via c = 1 −
+hf·(1−f) with f = ss(grazing/0.45) and hf = ss(dRef/70) — the
+long reach unlocks only as the eye RISES, because near the
+ground the deep-sub-pixel tail rasterized as whole lines popping
+in/out of the MSAA lattice (his "entire lines missing" flicker;
+the expand/contract is smoothstep-seamless, his suggested
+trade). A flat threshold drop was probed first: the FINEST
+decade became a mid-range speckle carpet; the far tail from
+height stays an accepted soft dashed haze) × a
+DENSITY gate ss(3·dRef/q − 0.3) (D243 — the 100 m grid
+appears only once the camera is well away; its close-up lines
+read massive before). hw = 0.015·q^0.6 (D243 exponent, D244
+halved); ring ladder to 384q with rings past the 5.5 km far
+clip never built (D245). The level cross-fade, radial fade
+and ortho behavior all emerge from that law — and the lens branch
+hides the line decades entirely under ORTHO (the 2D drawOrthoGrid
+canvas IS the grid there, its own alphas continuous per decade
+since D241/D242; the TOP view strokes WHITE like the 3D grid since
+D243, side views keep grey-blue). THREE D242 platform lessons (probe-proven, standing):
+(a) the 3D pipeline blends src·1 + dst·(1−α) — material alpha NEVER
+dims the source, so fades must PREMULTIPLY (diffuse = o·color at
+alpha o) and a zero-strength mesh must be setVisible(false), not
+alpha-0 (an α=0 quad renders its full source color); (b) translucent
+3D WRITES DEPTH and z-fights below the perspective depth resolution
+(~z²/(near·2²⁴)) — the whole grid + axisGroup render DepthTest.
+DISABLE at the FRONT of `world` (indices 0/1, built in the
+CONSTRUCTOR — empty coasters get a floor too): pure submission-order
+blending, sheet first, no depth writes (the track drawn later
+overdraws it; a below-ground camera never sees grid over track —
+accepted); (c) transparent 3D is NOT sorted — order is the scene
+graph's. Anchored on the CAMERA EYE per frame off the axes timer
+(updateFloorGrid — orbit rotate/zoom included; the old pivot-follow
+updateGridLOD sites are gone), per-decade translates quantized to
+the decade's OWN spacing q (10q parked the eye-centered alpha field
+up to 7q off and HOPPED it per step — D242's "grid vanishes"), base
+flips carry HYSTERESIS (up at upp>10^b, down at 0.5·10^(b−1); the
+swapped decade sits at strength 0 either way), strengths bucket at
+1/256. The ±3500 m single-quad sheet (inside the 5000 far clip — no
+far-plane cut line) follows the eye continuously, unquantized, and
+hides in SIDE ortho (edge-on it's a shimmering 1 px line). The
+MAIN AXES are the ONLY lines on the world zero lines since v19.14
+(D243, user spec): buildAxisMesh runs ±6.4 km from the camera
+anchor in a geometric segment ladder, each segment's half-width
+max(0.09, 0.0016·d) — ~1.5 px at its own distance AND wider than
+the 100 m decade's line wherever that decade shows, so the white
+zero lines beneath never peek out (the axes draw AFTER the grid,
+submission order) — strength fading smoothly to the far end;
+anchor quantized 30 m. Middle-clicking OUT of the TOP view drops
+the orbit pivot on the GROUND POINT under the cursor (D243 —
+XZ of the click, y = 0; the ortho-lens screen→world math).
+`-Dfvd.gridshot=<dir>` walks a pose ladder and snapshots the
+pane per pose — the grid's whole envelope in one run.
 Default keys (ALL rebindable via Edit > Shortcuts,
 persisted per-user): `1/2/3` lane select · click node = select + show handles
 · drag handle = length-only, `Shift` = angle · `B` smooth/broken (circle vs
@@ -2778,14 +2968,16 @@ live, v10.1; Ctrl while HOVERING snaps the dot in TIME per the
 horizontal snap reference — value stays on the curve — and the click
 inserts there; the dot hides where the snapped spot lacks INSERT_GAP
 room, shared insertRoomAt) · right-click a NODE (or selection) = its
-OPTIONS menu (v16.18, D130: Edit node…, smooth/broken — boundary
-match on edges — match-all, level, level-lock, straighten,
-straight-lock, SPLIT SECTION HERE, SPLIT TRACK PIECE HERE, CONNECT
+OPTIONS menu (v16.18, D130 — the SPLIT/CONNECT group sits DIRECTLY
+below "Edit node…" since v19.13, D242 user spec: Edit node…, then
+SPLIT SECTION HERE, SPLIT TRACK PIECE HERE, CONNECT
 WITH PREVIOUS/NEXT SECTION (v16.19 D131 — edge nodes facing a LIKE
 neighbor: same type/domain/axis flags; Coaster.mergeSections —
 matched seams merge losslessly, split→connect round-trips EXACTLY,
 gated 0.0 m; unmatched seam nodes take the AVERAGE value + averaged
-smooth handle slopes), delete;
+smooth handle slopes), then smooth/broken — boundary match on
+edges — match-all, level, level-lock, straighten, straight-lock,
+delete;
 LIVE shortcut labels in parentheses; inapplicable items are
 HIDDEN, not grayed, since v16.20 (D132 — the menu is what you can
 do HERE; Delete lost its redundant shortcut tag and never shows on
@@ -2802,7 +2994,9 @@ dotted hold — no nodes added; appended transitions get SINE handles, not
 cubic — only the shipped default layout keeps 1/3) ·
 `Space` POV cam — starts HANDS-OFF (W/S and the S slide key stay with the
 graph, so you can edit while watching); right-click the view CAPTURES the
-ride controls (mouse hidden, no mouse look): W/S ride at simulated speed,
+ride controls (mouse hidden AND CONFINED to the pane like fly since
+v19.11, D240 — flyLook's confine-only branch warps the cursor
+without moving the camera): W/S ride at simulated speed,
 Shift ×4, Ctrl ×0.25; A REVERSES the view — A again or D = forward,
 W/S keep their track direction, one applier with the View-menu check
 (v16.15); right-click releases; while captured, Space flips
@@ -2825,7 +3019,10 @@ ride position otherwise (was: always restarted at 0) ·
 `H` (action "flath") level the selection ONTO the main node — all
 selected nodes take selIdx's value with flat handles, one horizontal
 line; a single selected node just gets flat handles (v10.5 re-deal:
-this was Shift+H's move) ·
+this was Shift+H's move) — and a SECOND press on an already-flat
+node LEVELS it WITH the previous node since v19.12 (D241, value
+copy; third press exact no-op; section-firsts only flatten; a
+mid-drag broken-node H keeps its single-handle meaning) ·
 `Shift+H` (action "levelSel") LEVEL-LOCK the selection: level onto the
 main node, then the segments BETWEEN selected nodes hold HORIZONTAL via
 Node.levelOut — enforceLocks pins each right node's value to its
@@ -2859,10 +3056,40 @@ box applies at once through moveNode/handle writes, a blank box
 holds, each edit is a GLOBAL undo step with 0.8 s typing bursts
 coalesced per box, the node re-resolved BY INDEX per apply so Ctrl+Z
 leaves it live; boxes are GraphEditor.LiveNum = TextField + ▲/▼
-steppers + wheel Shift ×10 / Ctrl ×0.1) for transition time,
-transition Δ, and handle fractions (grey
+steppers + wheel per the D237 global spinner rules; NO Close
+button since v19.10 (D239 — Esc/Enter/X close, the grid's own
+padding is the bottom margin); ONE COLUMN throughout since v19.11
+(D240 — a broken node's slopes sit directly BELOW their handle
+lengths as "In slope"/"Out slope" rows, a section-EDGE node's
+single slope keeps the D239 "Handle slope" row); the handle
+boxes take the D240 EASE STOPS — see the spinner quirk) for
+transition
+time, transition Δ, and handle fractions (grey
 COMPUTED TWINS beside the fields update live as you type — the
-absolute axis position and the Δ from the previous node, v16.15;
+absolute axis position and the Δ from the previous node, v16.15 —
+and CLICKING a twin SWAPS which representation the box edits since
+v19.12 (D241, user spec: titles flip to "Absolute time (s)"/
+"Absolute position (m)" and the Δ form, the twin shows the other
+representation, snapping follows the box, applyPos
+converts back — abs mode maps warpInv(box − section start), delta
+mode adds the previous node's value; the speed-popup "Enter:"
+hover-outline pattern, constant transparent border; per-dialog-
+instance flags, reopening resets; node 0 has no twins; the
+undo-refresh hook re-seeds mode-aware and re-runs both twin fills,
+closing the old stale-twin corner). The VALUE row wears the LANE'S
+OWN quantity name since v19.13 (D242, user spec — laneQtyName:
+Vertical G / Lateral G / Roll / Pitch / Yaw / Bank / Elevation /
+Heading + the unit, EXCEPT "(g)" which the G names carry, D243;
+the click-swap delta title is "Δ " + the same,
+replacing "Change in value"; the influence surface prefixes its
+own Δ). The WHOLE dialog is LIVE-SYNCED since v19.14 (D243, user
+spec): a resync hook runs at the top of EVERY redraw
+(GraphEditor.redrawHooks — outside edits to the node, its
+handles, or the previous node update every box and twin in real
+time; a FOCUSED box is never overwritten mid-typing, undo
+restores force-overwrite, and LiveNum.set() no-ops on equal text
+so the steady state is free AND the ease-resume anchor survives
+— an unconditional write wiped it every redraw);
 typed
 fractions SLIDE the knob along its current line — dv scales with length,
 S-drag semantics; node 0's dialog also edits the START SPEED; labels are
@@ -2874,7 +3101,7 @@ has a movable pivot `camPivot` set to the point `zoom` m ahead of the fly
 camera; mutually exclusive with POV; TWO FOV settings — "POV" and
 "fly & orbit" (the handoff pair must share a lens or mode switches zoom-
 jump) — plus a fly mouse-sensitivity slider, all in
-Edit > Options; fly look deltas are capped ±35 px/event to tame OS pointer
+the View menu; fly look deltas are capped ±35 px/event to tame OS pointer
 acceleration, and measure from where the cursor ACTUALLY rests after
 each Robot warp — warpFlyCursor reads getMousePosition back, v16.10
 D122: the ideal subscene centre is fractional in screen coords while
@@ -2958,15 +3185,24 @@ FVD++ exporter format), rail-center-vs-heartline radios and a
 segment-length spinner, all persisted per-user in AppSettings; the
 explanation paragraph is GONE (user ask); spacing rounds to a whole
 number of equal segments; both formats negate Z for NL2's right-handed
-world — see D40/D201 before touching signs), Edit
-(Shortcuts dialog — TWO titled category columns since v10.3 (Graph
+world — see D40/D201 before touching signs), Edit (a D241
+"Preferences" rename was REVERSED in v19.13 D242, user spec —
+Shortcuts dialog — TWO titled category columns since v10.3 (Graph
 editor | View/File/History, ACTIONS carries the category as its 4th
 field); rebind by clicking + pressing a key, ↺ resets an edited
 binding to default; SNAPPING dialog — renamed from "Options" in
 v16.14 after the viewport rows left: snap steps (the v13.9
 bridge-optimizer rows were
 REMOVED in v13.10, D84 — internal constants again) and snap axis
-references; the POV graph marker is ALWAYS ON since v16.14), VIEW
+references; the POV graph marker is ALWAYS ON since v16.14;
+RESOLUTION SCALE… dialog (v19.12, D241): the Blender-style whole-UI
+factor — slider 0.75–1.75 snapped 0.05, ↺ at 1.0, "Applies at the
+next launch." (restart-only, a platform fact — see AppSettings/Main
+above) + an "Apply and Restart" button since v19.13 (D242, his
+"live like Blender?" ask — a true live apply is impossible:
+FvdDesigner.restartApp spawns a fresh JVM (same java/JVM args/
+classpath on coaster.Main) through the unsaved-changes gate and
+exits)), VIEW
 menu (v16.13, D125 — the v7.5
 "no View menu" verdict reversed on user spec, between Edit and
 Coaster: the "SHOW GIZMOS" row + inline axis dots are GONE since
@@ -3176,7 +3412,8 @@ are the surface) flips the translation arrows between world
 X/Y/Z and the entry frame's right/up/forward — rings keep the model
 Euler axes (a world-axis pitch/roll isn't representable in the
 delta model), and toggling never moves the track. VIEW-DIRECTION DIGITS `1`-`6` (v18.11, D182 — FIXED keys
-replacing T/Shift+T; 1 Front, 2 Back, 3 Right, 4 Left, 5 Top,
+replacing T/Shift+T; DROPDOWN-ORDER numbering since v19.13, D242:
+1 Top, 2 Front, 3 Back, 4 Right, 5 Left,
 6 Tangent to Selection; 1-5 only while a pane is captured or the
 mouse is over a VIEW — over the graph 1/2/3 stay lane switches —
 6 works from the graph too, aimed at the last-hovered pane) enter
@@ -3187,18 +3424,26 @@ preserved) remains the zoom/pan BOOKKEEPING, so every control is
 unchanged (the old "ParallelCamera can't do 3D" was JavaFX-8-era —
 26 honors camera transforms); side views draw a GROUND LINE at y=0
 and take the SUB-MODE dropdown (Front/Back/Right/Left/Tangent,
-v18.9 D180) — top snaps yaw to the nearest 90° (always grid-aligned), side
+v18.9 D180) — top enters at ONE FIXED orientation since v19.12 (D241,
+user spec: world Z up the screen, X right — as if tilted down from
+Front; the old nearest-90° yaw snap made the map depend on where the
+camera pointed), side
 centers the pivot on the SELECTED node's track point AND yaws the lens
 TANGENT to the track's heading there (perpendicular look direction,
 nearer of the two sides kept; no selection or vertical tangent = world
 X–Y elevation; D53) (selected markers
 draw white AND larger, 0.32 vs 0.22 m); RIGHT-drag pans in the view
 plane without exiting ortho (grab-style, world-units-per-pixel from the
-lens; right-click does NOT hand off to fly while ortho); same key
-restores the previous perspective view, orbiting away
-keeps the angles and restores the lens, scroll zooms multiplicatively
-while ortho, fly/POV entry auto-exits ortho, far clip 200000 while
-active. Toolbar "Resulting ▾" is a plain Button + ContextMenu (a
+lens; right-click does NOT hand off to fly while ortho); leaving for
+fly/orbit/POV — the same key, the view-list pick, or fly/POV entry —
+RESTORES the FULL pre-ortho perspective pose since v19.12 (D241:
+angles, zoom AND pivot via exitOrthoRestorePose + the savedPiv* stash;
+fly used to adopt the top-down direction, "fly lands where the top
+view was"); orbiting away still keeps the current angles (the
+deliberate adopt path); scroll zooms multiplicatively
+while ortho, far clip 200000 while
+active. The view-label dropdown wears shortcut tags since D241
+("(1)"…"(6)" fixed digits + the live POV binding). Toolbar "Resulting ▾" is a plain Button + ContextMenu (a
 MenuButton's arrow region broke the flat button look). Coaster (Heart
 spinner −3..3 default 1.0, Gauge spinner 0.3..2.5 default 1.0, Tie-spacing
 spinner 0.2..10 m default 1.0 (cross ties placed by arc length, flush with
@@ -3228,7 +3473,18 @@ undo step, the compile never reads the flag). While design ≠ real:
 a grey "Design orientation: pitch …° roll …°" readout sits under
 the spinners (designTiltLbl, synced per rebuild via
 syncDesignReadout) and ONE button line shows — "Design → Real
-Orientation" (design := true, shape re-solves at the real frame) /
+Orientation" (design := true, shape re-solves at the real frame —
+with ABSOLUTE lanes on the piece a DIALOG intervenes since v19.11,
+D240: absolute angles re-assert themselves whatever the entry
+frame, so the plain write SNAPPED the track back to the design
+shape (probed 28.9 m on his file); per absolute quantity the user
+picks Preserve (that snap, informed) or Convert — Coaster.
+designToRealConvert refits the chosen lanes from the CURRENT
+tilted compileForFit samples with the section's own flags + the
+D238 heading ref, installs only those lanes in place, then writes
+design := true; commits through the density preview, 0.40 m on
+his 37 m file at default density; GraphEditor.
+showDesignToRealDialog / FvdDesigner.designToRealDirect) /
 "Real → Design Orientation" (true := design, rigid un-rotation,
 chain carried back). Hidden for strict-seam followers (seam-owned);
 grayed under an optimize-orientation bridge (the march owns the
@@ -3291,7 +3547,8 @@ bank — persisted per-user (AppSettings resRateM/resRollG/resYpG/
 resRollAbs + resRoll; live-apply; supersedes v16.7's automatic
 °/m follow; resValueAt converts via worldRates/÷v/bankOfTU;
 check labels re-title via syncResChecks; the BANK overlay wears
-its own RED-ORANGE (BANK_COLOR rgb(235,70,45), v17.7 D144 —
+its own ORANGE (BANK_COLOR rgb(240,110,35) since v19.10 D239 —
+was the red-orange rgb(235,70,45), v17.7 D144 —
 REAL absolute-bank lanes wear it too since v17.9 D146, and the
 roll/bank overlay draws NO seam caret since v17.9; the Resulting
 popup DRAGS like the Track Piece panel, drag = hover-dismiss
@@ -3316,7 +3573,16 @@ DISPLAYS reported-left per D186; vertical track reads "—")
 corrected; refreshed per rebuild/ride frame/POV
 scroll; povTime persists across POV exits so the line stays live
 while editing, and the purple POV marker line on the graph draws
-ALWAYS now). The five coaster stats (ride time, track length,
+ALWAYS now). FIXED SLOTS since v19.10 (D239, user spec — no more
+horizontal jumping): the POV values render into per-field labels
+(buildPovRow/povSet) whose widths come from worst-case templates
+measured in the real font, values left-anchored, captions their
+own fixed labels; an extreme value RATCHETS its slot wider once
+for the session (never narrower) so overlap can't happen and
+nothing moves per frame. The row stacks over the plain statsLabel
+in one StackPane: ANY setText on statsLabel (refusal reasons,
+save/load lines — the bar is dual-duty) reclaims the bar until
+the next POV update, exactly the old clobber order. The five coaster stats (ride time, track length,
 height range, top speed, Gv range) moved to the Coaster menu's
 COASTER STATISTICS submenu (refreshed per open); the shortcut hint
 is gone entirely. While BRIDGE SETTINGS are edited, the POV
@@ -3333,14 +3599,14 @@ that broke on the user's 1080p screen once already.
 Features (`showHelpDialog` in Dialogs) must be updated with EVERY
 user-facing feature or control change, in its matching section, prioritizing
 non-obvious behavior. Do not ship a feature without touching it.
-REWRITTEN CONCISE in v17.16 (D157, user spec — it had grown into
-400-word wall-of-text rows): guidance for an fvd-literate user, terse
-helpKey rows grouped Getting started / Graph editor / Nodes / Handles /
-Sections / Straight-curve / Speed & conflicts / Pieces & strict seams /
-Bridges / 3D viewport / Menus & settings — NO version-number
-archaeology, no rationale narration; keep entries at ~3-4 lines and
-put new features in their section at that density (the changelog
-lives in DECISIONS.md, not Help).
+RE-REWRITTEN in v19.11 (D240, user spec, superseding D157's density):
+HALF the length, purely user-facing — say what things DO, never how
+they work inside; NO all-caps emphasis; DIAGRAMS where they teach
+faster than words (helpCanvas rows — the node/handles intro, the
+editor-landmarks map, smooth-vs-broken knobs, the pieces/run sketch,
+the gizmo). Keep new entries to a line or two in their section; the
+changelog lives in DECISIONS.md, not Help. (Canvas fillText cannot
+render ⊕/emoji glyphs — draw shapes, label with plain words.)
 
 ## Known quirks / accepted debts
 
@@ -3473,9 +3739,19 @@ lives in DECISIONS.md, not Help).
   v18.23 D194 — the old gate crawled a full design-sample past
   the zero point first) — the creep-through model + ghost track
   are the FINAL stall story (user decision, D195: no rollback
-  simulation). ROLL-ONLY
-  converts keep lanes 0/1 BIT-EXACT (D169 — only the roll lane
-  refits; the preview auto-selects it; gate 55j 3 mm).
+  simulation). PER-LANE convert preservation (v19.9, D238 —
+  generalizing D169's roll-only case, the user's verified theory):
+  a lane whose MEANING the requested flag flips don't touch keeps
+  its authored nodes BIT-EXACT — roll-only changes keep lanes 0/1
+  (D169, gate 55j 3 mm), yaw/pitch-only changes keep the roll
+  lane, rate-unit-only changes keep absolute-angle lanes (angles
+  aren't rates, D213); a FULLY IDENTICAL flag tuple preserves
+  NOTHING (the identity convert = the deliberate re-author-at-
+  density tool). Coaster.laneKeepMap/preserveLanes; the preview
+  auto-selects the first re-fitting lane; bakeAxes keys the map
+  off the fit's ACTUAL targets (fixes the D237 bug where a
+  roll-only bake on an abs-yp section shipped angle lanes into a
+  rate-flagged output).
 - ALL TOOL WINDOWS ARE MODELESS since v18.1 (D166 — viewport controls
   work with any window open; installViewKeys forwards ride keys from
   every secondary Scene; every numeric entry is digits+period only).
@@ -3521,28 +3797,80 @@ lives in DECISIONS.md, not Help).
   (D236 — the hybrid's Markov property; 1.4e-12 m gated, no anchor,
   InflSplitGate). vAuthored is an INERT mirror everywhere — no
   divergent-pair corners survive.
-- GLOBAL SPINNER STEP CONVENTIONS (v19.8, D237 — STANDING, every
-  spinner present and future; installed by numericEditor so
-  nothing can miss it): the scroll WHEEL steps any spinner by its
-  increment (always consumed), CTRL — wheel or arrow click —
-  steps at ONE TENTH, SHIFT SNAPS to the next round multiple of
-  the (possibly Ctrl-scaled) increment (0.435 → 0.5 → 0.6).
-  Plain arrow clicks keep the native auto-repeat; the Windows
+- GLOBAL SPINNER STEP CONVENTIONS (v19.8 D237, MODIFIERS SWAPPED
+  v19.12 D241 — STANDING, every value box present and future;
+  installed by numericEditor so nothing can miss it): the scroll
+  WHEEL steps any spinner by its increment (always consumed),
+  SHIFT — wheel or arrow click — steps at ONE TENTH, CTRL SNAPS
+  to the next round multiple of the (possibly Shift-scaled)
+  increment (0.435 → 0.5 → 0.6). Node/handle DRAGS keep their
+  historic Ctrl-snap — the D241 swap is value entry boxes only.
+  HOLD-TO-REPEAT everywhere since v19.11 (D240, STANDING): plain
+  arrows keep the native skin repeat; consumed MODIFIER presses
+  and LiveNum's ▲/▼ arm FvdDesigner.HoldRepeat at the native
+  cadence (immediate, 300 ms, then 60 ms; modifiers captured at
+  press; MOUSE_RELEASED/disable/scene-loss stop it — D237's "no
+  release handling needed" note is superseded). The Windows
   Shift+wheel deltaX fallback is load-bearing; the 1-2-5 walkers
   keep their series. The node editor's LiveNum boxes follow the
-  same rules (D225's Shift ×10 wheel superseded).
+  same rules — and its HANDLE boxes add EASE STOPS (D240):
+  stepping always stops on a named ease fraction (cubic 1/3, sine
+  0.3634, quintic 7/15, circle 0.5523) lying between the current
+  value and the step target; landing remembers the pre-stop grid
+  and the next step resumes it (0.31 → 0.333 → 0.36); a box
+  opened/typed ONTO an ease value steps to round multiples; on a
+  stop the field wears a soft blue ring + a name tag. A
+  stop within 5e-4 of the CURRENT value is SKIPPED (D241 — the
+  3-decimal render lands 0.333 just off the exact 1/3, and the
+  exact stop then sat between the box and every target: frozen; a
+  stop is an inserted snap point, never a wall). LAYOUT-NEUTRAL
+  since v19.13 (D242 — his screenshot): the ring is LAYERED
+  BACKGROUNDS, not a border (a CSS border joins the control's
+  layout insets — the D240 border grew the field 4 px on every
+  stop and shoved its arrows), and the tag is an UNMANAGED overlay
+  floating past the arrows over the empty gutter (any reserved
+  width held the grid column open and pushed the readout twins
+  right). D243 refinements: an unmanaged node is NEVER RESIZED by
+  its parent — without an explicit autosize() the tag stayed 0×0
+  and rendered nothing (the vanished-tag bug); the ring is 1 px
+  (half of D240) and a FOCUSED box adds an -fx-focus-color layer
+  at negative insets (outside the bounds, layout untouched) since
+  the ring style replaces the skin's own focus visuals. D244: the
+  tag re-places off the managed children's boundsInParent (the
+  layoutBounds listener fires BEFORE the first layout positions
+  them — the tag opened INSIDE the field) + a runLater pulse.
+  NEGATIVE-ZERO display rule (D244, re-specced D245 — standing):
+  FvdDesigner.z3 snaps only |v| < 1e-6 to +0.0 before formatting
+  (a flat handle's slope is inDv/effInDt with effInDt NEGATIVE —
+  ±0 numerators yield −0.0, and a typed 0 stores −0.0 back via
+  0·(−dt)); LARGER sub-display dust deliberately KEEPS its sign
+  ("-0.000" honestly means a-little-negative, user spec). Applied
+  in LiveNum.fmt, the dialog twins, the POV bar, hover/drag slope
+  readouts — use z3 for any new readout that can hit zero. Typed
+  values always apply at FULL precision (display-only rounding;
+  a stepper steps from the DISPLAYED text, so stepping after a
+  sub-display entry starts from the rounded value).
 - NEVER SHIP A CLICK THAT SILENTLY DOES NOTHING (v19.6, D235 —
   STANDING user rule): anything prevented must be GRAYED with a
   reason on HOVER — MenuItems use GraphEditor.grayItem since v19.7
   (D236: an enabled CustomMenuItem holding a gray tooltip'd Label,
   full-sentence reasons — the D235 "(reason)" parentheticals and
-  the shortWhy compressor are retired), Controls/rows take
+  the shortWhy compressor are retired; SELF-MEASURING left pad
+  since v19.10 D239: the skin puts CustomMenuItem content at the
+  bare left inset while native TEXT sits after the menu's
+  check/graphic COLUMN, which exists only in menus holding
+  Check/Radio rows — the badge menu — so a fixed pad is wrong in
+  either direction; the label measures a native sibling's x after
+  layout via a runLater hop and pads to match, pixel-exact both
+  menu kinds, MenuAlignProbe-verified), Controls/rows take
   GraphEditor.grayHint
   (String, live Supplier, or Node-row overloads); ops that can
   still fail at apply time post the full sentence on the stats
   bar. Pre-check menu items where a dry-run exists
   (makeSmoothingRealWhy → grayItem with the full sentence is the
-  pattern).
+  pattern). TOOLTIP ACCURACY is part of every change: a batch-24
+  audit of ~124 hover strings found 8 stale ones (D239) — update
+  the touched tooltips with the behavior they describe.
 - TOOL-WINDOW BEHAVIOR RULES (v19.6, D235 — STANDING): every
   non-autohide Popup takes the pv focus-hide pattern (hide on app
   focus loss, return on refocus — pvPopup/spPopup/seamPopup are
@@ -3553,8 +3881,22 @@ lives in DECISIONS.md, not Help).
   the capturing pane's flyLook — screen-coordinate math, so a
   window under the warped hidden cursor no longer starves the
   look — a right-click over one releases the capture,
-  presses/scrolls swallowed; release unwires). New windows must
-  follow both unless explicitly specced otherwise. Also: typed text NEVER
+  presses/scrolls swallowed; release unwires). HARDENED v19.11
+  (D240 — the user's cursor flashes): every NODE-level cursor in
+  a wired window is stashed + nulled (the TextField I-beam is CSS
+  and beats the scene NONE — the deepest non-null cursor wins,
+  and the cursor update runs outside the dispatch chain, so
+  consuming events can't stop it), resizable Stages go
+  non-resizable for the capture (native resize-border cursors),
+  Stages owned TRANSITIVELY by the main stage wire too (the
+  color picker owned by Rail Settings), windows opened
+  MID-CAPTURE wire via a Window-list watch (Ctrl+Z rebuilds the
+  seam pop-out, Ctrl+E opens Export), and the move filter
+  re-sweeps cursors every 25th event. CAPTURED POV also CONFINES
+  the mouse like fly since D240 (flyLook's confine-only branch
+  warps without moving the camera; both capture entries init the
+  Robot + center). New windows must follow all of this unless
+  explicitly specced otherwise. Also: typed text NEVER
   fires actions — handleKey/forwardViewKey return early while a
   TextInputControl holds focus without a shortcut modifier.
 - REVERSING a TILTED piece (pitch/roll deltas ≠ 0) bakes the tilt

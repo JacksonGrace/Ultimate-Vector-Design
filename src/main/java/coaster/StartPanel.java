@@ -211,12 +211,17 @@ final class StartPanel extends StackPane {
         VBox all = new VBox(8, title, cards, foot);
         all.setAlignment(Pos.TOP_LEFT);
         all.setMaxWidth(Region.USE_PREF_SIZE);
-        StackPane.setAlignment(all, Pos.CENTER);
+        // TOP_CENTER (D241): if the content ever outgrows the panel
+        // again, the overflow eats the bottom — never the title (the
+        // CENTER alignment pushed the title half above the dark
+        // background once the D237/D238 rows grew the grid)
+        StackPane.setAlignment(all, Pos.TOP_CENTER);
         getChildren().setAll(all);
     }
 
     /** The lane family's option rows (shown under the tiles once
-     *  Geometric/Force is picked; a Straight/Curve pick shows a note). */
+     *  Geometric/Force is picked; a Straight/Curve pick shows only
+     *  the size spinner — its note left in v19.13, D242). */
     private void buildLaneOptions() {
         ToggleGroup tg = new ToggleGroup();
         mForce = radio("Force", tg, true);
@@ -258,8 +263,11 @@ final class StartPanel extends StackPane {
             aRate.setSelected(true);
             muted = false;
         }
-        // absolute yaw/pitch needs Geometric + global (v19.8, D237)
+        // absolute yaw/pitch needs Geometric + global (v19.8, D237);
+        // the WHOLE behavior row grays under Force like the axis row
+        // (v19.10, D239 — user spec)
         boolean ypa = g && yGlobal.isSelected();
+        pRate.setDisable(!g);
         pAbs.setDisable(!ypa);
         if (!ypa && pAbs.isSelected()) {
             muted = true;
@@ -405,12 +413,9 @@ final class StartPanel extends StackPane {
                 distNow ? ws.lenDist() : ws.lenTime());
             typeOptions.getChildren().clear();
             if (ws.sc()) {
-                Label note = new Label(
-                    "A 10 m straight to begin with — edit it or append\n"
-                    + "elements once you're in.");
-                note.setTextFill(Color.rgb(170, 178, 200));
-                note.setStyle("-fx-font-size: 11px;");
-                typeOptions.getChildren().add(note);
+                // (the "A 10 m straight to begin with" note is GONE —
+                // v19.13, D242, user spec: no options for s/c, just
+                // the size spinner below)
             } else {
                 Section s = p.sections.isEmpty() ? null : p.sections.get(0);
                 if (s instanceof LaneSection ls) {
@@ -429,16 +434,20 @@ final class StartPanel extends StackPane {
                 javafx.scene.layout.GridPane og = new javafx.scene.layout.GridPane();
                 og.setHgap(10);
                 og.setVgap(5);
+                // the RIGHT column runs the canonical order —
+                // Yaw/pitch axis, Yaw/pitch behavior, Roll axis,
+                // Roll behavior (v19.9, D238: the D237 build parked
+                // "Yaw/pitch behavior" in the LEFT columns, which
+                // stretched the label column and left its "Rate"
+                // radio out of line — the user's report)
                 og.addRow(0, optLbl("Type", 0), optPair(mForce, mGeo),
                     optLbl("Yaw/pitch axis", 14), optPair(yLocal, yGlobal));
                 og.addRow(1, optLbl("Domain", 0), optPair(dTime, dDist),
-                    optLbl("Roll axis", 14), optPair(rLocal, rGlobal));
+                    optLbl("Yaw/pitch behavior", 14), optPair(pRate, pAbs));
                 og.addRow(2, optLbl("Rate units", 0), optPair(uSec, uMet),
-                    optLbl("Roll behavior", 14), optPair(aRate, aAbs));
-                // v19.8 (D237): the absolute yaw/pitch pick, below
-                // the Yaw/pitch axis column
-                og.addRow(3, optLbl("Yaw/pitch behavior", 0),
-                    optPair(pRate, pAbs));
+                    optLbl("Roll axis", 14), optPair(rLocal, rGlobal));
+                og.add(optLbl("Roll behavior", 14), 2, 3);
+                og.add(optPair(aRate, aAbs), 3, 3);
                 typeOptions.getChildren().add(og);
             }
         } finally {

@@ -29,7 +29,11 @@
         <artifactId>javafx-maven-plugin</artifactId>
         <version>0.0.8</version>
         <configuration>
-          <mainClass>coaster.FvdDesigner</mainClass>
+          <!-- coaster.Main (v19.12, D241): a plain launcher that sets
+               glass.win.uiScale BEFORE toolkit init — an Application
+               main class gets the toolkit pre-initialized before its
+               own main() runs, so the property would arrive too late -->
+          <mainClass>coaster.Main</mainClass>
         </configuration>
       </plugin>
     </plugins>

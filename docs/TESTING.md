@@ -3769,6 +3769,231 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     (DetermGates, Phase2/3, Domain, InflSplit, Mirror, YpAbs,
     Conflict, all suites).
 
+155. v19.9 (D238): batch 23. (a) PIECE-RELATIVE HEADING: author a
+    rate geo section turning left 40°, then an ABSOLUTE section
+    holding heading 40 — the track continues STRAIGHT at the world
+    40° (under D237 it turned another 40; YpAbsGate h1); the
+    absolute heading lane reads/writes the heading vs the PIECE's
+    entry everywhere (graphs, B, converts, '+' holds — a mid-piece
+    rate→abs convert's entry node reads ~the true incoming heading,
+    h4); piece x/y/z + yaw moves stay bitwise (h2); splitting the
+    PIECE re-zeroes moved lanes at the new entry, track put to
+    2.8e-14 m (h3/h3b); splits/merges WITHIN a piece carry values
+    verbatim now. (b) COLORS/NAMES: absolute elevation = deep
+    cyan-blue, heading = amber — curves, lane buttons ("Elevation"/
+    "Heading"), y-axis, node dialog, hover AND the resulting
+    overlays; the abs-bank y-axis says "Bank (°)" (was "Roll rate
+    (deg/s) (°)"). (c) RESULTING "Yaw/pitch behavior" row (below
+    the axis row, force view + global only): overlays show absolute
+    elevation/heading in degrees, ±90 default, own colors, no seam
+    carets; a rate roll then takes its own scale (the D214
+    inverse). (d) PER-LANE CONVERT PRESERVE: yp-only changes keep
+    the roll lane bit-exact, rate-unit-only changes keep absolute
+    lanes, roll-only keeps 0/1 (as before) — identity converts
+    still re-fit everything; the preview auto-selects the first
+    re-fitting lane; bakeAxes on an abs-yp section no longer copies
+    angle lanes into a rate output (pre-existing bug). (e) ±180
+    CONCRETE: B/creation land absolute values in (−180, 180]
+    unless the lane's adjacent node is deliberately out of range
+    (continuity wins); cross-seam 360-apart numbers still match
+    smoothly. (f) Convert dialog: no ↺ buttons, Add-dialog format;
+    wizard's "Yaw/pitch behavior" row sits aligned in the RIGHT
+    column; the Resulting popup's roll check left-aligns (grayHint
+    is CENTER_LEFT structurally). (g) PARITY SWEEP fixes: a
+    partial convert's KEPT half keeps its axis/rate/behavior flags
+    (they silently dropped since v16.x — cut an abs/global/°/m
+    section and check the kept half's badge + shape); attach /
+    un-strict / bridge-stitch / partial-bridge-right rebase moved
+    abs heading lanes (world headings preserved; split→attach
+    round-trips); abs-bank converts unwrap past ±180 (barrel
+    roll); the '+' hold copies a neighbor abs bank bitwise;
+    cross-piece strips/window-halves under an abs-yp surface draw
+    derived (no phantom frame offset). YpAbsGate 22; full battery
+    (32) green on wiped classes.
+
+156. v19.10 (D239): batch 24 — UI polish. (a) POV readouts: ride
+    the POV and watch the bottom line — values change without
+    anything shifting horizontally (fixed slots; sign flips and
+    digit changes stay inside their slot); force an extreme value
+    (a stall knot's spike) — its slot widens ONCE and stays.
+    Refusal reasons/save messages still take the bar and the next
+    POV frame takes it back. (b) Node editor: a section-EDGE
+    node's dialog shows "Handle slope" on its own aligned row (was
+    pushed right in the broken-node form); no Close button —
+    Esc/Enter/X close, no dead space at the bottom. (c) Part
+    convert: [Convert left/right part] toggles the side (click a
+    side still works), [Confirm] applies, [Cancel] right of it.
+    (d) Colors: Heading = yellow-green, Bank = orange (a bit less
+    red), and the lane button says "Bank" on abs-roll sections.
+    (e) Force sections gray the whole "Yaw/pitch behavior" row
+    (Rate incl.) in Convert/Add/wizard/Resulting. (f) ⊕ menu says
+    "Add floating piece…"; a coaster emptied via Switch Coaster
+    shows a centered "Add Floating Piece" button that opens the
+    same wizard. (g) grayItem rows align pixel-exact with native
+    menu text in BOTH menu kinds (the badge menu's check column
+    measured live; MenuAlignProbe diff 0.00 px on JavaFX 21+26).
+    (h) 8 stale tooltips corrected (see D239 item 10) — incl.
+    Delete section's "This coaster's only section". Battery (32)
+    green on wiped classes; devshot smoke clean.
+
+157. v19.11 (D240): batch 25. (a) DESIGN → REAL on his all-absolute
+    file: the button now opens the preserve/convert dialog —
+    Convert (default) keeps the on-screen shape (0.40 m over his
+    37 m at default density, was a 28.9 m snap; D2RFixProbe),
+    Preserve reproduces the old snap deliberately; rate-lane
+    pieces skip the dialog (they re-solve correctly, probed).
+    (b) HELP: half-length, what-not-how, no all-caps, four new
+    diagrams (landmarks map, smooth/broken, run sketch, gizmo) —
+    HelpShotProbe renders the full page. (c) The density preview:
+    click a dimmed lane to switch the viewed lane while it's open
+    (still read-only); the dashed originals draw at full sample
+    density (no more chords on long sections). (d) Captured POV
+    confines the mouse to the pane like fly (movement never moves
+    the camera). (e) "Add Floating Piece" on an emptied coaster
+    actually opens the wizard now (the setActivePiece stale-lanes
+    guard; empty-lane hardening in BezierBaker). (f) Hold ANY
+    spinner arrow (LiveNum's ▲/▼ and Ctrl/Shift-modified arrows
+    included) = steady repeat at the native cadence. (g) Handle
+    boxes stop on cubic/sine/quintic/circle between steps, resume
+    the pre-stop grid after, wear a blue outline + name tag on a
+    stop (fresh boxes on a stop step to round multiples).
+    (h) Broken-node editor: In/Out slope rows below their lengths,
+    one column. (i) No cursor flashes over tool windows during
+    capture (node cursors nulled, Stages non-resizable, mid-
+    capture windows wired; the OS title-bar arrow is the one
+    documented residual). (j) The initial-speed dialog's "Set
+    Design to Real" fills the box only; Apply commits (clamp
+    widened to [0.1, 1e4]). Battery (32) green on wiped classes.
+
+158. v19.12 (D241): batch 26. (a) The ADAPTIVE FLOOR GRID: four
+    decade meshes × ten alpha rings, every ring's alpha ONE pure
+    function of projected-cell-size × grazing (gridAlpha) — level
+    cross-fade, radial fade and the uniform ortho grid all emerge
+    from it; anchored on the camera EYE per frame (orbit rotate/
+    zoom finally move the grid; the 9 updateGridLOD call sites
+    retired). Verified live (PrintWindow captures): clean 10 m
+    field, smooth grazing fade, faint 100 m super-grid, no
+    speckle. Two dev-round root causes: alpha-0 quads still write
+    depth (they punched dotted holes in the sheet — invisible
+    rings now setVisible(false), sheet renders first) and
+    coplanar decades under different translates z-fight (stacked
+    4 mm apart). The 2D ortho overlay strokes three decades at a
+    continuous per-decade alpha — the 1 m ↔ 10 m level switch no
+    longer pops. (b) coaster.Main + Resolution Scale: probed —
+    glass.win.uiScale is consumed in WinApplication's clinit
+    BEFORE an Application main class's main() runs (setProperty
+    there is ignored; a malformed value crashes startup), so the
+    pom launches the plain Main launcher; factor is RELATIVE to
+    the OS scale (default 1.0 = property never set = bitwise
+    today); restart-only (probed: mid-session Stages keep the
+    boot scale). (c) Ctrl/Shift SWAPPED on all value boxes (Ctrl
+    snaps round multiples, Shift = tenths); drags keep Ctrl-snap.
+    (d) Ease stops no longer freeze (own-stop skipped within
+    5e-4; stops render 3 decimals); the ease tag has constant
+    width. (e) Single-node F/Shift+F/Shift+H pair with the
+    PREVIOUS node; H's second press levels with it; multi-node F
+    chords every selected pair, breaking disagreeing interior
+    joints FIRST (the old code was a hard ==2 gate; pairwise
+    chording would have snapped back via the C1 far-handle
+    re-angle, exactly his hypothesis). (f) Node-editor twins
+    click-swap the edited representation (absolute time / change
+    in value); reopening resets. (g) The initial-speed dialog's
+    unmodified "Set Design to Real" fill now commits through
+    refreezeSpeed == the badge resolve op (typed values still
+    pin). (h) Badges color-coded (blue/orange/purple) +
+    capitalized; Add/Convert yp-gray deselects Global→Local; the
+    wizard pins to its real pref height (title clipping fixed);
+    top view fixed at Z-up/X-right; ortho→fly restores the full
+    pre-ortho pose incl. pivot; view dropdown + Append wear
+    shortcut tags; Edit → Preferences; 14 tooltips + 4 grayHints
+    trimmed. Battery (32) green on wiped classes (model deltas:
+    AppSettings.uiScale + Main only).
+
+159. v19.13 (D242): batch 27 — the floor-grid REBUILD, probe-driven.
+    THREE platform facts pinned by a JavaFX pixel-probe (scratchpad
+    DepthProbe*, PNG evidence + javap corroboration): (a) prism's
+    3D translucency blends src·1 + dst·(1−α) — material alpha
+    NEVER dims the source (fades must premultiply; an α=0 quad
+    renders its full color); (b) translucent 3D writes depth and
+    z-fights below z²/(near·2²⁴) (probed 21-79% mis-ordered
+    overlap pixels at 300-1500 m for 4 mm/3 cm offsets);
+    DepthTest.DISABLE = pure submission order, NO depth read or
+    write; (c) transparent 3D is never sorted. Grid fixes on top:
+    per-decade translate quantum q (10q hopped the eye-centered
+    alpha field), skipTenth gone (i==0 was skipped by ALL decades
+    — origin lines drawn by nobody), width-coverage attenuation
+    (sub-pixel dash shimmer — his top-down patch reproduced in
+    the pose ladder), 15 geometric inner rings/extent 64q,
+    hysteresis, 1/256 buckets, constructor-built grid (empty
+    coasters had none), ortho hides the 3D lines (the 2D overlay
+    is the grid), ±3500 m eye-following sheet (far-clip cut +
+    annulus terracing both rejected on visuals). Verified over
+    NINE -Dfvd.gridshot pose-ladder rounds + live PrintWindow.
+    Also: refreezeSpeedOnly (the initial-speed dialog's Apply is
+    speed-only now — orientation conflicts stay; ConflictGate
+    unchanged, resolve-op path bitwise via factoring), Apply-and-
+    Restart (RuntimeMXBean-reconstructed relaunch through the
+    unsaved gate), Edit-menu revert, dropdown-order view digits,
+    lane-named value rows, layout-neutral ease stops (background
+    ring + unmanaged tag), split group under Edit node…, badge
+    desaturation, wizard s/c note removed. Battery (32) green on
+    wiped classes.
+
+160. v19.14 (D243): batch 28 — grid tuning on his "glitchiness
+    gone" verdict. Coarsest decade capped 100 m; hw q^0.6; density
+    gate ss(3·dRef/q − 0.3) delays the 100 m grid until the camera
+    is out; width attenuation relaxed (sqrt-grazing, 0.2/0.7 px)
+    so grids reach much further; axes rebuilt as the ONLY zero
+    lines (±6.4 km ladder, half-width max(0.09, 0.0016·d) covers
+    the white lines beneath, smooth far fade); top-view middle-
+    click drops the orbit pivot on the ground point under the
+    cursor; top-ortho overlay white. Node editor: live resync per
+    redraw (focused boxes protected; LiveNum.set equal-text no-op
+    preserves the ease anchor), "(g)" dropped from G rows, ease
+    tag fixed (UNMANAGED NODES ARE NEVER RESIZED — autosize or
+    they render 0×0; a lesson), 1 px stop ring + negative-inset
+    focus layer. Badges back to neutral gray (lighter + thicker
+    edge). Verified via gridshot ladder + devshot; no model-layer
+    changes (DetermGate197/199 + CoreCheck + ConflictGate smoke).
+
+161. v19.15 (D244): batch 29. Grid ×5 reach at half width (hw
+    0.015·q^0.6, width thresholds 0.04/0.16 px, cell fade-in from
+    0.8 px, ring ladder to 128q — the reach outran the 64q edge);
+    gridshot-verified (near-horizon 10 m field, full-frame even
+    100 m straight down). Ease tag placed right on FIRST open
+    (children's boundsInParent fire after positioning; the
+    layoutBounds listener fired before it — plus a runLater
+    pulse). "-0.000" eliminated: FvdDesigner.z3 snaps
+    renders-as-zero values to +0.0 (the slope's −0.0 comes from
+    inDv/effInDt with effInDt NEGATIVE; typing 0 stored −0.0 back
+    via 0·(−dt); the D243 live resync was why it appeared only
+    after a mouse move) — applied in LiveNum.fmt, the dialog
+    twins, the POV bar (angTxt showed "(-0.000°/s)"), hover/drag
+    slope readouts. Influence items retitled "Influence geo/force
+    graphs". No model changes (DetermGate197 + CoreCheck smoke).
+
+162. v19.16 (D245): batch 30. z3 threshold 5e-4 → 1e-6 — dust ≥
+    1e-6 keeps its sign ("-0.000" = honestly a-little-negative,
+    user spec; display-only, fixed slots → sign flicker moves no
+    layout; typed sub-display values apply at full precision).
+    Grid reach ×3 via GRAZING-AWARE gates (f = ss((dRef/dist)/
+    0.45): width floor 0.04→0.008 px, cell fade-in 0.8→0.09 px;
+    ladder 384q, far-clip-capped rings) — a flat threshold drop
+    was probed first and rejected: it turned the finest decade
+    into a mid-range speckle carpet (same px regime as the wanted
+    far tail; viewing angle is the discriminator). Gridshot
+    ladder green; no model changes.
+
+163. v19.17 (D246): batch 31 — the low-height flicker. Root:
+    deep-sub-pixel line quads land on or miss the MSAA sample
+    lattice whole-line-at-a-time (entire lines missing when
+    stopped; motion slides the phase = flicker; alpha can't fix
+    rasterization coverage). Fix: reach HEIGHT-GATED — c = 1 −
+    hf·(1−f), hf = ss(dRef/70): clean short field below ~20 m,
+    full D245 horizon reach by ~70 m, smoothstep-seamless both
+    ways (his suggested trade). Mid-orbit pose pixel-identical to
+    D245; low-graze contracts clean. No model changes.
+
 
 ## Debugging heuristics learned the hard way
 

@@ -147,6 +147,8 @@ class Viewport3D {
     boolean orthoView = false;
     boolean orthoTop = false;              // which preset is active
     double savedYaw, savedPitch, savedZoom; // perspective pose to restore
+    double savedPivX, savedPivY, savedPivZ; // + its pivot (D241 — ortho
+                                            // pans must not relocate fly)
     double lastMouseX, lastMouseY;
     boolean worldCentered = false;
     Group gridGroup;                    // floor grid, recentered on the camera (LOD)
@@ -228,8 +230,21 @@ class Viewport3D {
         // povHolder lives inside `world` so the centering translate applies
         // to the POV camera exactly as it does to the track mesh; the
         // fixed-size reveal balls are part of the TRACK layer (v18.17,
-        // D188 — normal depth, occludable like any track geometry)
-        world.getChildren().addAll(trackGroup, povHolder, trackBallGroup);
+        // D188 — normal depth, occludable like any track geometry).
+        // The FLOOR GRID + MAIN AXES lead the child list since v19.13
+        // (D242): created HERE — not in the first non-empty rebuild,
+        // which left empty coasters and fresh panes with NO grid at
+        // all — and DEPTH-DISABLED (see updateFloorGrid: pure
+        // submission-order blending, no depth writes — the fix for
+        // the depth-noise flashing between the grid's own layers).
+        gridGroup = new Group();
+        gridGroup.setMouseTransparent(true);
+        gridGroup.setDepthTest(javafx.scene.DepthTest.DISABLE);
+        axisGroup = new Group();
+        axisGroup.setMouseTransparent(true);
+        axisGroup.setDepthTest(javafx.scene.DepthTest.DISABLE);
+        world.getChildren().addAll(gridGroup, axisGroup,
+            trackGroup, povHolder, trackBallGroup);
         this.povHolder = povHolder;
         root3D = new Group(world, cameraRig, flyHolder, ambient, sun);
 
@@ -283,7 +298,15 @@ class Viewport3D {
                     moveKeys.clear();
                     sub.setCursor(povCaptured ? Cursor.NONE : Cursor.DEFAULT);
                     // one capture across all panes (v18.10)
-                    if (povCaptured) app.releaseOtherCaptures(this);
+                    if (povCaptured) {
+                        app.releaseOtherCaptures(this);
+                        // CONFINE like fly (v19.11, D240): warp to
+                        // center so the hidden cursor can't leave
+                        // the pane until the next right-click (the
+                        // pane may never have flown — init the Robot)
+                        if (flyRobot == null) flyRobot = new Robot();
+                        centerFlyCursor();
+                    }
                     syncPovLabel();   // the "(A)" hint is capture-only
                     app.syncCaptureWindows();   // D235: tool windows
                                                 // hide while captured
@@ -390,8 +413,27 @@ class Viewport3D {
             // stale delta (jump bug)
             if (!e.isMiddleButtonDown()) return;
             // rotating away from a snapped ortho view returns to the
-            // perspective lens but keeps the current angles
-            if (orthoView) exitOrthoKeepView();
+            // perspective lens but keeps the current angles — and
+            // from the TOP view the orbit pivot lands on the GROUND
+            // POINT under the middle-click (v19.14, D243, user spec:
+            // XZ of the cursor, y = 0), so orbiting starts around
+            // what you grabbed
+            if (orthoView) {
+                if (orthoTop) {
+                    double u = orthoUpp();
+                    double yawR = Math.toRadians(camYaw.getAngle());
+                    double cy = Math.cos(yawR), sy = Math.sin(yawR);
+                    double offR = (e.getX() - sub.getWidth() / 2) * u;
+                    double offD = (e.getY() - sub.getHeight() / 2) * u;
+                    // right = {cy,0,−sy}, top-view down = {−sy,0,−cy}
+                    camPivot.setX(camPivot.getX()
+                        + offR * cy + offD * -sy);
+                    camPivot.setZ(camPivot.getZ()
+                        + offR * -sy + offD * -cy);
+                    camPivot.setY(0);
+                }
+                exitOrthoKeepView();
+            }
             // orbit shares the mouse-sensitivity setting (fly's 0.15 default
             // maps to the original 0.3 orbit feel via the 2x factor)
             double s = app.settings.flySens() * 2;
@@ -412,7 +454,6 @@ class Viewport3D {
                 flyPos.setX(flyPos.getX() + fwd.getX() * d);
                 flyPos.setY(flyPos.getY() + fwd.getY() * d);
                 flyPos.setZ(flyPos.getZ() + fwd.getZ() * d);
-                updateGridLOD(flyPos.getX() + gridCamX0, flyPos.getZ() + gridCamZ0);
             } else if (povActive) {
                 // burst move along the TRACK (fast, like fly-mode scroll)
                 if (app.lastSamples == null || app.lastSamples.isEmpty()) return;
@@ -503,7 +544,6 @@ class Viewport3D {
                 // quantize-to-sample camera stepped visibly at slow
                 // ride speeds, the user's "jittering" with Ctrl)
                 applyPovCamera(povPoseAt(app.povTime));
-                updateGridLOD(app.lastSamples.get(idx).pos().x(), app.lastSamples.get(idx).pos().z());
                 app.updatePovStats();   // live POV line (v17.11)
                 // the editor FOLLOWS the ride across pieces (v13.11,
                 // user spec: the piece you're on is the one you're
@@ -543,7 +583,6 @@ class Viewport3D {
                 flyPos.setX(flyPos.getX() + (fwd.getX() * f + right.getX() * r) * speed);
                 flyPos.setY(flyPos.getY() + (fwd.getY() * f + right.getY() * r) * speed);
                 flyPos.setZ(flyPos.getZ() + (fwd.getZ() * f + right.getZ() * r) * speed);
-                updateGridLOD(flyPos.getX() + gridCamX0, flyPos.getZ() + gridCamZ0);
                 positionGizmo();   // gizmos stay visible in fly (v16.12)
             }
         };
@@ -667,7 +706,6 @@ class Viewport3D {
         camPivot.setX(camPivot.getX() - (right.getX() * dx + down.getX() * dy) * upp);
         camPivot.setY(camPivot.getY() - (right.getY() * dx + down.getY() * dy) * upp);
         camPivot.setZ(camPivot.getZ() - (right.getZ() * dx + down.getZ() * dy) * upp);
-        updateGridLOD(camPivot.getX() + gridCamX0, camPivot.getZ() + gridCamZ0);
         positionGizmo();
     }
 
@@ -803,7 +841,6 @@ class Viewport3D {
         camPivot.setX(sceneP.getX());
         camPivot.setY(sceneP.getY());
         camPivot.setZ(sceneP.getZ());
-        updateGridLOD(p.x(), p.z());
     }
 
     /** DOUBLE-click the track (v16.12 — was Ctrl+click): insert a node
@@ -856,32 +893,33 @@ class Viewport3D {
             savedYaw = cm[3];
             savedPitch = cm[4];
             savedZoom = z;
+            savedPivX = camPivot.getX();   // the applied pose supersedes
+            savedPivY = camPivot.getY();   // the ortho-entry stash (D241)
+            savedPivZ = camPivot.getZ();
         } else {
             camYaw.setAngle(cm[3]);
             camPitch.setAngle(cm[4]);
             camZoom.setZ(z);
         }
-        // the LOD floor grid FOLLOWS the camera — but only through
-        // the move handlers; a programmatic jump (load restore, New
-        // framing, Add View centering) left it wherever the last
-        // rebuild parked it, up to "no grid at all" past its 240 m
-        // fade (v18.46, D218 — the user's empty-floor new pane)
-        updateGridLOD(cm[0], cm[2]);
+        // (the floor grid needs no nudge here since v19.12, D241 —
+        // updateFloorGrid re-anchors it on the eye every frame, which
+        // also retired the whole D218 "programmatic jump left the
+        // grid parked" class)
     }
 
     private void orthoEnter(boolean top) {
         if (flyActive || povActive) return;
         if (orthoView && top && orthoTop) {   // T again in top view: exit
-            camYaw.setAngle(savedYaw);
-            camPitch.setAngle(savedPitch);
-            camZoom.setZ(savedZoom);
-            exitOrthoLens();
+            exitOrthoRestorePose();
             return;
         }
         if (!orthoView) {
             savedYaw = camYaw.getAngle();
             savedPitch = camPitch.getAngle();
             savedZoom = camZoom.getZ();
+            savedPivX = camPivot.getX();   // full pose (D241): ortho
+            savedPivY = camPivot.getY();   // pans/centers must not move
+            savedPivZ = camPivot.getZ();   // the restored fly/orbit view
             // same apparent size: visible height = 2·d·tan(fov/2)
             double scale = Math.tan(Math.toRadians(app.settings.flyFov() / 2))
                          / Math.tan(Math.toRadians(ORTHO_FOV / 2));
@@ -901,9 +939,13 @@ class Viewport3D {
         orthoTop = top;
         syncViewMode();
         if (top) {
-            // plan view LOCKS to the grid: yaw snaps to the nearest 90°
+            // plan view at ONE fixed orientation since v19.12 (D241,
+            // user spec): always as if tilted down from the FRONT
+            // view — world Z up the screen, X right (the old
+            // nearest-90° yaw snap made the map's orientation depend
+            // on where the camera happened to point)
             camPitch.setAngle(-90);
-            camYaw.setAngle(Math.round(camYaw.getAngle() / 90.0) * 90);
+            camYaw.setAngle(0);
         } else {
             applySideMode();
         }
@@ -987,7 +1029,6 @@ class Viewport3D {
         camPivot.setX(sceneP.getX());
         camPivot.setY(sceneP.getY());
         camPivot.setZ(sceneP.getZ());
-        updateGridLOD(p.x(), p.z());
     }
 
     /** Leave the ortho lens but KEEP the current view direction (used when
@@ -1008,6 +1049,22 @@ class Viewport3D {
         if (sub.getCamera() == orthoCam) sub.setCamera(orbitCam);
         syncViewMode();
         refreshGizmo(false);   // scale + arrows follow the restored lens
+    }
+
+    /** Leave ortho and RESTORE the full perspective pose saved at
+     *  ortho entry — angles, zoom AND pivot (v19.12, D241, user spec:
+     *  every ortho→fly/orbit transition returns to where the camera
+     *  was BEFORE ortho, never to the top/side direction; the pose
+     *  is the entry stash, or applyCameraWorld's if one landed since). */
+    void exitOrthoRestorePose() {
+        if (!orthoView) return;
+        camYaw.setAngle(savedYaw);
+        camPitch.setAngle(savedPitch);
+        camZoom.setZ(savedZoom);
+        camPivot.setX(savedPivX);
+        camPivot.setY(savedPivY);
+        camPivot.setZ(savedPivZ);
+        exitOrthoLens();
     }
 
     /** Keep the true-ortho ParallelCamera glued to the orbit rig
@@ -1041,7 +1098,8 @@ class Viewport3D {
     void togglePov() {
         if (!povActive) {
             if (app.lastSamples == null || app.lastSamples.isEmpty()) return;
-            if (orthoView) exitOrthoKeepView();   // orbit must be sane on exit
+            if (orthoView) exitOrthoRestorePose();   // D241: back to the
+                                                     // pre-ortho orbit pose
             boolean keepCapture = flyActive;   // Space mid-flight keeps capture
             if (flyActive) toggleFly();        // hand the camera over cleanly
             povActive = true;
@@ -1066,6 +1124,10 @@ class Viewport3D {
             if (povCaptured) {
                 sub.setCursor(Cursor.NONE);
                 app.releaseOtherCaptures(this);   // one capture (v18.10)
+                // continuous confinement across the fly→POV flip
+                // (v19.11, D240 — flyLook's confine-only branch)
+                if (flyRobot == null) flyRobot = new Robot();
+                centerFlyCursor();
             }
             if (heartMesh != null) heartMesh.setVisible(false);
             if (combGroup != null) combGroup.setVisible(false);
@@ -1110,7 +1172,8 @@ class Viewport3D {
     void toggleFly() {
         if (povActive) return;
         if (!flyActive) {
-            if (orthoView) exitOrthoKeepView();   // hand off a sane pose
+            if (orthoView) exitOrthoRestorePose();   // D241: fly starts at
+                                                     // the pre-ortho pose
             flyActive = true;
             app.releaseOtherCaptures(this);   // one capture (v18.10)
             // seamless handoff: adopt the orbit camera's current pose
@@ -1145,7 +1208,6 @@ class Viewport3D {
             camYaw.setAngle(flyYaw.getAngle());
             camPitch.setAngle(flyPitch.getAngle());
             sub.setCamera(orbitCam);
-            updateGridLOD(camPivot.getX() + gridCamX0, camPivot.getZ() + gridCamZ0);
         }
         refreshGizmo(false);   // gizmos STAY in fly (v16.12) — rescale
         app.syncCaptureWindows();   // tool windows hide while captured
@@ -1166,7 +1228,12 @@ class Viewport3D {
     private double flyRestX = Double.NaN, flyRestY;
 
     void flyLook(MouseEvent e) {
-        if (!flyActive) return;
+        // captured POV CONFINES the mouse exactly like fly since
+        // v19.11 (D240, user spec) — same warp machinery, but mouse
+        // movement never moves the camera (orientation follows the
+        // track)
+        boolean confineOnly = povActive && povCaptured;
+        if (!flyActive && !confineOnly) return;
         Point2D c = sub.localToScreen(sub.getWidth() / 2, sub.getHeight() / 2);
         if (c == null) return;
         double rx = Double.isNaN(flyRestX) ? c.getX() : flyRestX;
@@ -1178,10 +1245,14 @@ class Viewport3D {
         double dx = FvdDesigner.clamp(e.getScreenX() - rx, -35, 35);
         double dy = FvdDesigner.clamp(e.getScreenY() - ry, -35, 35);
         if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;  // our own warp event
-        flyYaw.setAngle(flyYaw.getAngle() + dx * sens);
-        flyPitch.setAngle(FvdDesigner.clamp(flyPitch.getAngle() - dy * sens, -89, 89));
+        if (!confineOnly) {
+            flyYaw.setAngle(flyYaw.getAngle() + dx * sens);
+            flyPitch.setAngle(FvdDesigner.clamp(flyPitch.getAngle() - dy * sens, -89, 89));
+        }
         warpFlyCursor(c);
-        positionGizmo();   // depth-based scale follows the look (v16.12)
+        if (!confineOnly) {
+            positionGizmo();   // depth-based scale follows the look (v16.12)
+        }
     }
 
     /** Re-aim the parked POV camera immediately (v16.15 — the A/D
@@ -1408,21 +1479,10 @@ class Viewport3D {
                 new Translate(-mid.pos().x(), 0, -mid.pos().z()));
             gridCamX0 = mid.pos().x();   // scene coords + this = world coords
             gridCamZ0 = mid.pos().z();
-            // transparent reference grid at ABSOLUTE GROUND LEVEL y=0 (it
-            // used to sit just under the track's lowest point — now Start y
-            // IS height above ground; tracks may dig below it); its XZ
-            // position follows the camera in 10 m steps so full line density
-            // is always around the viewer (LOD)
-            gridGroup = buildGrid(0);
-            world.getChildren().add(gridGroup);
-            // the MAIN X / Z axes (v19.2, D229; camera-faded LOD
-            // segments since D232 — the fixed quads shimmered far
-            // away): world-fixed lines through the origin in the
-            // gizmo colors, populated by updateGridLOD
-            axisGroup = new Group();
-            axisGroup.setMouseTransparent(true);
-            world.getChildren().add(axisGroup);
-            updateGridLOD(mid.pos().x(), mid.pos().z());
+            // (the ADAPTIVE grid + main axes are constructor-built at
+            // world indices 0/1 since v19.13, D242 — empty coasters
+            // and fresh panes get their floor too; this block keeps
+            // only the one-shot centering capture)
             worldCentered = true;
         }
 
@@ -2077,6 +2137,7 @@ class Viewport3D {
                 updateAxesRef();
                 syncGroundLine();
                 drawOrthoGrid();
+                updateFloorGrid();   // D241: eye-anchored adaptive floor
             }
         };
         axesTimer.start();
@@ -2115,8 +2176,12 @@ class Viewport3D {
         GraphicsContext g = orthoGridCanvas.getGraphicsContext2D();
         g.clearRect(0, 0, w, h);
         // POWERS OF TEN with 1 m squares as the floor (v18.11, user
-        // spec — was a 1-2-5 series): step up ×10 while the minors
-        // would crowd under ~7 px
+        // spec — was a 1-2-5 series). CONTINUOUS since v19.12 (D241):
+        // three decades stroke per family, each at ONE pure-function-
+        // of-its-own-px alpha (orthoGridAlpha) — a fresh minor decade
+        // fades in from 0 instead of popping, and a demoted decade
+        // keeps the exact alpha it had (the 1 m ↔ 10 m side-view
+        // seam of the user's report)
         double minor = 1;
         while (minor / upp < 7) minor *= 10;
         double cy = Math.cos(yaw), sy = Math.sin(yaw);
@@ -2132,11 +2197,15 @@ class Viewport3D {
         // grid by that offset (height was fine: Y never translates,
         // his "aligned vertically, not horizontally"). Each family's
         // origin scalar now sits on the WORLD origin.
+        // TOP view strokes WHITE like the 3D views' grid (v19.14,
+        // D243, user spec); the side views keep their grey-blue
+        Color oc = orthoTop ? Color.rgb(235, 240, 250)
+                            : Color.rgb(150, 160, 185);
         if (orthoTop) {
             gridFamily(g, new double[]{ 1, 0, 0 }, -gridCamX0, piv, right,
-                down, upp, w, h, minor);
+                down, upp, w, h, minor, oc);
             gridFamily(g, new double[]{ 0, 0, 1 }, -gridCamZ0, piv, right,
-                down, upp, w, h, minor);
+                down, upp, w, h, minor, oc);
         } else {
             // horizontal axis = the view plane's right direction; the
             // tangent sub-mode measures it from the anchored node
@@ -2144,32 +2213,61 @@ class Viewport3D {
             double o = orthoSideMode == 4
                 ? tangAnchorX * right[0] + tangAnchorZ * right[2]
                 : -(gridCamX0 * right[0] + gridCamZ0 * right[2]);
-            gridFamily(g, right, o, piv, right, down, upp, w, h, minor);
+            gridFamily(g, right, o, piv, right, down, upp, w, h, minor, oc);
             // height lines (scene y; world y = −scene y, same spacing)
             gridFamily(g, new double[]{ 0, 1, 0 }, 0, piv, right, down,
-                upp, w, h, minor);
+                upp, w, h, minor, oc);
         }
+    }
+
+    /** The 2D overlay's alpha law (D241): a decade whose cells
+     *  project to px pixels strokes at this alpha — 0 below 7 px,
+     *  ≈0.13 (today's minors) once readable, ramping to 0.28
+     *  (today's majors) as cells reach hundreds of px. Pure in px ⇒
+     *  decade promotions/demotions are continuous. */
+    private static double orthoGridAlpha(double px) {
+        // amplitudes raised in D242 (the ortho views lost the 3D
+        // grid's contribution — the overlay is the whole grid there)
+        return 0.18 * gridSmooth((px - 7) / 14)
+             + 0.20 * gridSmooth((px - 7) / 200);
     }
 
     /** One line family: planes of constant coordinate along `axis`
      *  (scene unit vector, parallel to a screen axis in every ortho
-     *  mode), measured from origin scalar o. */
+     *  mode), measured from origin scalar o. THREE decades since
+     *  v19.12 (minor, 10×, 100× — the finer two skip every 10th
+     *  line, the next decade owns it), each at its own continuous
+     *  alpha. */
     private static void gridFamily(GraphicsContext g, double[] axis,
             double o, double[] piv, double[] right, double[] down,
-            double upp, double w, double h, double minor) {
+            double upp, double w, double h, double minor, Color col) {
+        for (int j = 0; j < 3; j++) {
+            double q = minor * Math.pow(10, j);
+            double a = orthoGridAlpha(q / upp);
+            if (a < 0.004) continue;
+            gridFamilyDecade(g, axis, o, piv, right, down, upp, w, h,
+                q, a, j < 2, col);
+        }
+    }
+
+    private static void gridFamilyDecade(GraphicsContext g, double[] axis,
+            double o, double[] piv, double[] right, double[] down,
+            double upp, double w, double h, double q, double alpha,
+            boolean skipTenth, Color col) {
         double dR = axis[0] * right[0] + axis[1] * right[1] + axis[2] * right[2];
         double dD = axis[0] * down[0] + axis[1] * down[1] + axis[2] * down[2];
         double pc = axis[0] * piv[0] + axis[1] * piv[1] + axis[2] * piv[2] - o;
         boolean vertical = Math.abs(dR) > Math.abs(dD);
         double dir = vertical ? (dR > 0 ? 1 : -1) : (dD > 0 ? 1 : -1);
-        double span = (vertical ? w : h) * upp / 2 + minor;
-        int k0 = (int) Math.floor((pc - span) / minor);
-        int k1 = (int) Math.ceil((pc + span) / minor);
+        double span = (vertical ? w : h) * upp / 2 + q;
+        int k0 = (int) Math.floor((pc - span) / q);
+        int k1 = (int) Math.ceil((pc + span) / q);
+        g.setStroke(Color.color(col.getRed(), col.getGreen(),
+            col.getBlue(), Math.min(1, alpha)));
+        g.setLineWidth(1);
         for (int k = k0; k <= k1; k++) {
-            boolean major = Math.floorMod(k, 10) == 0;
-            g.setStroke(Color.rgb(150, 160, 185, major ? 0.28 : 0.13));
-            g.setLineWidth(1);
-            double off = (k * minor - pc) * dir / upp;
+            if (skipTenth && Math.floorMod(k, 10) == 0) continue;
+            double off = (k * q - pc) * dir / upp;
             if (vertical) {
                 double x = w / 2 + off;
                 if (x >= 0 && x <= w) g.strokeLine(x, 0, x, h);
@@ -2427,8 +2525,14 @@ class Viewport3D {
             // "Side" sub-dropdown is gone): modes 3-7 are the five
             // side sub-modes directly
             int cur = currentViewIdx();
-            String[] names = { "Fly/Orbit", "POV", "Top", "Front",
-                "Back", "Right", "Left", "Tangent to Selection" };
+            // shortcut tags (v19.12, D241, user spec): the fixed 1-6
+            // view digits + the LIVE POV binding (Space by default —
+            // it flips between Fly/Orbit and POV)
+            String sp = " (" + app.settings.shortcut("pov") + ")";
+            // digits in DROPDOWN order since v19.13 (D242, user spec)
+            String[] names = { "Fly/Orbit" + sp, "POV" + sp, "Top (1)",
+                "Front (2)", "Back (3)", "Right (4)", "Left (5)",
+                "Tangent to Selection (6)" };
             for (int m = 0; m < names.length; m++) {
                 MenuItem it = new MenuItem(
                     (m == cur ? "● " : "   ") + names[m]);
@@ -2529,11 +2633,8 @@ class Viewport3D {
                 if (povActive || flyActive) {
                     exitRideModes();
                 } else if (orthoView) {
-                    // the restore path: saved perspective pose
-                    camYaw.setAngle(savedYaw);
-                    camPitch.setAngle(savedPitch);
-                    camZoom.setZ(savedZoom);
-                    exitOrthoLens();
+                    // the restore path: full saved perspective pose
+                    exitOrthoRestorePose();
                 }
             }
             case 1 -> {
@@ -2905,13 +3006,286 @@ class Viewport3D {
             : String.format("(r=%.3f m)", 57.29578 / Math.abs(degPerM));
     }
 
-    /** Recenter the floor grid under the camera, quantized to 10 m steps so
-     *  the 1 m / 10 m line pattern stays aligned with the world grid. */
-    void updateGridLOD(double worldX, double worldZ) {
-        if (gridGroup == null) return;
-        gridGroup.setTranslateX(Math.round(worldX / 10) * 10);
-        gridGroup.setTranslateZ(Math.round(worldZ / 10) * 10);
-        updateGroundAxesLOD(worldX, worldZ);
+    // ---------- ADAPTIVE FLOOR GRID (v19.12, D241 — Blender-style,
+    // replacing the fixed 1 m/10 m band tables): FOUR DECADE MESHES
+    // (spacing 10^n … 10^(n+3), every 10th line skipped — the next
+    // decade owns it), each split into 6 concentric alpha RINGS.
+    // EVERY ring's alpha is ONE pure function of its projected cell
+    // size in px — so the level cross-fade AND the radial fade both
+    // emerge from the same formula with no hand-tuned tables, a mesh
+    // enters/leaves at exactly alpha 0 (its brightest ring sits at
+    // the visibility threshold when the base decade shifts), the
+    // ortho projection (constant m/px) comes out UNIFORM with no
+    // special case, and density depends ONLY on camera height/zoom —
+    // never view angle. Anchored on the CAMERA EYE per frame (the
+    // orbit grid used to follow the PIVOT and never updated on
+    // rotate/zoom at all — the user's report), each decade group
+    // translated in multiples of 10× its spacing so the pattern
+    // stays world-aligned. Driven off the axes timer; per frame it
+    // costs a transform read + ~24 bucketed material checks. ----------
+    private static final double[] GRID_EDGE =      // ring bounds × spacing
+        // GEOMETRICALLY divided INNER rings (D242, review-probed):
+        // the radial falloff runs over the EYE-HEIGHT scale, which
+        // for the coarser decades is a small fraction of their first
+        // ring — coarse inner rings banded into visible squares.
+        // Extent 384q since D245 (the reach tripled again); rings
+        // whose inner edge sits past the far clip are never built.
+        { 0, 1, 1.35, 1.8, 2.4, 3.2, 4.2, 5.6, 7.5, 10,
+          13.5, 18, 24, 32, 44, 64, 88, 128, 180, 256, 384 };
+    private static final int GRID_RINGS = GRID_EDGE.length - 1;
+    // THREE decades, coarsest capped at 100 m (v19.14, D243 — user
+    // spec: "only have 1 m, 10 m and 100 m grids")
+    private static final int GRID_DECADES = 3;
+    private static final double GRID_Q_MAX = 100;
+    private final Group[] gridDecades = new Group[GRID_DECADES];
+    private final MeshView[][] gridRings =
+        new MeshView[GRID_DECADES][GRID_RINGS];
+    private Group gridSheetGroup;
+    private int gridBase = Integer.MIN_VALUE;      // n of the built meshes
+    private final int[] gridAlphaBk = new int[GRID_DECADES * GRID_RINGS];
+    // near-white: the fade is PREMULTIPLIED (see below), so the line
+    // color at strength o is o·LINE + (1−o)·background — the old
+    // (0.70,0.75,0.85) washed out against the lit blue sheet
+    private static final Color GRID_LINE = Color.color(0.93, 0.95, 1.0);
+
+    private static double gridSmooth(double t) {
+        t = FvdDesigner.clamp(t, 0, 1);
+        return t * t * (3 - 2 * t);
+    }
+
+    /** The one strength law: a line family whose cells cover pxEff
+     *  effective pixels draws at this strength. pxEff is the
+     *  projected cell size times the GRAZING factor dRef/dist (far
+     *  ground is seen edge-on — its squares compress on screen,
+     *  which is what actually breeds the no-mipmap shimmer forests
+     *  the old band tables were hand-tuned against). The fast ramp
+     *  is the minor-line fade-in, the slow one brightens majors —
+     *  and the HIGH-side rolloff retires a decade as its cells pass
+     *  a few hundred px: its sparse lines would only render as fat
+     *  stripes there, and the next-finer decade owns that view.
+     *  Pure in pxEff ⇒ a decade keeps its strength when the base
+     *  re-labels — no pops. */
+    private static double gridAlpha(double px, double f) {
+        // f = clean-tuning proximity (1 = steep view or a
+        // near-ground eye, 0 = edge-on from height): the D245
+        // "reach ×3" lives at LOW f — the horizon-ward fade
+        // stretches — while high f keeps the clean D244 tuning
+        // (a flat ×3 threshold drop let the FINEST decade survive
+        // as a mid-range speckle carpet, and near the ground the
+        // deep tail flickered whole lines — both probed visually)
+        double start = 0.09 + 0.71 * f;
+        return (0.55 * gridSmooth((px - start) / (5 * start))
+              + 0.30 * gridSmooth(px / 60))
+             * (1 - gridSmooth((px - 150) / 350));
+    }
+
+    /** Line HALF-width per decade spacing (q^0.6 since D243; HALVED
+     *  in D244, user spec): 1 m: 1.5 cm; 10 m: 6 cm; 100 m: 24 cm. */
+    private static double gridHw(double q) {
+        return 0.015 * Math.pow(q, 0.6);
+    }
+
+    /** Per-frame driver (the axes timer): eye + zoom → base decade,
+     *  per-decade anchors, per-ring alphas. */
+    private void updateFloorGrid() {
+        if (gridGroup == null || sub == null) return;
+        double subH = Math.max(1, sub.getHeight());
+        double upp, dRef, ex, ez;
+        boolean persp = !orthoView;
+        if (orthoView) {
+            upp = orthoUpp();
+            dRef = 0;
+            ex = camPivot.getX() + gridCamX0;
+            ez = camPivot.getZ() + gridCamZ0;
+        } else {
+            // the eye, uniformly for orbit/fly/POV: the active
+            // camera's localToScene origin (scene + gridCam offsets =
+            // world; world Y = −scene Y)
+            javafx.scene.transform.Transform tr =
+                sub.getCamera().getLocalToSceneTransform();
+            ex = tr.getTx() + gridCamX0;
+            ez = tr.getTz() + gridCamZ0;
+            dRef = Math.max(2, Math.abs(-tr.getTy()));
+            upp = 2 * dRef
+                * Math.tan(Math.toRadians(app.settings.flyFov() / 2))
+                / subH;
+        }
+        if (!(upp > 1e-9) || !Double.isFinite(upp)) return;
+        // base decade with HYSTERESIS (D242 — a raw ceil() rebuilt
+        // 60 meshes every frame while an orbit zoom hovered on the
+        // boundary): up when the finest decade's center cells drop
+        // below 1 px, down half a decade later; the flip itself is
+        // alpha-invisible either way (the swapped decade sits in
+        // the dead zone at both thresholds)
+        int base = gridBase == Integer.MIN_VALUE
+            ? Math.max(0, (int) Math.ceil(Math.log10(upp) - 1e-12))
+            : gridBase;
+        while (upp > Math.pow(10, base) * (1 + 1e-12)) base++;
+        while (base > 0 && upp < 0.5 * Math.pow(10, base - 1)) base--;
+        // coarsest spacing is 100 m (D243) — base 2 = the 100 m grid
+        // alone at extreme zoom
+        base = Math.max(0, Math.min(2, base));
+        if (base != gridBase) rebuildFloorGrid(base);
+        double tanH = persp
+            ? Math.tan(Math.toRadians(app.settings.flyFov() / 2)) : 0;
+        for (int d = 0; d < GRID_DECADES; d++) {
+            double q = Math.pow(10, base + d);
+            if (gridDecades[d].getChildren().isEmpty()) continue;
+            // quantum q, NOT 10q (D242, review find D1): ring alphas
+            // are eye-centered, so a 10q quantum parked the bright
+            // field up to 7q beside the camera and HOPPED it 10q per
+            // step — the live "grid vanishes / pulses" report. With
+            // no skipped lines (below), multiples of q keep every
+            // decade world-aligned and the decenter is ≤ 0.71q.
+            gridDecades[d].setTranslateX(Math.round(ex / q) * q);
+            gridDecades[d].setTranslateZ(Math.round(ez / q) * q);
+            for (int k = 0; k < GRID_RINGS; k++) {
+                if (gridRings[d][k] == null) continue;   // past far clip
+                double r = q * (GRID_EDGE[k] + GRID_EDGE[k + 1]) / 2;
+                double a;
+                if (persp) {
+                    // projected cell size × grazing: q/upp(dist) ·
+                    // dRef/dist = q·subH·dRef/(2·dist²·tan)
+                    double d2 = dRef * dRef + r * r;
+                    double dist = Math.sqrt(d2);
+                    double pxCell = q * subH * dRef / (2 * d2 * tanH);
+                    // WIDTH-COVERAGE attenuation (D242, RELAXED in
+                    // D243 — "make the grid go out way further; a
+                    // little horizon artifact is OK"): a quad much
+                    // thinner than a pixel rasterizes as dash
+                    // chains, so each decade fades where its own
+                    // line width goes sub-pixel (sqrt-grazing,
+                    // dead below ~0.2 px, full by ~0.7)
+                    double wPx = 2 * gridHw(q)
+                        * subH / (2 * dist * tanH)
+                        * Math.sqrt(dRef / dist);
+                    // DENSITY gate (D243): a decade whose spacing
+                    // dwarfs the eye height draws huge close-up
+                    // stripes — the 100 m grid now appears only
+                    // once the camera is well away
+                    double dens = gridSmooth(3 * dRef / q - 0.3);
+                    // GRAZING-AWARE thresholds (D245): the width
+                    // floor slides 0.04 px (steep, = D244) down to
+                    // 0.008 px edge-on — the horizon-ward reach
+                    // roughly triples while steep views keep their
+                    // clean speckle-free tuning. HEIGHT-GATED since
+                    // D246 (his flicker report): near the ground
+                    // the deep-sub-pixel tail rasterizes as whole
+                    // lines popping in/out of the MSAA lattice
+                    // (stationary = entire lines missing), so the
+                    // long reach only unlocks as the eye rises —
+                    // smooth in height, seamless expand/contract
+                    // (his own suggested trade).
+                    double f = gridSmooth(dRef / dist / 0.45);
+                    double hf = gridSmooth(dRef / 70);
+                    double c = 1 - hf * (1 - f);
+                    double thr = 0.008 + 0.032 * c;
+                    a = gridAlpha(pxCell, c)
+                        * gridSmooth((wPx - thr) / (3 * thr)) * dens;
+                } else {
+                    // ORTHO lens (D242): the 2D canvas overlay IS
+                    // the grid there — the 3D line field is uniform
+                    // under a parallel projection and just ended in
+                    // a hard square edge over it (the user's
+                    // "obvious boundaries"); only the sheet stays
+                    a = 0;
+                }
+                // 1/256 buckets (D242 — 1/64 steps popped visibly
+                // on a whole annulus during slow zooms)
+                int bk = (int) Math.round(a * 256);
+                if (bk != gridAlphaBk[d * GRID_RINGS + k]) {
+                    gridAlphaBk[d * GRID_RINGS + k] = bk;
+                    double o = bk / 256.0;
+                    // PREMULTIPLIED color (D242, probe-proven): the
+                    // 3D pipeline blends src·1 + dst·(1−α) — the
+                    // material's alpha never dims the LINE itself,
+                    // only what's behind it, so every "faded" ring
+                    // rendered full brightness (the real "no fading
+                    // at all"). diffuse = o·LINE with alpha o is
+                    // exact OVER compositing — and a zero-strength
+                    // ring must be INVISIBLE, not alpha-0 (an α=0
+                    // quad still adds its full source color).
+                    gridRings[d][k].setVisible(bk > 0);
+                    ((PhongMaterial) gridRings[d][k].getMaterial())
+                        .setDiffuseColor(Color.color(
+                            GRID_LINE.getRed() * o,
+                            GRID_LINE.getGreen() * o,
+                            GRID_LINE.getBlue() * o, o));
+                }
+            }
+        }
+        if (gridSheetGroup != null) {
+            // the sheet FOLLOWS THE EYE CONTINUOUSLY (D242): it has
+            // no lines, so nothing needs world alignment — and its
+            // fade rings are static relative to its center, so the
+            // whole far-field vanishes smoothly with zero churn.
+            // Hidden in SIDE ortho (edge-on it's a shimmering 1 px
+            // line; the groundLine overlay owns that view).
+            gridSheetGroup.setVisible(!orthoView || orthoTop);
+            gridSheetGroup.setTranslateX(ex);
+            gridSheetGroup.setTranslateZ(ez);
+        }
+        // the D232 main axes ride the same eye anchor now
+        updateGroundAxesLOD(ex, ez);
+    }
+
+    /** Rebuild the four decade meshes for base level n (decade
+     *  transitions only — the appearing/vanishing decade sits in the
+     *  dead zone at both hysteresis thresholds, so the swap is
+     *  invisible by construction). The self-fading SHEET is built
+     *  once (first call) and survives rebuilds. */
+    private void rebuildFloorGrid(int base) {
+        gridBase = base;
+        java.util.Arrays.fill(gridAlphaBk, -1);
+        gridGroup.getChildren().clear();
+        if (gridSheetGroup == null) {
+            // ONE ±3500 m ground quad (inside the 5000 m far clip,
+            // so the far-clip plane can never cut a sweeping line
+            // across it — the old 24 km sheet's artifact; a graded
+            // annulus taper was tried and TERRACED at grazing).
+            // Historic material — the bright-blue ground look.
+            TriangleMesh m = new TriangleMesh();
+            m.getTexCoords().addAll(0, 0);
+            addFloorQuad(m, 0, -3500, -3500, 3500, 3500, 0);
+            MeshView mv = new MeshView(m);
+            mv.setMaterial(new PhongMaterial(
+                Color.color(0.45, 0.50, 0.60, 0.10)));
+            mv.setCullFace(CullFace.NONE);
+            gridSheetGroup = new Group(mv);
+        }
+        gridGroup.getChildren().add(gridSheetGroup);
+        for (int d = 0; d < GRID_DECADES; d++) {
+            double q = Math.pow(10, base + d);
+            Group dec = new Group();
+            gridDecades[d] = dec;
+            gridGroup.getChildren().add(dec);
+            if (q > GRID_Q_MAX + 1e-9) continue;   // D243: 100 m cap
+            double hw = gridHw(q);
+            for (int k = 0; k < GRID_RINGS; k++) {
+                // never build a ring wholly past the far clip
+                // (D245 — the 384q ladder at q=100 is 38 km)
+                if (q * GRID_EDGE[k] > 5500) {
+                    gridRings[d][k] = null;
+                    continue;
+                }
+                // flat y = 0 for every decade (D242): the grid is
+                // DEPTH-DISABLED — blending is pure submission
+                // order, no coplanar z-fighting exists to dodge.
+                // skipTenth = FALSE everywhere (review find D1: the
+                // skip slots live in MESH coordinates, so they only
+                // land on the coarser decade's lines under 10q
+                // translate quanta — and all four decades skipping
+                // i==0 left the x=0/z=0 lines beyond the colored
+                // axes drawn by NOBODY); the doubled line under a
+                // major reads as its brighter core.
+                MeshView mv = buildGridBand(0, q * GRID_EDGE[k],
+                    q * GRID_EDGE[k + 1], k == GRID_RINGS - 1, q, hw,
+                    Color.color(0, 0, 0, 0), false);
+                mv.setVisible(false);
+                gridRings[d][k] = mv;
+                dec.getChildren().add(mv);
+            }
+        }
     }
 
     /** Re-fit the main-axis meshes to the camera (D232 — the fixed
@@ -2923,8 +3297,8 @@ class Viewport3D {
      *  10 m like the grid; rebuilt only when the anchor moves. */
     private void updateGroundAxesLOD(double worldX, double worldZ) {
         if (axisGroup == null) return;
-        double ax = Math.round(worldX / 10) * 10;
-        double az = Math.round(worldZ / 10) * 10;
+        double ax = Math.round(worldX / 30) * 30;
+        double az = Math.round(worldZ / 30) * 30;
         if (ax == axisAnchorX && az == axisAnchorZ
                 && !axisGroup.getChildren().isEmpty()) {
             return;
@@ -2938,10 +3312,21 @@ class Viewport3D {
     private Group axisGroup;
     private double axisAnchorX = Double.NaN, axisAnchorZ = Double.NaN;
 
-    /** One main axis (D229/D232): xAxis = the world X axis (z = 0) in
-     *  the gizmo's X green, else the Z axis (x = 0) in its Z red —
-     *  0.18 m wide, 5 mm above the grid, in 30 m segments alpha-faded
-     *  by their 2D distance to the camera anchor. */
+    // segment boundaries out from the camera anchor (m) — geometric
+    // past the near field, ±6.4 km total (D243)
+    private static final double[] AXIS_SEG = { 0, 30, 60, 90, 120, 180,
+        240, 360, 480, 720, 960, 1440, 1920, 2880, 3840, 5120, 6400 };
+
+    /** One main axis (D229/D232; REBUILT v19.14, D243 — user spec:
+     *  the colored zero lines are the ONLY lines on the world axes
+     *  and they SCALE like the grid's): xAxis = the world X axis
+     *  (z = 0) in the gizmo's X green, else the Z axis in its Z red.
+     *  Segments run ±6.4 km from the camera anchor in a geometric
+     *  ladder; each segment's HALF-WIDTH grows with its distance
+     *  (≥ the 100 m decade's line width, so the white zero lines
+     *  underneath never peek out, and ~1-2 px on screen far away
+     *  instead of vanishing at the old fixed 0.09 m), its strength
+     *  fading smoothly to the far end. Premultiplied (D242). */
     private javafx.scene.Node buildAxisMesh(boolean xAxis,
                                             double camX, double camZ) {
         Group g = new Group();
@@ -2949,56 +3334,42 @@ class Viewport3D {
         double abeam = Math.abs(xAxis ? camZ : camX);   // distance off it
         Color base = xAxis ? Color.color(0.30, 0.85, 0.35)
                            : Color.color(0.95, 0.35, 0.35);
-        for (double s0 = along - 240; s0 < along + 240; s0 += 30) {
-            double mid = s0 + 15;
-            double d = Math.hypot(mid - along, abeam);
-            double a = 0.85 * (1 - d / 260);
-            if (a <= 0.02) continue;
-            TriangleMesh m = new TriangleMesh();
-            m.getTexCoords().addAll(0, 0);
-            if (xAxis) addFloorQuad(m, 0, s0, -0.09, s0 + 30, 0.09, 0.005);
-            else addFloorQuad(m, 0, -0.09, s0, 0.09, s0 + 30, 0.005);
-            MeshView mv = new MeshView(m);
-            mv.setMaterial(new PhongMaterial(
-                Color.color(base.getRed(), base.getGreen(), base.getBlue(), a)));
-            mv.setCullFace(CullFace.NONE);
-            g.getChildren().add(mv);
+        for (int side = -1; side <= 1; side += 2) {
+            for (int s = 0; s < AXIS_SEG.length - 1; s++) {
+                double s0 = along + side * AXIS_SEG[s];
+                double s1 = along + side * AXIS_SEG[s + 1];
+                double mid = (s0 + s1) / 2;
+                double d = Math.hypot(mid - along, abeam);
+                double a = 0.85 * (1 - gridSmooth(d / 6400));
+                if (a <= 0.02) continue;
+                // ~1.5 px at its own distance, floored at the
+                // historic near width; wide enough to cover the
+                // grid's own zero line wherever the 100 m decade
+                // shows (its lines only reach strength at range,
+                // where this width has grown past theirs)
+                double hw = Math.max(0.09, 0.0016 * d);
+                double lo = Math.min(s0, s1), hi = Math.max(s0, s1);
+                TriangleMesh m = new TriangleMesh();
+                m.getTexCoords().addAll(0, 0);
+                if (xAxis) addFloorQuad(m, 0, lo, -hw, hi, hw, 0.005);
+                else addFloorQuad(m, 0, -hw, lo, hw, hi, 0.005);
+                MeshView mv = new MeshView(m);
+                // PREMULTIPLIED (D242): the 3D blend never dims the
+                // source by alpha — the color must scale too
+                mv.setMaterial(new PhongMaterial(Color.color(
+                    base.getRed() * a, base.getGreen() * a,
+                    base.getBlue() * a, a)));
+                mv.setCullFace(CullFace.NONE);
+                g.getChildren().add(mv);
+            }
         }
         g.setMouseTransparent(true);
         return g;
     }
 
-    /** Floor: grid lines that fade smoothly with distance over several
-     *  concentric bands — dense 1 m lines near, only 10 m lines further
-     *  out, nothing past 240 m — resting on a solid translucent sheet that
-     *  carries the far field. JavaFX 3D has no texture mipmapping, so
-     *  distant sub-pixel lines shimmer; fading them out band by band is
-     *  the workaround, and the sheet keeps the ground read as a surface. */
-    Group buildGrid(double y) {
-        double[] edge   = { 0, 30, 60, 90, 120, 180, 240 };  // band bounds (m)
-        double[] minorA = { 0.30, 0.22, 0.14, 0.07, 0, 0 };  // 1 m lines (0 = none)
-        double[] majorA = { 0.50, 0.42, 0.34, 0.26, 0.16, 0.08 };
-        Group g = new Group();
-        for (int b = 0; b < 6; b++) {
-            boolean last = b == 5;
-            if (minorA[b] > 0) {
-                g.getChildren().add(buildGridBand(y, edge[b], edge[b + 1], last, 1, 0.03,
-                    Color.color(0.55, 0.60, 0.70, minorA[b]), true));
-            }
-            g.getChildren().add(buildGridBand(y, edge[b], edge[b + 1], last, 10, 0.08,
-                Color.color(0.75, 0.80, 0.90, majorA[b]), false));
-        }
-        // solid translucent sheet just below the lines (offset avoids
-        // z-fighting), reaching past the last line band
-        TriangleMesh sheet = new TriangleMesh();
-        sheet.getTexCoords().addAll(0, 0);
-        addFloorQuad(sheet, 0, -600, -600, 600, 600, y - 0.03);
-        MeshView sheetView = new MeshView(sheet);
-        sheetView.setMaterial(new PhongMaterial(Color.color(0.45, 0.50, 0.60, 0.10)));
-        sheetView.setCullFace(CullFace.NONE);
-        g.getChildren().add(sheetView);
-        return g;
-    }
+    // (the fixed buildGrid band tables are GONE, v19.12 D241 — the
+    // adaptive decade meshes above replaced them; buildGridBand and
+    // addFloorQuad live on as their geometry primitives)
 
     /** Lines of one weight clipped to the square ring [inner, outer). A line
      *  whose own coordinate lies inside the ring runs full length; a line

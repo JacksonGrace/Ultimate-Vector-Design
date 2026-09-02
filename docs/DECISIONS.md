@@ -9716,3 +9716,1012 @@ the "Conflict not getting resolved 8.25.26.fvd" file.
    padding doubled the container's — measured by menu-snapshot
    probe) and their tooltip fires over the WHOLE highlighted row
    (installed on the .menu-item container via the parent hook).
+
+## D238 (v19.9) — Batch 23: PIECE-RELATIVE absolute heading, per-lane convert preservation, resulting yaw/pitch behavior, abs lane colors/naming, dialog cleanup
+
+Date: 2026-08-25. User feedback batch on D237's absolute yaw/pitch
+(colors, resulting overlays, the heading zero, dialog format) plus
+two structural convert/UI rules. No commit requested this round.
+
+1. **PIECE-RELATIVE absolute heading** (his headline: "It seems
+   that the pitch is a global value but the yaw is not [always sets
+   the entrance angle to be zero]. Please make yaw also a global
+   value like the pitch and roll."). D237 made the heading lane
+   SECTION-entry-relative because every section generates
+   heading-stripped (D199). Re-specced: the heading lane's zero is
+   now the PIECE's entry heading — continuous across the piece's
+   whole section chain, exactly like elevation and bank, and equal
+   to the world heading for unrotated pieces. Mechanically the
+   canonical generation is untouched: the compile captures
+   psiPieceStart at each piece's entry and geoLane shifts the baked
+   lane-1 keyframes by the section entry's piece-relative heading
+   (psiPieceStart − cp.psiDeg(), threaded through passGRaw and
+   influencedLane's abs early-out). The shift is a chain-psi
+   DIFFERENCE — pure generation bits — so piece x/y/z + yaw moves
+   stay BITWISE-rigid (gated h2) and a piece's first section keeps
+   offset exactly 0.0 (single-section pieces bitwise). Slopes are
+   untouched by a constant shift, so the feed-forward and felt
+   records ride through; ±360k representatives are the same
+   orientation (projectYp wraps).
+   Consequences swept:
+   - The D237 rebases DIE where both halves share a piece:
+     splitSectionAt's cut rebase, mergeSections' lift,
+     partialConvertSection's kept-right rebase — values carry
+     verbatim now (split→connect still lossless).
+   - Rebases are BORN where sections change piece frame:
+     splitPiece and reanchorAtBoundary shift moved abs heading
+     lanes by the boundary's chain-psi delta (rebaseAbsHeading;
+     the yaw-delta term of a tilted split's decomposition cancels
+     between psi0 and the chain — the shift is the plain
+     exitPsi − entryPsi in both branches, gated h3 at 2.8e-14 m
+     with the lane re-zeroing at the new piece, h3b).
+     makeSmoothingReal's window-end rebase STAYS (B re-anchors
+     there) and now applies to EVERY abs section of the follower,
+     not just its first (sample-based fallback when the first
+     section isn't abs — a multi-turn window may land a 360°
+     representative off, same orientation).
+   - The convert extraction takes a ypHeadDeg REFERENCE (the
+     piece's first compiled sample's heading; NaN = self-relative,
+     right for pieces' first sections): convertWholeSection /
+     partialConvertSection pass pieceHeadDeg(r, pieceIdx),
+     bridge converts the stored-placement flavor
+     (pieceHeadDeg(pieceIdx) — no compile in hand; differs from
+     measured only by a follower's re-aim tilt, the same
+     world-vs-chain corner every global-axis fit has), the
+     partial-bridge RIGHT side NaN (it becomes the target piece's
+     first section). The entry value seeds at the representative
+     nearest the reference — it lands in (−180, 180] of the piece
+     frame (gated h4: a mid-piece convert extracts ~40°, not 0).
+   - Display (derivedAt/trueAt/sampledPerSec) shows heading MINUS
+     the ACTIVE piece's reference, wrapped principal
+     (pieceRelHeadingDeg; wrap walls = the abs-bank precedent);
+     B's absYpTarget subtracts the same reference; the '+' add
+     hold takes the ride end's piece-relative heading (unwrapped
+     against a same-language neighbor's end value, else
+     principal) instead of D237's flat 0.
+   - FVDD note: lane values just MEAN piece-relative now — no
+     format change; mid-piece abs sections authored on the
+     one-day-old D237 build re-aim (accepted, the feature was
+     hours old). Followers re-aimed by held angles keep the
+     documented world-vs-chain dust class. (An early draft
+     carried attach lanes verbatim; the parity sweep — item 9 —
+     replaced that with the world-preserving attach rebase.)
+
+2. **±180 wrapping is CONCRETE** (his question: "would there be
+   any issues making it concrete? would it be possible to avoid
+   those issues?"). Answer shipped: no issues exist — every ±360k
+   representative is the identical orientation and slopes are
+   translation-invariant, so a B/creation value wrapped into
+   (−180, 180] matches the neighbor exactly even when the two
+   sides show 360-apart numbers ("as if the value on the other
+   side were translated in the same way", his acceptance).
+   absRep() is the one implementation: principal range UNLESS the
+   lane's adjacent interior node sits > 180° away (a deliberately
+   out-of-range authored lane — a helix — keeps its branch:
+   continuity wins). Supersedes D120's unwrap-to-the-edge-node
+   for B targets; absRollTarget and absYpTarget share it;
+   creation holds wrap the same way.
+
+3. **Per-lane convert preservation** (his theory, verified
+   correct): if only the yaw/pitch axis/behavior changes the roll
+   lane is not re-fitted; if only rate units and/or the OTHER
+   orientation change, absolute lanes are not converted — "a
+   conversion would only converge to the original". laneKeepMap
+   generalizes D169's roll-only rule: lanes 0/1 keep when
+   yaw/pitch axis + behavior are unchanged and a rate-unit flip
+   doesn't reach them (force G targets aren't rates; absolute
+   angles aren't either — D213/D237); lane 2 keeps symmetrically.
+   The ONE correction to the theory: a FULLY IDENTICAL flag tuple
+   preserves NOTHING — the identity convert is the deliberate
+   re-author-at-density tool and must keep re-fitting everything.
+   preserveLanes deep-copies kept lanes; the preview auto-selects
+   the first lane that actually re-fits (generalizing the D169
+   roll-select). bakeAxes now computes the keep map against the
+   fit's ACTUAL targets — which FIXES a pre-existing D237 bug: a
+   roll-only bake on an abs-yaw/pitch section used to copy its
+   ANGLE lanes verbatim into the rate-flagged output (degrees
+   consumed as °/s).
+
+4. **Abs lane colors + naming** (user spec): absolute ELEVATION =
+   deep cyan-blue rgb(40,150,200) (darker/bluer than pitch teal),
+   absolute HEADING = amber rgb(255,180,25) (more orange than yaw
+   yellow, still off roll's orange) — ELEV_ABS_COLOR /
+   HEAD_ABS_COLOR, the BANK_COLOR pattern: worn by curves, lane
+   buttons, markers AND the resulting overlays (laneColor +
+   overlayColor + tintResChecks branches). NAMING rule (standing):
+   where the two lanes appear separately they are "Elevation" and
+   "Heading" (lane buttons, y-axis title, node-dialog title,
+   hover readouts, resulting check labels); "absolute angles"
+   remains the collective. laneName also gained the "Bank" branch
+   — the abs-bank y-axis used to read "Roll rate (deg/s) (°)".
+
+5. **Resulting yaw/pitch behavior** (resYpAbs, AppSettings): the
+   Resulting settings dialog grows a "Yaw/pitch behavior" row
+   (Rate | Absolute angles (°)) directly below the axis row,
+   double-interlocked on force view + global axis — overlays
+   comps 1/2 then show absolute elevation / piece-relative
+   heading (degrees, ±90 default scale, own abs colors, hover
+   "elevation/heading", axis title "angle (°)"). Their seam
+   carets suppress (angles are continuous — the comp-3 abs-bank
+   precedent). resRollOwnScale generalizes to "units differ":
+   a RATE roll now takes its own scale under absolute comps 1/2
+   (the previously unreachable D214 inverse), and two absolute
+   behaviors SHARE (all degrees). No redundancy gray exists for
+   comps 1/2 (geo view shows felt G — the overlay can never
+   duplicate an abs section's own lanes). CLAUDE.md's old "NO
+   resYpAbs row" note is reversed by this decision.
+
+6. **Convert dialog cleanup** (user spec: remove the "swirly
+   arrows", unify with the Add dialog): all seven per-row ↺
+   resets are GONE from the Convert dialog (the only
+   section-settings dialog that had them), its third grid column
+   with them (colspans trimmed, the scope row's stale
+   parenthetical dropped — the grayHint tooltip carries the
+   reason); wireOriginal's orange changed-row dot remains the
+   "differs from current" indicator. resetBtn deleted. The ↺
+   KEEPS its other homes deliberately — they reset to a SETTING,
+   not to "current": Snapping/Shortcuts/View sliders, color
+   dialogs, Export, and the strict-seam pop-out's
+   window-open-revert.
+
+7. **The "Rate" misalignment** (his intermittent report, found):
+   the START WIZARD's option grid parked D237's "Yaw/pitch
+   behavior" row in the LEFT label+radio columns — the long label
+   stretched that column and its "Rate" radio sat out of line.
+   The right column now runs the canonical order (Yaw/pitch axis,
+   Yaw/pitch behavior, Roll axis, Roll behavior), every label in
+   a label column, every pair aligned.
+
+8. **The Resulting-popup alignment bug + the STRUCTURAL fix**
+   (his "recurring mistake class" complaint): grayHint returns a
+   StackPane, whose default alignment is CENTER — a fill-width
+   VBox stretches the wrapper and CENTERS its one child against
+   left-aligned siblings (the popup's roll/bank check, the only
+   VBox call site; HBox rows size wrappers to content and never
+   showed it). ALL THREE grayHint overloads now set
+   Pos.CENTER_LEFT on the wrapper — the whole mistake class is
+   closed at the factory, not the call site.
+
+9. **The abs-roll vs abs-yp PARITY SWEEP** (his item 7 — an agent
+   audit of every touchpoint after the above landed). Fixed:
+   - partialConvertSection's KEPT half silently dropped ALL FIVE
+     axis/rate/behavior flags (pre-existing since v16.x! — only
+     domain copied, unlike splitSectionAt): a partial convert of
+     any global/°/m/absolute section read its kept half as local
+     °/s rates, violating "the unconverted side keeps its
+     original representation EXACTLY". The flags copy now.
+   - attachPiece REBASES moved absolute heading lanes into the
+     target's frame (the psi delta — WORLD headings preserved,
+     exactly how elevation/bank carry through an attach, and the
+     exact inverse of splitPiece's rebase so split→attach
+     round-trips). Covers "Attach floating piece", un-strict and
+     the whole-bridge-convert stitch — a verbatim carry would
+     have re-aimed the attached stretch at the target's entry
+     heading. (Un-strict's "graphs bit-kept" bends by the
+     constant translation for abs heading lanes — shape kept,
+     values re-framed honestly.)
+   - partialConvertBridge's RIGHT branch re-anchors the target
+     piece at the cut — its original sections' abs heading lanes
+     rebase by the psi delta now (the reanchor rule; "their own
+     shapes untouched" held for everything but abs headings).
+   - The cross-piece AUTHORED fast paths (drawInactiveSections'
+     same-flag strip drawing + smoothedWindowParts' far-side
+     reference) treated piece-relative heading as frame-free —
+     a strict-seam neighbor's lane values sit a constant off the
+     active frame. Both now require same-piece under an abs-yp
+     active surface and fall back to DERIVED (drawn in the
+     active frame — curves still join at the seam).
+   - The abs-BANK extraction never unwrapped sample to sample
+     (pre-existing D118 gap vs the heading extraction): a bank
+     crossing ±180 (barrel roll) fitted a lane jumping 360
+     between knots that swept back the wrong way. Unwraps now;
+     no-crossing tracks bitwise.
+   - The '+' hold's abs BANK gained D238's abs-yp parity: a
+     same-language neighbor's authored end value copies bitwise,
+     and a measured bank unwraps toward the neighbor's branch
+     (an over-±180 authored lane keeps it) instead of always
+     the principal.
+   Deliberate non-findings: no resYp redundancy gray can exist
+   (geo view shows felt G); a strict FOLLOWER's delete-first
+   keeps its stored frame (entry glued to the seam — values keep
+   their meaning, no rebase); snap steps already shared (both
+   abs kinds take the roll step); mirrorPiece verified correct
+   under piece-relative semantics (pure lane-1 negation IS the
+   mirror about the entry heading).
+
+Gates: YpAbsGate grew the h-series (piece-relative continuity h1,
+bitwise yaw rigidity h2, splitPiece rebase h3/h3b at 2.8e-14 m,
+piece-relative extraction h4/h5) — 22 checks green; full battery
+(32) re-run green on wiped classes after the sweep fixes.
+
+## D239 (v19.10) — Batch 24: fixed-slot POV readouts, the grayItem self-measuring pad, part-convert Confirm flow, empty-coaster recovery, tooltip accuracy audit
+
+Date: 2026-08-26. Ten-item polish batch on the v19.8/v19.9 work.
+No commit requested.
+
+1. **Heading color re-specced YELLOW-GREEN** (user: "actually make
+   the Heading color be a yellow-green") — HEAD_ABS_COLOR
+   rgb(180,225,45), between the yaw yellow and the Lat-G green and
+   distinct from both; one constant, every surface follows (curves,
+   buttons, resulting overlays, check tints).
+
+2. **Node editor (edge nodes + Close)**: a section-edge node has
+   ONE handle, which made `oneSlope` false and dropped its slope
+   box into the BROKEN node's 4-cell row — visually out of the
+   column line ("as if the node were broken", his report). Single-
+   handled nodes now get the smooth node's own aligned "Handle
+   slope" row. The Close button is GONE (the dialog is live; X /
+   Esc / Enter close — a scene KeyEvent handler replaces the lost
+   default/cancel-button wiring) and with the buttons row gone the
+   grid's symmetric 14 px padding is the whole bottom margin — no
+   leftover whitespace.
+
+3. **FIXED-SLOT POV READOUTS** (his "values jump around
+   horizontally"): updatePovStats no longer formats one string
+   into statsLabel — each field (X/Y/Z, Speed, Gv, Gl, Pitch/Yaw/
+   Roll angle+rate) renders into its own value Label inside a slot
+   pre-sized from a worst-case template measured in the actual
+   font (buildPovRow/povSet/statsTextW). Values left-anchor in
+   their slots and captions are separate fixed labels, so sign
+   flips and digit-count changes stop at the slot boundary; an
+   EXTREME value RATCHETS its slot wider once for the session
+   (never narrower — his "more space automatically given, but
+   normal changes don't move things"), so overlap is impossible
+   and the layout shifts at most once per extreme, never per
+   frame. The row stacks over the plain statsLabel in a StackPane;
+   any setText on statsLabel (refusal reasons, save/load lines —
+   the bar is dual-duty) makes the message visible and hides the
+   row until the next POV update, reproducing the old clobber
+   order exactly (a textProperty listener, zero changes at the
+   ~40 message call sites).
+
+4. **Bank more orange + the button says "Bank"**: BANK_COLOR
+   rgb(235,70,45) → rgb(240,110,35) (hotter than the roll lane's
+   pale orange, decidedly orange now); the lane-2 button caption
+   reads "Bank" under absolute roll (it kept "Roll" with only the
+   tint changing — the Elevation/Heading precedent).
+
+5. **Force grays the whole Yaw/pitch-behavior row**: the "Rate"
+   radio now disables (with a hover reason) whenever Type is Force
+   — in the Convert dialog, the Add-section dialog, the start
+   wizard and (already there) the Resulting settings — matching
+   the axis row's rule; Absolute still additionally needs Global.
+
+6. **"Add floating piece…"** — the ⊕ menu item renamed (it creates
+   a PIECE; the old "…section…" undersold it), Help along.
+
+7. **EMPTY-COASTER RECOVERY** (user: a coaster whose last piece
+   left had no way to add one; "I'm okay with allowing the coaster
+   to be empty"): zero pieces is reachable via Switch Coaster
+   moving a coaster's only piece away. The graph editor now shows
+   a centered "Add Floating Piece" button over the otherwise blank
+   plot (GraphEditor.setEmptyPiece — the no-coaster panel's clone,
+   synced by syncNoCoasterPanel from every transition incl. both
+   rebuildTrack branches), opening the New Track Piece (FLOATING)
+   wizard — whose no-piece fallback placement (origin, y 5 m,
+   5 m/s) already existed. The Delete-section guard is unchanged
+   (a coaster's last section still can't be deleted — emptying by
+   deletion wasn't asked for); the wizard's placeholder piece
+   clears the button while the screen is open.
+
+8. **Part-convert Confirm flow** (user re-spec): the [Convert
+   left/right part] chip now TOGGLES which side converts (same
+   flash as clicking a side, which still works); a [Confirm] chip
+   on a second row applies — [Cancel] to its right. pcSideRect
+   joins the chip hit-test (code 3); Confirm keeps the old apply
+   wiring untouched; the chips outrank the line's resize cursor.
+
+9. **grayItem alignment — the real root cause at last** (his THIRD
+   report): the ContextMenu skin positions a CustomMenuItem's
+   content at the bare left inset, while native item TEXT sits
+   after the menu's check/graphic COLUMN — which exists only in
+   menus containing Check/Radio rows. The badge menu always holds
+   the "View in … domain" check, so its gray rows sat ~20 px left
+   of native text; every OTHER menu has no column, which is why
+   D237's fixed padding was wrong there and zero padding wrong
+   here — no constant works. grayItem labels now SELF-MEASURE: a
+   post-layout runLater hop reads a native sibling row's label x
+   and pads the gray label to match — pixel-exact in both menu
+   kinds (MenuAlignProbe, a scratch headed probe: diff 0.00 px on
+   JavaFX 21 and 26), zero where no column exists, any font.
+
+10. **Tooltip accuracy AUDIT** (his "double check all tool tips"):
+    ~124 hover/gray/stats strings verified against current code;
+    8 were stale and are fixed —
+    (a) Delete section: "The document's only section" → "This
+        coaster's only section" (the guard tests the ACTIVE
+        coaster's one-piece-one-section state; his guess "the
+        track piece's only section" was also off — a piece's only
+        section IS deletable when other pieces exist, the piece
+        goes with it);
+    (b) the whole-bridge Convert strict-seam checkbox still
+        claimed "the bridge's padlocks carry over" — D235 locks
+        all three axes at current angles;
+    (c) YP_ABS_HOW still said absolute angles target "the
+        heading/elevation vs the world" — heading is
+        piece-relative since D238;
+    (d) the s/c Direction tooltip said "180 = left" — 180 is a
+        flat RIGHT turn since D187;
+    (e) the element-0 entry-ease tooltip said "0 = the default
+        2 m" — verbatim-0 snaps since D233 (new sections start at
+        2 m);
+    (f) the Global-bank radio (and the Help Roll row) said "eased
+        over max(entry smoothing, 2 m)" — element 0 is verbatim;
+    (g) the strict-seam ↺ tooltips promised "the opening value"
+        unconditionally — an axis locked during the session
+        restores the STORED placement angle (D235);
+    (h) "Un-strict refused — the previous piece must end with
+        lane sections" — the actual rule is "must not end with a
+        bridge" (s/c ends pass fine).
+    Also fixed nearby: the node-editor Help row's stale "wheel
+    Shift ×10 / Ctrl ×0.1" (D237's global rules superseded) and
+    "Close just closes"; CLAUDE.md's Java/JavaFX "21" header
+    (pom.xml has been 26 since the initial commit).
+
+Verification: MenuAlignProbe pixel-exact both menu kinds on
+JavaFX 21 + 26; devshot smoke clean (startup exercises the new
+stats bar + wizard grid); full 32-gate battery green on wiped
+classes (the batch is UI-side — no model arithmetic touched).
+
+## D240 (v19.11) — Batch 25: the Design→Real absolute-lane dialog, the Help rewrite, spinner hold+ease stops, POV confinement, capture-cursor hardening, the Add-Floating-Piece fix
+
+Date: 2026-08-30. Eleven-item batch, with his "Design to real not
+working for case 8.30.26.fvd" attached. No commit requested.
+
+1. **Design → Real on absolute lanes** (his deep-dive ask + his own
+   correct diagnosis). Probed on his file (one all-absolute geo
+   section, true pitch/roll −48.9/−38.6, design (0,0)): the plain
+   design := true write left the entry frame right for ONE
+   integration step, then projectYp/the abs-bank projection
+   re-asserted the authored absolute angles — the track snapped
+   back to the DESIGN shape, 28.9 m / 41.7° off the on-screen
+   track ("the rest is just the Real→Design track", exactly as he
+   described). Rate lanes — local or global — are entry-relative
+   and re-solve correctly (probed ≤ 0.03 m); only absolute lanes
+   snap. THE FIX (his spec): when the piece carries absolute
+   lanes, the button opens a dialog — per absolute quantity
+   (Elevation & heading / Bank) pick PRESERVE (the snap, now an
+   informed choice) or CONVERT (default): Coaster.
+   designToRealConvert refits the chosen lanes from the CURRENT
+   compileForFit samples (the conflict-tilted truth, captured
+   BEFORE the design write) with the section's own flags + the
+   D238 piece-heading reference, installs ONLY those lanes in
+   place (other lanes, flags, controls, pins untouched), then
+   writes design := true — committed through the density preview.
+   Probe: his track holds to 0.40 m over 37 m at default density
+   (the residual = fit + the one-step entry transient) with the
+   conflict closed. All-Preserve routes to the classic direct
+   write (FvdDesigner.designToRealDirect, factored out). Sections
+   too short to fit keep their lanes; followers can't reach the
+   buttons; Real→Design needs no dialog (re-solving to the design
+   graphs is exactly what it promises).
+
+2. **HELP REWRITTEN** (user spec): half the length, purely
+   user-facing — what things do, never how they work inside; no
+   all-caps emphasis; four NEW drawn diagrams beside the node
+   intro (helpCanvas rows): the graph editor's landmarks (strips,
+   badges, seam line + ◇, ⊕, +V, resulting axis), smooth vs
+   broken knobs, the pieces/run sketch (strict seam ‖◇ + bridge),
+   and the placement gizmo. Verified by full-height snapshot
+   (HelpShotProbe, scratch). Canvas fillText can't render ⊕/emoji
+   — draw shapes, label with words (noted in CLAUDE.md).
+
+3. **Density preview: lane-switch clicks live** — the v16.7
+   1/2/3-key rule extended to the mouse: clicking a dimmed lane's
+   node/curve inside the preview's own strip switches the VIEWED
+   lane (read-only — no selection, no gestures; the lane survives
+   every preview re-run since restores never touch activeLane).
+   Double-clicks are now consumed too (the node editor could open
+   under a live preview and be clobbered by its re-runs).
+
+4. **Full-density reference curves** — the preview's dashed
+   originals were capped at 400 strided points (visible chords on
+   any section over ~4 s, his "bunch of lines"); they now carry
+   every compiled sample, drawn through ColPath with view culling
+   (pixel-bounded like the Resulting overlays; captured once per
+   open). The reversal guides share the fix.
+
+5. **Captured POV confines the mouse like fly** (user spec):
+   flyLook gains a confine-only branch — same warp machinery,
+   camera untouched; both capture entries (right-click, the
+   fly→POV Space flip) init the Robot + center. The tool-window
+   forwarding now genuinely warps off windows in POV too;
+   releases unchanged.
+
+6. **"Add Floating Piece" fixed** (his bug report — probe-verified
+   chain): on a zero-piece coaster the editor idles at activePiece
+   0 + NO_LANES; the FLOATING wizard's first piece lands at index
+   0 and setActivePiece(0)'s bare same-index return skipped the
+   lane re-point — a ForceSection paired with empty immutable
+   lanes, and redraw threw (BezierBaker get(-1)) BEFORE
+   syncWizardPanel could show the start screen: black canvas, live
+   invisible wizard. Fix: the guard now also requires app.lanes ==
+   lanesFor(active section) — the setActiveSection rule — plus
+   empty-lane no-op hardening in rideEnd/bakeLane/evalPolyline
+   (legal documents never hold one; bitwise elsewhere).
+
+7. **Hold-to-repeat on every spinner** (user spec, STANDING):
+   plain arrows keep the native skin repeat; the D237-consumed
+   MODIFIER presses and LiveNum's ▲/▼ (which only fired on
+   release) arm a shared FvdDesigner.HoldRepeat at the native
+   cadence — immediate step, 300 ms delay, then 60 ms (verified
+   against javafx-controls 26) — modifiers captured at press;
+   MOUSE_RELEASED / disable / scene-loss stop it. Installed at
+   the numericEditor choke, so future spinners inherit.
+
+8. **Ease stops for the handle boxes** (user spec): the node
+   editor's handle-length boxes stop on any NAMED ease fraction
+   (cubic 1/3, sine 1−2/π, quintic 7/15, circle 0.5523 — derived
+   from the existing HANDLE_PRESETS) lying strictly between the
+   current value and the step target — wheel, arrows, Ctrl and
+   Shift alike. Landing remembers the pre-stop grid and the next
+   step resumes it (0.3 → 0.333 → 0.35; from 0.31 → 0.333 → 0.36;
+   Ctrl: 0.330 → 0.333 → 0.335; stepping back returns exactly to
+   the pre-stop value); a box OPENED or typed onto an ease value
+   steps to round multiples instead (his reopen example). On a
+   stop the field wears a soft blue outline (outlineStyleBg — the
+   D233 one-layer rule generalized over the control's own
+   background) and a tag names it ("Cubic", "Sine", …); stops
+   render at 4 decimals so they re-detect (±5e-4 tolerance).
+
+9. **Broken-node editor rows in one column** (user spec): "In
+   slope"/"Out slope" rows sit directly below their handle-length
+   rows — the 4-cell side-by-side form is gone; edge nodes keep
+   D239's "Handle slope" row.
+
+10. **Capture cursor flashes tied up** (his report: I-beam and
+    resize cursors flickering over centered tool windows): the
+    TextField I-beam is CSS and beats the scene-level NONE (the
+    deepest non-null cursor wins, and the cursor update runs
+    outside the event dispatch — consuming can't stop it), and
+    every dialog Stage was decorated + resizable (native OS
+    resize-border cursors). syncCaptureWindows now stashes+nulls
+    every node-level cursor per wired window (restored on
+    release), sets Stages non-resizable for the capture, wires
+    Stages owned transitively by the main stage (the color picker
+    owned by Rail Settings was skipped), wires windows OPENED
+    MID-CAPTURE via a Window-list watch (Ctrl+Z rebuilds the seam
+    pop-out; Ctrl+E opens Export — both previously arrived
+    unwired), and re-sweeps cursors every 25th forwarded move.
+    Residual: a decorated Stage's title-bar arrow is OS-drawn and
+    cannot be suppressed.
+
+11. **"Set Design to Real" in the initial-speed dialog fills the
+    box** (user spec): no op, no close — it writes the true seam
+    speed (the reconcile's D237 anchor read) into the box; Apply
+    commits through the existing routes. Apply's clamp widened
+    [1,100] → [0.1, 1e4] (the D198 admit-what-the-app-produces
+    rule — a near-stall true speed round-trips now); grayed with
+    a reason before the first compile. The badge-menu resolve op
+    keeps the direct refreeze (note: the dialog's Apply pins
+    where the resolve op unpins — deliberate, the dialog's
+    documented semantics).
+
+Verification: D2RFixProbe (0.40 m) + the D2R probe family;
+HelpShotProbe full-page render; full 32-gate battery green on
+wiped classes (model changes: designToRealConvert added,
+BezierBaker empty-lane guards — legal paths bitwise).
+
+
+## D241 (v19.12) — Batch 26: the Blender-style adaptive floor grid, Preferences + Resolution Scale, badge colors, the Ctrl/Shift swap, single/multi-node H·F·locks, clickable node-editor twins
+
+Date: 2026-09-01. Eighteen-item batch. No commit requested.
+
+1. **The ADAPTIVE FLOOR GRID** (his big item — the Blender spec:
+   density from on-screen square size only, powers of 10, no
+   view-angle dependence, top ortho uniform with no special case,
+   levels cross-fading, camera-position anchored, minimal lag).
+   The fixed 1 m/10 m band tables (minorA/majorA, six rings to
+   240 m) are GONE. New model in Viewport3D: FOUR DECADE MESHES
+   (spacing 10^n … 10^(n+3), n floored at 0 = 1 m; every mesh
+   skips its 10th lines — the next decade owns them), each split
+   into TEN concentric alpha rings (edges spacing × {0, 7.5, 15,
+   22.5, 30, 45, 60, 90, 120, 180, 240}; extent 240 × spacing,
+   self-similar). EVERY ring's alpha is ONE pure function of its
+   projected cell size in EFFECTIVE pixels — pxEff = cell px ×
+   the GRAZING factor dRef/dist (far ground is seen edge-on; its
+   squares compress on screen, which is what actually breeds the
+   no-mipmap shimmer the old tables were hand-tuned against):
+   gridAlpha(px) = 0.30·smoothstep((px−4)/12) + 0.20·
+   smoothstep(px/60) — the fast ramp ≈ the historic minor look,
+   the slow one brightens majors toward 0.50, and the 4 px dead
+   zone kills sub-pixel dot forests outright (probed: even at 3%
+   alpha they read as a textured patch). Purity in pxEff is the
+   whole design: the level CROSS-FADE and the radial fade emerge
+   from the same formula, a decade keeps its exact alpha when the
+   base level re-labels (no pops — its brightest ring sits at the
+   visibility threshold at every base transition, so rebuilds are
+   invisible by construction), line width 0.03·q^0.426 (pure in
+   the line's own spacing q; reproduces the historic 0.03/0.08 m
+   at q = 1/10), and the ORTHO branch (constant m/px) comes out
+   UNIFORM with zero special-casing. Driven per frame off the
+   axes timer (updateFloorGrid): the anchor is the CAMERA EYE via
+   the active camera's localToScene — the orbit grid used to
+   follow the PIVOT and never updated on rotate/zoom at all (his
+   report); the 9 scattered updateGridLOD call sites are RETIRED
+   (with them the whole D218 "programmatic jump left the grid
+   parked" class), the D232 ground axes ride the same eye anchor,
+   and each decade group translates in multiples of 10× its own
+   spacing (world-aligned; per-decade because one shared quantum
+   would be the coarsest decade's — km jumps). Per frame: one
+   transform read + 40 bucketed material writes (1/64 buckets,
+   epsilon-free); meshes rebuild only on base-decade changes.
+   TWO dev-round root causes worth recording: (a) the first build
+   showed a dotted speckle field everywhere — ALPHA-0 line quads
+   still WRITE DEPTH, and the sheet (drawn after) lost the depth
+   test under every invisible line: zero-alpha rings now
+   setVisible(false) and the sheet renders FIRST (gridGroup child
+   0); (b) coplanar decade meshes under different translates
+   z-fight at crossings (the old two-mesh grid shared one
+   transform — identical arithmetic hid it): decades stack 4 mm
+   apart, coarser on top. The sheet's extent rides the third
+   decade (±24 000 m at base 1 m — ground to the horizon).
+   The 2D ORTHO OVERLAY gets the same treatment (his side-view
+   1 m ↔ 10 m seam): gridFamily strokes THREE decades, each at
+   orthoGridAlpha(px) = 0.13·ss((px−7)/14) + 0.15·ss((px−7)/200)
+   — pure in the decade's own px, so promotions/demotions are
+   continuous and a fresh minor decade fades in from 0 instead of
+   popping (the old hard `while (minor/upp < 7) ×10` step with
+   fixed 0.13/0.28 alphas is gone; today's densities preserved at
+   the same 7 px threshold).
+
+2. **Preferences menu** (renamed from "Edit", user spec) with the
+   new **"Resolution Scale…"** row (his "if feasible" — probed
+   FEASIBLE, restart-only): a Blender-style whole-UI factor.
+   Empirics from the feasibility probe: glass.win.uiScale scales
+   the entire toolkit crisply (Canvas included — full-res
+   rasterization), coordinates stay logical, fractional and sub-1
+   values work — but the property is consumed in
+   WinApplication's static initializer, which the standard java
+   launcher runs BEFORE an Application main class's own main()
+   (probed: a setProperty there is ignored), and a malformed
+   value CRASHES toolkit startup. So: NEW coaster.Main — a plain
+   launcher class (does NOT extend Application) that reads
+   AppSettings.uiScale (default 1.0 = never set the property =
+   today bitwise), multiplies by the OS scale read pre-FX via AWT
+   (the property REPLACES the OS scale — an absolute 1.0 on his
+   150% desktop would shrink the app by a third), sanitizes hard,
+   sets the property, then Application.launch(FvdDesigner).
+   pom.xml mainClass → coaster.Main; FvdDesigner.main delegates.
+   The dialog: slider 0.75–1.75 snapped to 0.05, ↺ at 1.0,
+   "Applies at the next launch." — restart-only is a platform
+   fact (probed: a mid-session Stage keeps the boot scale).
+
+3. **Ctrl/Shift SWAP on all value entry boxes** (user spec,
+   reversing D237): Ctrl = snap to the next round multiple,
+   Shift = tenth steps — installSpinnerSteps (press + wheel),
+   modStep, LiveNum.wireHold/modClick/setOnScroll, every doc/
+   Help string. Node DRAGS keep Ctrl-snap (unchanged — the swap
+   is value boxes only). The ease-stop machinery rides along
+   (Ctrl = round multiples incl. from a stop, Shift-tenths still
+   stop on ease fractions).
+
+4. **Ease-stop fixes** (his two reports): (a) values FROZE on
+   stops — a landed stop renders 3 decimals (0.333) while the
+   exact stop is 0.3333…, which then lay strictly between the box
+   value and every later target and interceptStop re-caught it
+   forever; stops within 5e-4 of the CURRENT value are now
+   skipped (a stop is an inserted snap point, never a wall) and
+   stops render at the standard 3 decimals (his explicit ask).
+   (b) The ease tag pushed the grid's readout twins right when it
+   appeared — the tag has a constant width (measured from the
+   widest stop name) from birth.
+
+5. **Single-node H / F / lock semantics** (user spec): with ONE
+   node selected, F straightens the segment to its PREVIOUS node,
+   Shift+F/Shift+H LOCK that segment (straight / level-with-this-
+   node), and H's SECOND press on an already-flat node levels it
+   WITH the previous node (value copy; third press exact no-op).
+   Section-first nodes: the prev-pair features no-op (H still
+   flattens). He wrote "ctrl+h and ctrl+f" for the lock gestures —
+   implemented on the EXISTING Shift+F/Shift+H bindings (Ctrl+F/H
+   are unbound; rebindable anyway), flagged in the reply.
+
+6. **Multi-node F** (his report + his correct hypothesis): F with
+   >2 or non-adjacent selections did nothing — a hard
+   `selSet.size() != 2` gate (nothing ever "tried"); and pairwise
+   application WOULD have snapped back exactly as he suspected
+   (the smooth-joint C1 far-handle re-angle overwrites the
+   neighbor chord). Rewrite: every segment between consecutive
+   selected nodes chords (the v10.6 selectedPairs target set);
+   interior joints whose chords DISAGREE go honestly BROKEN
+   first (the D62 rule; agreeing collinear runs stay smooth);
+   far-handle re-angles only at chain ends; locked segments skip
+   (their lock owns the shape). Two adjacent nodes = the classic
+   behavior bitwise. Right-click menu entries follow (level/
+   straighten/lock "with previous" on single nodes, D132
+   hide-inapplicable rule).
+
+7. **Clickable node-editor twins** (user spec): the grey computed
+   twins next to Transition time and Value wear the speed-popup
+   "Enter:" hover outline (constant transparent border — D237
+   layout rule) and CLICKING one SWAPS which representation the
+   box edits — titles flip to "Absolute time (s)"/"Absolute
+   position (m)" and "Change in value (unit)", the twin shows the
+   other representation, snapping follows the box (its content IS
+   the edited quantity), applyPos converts back (abs mode maps
+   through warpInv − section start; delta mode adds the previous
+   node's value), the undo-refresh hook re-seeds mode-aware and
+   re-runs both twin fills (closing the pre-existing stale-twin
+   corner). Per-dialog-instance; reopening resets. Node 0 has no
+   twins (nothing previous).
+
+8. **Init-speed equivalence** (his question — answered YES, they
+   differed): the dialog's "Set Design to Real" + Apply PINNED a
+   2-decimal value while the badge-menu resolve op unpins, bakes
+   tilt/follow and writes the exact seam value. Now an UNMODIFIED
+   fill commits through Coaster.refreezeSpeed — identical to the
+   resolve op; a hand-typed value (even re-typed equal) still
+   pins as a deliberate conflict; ride-entry and bridge-before
+   cases keep the plain write (no conflict exists / the resolve
+   op refuses there).
+
+9. **UI polish sweep**: section badges COLOR-CODED (blue Force /
+   orange Geo / purple S/C; bridges keep neutral gray + the dirty
+   warning) with capitalized labels and brighter alphas (0.6
+   inactive / 0.9 active / 1.0 hover); the yp-axis row's GRAY
+   under Force now also DESELECTS Global → Local in the Add and
+   Convert dialogs (the behavior row's Abs→Rate precedent — the
+   dot sat on a choice that no longer applied; the wizard was
+   already correct via its model round-trip); the wizard panel
+   pins the editor to its REAL pref height (MIN_HEIGHT 240 dated
+   from the D232 3-row grid — the D237/D238 rows grew content to
+   ~279 px and the centered title rendered half above the dark
+   background; + TOP_CENTER so any future overflow eats the
+   bottom, never the title); "(10 m straight)" dropped from the
+   ⊕ items; the view-label dropdown wears shortcut tags ("(1)"…
+   "(6)" fixed digits, the live POV binding on Fly/Orbit and
+   POV) and the Append button "(A)"; the Design→Real dialog is
+   retitled "Design → Real Absolute-Angle Conversion" minus its
+   explainer paragraph; TOP view enters at ONE fixed orientation
+   (world Z up, X right — as if tilted down from Front; the
+   nearest-90° yaw snap is gone); ortho→fly/orbit ALWAYS
+   restores the full pre-ortho perspective pose — angles, zoom
+   AND pivot (savedPiv* joins the stash; exitOrthoRestorePose
+   feeds toggleFly, togglePov, the dropdown restore and the
+   same-key exit; orbiting away keeps the adopt-view behavior).
+
+10. **Tooltip length sweep** (his Append-button report + "do
+    another sweep"): 14 overlong tooltips + 4 grayHint reasons
+    trimmed to the D240 what-not-how length (worst: the Convert
+    dialog's 8-line strict-seam checkbox; the bridge length/mode/
+    optimize trio; both friction rows; the element dialog's
+    global-bank + entry-ease pair; YP_ABS_HOW).
+
+Verification: full 32-gate battery green on wiped classes (model
+deltas: AppSettings.uiScale + coaster.Main only — every gate path
+untouched); devshot wizard renders (title inside the panel, both
+modes); live-app PrintWindow captures of the adaptive floor
+(default framing: clean 10 m field, smooth grazing fade, faint
+100 m super-grid, no speckle — plus the two root-caused rendering
+bugs above found via a -Dfvd.griddbg telemetry round).
+
+
+## D242 (v19.13) — Batch 27: the floor-grid REBUILD (premultiplied fades, depth-disable, q-quanta), Edit-menu revert, speed-only Set-Design-to-Real, Apply-and-Restart, view digits in dropdown order
+
+Date: 2026-09-01, same day as D241 — his feedback round on batch
+26. Ten items; the grid "EXTREMELY buggy … put far more resources
+into making this a very clean feature" headline drove a 3-agent
+probe/sweep/review pass plus nine visual iteration rounds through
+a new `-Dfvd.gridshot` pose-ladder hook.
+
+1. **THE FLOOR GRID, ROOT-CAUSED AND REBUILT.** His live symptoms
+   (flashing, missing lines, whole-grid vanishing, no fading /
+   hard decade boundaries) decomposed into FIVE independent
+   defects, each probe- or math-confirmed:
+   (a) **The 3D blend law never dims the source.** Empirical
+   probe (the decisive one): prism's 3D translucency composites
+   src_lit·1 + dst·(1−α) — the material's alpha attenuates only
+   what is BEHIND the quad. Every "faded" ring therefore rendered
+   at FULL line brightness until its bucket hit zero and it
+   vanished — the literal "no fading at all, obvious boundaries".
+   An α=0 quad still adds its whole source color. FIX: fades are
+   PREMULTIPLIED (diffuse = o·LINE at alpha o == exact OVER
+   compositing) and zero-strength rings go setVisible(false).
+   The D232 ground-axis segment fades had the same disease —
+   premultiplied now too.
+   (b) **Depth noise between the grid's own layers.** Translucent
+   3D writes depth; perspective depth resolution ≈ z²/(near·2²⁴)
+   (near 0.1) is ~5 cm at 300 m — the D241 4 mm decade stacking
+   and 3 cm sheet offset sat INSIDE the noise: probed 21-79% of
+   overlap pixels mis-ordered per static frame at 300-1500 m =
+   the per-pixel patchwork that flashes under motion. FIX:
+   gridGroup + axisGroup render DepthTest.DISABLE at the FRONT of
+   `world` (indices 0/1) — probe-proven pure submission order, NO
+   depth read or write (D3D sets both from one flag; bytecode-
+   corroborated NGNode → D3DContext), sheet first, everything
+   flat y=0. The track drawn later overdraws the grid cleanly;
+   a below-ground camera never sees grid lines over track
+   (accepted corner). Also probed: transparent 3D is NEVER
+   sorted — submission order is the only order.
+   (c) **The 10q translate quantum de-centered the alpha field.**
+   Ring alphas are eye-centered but the decade meshes translated
+   in 10-spacing steps — the bright field parked up to 7q beside
+   the camera and HOPPED 10q per step (100 m hops for the 10 m
+   decade; km hops above): the live "grid vanishes / pulses".
+   FIX: per-decade quantum = its OWN spacing q, coupled with
+   skipTenth = FALSE everywhere (the skip slots live in mesh
+   coordinates — under q-quanta they'd land beside the coarse
+   decade's lines; and all four decades skipping i==0 left the
+   x=0/z=0 lines beyond the ±240 m colored axes drawn by NOBODY —
+   his "certain lines never appearing"). A major now carries the
+   finer line under it as a brighter core — reads as emphasis.
+   (d) **Sub-pixel dash shimmer.** Quads much thinner than a
+   pixel rasterize as dash chains (4-sample MSAA, no mipmaps)
+   that crawl under motion — his original top-down "uneven patch"
+   reproduced exactly in the pose ladder. FIX: WIDTH-COVERAGE
+   attenuation — each ring's strength × smoothstep of its own
+   projected line width (grazing^0.75), dead below ~⅓ px, full by
+   ~1 px — so every decade lives only where it renders as SOLID
+   lines; widths are hw = 0.03·q^0.7 (each decade ~1 px in its
+   own viewing band; pure in q so base re-labels can't pop), and
+   a HIGH-side rolloff (cells past ~150 px) retires a decade
+   whose sparse lines would only render as fat stripes.
+   (e) **Structure/lifecycle.** Grid + axes are CONSTRUCTOR-built
+   (the old first-nonempty-rebuild latch left empty coasters and
+   fresh panes with NO floor at all); 15 GEOMETRIC rings per
+   decade (inner edges q·{0,1,1.35,…} — the review probe showed
+   the radial falloff lives at eye-height scale, INSIDE the old
+   coarse first rings: identical worst-banding with the old
+   outer-only subdivision), extent 64q (beyond ~C/8·q no ring
+   ever clears the dead zone — the 240q tail was dead weight),
+   base-flip HYSTERESIS (up at upp>10^b, down at 0.5·10^(b−1);
+   both thresholds sit in the dead zone so flips are invisible),
+   strength buckets 1/256 (1/64 popped whole annuli during slow
+   zooms). The ORTHO lens hides the line decades outright — the
+   2D drawOrthoGrid canvas IS the ortho grid (it double-drew
+   under a uniform 3D field that ended in a hard square edge:
+   his top-down "obvious boundary"); its per-decade alphas rose
+   to 0.18/0.38 caps (the 3D contribution left). The sheet is
+   ONE ±3500 m quad (inside the 5000 far clip — the old 24 km
+   sheet showed the far-plane's cut sweeping the ground; a
+   graded-annulus taper was tried and TERRACED at grazing),
+   follows the eye continuously un-quantized, hides in SIDE
+   ortho (edge-on = a shimmering 1 px line). Line color near-
+   white 0.93/0.95/1.0 (premultiplied mixing needs the headroom
+   against the lit sheet), law 0.55·ss((px−2)/10) + 0.30·
+   ss(px/60) on grazing-compressed cell px. Verified across a
+   9-pose gridshot ladder (low graze, mid orbit, high, very
+   high, base straddle ×2, POV height, ortho ×2) over nine
+   candidate rounds — the failures of each round are what
+   produced (c), (d), the terrace find and the ramp widths.
+
+2. **"Set Design to Real" in the initial-speed dialog is SPEED-
+   ONLY** (his correction of D241's full-resolve): the unmodified
+   fill + Apply now runs Coaster.refreezeSpeedOnly — the exact
+   seam speed, un-pinned so it follows the real flow — and an
+   ORIENTATION conflict stays exactly as it stands; with none,
+   it equals the badge-menu resolve op, which alone still bakes
+   tilt/follow (refreezeSpeed = bakes + refreezeSpeedOnly,
+   factored). Typed values still pin; ride entry keeps the
+   spinner write; the bridge-before guard is gone (a speed-only
+   write is as safe as any typed one).
+
+3. **Resolution Scale: "Apply and Restart"** (his "instantly
+   update like Blender?" — the honest answer is no: the scale is
+   baked into glass at toolkit boot, probed in D241; Blender owns
+   its renderer, JavaFX doesn't let us). The closest gesture
+   ships instead: FvdDesigner.restartApp spawns a fresh JVM
+   (java.home binary + RuntimeMXBean input args + classpath, on
+   coaster.Main) through the unsaved-changes gate and exits; a
+   spawn failure posts a stats reason and keeps the session.
+
+4. **"Preferences" reverted to "Edit"** (his call — the D241
+   rename undone; Resolution Scale stays in the menu; every
+   Help/comment reference swept back).
+
+5. **View digits renumbered in DROPDOWN order** (1 Top, 2 Front,
+   3 Back, 4 Right, 5 Left, 6 Tangent — was sides-then-top);
+   dropdown tags, handleViewDigit, Help updated. 6 = Tangent
+   still works from the graph.
+
+6. **Node editor**: the value row wears the LANE'S OWN quantity
+   name (laneQtyName — Vertical G / Lateral G / Roll / Pitch /
+   Yaw / Bank / Elevation / Heading + unit; his spec), and the
+   click-swap delta title is "Δ " + the same (replacing "Change
+   in value"). Ease-stop LAYOUT NEUTRALITY (his screenshot): the
+   blue ring is layered BACKGROUNDS, not a border (a CSS border
+   joins layout insets — the D240 border grew the field 4 px on
+   every stop and shoved its arrows), and the name tag is an
+   UNMANAGED overlay floating past the arrows (any reserved
+   width held the grid column open and pushed the readout twins
+   right — the twins sit exactly where they did pre-D240 now).
+
+7. **Node right-click menu**: the split/connect group moved
+   directly below "Edit node…" (separator kept).
+
+8. **Badges desaturated** ~45% toward the old neutral gray (his
+   "less saturated"); labels/alphas/hover kept.
+
+9. **Wizard**: the Straight/Curve card's "A 10 m straight to
+   begin with…" note removed — tiles + size spinner only.
+
+Verification: 3-agent workflow (depth-semantics probe with
+pixel-level evidence + bytecode corroboration; camera-parenting/
+world-order sweep — all three cameras' eye reads confirmed
+correct, POV's world-parenting cancels; adversarial design review
+with computed alpha tables), nine gridshot ladders, a live
+PrintWindow capture, devshot smoke, full 32-gate battery green on
+wiped classes (model deltas: Coaster.refreezeSpeedOnly factored
+out of refreezeSpeed — resolve-op path bitwise).
+
+
+## D243 (v19.14) — Batch 28: grid tuning round (3-decade cap, density gate, scaled axes), top-view white overlay, live node editor, ease-tag fixes, badge revert
+
+Date: 2026-09-01, his feedback on D242 — "all of the glitchiness
+of the floor grid looks to be gone and the fading is clean."
+Eight items.
+
+1. **Grid tuning** (all user spec): the coarsest decade is CAPPED
+   at 100 m (GRID_DECADES 3, base ≤ 2 — no 1 km+ grids ever);
+   line widths hw = 0.03·q^0.6 (q^0.7's close-up 100 m lines read
+   "massive"); a DENSITY GATE ss(3·dRef/q − 0.3) keeps the 100 m
+   grid away until the camera is well out (~15 m eye: gone; ~45 m:
+   full); the width-coverage attenuation relaxed (sqrt-grazing,
+   dead 0.2 px / full 0.7 px — was grazing^0.75 with 0.35/1.0) so
+   each grid reaches MUCH further before fading ("a little
+   artifact on the horizon is OK" — his explicit tolerance).
+2. **The MAIN AXES are the only lines on the world zero lines**
+   and scale like grid lines (user spec): buildAxisMesh reworked —
+   segments ±6.4 km from the camera anchor in a geometric ladder
+   (AXIS_SEG), per-segment half-width max(0.09, 0.0016·d) = ~1.5
+   screen px at its own distance AND wider than the 100 m
+   decade's line wherever that decade is visible, so the white
+   zero lines underneath (drawn by every decade since the D242
+   skip removal) never peek out — the axes render AFTER the grid
+   in the depth-disabled submission order. Strength fades
+   smoothly by 6.4 km; anchor quantized 30 m.
+3. **Middle-clicking out of the TOP view orbits around the ground
+   point under the cursor** (user spec): before exitOrthoKeepView
+   the pivot moves to the click's XZ at y=0 (the ortho lens's
+   screen→world math; top is always yaw-0 since D241 so the
+   mapping is exact). Top→orbit also keeps grid density/width
+   roughly continuous by construction now: the ortho overlay and
+   the 3D law agree on which decades are visible at a given m/px.
+4. **The TOP view's 2D overlay strokes WHITE** (like the 3D grid;
+   user spec) — side views keep the grey-blue; behavior (zoom
+   sizing, per-zoom decades — which he called out as liked)
+   unchanged; gridFamily gained a color parameter.
+5. **Badges: the type colors are GONE** (his explicit reversal of
+   D241/D242) — neutral gray again but LIGHTER than historic
+   (fill 56,62,76 / hot 84,92,112) with a THICKER edge (1.6 px,
+   2.2 hot); capitalized labels and the raised alphas stay.
+6. **Node editor lives** (user spec): a resync hook runs at the
+   top of EVERY redraw (GraphEditor.redrawHooks + a reentry
+   guard) — outside changes to the node, its handles, or the
+   previous node update every box and twin in real time; a
+   FOCUSED box is never overwritten (typing safe), undo restores
+   force-overwrite; LiveNum.set() no-ops on equal text, which
+   both makes the steady state free AND stops the resync from
+   wiping the ease-resume anchor every frame. Also "(g)" dropped
+   from the Vertical G / Lateral G row titles (redundant).
+7. **The vanished ease tag** (his report — a D242 regression):
+   an UNMANAGED node is never resized by its parent, so the
+   overlay tag stayed 0×0 and rendered nothing; place() now
+   autosize()s it. Worth remembering alongside the D242 blend
+   lesson: unmanaged JavaFX nodes need explicit sizing.
+8. **Focus visible on an ease stop** (his report): the ring style
+   replaces the skin's focus visuals, so a focused box showed
+   nothing — the ring is 1 px now (half of D240, his suggestion)
+   and a focused box adds an -fx-focus-color layer at negative
+   insets (outside the bounds — layout untouched, the D242
+   layout-neutrality preserved).
+
+Verification: gridshot ladder (clean 10 m field reaching ~2-3×
+further at orbit heights, no massive close-up 100 m lines, thin
+even top-down 100 m grid, axes running to the horizon at every
+height, white top-ortho overlay); devshot; DetermGate197/199 +
+CoreCheck + ConflictGate smoke (NO model-layer changes this
+round — the full battery ran identically in D242).
+
+
+## D244 (v19.15) — Batch 29: grid reach ×5 at half thickness, ease-tag first-open placement, the "-0.000" fix, influence titles
+
+Date: 2026-09-01, his quick follow-up on D243. Four items.
+
+1. **Grid ~5× reach, half thickness** (user spec): gridHw 0.015·
+   q^0.6 (halved), the width-attenuation thresholds dropped ~5×
+   (dead 0.04 px / full 0.16 — was 0.2/0.7), the cell fade-in
+   starts at 0.8 px (was 2), and the ring ladder extends to 128q
+   (the reach outran the 64q mesh edge — a clipped square would
+   have shown). The far tail renders as a soft dashed haze —
+   explicitly accepted ("a little artifacts on the horizon", his
+   standing tolerance). Axes untouched (approved last round;
+   they still cover the thinner zero lines everywhere).
+
+2. **Ease tag inside the box at first open** (his report): the
+   HBox's layoutBounds listener fires BEFORE the first layout
+   pass positions the children, so place() read zero bounds and
+   parked the tag at x≈5 over the digits until any later
+   re-place. Now the managed children's boundsInParent changes
+   re-place it (they fire after positioning) plus one
+   Platform.runLater pulse after construction.
+
+3. **"-0.000" never displays** (his report + the why): the flat
+   handle's slope is inDv/effInDt where effInDt is NEGATIVE by
+   convention — a ±0.0 numerator yields −0.0, and typing 0 in
+   the slope box stores −0.0 right back via 0·(−dt), so the sign
+   "came back"; it appeared only after a mouse move because the
+   D243 live resync was the writer. Fix at the DISPLAY layer:
+   FvdDesigner.z3 snaps any value that renders as zero at 3
+   decimals (|v| < 5e-4 — −0.0 and dust alike) to +0.0, applied
+   in LiveNum.fmt, the node-dialog twins, the POV bar's numeric
+   fields + angTxt (his old screenshot showed "(-0.000°/s)"
+   there), and the graph hover/drag slope readouts.
+
+4. **Badge-menu influence items retitled** "Influence geo
+   graphs" / "Influence force graphs" (user spec — the
+   resulting/felt qualifiers dropped).
+
+Verification: gridshot ladder (10 m field to near-horizon at
+orbit heights, full-frame even 100 m field straight down, thinner
+lines everywhere); no model-layer changes (DetermGate197 +
+CoreCheck smoke).
+
+
+## D245 (v19.16) — Batch 30: sign-preserving dust display, grid reach ×3 (grazing-aware)
+
+Date: 2026-09-01. Two items + two answered questions.
+
+1. **"-0.000" re-specced sign-preserving** (user): z3 now snaps
+   only |v| < 1e-6 to +0.0 — true zero, −0.0 and deep dust show
+   "0.000"; anything from 1e-6 up keeps its real sign, so
+   "-0.000" honestly reads "a little negative" (his ask: the user
+   should see the dust's sign "up to a certain point"). Edge
+   cases examined: display-only (nothing reads formatted text
+   back into the model), fixed-slot POV bar and fixed-width boxes
+   mean a sign flicker on oscillating ±1e-6 dust moves no layout
+   — the flicker IS the requested information. His curiosity
+   answered: typed sub-display values apply at FULL double
+   precision (the sink takes the parsed value; only the display
+   rounds — though a subsequent STEPPER step starts from the
+   displayed text, i.e. the rounded value).
+
+2. **Grid reach ×3 — grazing-aware** (user: "3× as far"). A flat
+   ~5× threshold drop was tried first and probed visually: it let
+   the FINEST decade survive as a mid-range speckle carpet over
+   the working area (at eye ~80 m the 1 m lines at 0.12 px width
+   painted dot noise everywhere — the same px regime as the
+   wanted far tail, differing only in VIEWING ANGLE). So both
+   fade gates now slide with grazing proximity f =
+   ss((dRef/dist)/0.45): the width floor 0.04 px (steep, = the
+   clean D244 tuning) → 0.008 edge-on, the cell fade-in start
+   0.8 px → 0.09 — the horizon-ward reach roughly triples while
+   steep views keep their speckle-free look. Ring ladder extends
+   to 384q, with rings whose inner edge passes the 5.5 km far
+   clip never built (null slots, guarded). Gridshot-verified:
+   the low-graze and orbit poses run the 10 m field far toward
+   the horizon with a soft dashed tail; near/mid fields clean.
+
+No model-layer changes; compile + gridshot ladder.
+
+
+## D246 (v19.17) — Batch 31: the low-height grid flicker (height-gated reach)
+
+Date: 2026-09-01. One item — his report: from low down the grid
+flickers, worst when traveling straight along an axis; stopping
+shows several ENTIRE lines missing.
+
+Root cause: the D245 long reach permits DEEP-sub-pixel line
+widths at low grazing, and near the ground most of the visible
+field IS low-grazing — a quad 0.01-0.1 px wide either lands on an
+MSAA sample column (drawn, full length) or misses it entirely
+(invisible), so parallel lines alternate visible/missing by their
+sub-pixel phase against the pixel lattice, and camera motion
+slides that phase = whole lines popping (gradual alpha can't fix
+it — it's rasterization coverage, not opacity, which is why "more
+gradual fading" alone wouldn't have helped).
+
+Fix — his own suggested trade, implemented smoothly: the reach is
+HEIGHT-GATED. c = 1 − hf·(1 − f) with hf = ss(dRef/70) joins the
+D245 grazing factor f: at eye heights below ~20 m the gates sit
+at the clean D244 tuning (short, solid, flicker-free field); by
+~70 m the full D245 horizon reach is unlocked — both dimensions
+smoothstep-continuous, so the field expands as you rise and
+contracts as you descend with no seam ("would need to be
+seamless", his spec). Distance views (which are taken from
+height) keep their full density — gridshot-verified: the
+mid-orbit pose is pixel-identical to D245, the low-graze pose
+contracts to a clean solid field.
+
+No model-layer changes; compile + gridshot ladder.

@@ -29,9 +29,9 @@ public class AppSettings {
         { "smooth", "Toggle smooth/broken node",  "B", "Graph editor" },
         { "matchAll", "Match boundary: all lanes", "Shift+B", "Graph editor" },
         { "flath",  "Level selection / flatten handles", "H", "Graph editor" },
-        { "levelSel", "Level-lock selection", "Shift+H", "Graph editor" },
-        { "align",  "Straighten between selected pair", "F", "Graph editor" },
-        { "alignLock", "Straight-lock between selected pair", "Shift+F", "Graph editor" },
+        { "levelSel", "Level-lock selection / with previous", "Shift+H", "Graph editor" },
+        { "align",  "Straighten selection / with previous", "F", "Graph editor" },
+        { "alignLock", "Straight-lock selection / with previous", "Shift+F", "Graph editor" },
         { "lockv",  "Lock node drag: vertical",   "Z", "Graph editor" },
         { "lockh",  "Lock node drag: horizontal", "X", "Graph editor" },
         { "delNode", "Delete selected node",      "Delete", "Graph editor" },
@@ -108,6 +108,16 @@ public class AppSettings {
         props.setProperty(key, String.format(Locale.US, "%.4f", v));
         save();
     }
+
+    /** RESOLUTION SCALE (v19.12, D241): a RELATIVE factor on the OS
+     *  display scale — 1.0 = leave the OS scale alone (today's
+     *  behavior exactly; the glass property is then never set).
+     *  Read by coaster.Main BEFORE the JavaFX toolkit initializes
+     *  (glass.win.uiScale is consumed in WinApplication's clinit, so
+     *  it cannot apply mid-session — restart-only) and edited in
+     *  Preferences > Resolution Scale…. */
+    public double uiScale() { return getD("uiScale", 1.0); }
+    public void setUiScale(double v) { setD("uiScale", v); }
 
     /** Track-view field of view: orbit + POV cameras. */
     public double fov() { return getD("fov", FOV_DEFAULT); }
@@ -265,6 +275,19 @@ public class AppSettings {
 
     public void setResRollAbs(boolean on) {
         props.setProperty("resRollAbs", String.valueOf(on));
+        save();
+    }
+
+    /** Resulting yaw/pitch BEHAVIOR (v19.9, D238): absolute
+     *  elevation/heading angles instead of rates — the resRollAbs
+     *  twin for overlay comps 1/2 (global yaw/pitch axis only,
+     *  force view only — geo view's comps are felt G). */
+    public boolean resYpAbs() {
+        return Boolean.parseBoolean(props.getProperty("resYpAbs", "false"));
+    }
+
+    public void setResYpAbs(boolean on) {
+        props.setProperty("resYpAbs", String.valueOf(on));
         save();
     }
 

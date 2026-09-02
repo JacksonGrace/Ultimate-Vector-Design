@@ -322,6 +322,17 @@ public final class TrackCompiler {
             // differenced across dt = 0; v13.10 D84). A strict-seam
             // FOLLOWER's entry coincides the same way (v17.1).
             boolean continuation = bridgedIn || followed;
+            // PIECE-RELATIVE absolute heading (v19.9, D238 — user
+            // spec: "make yaw a global value like the pitch and
+            // roll"): an ABSOLUTE heading lane's zero is the PIECE's
+            // entry heading, not the section's. Each section still
+            // generates heading-stripped (D199), so geoLane shifts
+            // the lane by the section entry's piece-relative heading
+            // — the chain-psi DIFFERENCE, pure generation bits:
+            // placement x/y/z + yaw moves stay bitwise-rigid, and a
+            // piece's FIRST section keeps offset 0 (bitwise the
+            // D237 behavior).
+            double psiPieceStart = cp.psiDeg();
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // LIVE-FOLLOW (v13.1, D73): re-capture the solve
@@ -447,7 +458,8 @@ public final class TrackCompiler {
                     // (identity = no-op)
                     local = passGRaw(section,
                         new TrackPose(Vec3.ZERO, cp.canon(),
-                            pose.s0(), pose.t0()), dt, fric);
+                            pose.s0(), pose.t0()), dt, fric,
+                        psiPieceStart - cp.psiDeg());   // RL (D238)
                     line = placeLine(local, cp);
                     pose = line.exit();
                     cp = chainNext(cp, local, pose.pos());
@@ -666,13 +678,25 @@ public final class TrackCompiler {
 
     static Centerline passGRaw(Section section, TrackPose entry, double dt,
                                FVDIntegrator.Friction fric) {
+        return passGRaw(section, entry, dt, fric, 0);
+    }
+
+    /** ypHeadDeg = the section entry's PIECE-relative heading (deg,
+     *  reported-left; v19.9, D238) — the constant an ABSOLUTE
+     *  heading lane shifts by so its zero is the PIECE entry. 0 for
+     *  piece firsts, one-shot callers and every non-abs section. */
+    static Centerline passGRaw(Section section, TrackPose entry, double dt,
+                               FVDIntegrator.Friction fric,
+                               double ypHeadDeg) {
         if (section instanceof ForceSection fs) {
             if (fs.influenced()) return influencedLane(fs, entry, dt, false, fric);
             return forceLane(fs, entry, dt, fric);
         }
         if (section instanceof GeoSection gs) {
-            if (gs.influenced()) return influencedLane(gs, entry, dt, true, fric);
-            return geoLane(gs, entry, dt, fric);
+            if (gs.influenced()) {
+                return influencedLane(gs, entry, dt, true, fric, ypHeadDeg);
+            }
+            return geoLane(gs, entry, dt, fric, null, ypHeadDeg);
         }
         if (section instanceof StraightCurveSection sc) {
             // straight/curve (v11.0): same quaternion-native pattern as
@@ -1186,21 +1210,41 @@ public final class TrackCompiler {
      *  domain v16.0 like forceLane). */
     private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt,
                                       FVDIntegrator.Friction fric) {
-        return geoLane(gs, entry, dt, fric, null);
+        return geoLane(gs, entry, dt, fric, null, 0);
     }
 
     /** dInfl = influence FELT delta keyframes (ΔGv/ΔGl) on the
-     *  lanes' own axis (v19.7, D236); null = plain, bitwise. */
+     *  lanes' own axis (v19.7, D236); null = plain, bitwise.
+     *  ypHeadDeg = the entry's piece-relative heading (D238): an
+     *  ABSOLUTE heading lane authors PIECE-relative values, and the
+     *  canonical generation frame re-zeroes at the SECTION entry —
+     *  the constant shift bridges the two (slopes untouched, so the
+     *  feed-forward and felt records ride through; representatives
+     *  360° apart are the same orientation — projectYp wraps). */
     private static Centerline geoLane(GeoSection gs, TrackPose entry, double dt,
                                       FVDIntegrator.Friction fric,
-                                      List<FVDIntegrator.Keyframe> dInfl) {
+                                      List<FVDIntegrator.Keyframe> dInfl,
+                                      double ypHeadDeg) {
         boolean dist = gs.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs =
             BezierBaker.bake(gs.lanes, dist ? 0.05 : 0.01);   // D151
         boolean gAbs = gs.rollAbsolute && gs.rollGlobal;   // v16.7
         if (gAbs) kfs = exactRoll(kfs, gs.lanes.get(2));
         boolean gYpAbs = gs.ypAbsolute && gs.yawPitchGlobal;   // v19.8, D237
-        if (gYpAbs) kfs = exactYp(kfs, gs.lanes.get(0), gs.lanes.get(1));
+        if (gYpAbs) {
+            kfs = exactYp(kfs, gs.lanes.get(0), gs.lanes.get(1));
+            // piece-relative → section-local heading (D238); the
+            // reversed legacy path keeps its own canonical frame
+            if (ypHeadDeg != 0 && !gs.reversed) {
+                List<FVDIntegrator.Keyframe> sh =
+                    new ArrayList<>(kfs.size());
+                for (FVDIntegrator.Keyframe k : kfs) {
+                    sh.add(new FVDIntegrator.Keyframe(k.t(), k.Gv(),
+                        k.Gl() - ypHeadDeg, k.rollRateDeg()));
+                }
+                kfs = sh;
+            }
+        }
         if (gs.reversed) {
             GeoIntegrator.Result rr = dist
                 ? GeoIntegrator.integrateDist(kfs, dt, gs.vDesign,
@@ -1267,14 +1311,22 @@ public final class TrackCompiler {
     static Centerline influencedLane(LaneSection ls, TrackPose entry,
                                      double dt, boolean isGeo,
                                      FVDIntegrator.Friction fric) {
+        return influencedLane(ls, entry, dt, isGeo, fric, 0);
+    }
+
+    static Centerline influencedLane(LaneSection ls, TrackPose entry,
+                                     double dt, boolean isGeo,
+                                     FVDIntegrator.Friction fric,
+                                     double ypHeadDeg) {
         if ((ls.rollAbsolute && ls.rollGlobal)
                 || (ls.ypAbsolute && ls.yawPitchGlobal)) {
             // absolute-angle sections take no influence (deltas are
             // RATES — the projection would silently erase them;
             // ypAbsolute joins in v19.8, D237)
             ls.baseCurves = null;
-            return isGeo ? geoLane((GeoSection) ls, entry, dt, fric)
-                         : forceLane((ForceSection) ls, entry, dt, fric);
+            return isGeo
+                ? geoLane((GeoSection) ls, entry, dt, fric, null, ypHeadDeg)
+                : forceLane((ForceSection) ls, entry, dt, fric);
         }
         boolean distAxis = ls.domain() == Section.Domain.DISTANCE;
         List<FVDIntegrator.Keyframe> kfs =
@@ -1294,7 +1346,7 @@ public final class TrackCompiler {
         List<FVDIntegrator.Keyframe> dKfs =
             BezierBaker.bake(ls.deltaLanes, distAxis ? 0.05 : 0.01);
         Centerline line = isGeo
-            ? geoLane((GeoSection) ls, entry, dt, fric, dKfs)
+            ? geoLane((GeoSection) ls, entry, dt, fric, dKfs, 0)
             : forceLane((ForceSection) ls, entry, dt, fric, dKfs,
                 ls.inflYawPitchGlobal);
         // base rows for the editor's guides: resulting − delta —

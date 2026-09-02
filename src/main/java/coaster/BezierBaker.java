@@ -148,10 +148,17 @@ public class BezierBaker {
         return -clamp(b.inFrac, 0, MAX_FRAC) * (b.t - a.t);
     }
 
-    /** End time of the ride: latest node across all lanes. */
+    /** End time of the ride: latest node across all lanes. EMPTY
+     *  lanes contribute 0 (v19.11, D240 hardening — legal documents
+     *  never hold one, but the editor's NO_LANES placeholder can
+     *  transiently pair with a lane section and a get(-1) here took
+     *  the whole redraw down). */
     public static double rideEnd(List<List<Node>> lanes) {
         double end = 0;
-        for (List<Node> lane : lanes) end = Math.max(end, lane.get(lane.size() - 1).t);
+        for (List<Node> lane : lanes) {
+            if (lane.isEmpty()) continue;
+            end = Math.max(end, lane.get(lane.size() - 1).t);
+        }
         return end;
     }
 
@@ -200,6 +207,7 @@ public class BezierBaker {
     /** Sample one lane's chain of cubic Beziers into a (t, value) polyline. */
     private static List<double[]> bakeLane(List<Node> lane) {
         List<double[]> poly = new ArrayList<>();
+        if (lane.isEmpty()) return poly;   // D240 hardening (rideEnd's note)
         if (lane.size() == 1) {
             Node only = lane.get(0);
             poly.add(new double[]{ only.t, only.val });
@@ -342,6 +350,7 @@ public class BezierBaker {
     }
 
     private static double evalPolyline(List<double[]> poly, double t) {
+        if (poly.isEmpty()) return 0;   // D240 hardening (rideEnd's note)
         if (t <= poly.get(0)[0]) return poly.get(0)[1];
         int hi = poly.size() - 1;
         if (t >= poly.get(hi)[0]) return poly.get(hi)[1];

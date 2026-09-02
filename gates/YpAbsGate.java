@@ -225,6 +225,129 @@ public class YpAbsGate {
             "g1 a 260° authored heading turns 260° (unwrap)",
             String.format(Locale.US, "turned %.4f°", tot));
 
+        // ---- (h) PIECE-RELATIVE heading (v19.9, D238 — the user's
+        // "yaw always sets the entrance angle to zero" fix: the
+        // heading lane's zero is the PIECE entry, continuous across
+        // the piece's chain like elevation and bank) ----
+        // h1: rate section turns LEFT ~40°, then an abs section
+        // HOLDS heading 40 — the track continues STRAIGHT at the
+        // world 40° heading (under D237 it turned ANOTHER 40°)
+        Coaster ch = new Coaster();
+        ch.v0 = 24;
+        ch.pieces.add(new TrackPiece(0, 21, 0, 0));
+        List<List<BezierBaker.Node>> rlh = new ArrayList<>();
+        rlh.add(lane(new double[][]{ {0, 0}, {4, 0} }));
+        rlh.add(lane(new double[][]{ {0, 10}, {4, 10} }));   // 40° left
+        rlh.add(lane(new double[][]{ {0, 0}, {4, 0} }));
+        GeoSection gA = new GeoSection(rlh, 24);
+        gA.yawPitchGlobal = true;
+        ch.pieces.get(0).sections.add(gA);
+        List<List<BezierBaker.Node>> alh = new ArrayList<>();
+        alh.add(lane(new double[][]{ {0, 0}, {6, 0} }));
+        alh.add(lane(new double[][]{ {0, 40}, {6, 40} }));
+        alh.add(lane(new double[][]{ {0, 0}, {6, 0} }));
+        GeoSection gB = new GeoSection(alh, 24);
+        gB.yawPitchGlobal = true;
+        gB.ypAbsolute = true;
+        ch.pieces.get(0).sections.add(gB);
+        TrackCompiler.Result rh = TrackCompiler.compile(ch, DT);
+        TrackCompiler.Span spB = rh.spans().get(1);
+        double hMin = 1e9, hMax2 = -1e9;
+        for (int i = spB.i0() + 5; i <= spB.i1(); i++) {
+            double h = headingDegOf(rh.samples().get(i));
+            hMin = Math.min(hMin, h);
+            hMax2 = Math.max(hMax2, h);
+        }
+        check(Math.abs(hMin - 40) < 0.05 && Math.abs(hMax2 - 40) < 0.05,
+            "h1 abs heading 40 mid-piece = the WORLD 40° heading",
+            String.format(Locale.US, "span heading %.3f..%.3f°",
+                hMin, hMax2));
+        // h2: piece YAW moves stay rigid — heights bitwise, the
+        // heading field rotated wholesale (the D199 contract holds
+        // through the D238 shift: chain-psi differences only)
+        ch.pieces.get(0).yawDeg = 30;
+        TrackCompiler.Result rh2 = TrackCompiler.compile(ch, DT);
+        boolean rigid = rh2.samples().size() == rh.samples().size();
+        double dHd = 0;
+        for (int i = 0; rigid && i < rh.samples().size(); i++) {
+            rigid = rh.samples().get(i).pos().y()
+                == rh2.samples().get(i).pos().y();
+            double d = headingDegOf(rh2.samples().get(i))
+                - headingDegOf(rh.samples().get(i)) + 30;
+            d -= 360 * Math.round(d / 360);
+            dHd = Math.max(dHd, Math.abs(d));
+        }
+        check(rigid && dHd < 1e-9,
+            "h2 piece yaw stays bitwise-rigid on abs-heading track",
+            String.format(Locale.US, "y bitwise %s, heading Δ %.2e°",
+                rigid, dHd));
+        ch.pieces.get(0).yawDeg = 0;
+        // h3: SPLIT PIECE at the boundary — the moved abs lane
+        // REBASES onto the new piece (chain-psi delta) and the
+        // track holds to ulp class
+        TrackCompiler.Result rh0 = TrackCompiler.compile(ch, DT);
+        int np = ch.splitPiece(0, 1, rh0.spans().get(0));
+        check(np == 1, "h3a splitPiece succeeds", "");
+        double vB0 = ((LaneSection) ch.pieces.get(1).sections.get(0))
+            .lanes.get(1).get(0).val;
+        check(Math.abs(vB0) < 0.01,
+            "h3b the moved abs lane re-zeroes at the new piece",
+            String.format(Locale.US, "lane value %.4f° (was 40)", vB0));
+        TrackCompiler.Result rh3 = TrackCompiler.compile(ch, DT);
+        // a DETACHED piece keeps its first sample (no continuation
+        // drop), so the split compile carries one extra sample that
+        // duplicates the boundary — align around it
+        int bIdx = rh0.spans().get(0).i1();
+        double devH = 0;
+        boolean sized = rh3.samples().size() == rh0.samples().size() + 1;
+        for (int i = 0; sized && i < rh0.samples().size(); i++) {
+            int j = i <= bIdx ? i : i + 1;
+            devH = Math.max(devH, rh0.samples().get(i).pos()
+                .sub(rh3.samples().get(j).pos()).length());
+        }
+        check(sized && devH < 1e-9,
+            "h3 splitPiece rebases the abs heading (track holds)",
+            String.format(Locale.US, "dev %.2e m", devH));
+        // h4: a MID-PIECE rate→abs convert extracts PIECE-relative
+        // heading — the fitted lane's entry sits at ~40, not 0
+        Coaster ch4 = new Coaster();
+        ch4.v0 = 24;
+        ch4.pieces.add(new TrackPiece(0, 21, 0, 0));
+        List<List<BezierBaker.Node>> rlh4 = new ArrayList<>();
+        rlh4.add(lane(new double[][]{ {0, 0}, {4, 0} }));
+        rlh4.add(lane(new double[][]{ {0, 10}, {4, 10} }));
+        rlh4.add(lane(new double[][]{ {0, 0}, {4, 0} }));
+        GeoSection g4a = new GeoSection(rlh4, 24);
+        g4a.yawPitchGlobal = true;
+        ch4.pieces.get(0).sections.add(g4a);
+        List<List<BezierBaker.Node>> rlh4b = new ArrayList<>();
+        rlh4b.add(lane(new double[][]{ {0, 0}, {6, 0} }));
+        rlh4b.add(lane(new double[][]{ {0, 5}, {6, 5} }));
+        rlh4b.add(lane(new double[][]{ {0, 0}, {6, 0} }));
+        GeoSection g4b = new GeoSection(rlh4b, 24);
+        g4b.yawPitchGlobal = true;
+        ch4.pieces.get(0).sections.add(g4b);
+        TrackCompiler.Result r4pre = TrackCompiler.compile(ch4, DT);
+        boolean ok4 = ch4.convertWholeSection(0, 1, true, DT, 0.1, 0,
+            Section.Domain.TIME, false, true, false, false, false,
+            true);
+        LaneSection c4 = (LaneSection) ch4.pieces.get(0).sections.get(1);
+        double h40 = c4.lanes.get(1).get(0).val;
+        check(ok4 && c4.ypAbsolute && Math.abs(h40 - 40) < 0.5,
+            "h4 mid-piece convert extracts PIECE-relative heading",
+            String.format(Locale.US, "entry node %.3f° (expect ~40)",
+                h40));
+        TrackCompiler.Result r4post = TrackCompiler.compile(ch4, DT);
+        double dev4 = 0;
+        int n4 = Math.min(r4pre.samples().size(), r4post.samples().size());
+        for (int i = 0; i < n4; i++) {
+            dev4 = Math.max(dev4, r4pre.samples().get(i).pos()
+                .sub(r4post.samples().get(i).pos()).length());
+        }
+        check(dev4 < 0.35,
+            "h5 the mid-piece re-author reproduces the shape",
+            String.format(Locale.US, "dev %.3f m", dev4));
+
         System.out.println();
         System.out.println(fail == 0
             ? "ALL YP-ABS GATES PASS (" + pass + ")"

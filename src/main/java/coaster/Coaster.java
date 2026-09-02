@@ -216,8 +216,45 @@ public class Coaster {
         List<Section> tail = src.sections.subList(sectionIdx, src.sections.size());
         cut.sections.addAll(tail);
         tail.clear();
+        // ABSOLUTE heading lanes REBASE onto the new piece (v19.9,
+        // D238 — piece-relative heading): the moved sections' zero
+        // was the OLD piece's entry; the new piece's is the
+        // boundary. The shift is the chain-psi difference — pure
+        // generation bits, so the split stays bitwise (the compile's
+        // own shift changes by exactly the amount added here).
+        if (pair) {
+            rebaseAbsHeading(cut.sections,
+                boundarySpan.exitPsi() - entryPsiInternal(src));
+        }
         pieces.add(pieceIdx + 1, cut);
         return pieceIdx + 1;
+    }
+
+    /** A piece's entry chain heading (deg, INTERNAL sign — the psi
+     *  pieceCanon generates at; v19.9, D238). */
+    private static double entryPsiInternal(TrackPiece p) {
+        return p.canonOrient != null
+            ? p.canonPsiDeg + p.yawDeg
+            : TrackCompiler.headingDeg(p.baseOrient) + p.yawDeg;
+    }
+
+    /** Shift every ABSOLUTE heading lane of the given sections by
+     *  the INTERNAL chain-psi delta (deg) their piece's entry moved
+     *  by (v19.9, D238): h' = h + Δpsi — reported-left heading is
+     *  the negated chain psi, so a boundary the chain reached at
+     *  +Δpsi sits at −Δpsi reported, and re-zeroing there subtracts
+     *  it. Constant shift: handles, slopes and shape untouched. */
+    private static void rebaseAbsHeading(List<Section> secs,
+                                         double dPsiDeg) {
+        if (dPsiDeg == 0) return;
+        for (Section s : secs) {
+            if (s instanceof GeoSection g && g.ypAbsolute
+                    && g.yawPitchGlobal && !g.reversed) {
+                for (BezierBaker.Node nd : g.lanes.get(1)) {
+                    nd.val += dPsiDeg;
+                }
+            }
+        }
     }
 
     /** RE-ANCHOR a piece at a compiled section boundary (v19.6, D235
@@ -232,6 +269,9 @@ public class Coaster {
      *  orphaned). */
     public void reanchorAtBoundary(TrackPiece p,
                                    TrackCompiler.Span boundarySpan) {
+        // the OLD entry psi — read BEFORE the placement overwrites
+        // below (v19.9, D238: the abs-heading rebase needs it)
+        double oldPsi = entryPsiInternal(p);
         TrackPose boundary = boundarySpan.exit();
         p.x = boundary.pos().x();
         p.y = boundary.pos().y();
@@ -262,6 +302,13 @@ public class Coaster {
             } else {
                 p.canonOrient = null;   // re-solve from the world pose
             }
+        }
+        // ABSOLUTE heading lanes REBASE at the new entry (v19.9,
+        // D238 — the splitPiece rule: the piece's heading zero moved
+        // to the boundary; the yaw-delta term cancels between psi0
+        // and the chain, so the shift is the plain psi delta)
+        if (pair) {
+            rebaseAbsHeading(p.sections, boundarySpan.exitPsi() - oldPsi);
         }
     }
 
@@ -690,6 +737,17 @@ public class Coaster {
         if (targetIdx == floatingIdx) return;
         TrackPiece target = pieces.get(targetIdx);
         TrackPiece floating = pieces.get(floatingIdx);
+        // ABSOLUTE heading lanes REBASE into the target's frame
+        // (v19.9, D238 — piece-relative heading): the moved lanes'
+        // zero was the floating piece's entry; shifting by the
+        // psi delta keeps their WORLD heading targets — exactly how
+        // elevation and bank carry through an attach (and the exact
+        // inverse of splitPiece's rebase, so split→attach
+        // round-trips; the un-strict and bridge-stitch flows ride
+        // this too — the attached track's shape survives instead of
+        // re-aiming at the target's entry heading).
+        rebaseAbsHeading(floating.sections,
+            entryPsiInternal(target) - entryPsiInternal(floating));
         target.sections.addAll(floating.sections);
         pieces.remove(floatingIdx);
     }
@@ -978,7 +1036,8 @@ public class Coaster {
         LaneSection W = fitLanes(w, vW, lPrev instanceof GeoSection,
             dt, spacing, adaptTol, lPrev.domain(), lPrev.rollGlobal,
             lPrev.yawPitchGlobal, lPrev.ratePerMeter, lPrev.rollAbsolute,
-            lPrev.ypAbsolute);
+            lPrev.ypAbsolute,
+            pieceHeadDeg(r, followerIdx - 1));   // W joins piece A (D238)
         if (W == null) return "the window is too short to re-fit";
         // ---- assemble ----
         List<List<BezierBaker.Node>> leftLanes =
@@ -1004,12 +1063,34 @@ public class Coaster {
         nextRight.ratePerMeter = lNext.ratePerMeter;
         nextRight.rollAbsolute = lNext.rollAbsolute;
         nextRight.ypAbsolute = lNext.ypAbsolute;
-        // the ABS heading rebase at the window end (D237 — the
-        // splitSectionAt rule)
+        // the ABS heading rebase at the window end (piece-relative
+        // since v19.9, D238): B re-anchors at the window end, so
+        // EVERY absolute heading lane in B re-zeroes there — the
+        // shift is the heading traversed from B's old entry to the
+        // cut. Read off the authored lane when B's first section is
+        // itself abs (exact), else off the samples (a multi-turn
+        // window may land a 360° representative off — the same
+        // orientation either way, the integrator wraps).
+        double hCutB = Double.NaN;
         if (lNext.ypAbsolute && lNext.yawPitchGlobal) {
-            double hCut = BezierBaker.exactAt(lNext.lanes.get(1), cutB);
+            hCutB = BezierBaker.exactAt(lNext.lanes.get(1), cutB);
             for (BezierBaker.Node nd : nextRight.lanes.get(1)) {
-                nd.val -= hCut;
+                nd.val -= hCutB;
+            }
+        }
+        if (Double.isNaN(hCutB)) {
+            double hs = FVDIntegrator.headingOfT(csB.T());
+            double hp = pieceHeadDeg(r, followerIdx);
+            hCutB = Double.isNaN(hs) || Double.isNaN(hp)
+                ? 0 : Math.IEEEremainder(Math.toDegrees(hs) - hp, 360);
+        }
+        for (int k2 = 1; k2 < B.sections.size(); k2++) {
+            if (B.sections.get(k2) instanceof GeoSection g2
+                    && g2.ypAbsolute && g2.yawPitchGlobal
+                    && !g2.reversed && hCutB != 0) {
+                for (BezierBaker.Node nd : g2.lanes.get(1)) {
+                    nd.val -= hCutB;
+                }
             }
         }
         nextRight.vPinned = lNext.vPinned;
@@ -1973,6 +2054,68 @@ public class Coaster {
         return true;
     }
 
+    /** DESIGN → REAL with ABSOLUTE lanes CONVERTED to the current
+     *  true shape (v19.11, D240 — user spec, his "Design to real
+     *  not working" file): absolute elevation/heading/bank targets
+     *  re-assert themselves whatever entry frame the design tier
+     *  supplies (projectYp / the abs-bank projection), so the plain
+     *  design := true write snapped an all-absolute piece straight
+     *  back to the DESIGN shape after one integration step. This op
+     *  refits the CHOSEN absolute lanes (convYp = elevation+heading,
+     *  convBank = bank) from the CURRENT compiled — i.e. conflict-
+     *  tilted, on-screen — curves, installs ONLY those lanes in
+     *  place (every other lane, flag, control and pin untouched;
+     *  rate lanes are entry-relative and re-solve correctly on
+     *  their own), then writes design := true. The fit reads
+     *  compileForFit BEFORE the write (the samples must be the
+     *  tilted truth) with the section's own flags + the D238 piece
+     *  heading reference. Sections too short to fit keep their
+     *  authored lanes (they'd snap — the honest fallback). */
+    public boolean designToRealConvert(int pieceIdx, boolean convYp,
+            boolean convBank, double dt, double spacing,
+            double adaptTol) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return false;
+        TrackPiece piece = pieces.get(pieceIdx);
+        TrackCompiler.Result r = compileForFit(dt);
+        double headRef = pieceHeadDeg(r, pieceIdx);
+        int spanBase = 0;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanBase += pieces.get(p).sections.size();
+        }
+        for (int k = 0; k < piece.sections.size(); k++) {
+            Section sec = piece.sections.get(k);
+            int si = spanBase + k;
+            if (!(sec instanceof LaneSection ls) || ls.reversed()
+                    || ls.influenced() || si >= r.spans().size()) {
+                continue;
+            }
+            boolean ypHon = ls instanceof GeoSection && ls.ypAbsolute
+                && ls.yawPitchGlobal;
+            boolean bankHon = ls.rollAbsolute && ls.rollGlobal;
+            boolean doYp = convYp && ypHon;
+            boolean doBank = convBank && bankHon;
+            if (!doYp && !doBank) continue;
+            TrackCompiler.Span sp = r.spans().get(si);
+            if (sp.i1() - sp.i0() < 4) continue;   // too short to fit
+            LaneSection fit = fitLanes(withEntry(r.samples(), sp, dt),
+                ls.vDesign(), ls instanceof GeoSection, dt, spacing,
+                adaptTol, ls.domain(), ls.rollGlobal, ls.yawPitchGlobal,
+                ls.ratePerMeter, bankHon, ypHon, sec, sp, headRef);
+            if (fit == null) continue;
+            for (int L = 0; L < 3; L++) {
+                if (!(L < 2 ? doYp : doBank)) continue;
+                List<BezierBaker.Node> dst = ls.lanes.get(L);
+                dst.clear();
+                for (BezierBaker.Node nd : fit.lanes.get(L)) {
+                    dst.add(nd.copy());
+                }
+            }
+        }
+        piece.designPitchDeg = piece.pitchDeg;
+        piece.designRollDeg = piece.rollDeg;
+        return true;
+    }
+
     /** Compile with every piece's strict-seam SMOOTHING suspended
      *  (v17.2, D139) — the read for every lane-refit op. The smoothing
      *  blend rewrites the samples around a followed seam, so a fit
@@ -2116,6 +2259,18 @@ public class Coaster {
         if (followerActive(pieceIdx)) {
             bakeFollow(pieceIdx, TrackCompiler.compile(this, dt));
         }
+        return refreezeSpeedOnly(pieceIdx, secIdx, dt);
+    }
+
+    /** The SPEED HALF of the resolve op alone (v19.13, D242 — user
+     *  spec for the initial-speed dialog's "Set Design to Real":
+     *  "purely adjust the starting speed"): vDesign := the true seam
+     *  speed + un-pin so it follows naturally — an orientation
+     *  conflict (tilt / follow) is left EXACTLY as it stands. With
+     *  no such conflict this IS the whole resolve op. */
+    public boolean refreezeSpeedOnly(int pieceIdx, int secIdx, double dt) {
+        Section sec = pieces.get(pieceIdx).sections.get(secIdx);
+        if (sec.reversed() || sec instanceof BridgeSection) return false;
         TrackCompiler.Result r = compileForFit(dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
@@ -2126,7 +2281,7 @@ public class Coaster {
         sec.vDesign(Math.max(0.5, r.trueV()[spanIdx > 0
             ? r.spans().get(spanIdx - 1).i1()
             : r.spans().get(spanIdx).i0()]));
-        sec.vPinned(false);   // resolved: re-join the speed flow
+        sec.vPinned(false);   // re-join the speed flow
         return true;
     }
 
@@ -2258,12 +2413,51 @@ public class Coaster {
         dst.speedMarks().addAll(marks);
     }
 
-    /** ROLL-ONLY converts keep the NON-ROLL lanes verbatim (v18.2,
-     *  D169): deep node copies of the source's lanes 0/1 replace the
-     *  fitted ones — locks, handles and all. */
-    private static void preserveNonRollLanes(LaneSection src,
-                                             LaneSection conv) {
-        for (int L = 0; L < 2; L++) {
+    /** Which lanes a same-mode same-domain convert KEEPS verbatim
+     *  (v19.9, D238 — user rule, generalizing v18.2/D169's roll-only
+     *  case): a lane whose MEANING is untouched by the requested
+     *  flag flips would only re-fit onto itself — at best converging
+     *  back to the original — so its authored nodes carry bit-exact
+     *  and the conversion residual lives in the lanes that actually
+     *  change meaning. Lanes 0/1 keep when the yaw/pitch axis AND
+     *  behavior are unchanged and a rate-unit flip doesn't reach
+     *  them (force G targets aren't rates; absolute angles aren't
+     *  either — D213/D237). The roll lane keeps symmetrically (an
+     *  absolute bank lane ignores rate units the same way). Null =
+     *  nothing keeps: cross-mode/domain, influenced, or a FULLY
+     *  IDENTICAL flag tuple — the identity convert is the deliberate
+     *  re-author-at-density tool. */
+    static boolean[] laneKeepMap(LaneSection src, boolean toGeo,
+            Section.Domain outDom, boolean rollG, boolean ypG,
+            boolean rateM, boolean rollAbs, boolean ypAbs) {
+        if (rollAbs) rollG = true;              // forced pairs — the
+        ypAbs = ypAbs && toGeo;                 // convertToLanes
+        if (ypAbs) ypG = true;                  // normalization
+        if (src.influenced() || toGeo != (src instanceof GeoSection)
+                || outDom != src.domain() || src.reversed()) {
+            return null;
+        }
+        boolean srcYpAbs = src.ypAbsolute && src.yawPitchGlobal;
+        boolean srcRollAbs = src.rollAbsolute && src.rollGlobal;
+        if (rollG == src.rollGlobal && ypG == src.yawPitchGlobal
+                && rateM == src.ratePerMeter && rollAbs == srcRollAbs
+                && ypAbs == srcYpAbs) {
+            return null;   // identity convert = re-author everything
+        }
+        boolean keep01 = ypG == src.yawPitchGlobal && ypAbs == srcYpAbs
+            && (rateM == src.ratePerMeter || ypAbs || !toGeo);
+        boolean keep2 = rollG == src.rollGlobal && rollAbs == srcRollAbs
+            && (rateM == src.ratePerMeter || rollAbs);
+        if (!keep01 && !keep2) return null;
+        return new boolean[]{ keep01, keep01, keep2 };
+    }
+
+    /** Deep-copy the kept lanes of the source over the fitted ones —
+     *  locks, handles and all (the D169 preserve, per-lane). */
+    private static void preserveLanes(LaneSection src, LaneSection conv,
+                                      boolean[] keep) {
+        for (int L = 0; L < 3; L++) {
+            if (keep == null || !keep[L]) continue;
             List<BezierBaker.Node> dst = conv.lanes.get(L);
             dst.clear();
             for (BezierBaker.Node n : src.lanes.get(L)) dst.add(n.copy());
@@ -2747,15 +2941,18 @@ public class Coaster {
             outDom, toRollG, toYpG, toRateM, toRollAbs, fric());
     }
 
-    /** + ABSOLUTE yaw/pitch target (v19.8, D237). */
+    /** + ABSOLUTE yaw/pitch target (v19.8, D237); ypHeadDeg = the
+     *  piece-relative heading reference (v19.9, D238 — NaN =
+     *  self-relative, right for a piece FIRST section). */
     LaneSection fitLanes(List<FVDIntegrator.Sample> s, double vDesign,
                          boolean toGeo, double dt, double spacing,
                          double adaptTol, Section.Domain outDom,
                          boolean toRollG, boolean toYpG, boolean toRateM,
-                         boolean toRollAbs, boolean toYpAbs) {
+                         boolean toRollAbs, boolean toYpAbs,
+                         double ypHeadDeg) {
         return convertToLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
             outDom, toRollG, toYpG, toRateM, toRollAbs, fric(),
-            null, 0, false, toYpAbs);
+            null, 0, false, toYpAbs, ypHeadDeg);
     }
 
     /** fitLanes with the SOURCE section's speed controls fed into
@@ -2777,13 +2974,14 @@ public class Coaster {
             ctl, off, sd);
     }
 
-    /** The D236 ctl-aware instance path + ABSOLUTE yaw/pitch (D237). */
+    /** The D236 ctl-aware instance path + ABSOLUTE yaw/pitch (D237)
+     *  + the piece-relative heading reference (v19.9, D238). */
     LaneSection fitLanes(List<FVDIntegrator.Sample> s, double vDesign,
                          boolean toGeo, double dt, double spacing,
                          double adaptTol, Section.Domain outDom,
                          boolean toRollG, boolean toYpG, boolean toRateM,
                          boolean toRollAbs, boolean toYpAbs, Section src,
-                         TrackCompiler.Span sp) {
+                         TrackCompiler.Span sp, double ypHeadDeg) {
         SpeedControl.Ctl ctl = src != null && src.speedControllable()
             ? SpeedControl.Ctl.of(src.speedControls()) : null;
         boolean sd = src != null
@@ -2791,7 +2989,48 @@ public class Coaster {
         double off = sp == null ? 0 : (sd ? sp.s0() : sp.t0());
         return convertToLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
             outDom, toRollG, toYpG, toRateM, toRollAbs, fric(),
-            ctl, off, sd, toYpAbs);
+            ctl, off, sd, toYpAbs, ypHeadDeg);
+    }
+
+    /** The ABSOLUTE-heading reference of a piece (v19.9, D238): its
+     *  FIRST compiled sample's reported-left heading (deg) — the
+     *  zero every piece-relative absolute heading lane speaks from.
+     *  Vertical entries scan forward within the piece for the first
+     *  defined heading; NaN = none / not compiled (self-relative
+     *  fallback). */
+    double pieceHeadDeg(TrackCompiler.Result r, int pieceIdx) {
+        if (r == null || pieceIdx < 0 || pieceIdx >= pieces.size()) {
+            return Double.NaN;
+        }
+        int k = 0;
+        for (int p = 0; p < pieceIdx; p++) {
+            k += pieces.get(p).sections.size();
+        }
+        int nSec = pieces.get(pieceIdx).sections.size();
+        if (nSec == 0 || k >= r.spans().size()) return Double.NaN;
+        int i0 = r.spans().get(k).i0();
+        int i1 = Math.min(
+            r.spans().get(Math.min(k + nSec - 1, r.spans().size() - 1)).i1(),
+            r.samples().size() - 1);
+        for (int i = i0; i <= i1; i++) {
+            double h = FVDIntegrator.headingOfT(r.samples().get(i).T());
+            if (!Double.isNaN(h)) return Math.toDegrees(h);
+        }
+        return Double.NaN;
+    }
+
+    /** pieceHeadDeg without a compile in hand: the STORED-placement
+     *  reference — the chain heading the compile generates at
+     *  (pieceCanon's psi, negated to the reported sense). Equal to
+     *  the measured first sample to float dust on plain pieces; a
+     *  re-aimed follower / tilted piece differs by its rigid tilt —
+     *  the same world-vs-chain corner every global-axis fit has. */
+    double pieceHeadDeg(int pieceIdx) {
+        TrackPiece p = pieces.get(pieceIdx);
+        double psi = p.canonOrient != null
+            ? p.canonPsiDeg + p.yawDeg
+            : TrackCompiler.headingDeg(p.baseOrient) + p.yawDeg;
+        return Math.IEEEremainder(-psi, 360);
     }
 
     /** Default target node spacing for conversions (s) — the density
@@ -2956,6 +3195,30 @@ public class Coaster {
                                              double srcOff,
                                              boolean srcDist,
                                              boolean toYpAbs) {
+        return convertToLanes(s, vDesign, toGeo, dt, spacing, adaptTol,
+            outDom, toRollG, toYpG, toRateM, toRollAbs, fric,
+            srcCtl, srcOff, srcDist, toYpAbs, Double.NaN);
+    }
+
+    /** + the ABSOLUTE-heading reference (v19.9, D238): ypHeadDeg =
+     *  the PIECE's entry heading (deg, reported-left) — the zero of
+     *  a piece-relative absolute heading lane. NaN = fall back to
+     *  the section's own first defined heading (self-relative — the
+     *  reference a piece FIRST section has anyway). */
+    public static LaneSection convertToLanes(List<FVDIntegrator.Sample> s,
+                                             double vDesign, boolean toGeo,
+                                             double dt, double spacing,
+                                             double adaptTol,
+                                             Section.Domain outDom,
+                                             boolean toRollG, boolean toYpG,
+                                             boolean toRateM,
+                                             boolean toRollAbs,
+                                             FVDIntegrator.Friction fric,
+                                             SpeedControl.Ctl srcCtl,
+                                             double srcOff,
+                                             boolean srcDist,
+                                             boolean toYpAbs,
+                                             double ypHeadDeg) {
         if (toRollAbs) toRollG = true;   // the angle IS the target
         toYpAbs = toYpAbs && toGeo;      // geo lanes only (D237)
         if (toYpAbs) toYpG = true;
@@ -3071,14 +3334,24 @@ public class Coaster {
         }
         // ABSOLUTE-ROLL target (v16.7, D118): lane 2 = the measured
         // bank angle per sample; vertical stretches hold the last
-        // defined bank
+        // defined bank. UNWRAPPED sample to sample since v19.9
+        // (D238 sweep find — the heading extraction's rule): a bank
+        // crossing ±180 (barrel roll) used to jump 360 between
+        // adjacent knots and the fitted lane swept back the wrong
+        // way; no-crossing tracks are bitwise (the correction is 0).
         if (toRollAbs) {
-            double lastBank = 0;
+            double lastBank = Double.NaN;
             for (int i = 0; i < n; i++) {
                 FVDIntegrator.Sample sm = s.get(i);
                 double b = FVDIntegrator.bankOfTU(sm.T(), sm.U());
-                if (!Double.isNaN(b)) lastBank = Math.toDegrees(b);
-                val[i][2] = lastBank;
+                if (!Double.isNaN(b)) {
+                    double deg = Math.toDegrees(b);
+                    if (!Double.isNaN(lastBank)) {
+                        deg += 360 * Math.round((lastBank - deg) / 360);
+                    }
+                    lastBank = deg;
+                }
+                val[i][2] = Double.isNaN(lastBank) ? 0 : lastBank;
             }
         }
         // ABSOLUTE-YAW/PITCH target (v19.8, D237): lane 0 = the
@@ -3087,10 +3360,15 @@ public class Coaster {
         // crosses ±180 on any half-turn); vertical stretches hold the
         // last defined heading
         if (toYpAbs) {
-            // ENTRY-RELATIVE heading (D237/D199): the fitted section
-            // generates with its entry heading stripped, so the lane
-            // holds heading MINUS the first sample's heading —
-            // unwrapped across samples
+            // PIECE-RELATIVE heading (v19.9, D238 — superseding
+            // D237's section-entry-relative): the compile shifts an
+            // absolute heading lane by the section entry's
+            // piece-relative heading, so the lane holds heading
+            // MINUS the PIECE entry's — the caller supplies the
+            // reference; the first defined sample seeds at the
+            // representative nearest it (the entry value lands in
+            // (−180, 180] of the piece frame), then unwraps sample
+            // to sample. NaN reference = self-relative (D237).
             double lastRaw = Double.NaN, h0 = 0;
             for (int i = 0; i < n; i++) {
                 FVDIntegrator.Sample sm = s.get(i);
@@ -3100,7 +3378,8 @@ public class Coaster {
                 if (!Double.isNaN(hd)) {
                     double deg = Math.toDegrees(hd);
                     if (Double.isNaN(lastRaw)) {
-                        h0 = deg;
+                        h0 = Double.isNaN(ypHeadDeg) ? deg : ypHeadDeg;
+                        deg += 360 * Math.round((h0 - deg) / 360);
                         lastRaw = deg;
                     } else {
                         deg += 360 * Math.round((lastRaw - deg) / 360);
@@ -3265,12 +3544,15 @@ public class Coaster {
             withEntry(r.samples(), sp, dt),
             ls.vDesign(), ls instanceof GeoSection, dt, spacing, adaptTol,
             ls.domain(), toRollG, toYpG, false, false, sec, sp);
-        // roll-only bake keeps lanes 0/1 node-exact (v18.2, D169 —
-        // same rule as the Convert dialog's roll-only path)
-        if (!ls.influenced() && toYpG == ls.yawPitchGlobal
-                && !ls.ratePerMeter && toRollG != ls.rollGlobal) {
-            preserveNonRollLanes(ls, conv);
-        }
+        // per-lane preserve against the fit's ACTUAL targets (v19.9,
+        // D238 — the D169 roll-only rule generalized; the keep map
+        // gets the same rateM=false / abs=false the fitLanes call
+        // above targets, which also FIXES a pre-existing bug: a
+        // roll-only bake on an ABSOLUTE-yaw/pitch section used to
+        // copy its ANGLE lanes verbatim into the rate-flagged
+        // output — degrees consumed as °/s)
+        preserveLanes(ls, conv, laneKeepMap(ls, ls instanceof GeoSection,
+            ls.domain(), toRollG, toYpG, false, false, false));
         conv.vPinned = sec.vPinned();
         // same domain + clock: speed controls carry verbatim (v18.0)
         carrySpeedCtls(sec, sp, r.samples(), conv, 0,
@@ -3894,7 +4176,8 @@ public class Coaster {
         if (left) {
             LaneSection conv = fitLanes(sideOf(s, cs, true),
                 bs.vDesign, toGeo, dt, spacing, adaptTol,
-                outDom, rollG, ypG, rateM, rollAbs, ypAbs);
+                outDom, rollG, ypG, rateM, rollAbs, ypAbs,
+                pieceHeadDeg(pieceIdx));   // conv stays mid-piece (D238)
             BridgeSection rem = new BridgeSection(
                 new TrackPose(cs.pos(), cq),
                 new TrackPose(bs.solvedTarget.pos(), bs.solvedTarget.orient()),
@@ -3928,7 +4211,8 @@ public class Coaster {
             List<FVDIntegrator.Sample> side = sideOf(s, cs, false);
             LaneSection conv = fitLanes(side, vCut, toGeo, dt,
                 spacing, adaptTol, outDom, rollG, ypG, rateM, rollAbs,
-                ypAbs);
+                ypAbs, Double.NaN);   // conv becomes the target
+                // piece's FIRST section — self-relative (D238)
             // the kept bridge now ends at the cut; seed the far seam
             // with the dynamics MEASURED there (the next compile
             // re-captures them from the converted piece's head)
@@ -3962,6 +4246,11 @@ public class Coaster {
                 // (their own shapes untouched, §0; the downstream
                 // track shifts only by the conversion's fit residual).
                 TrackPiece tp = pieces.get(pieceIdx + 1);
+                // the target's entry moves to the cut — its ABSOLUTE
+                // heading lanes rebase by the psi delta (v19.9, D238
+                // sweep find: without it "their own shapes untouched"
+                // broke for abs-heading sections — the reanchor rule)
+                double tpOldPsi = entryPsiInternal(tp);
                 tp.x = cs.pos().x();
                 tp.y = cs.pos().y();
                 tp.z = cs.pos().z();
@@ -3972,6 +4261,8 @@ public class Coaster {
                 tp.designRollDeg = 0;
                 tp.baseOrient = cq;
                 tp.canonOrient = null;   // interpolated cut pose (D199)
+                rebaseAbsHeading(tp.sections,
+                    TrackCompiler.headingDeg(cq) - tpOldPsi);
                 // PIN the old first section's design speed (v14.5,
                 // D97): the split must survive the conversion — the
                 // D95 reconcile would otherwise re-freeze it to the
@@ -4088,7 +4379,6 @@ public class Coaster {
         double vCut;
         if (sec instanceof LaneSection ls) {
             List<List<BezierBaker.Node>> half;
-            double cutX;
             if (ls.domain() == Section.Domain.DISTANCE) {
                 // DISTANCE lanes cut in their own axis (v16.0): the cut
                 // is an ARC fraction and the de Casteljau split runs on
@@ -4100,7 +4390,6 @@ public class Coaster {
                         Math.max(0.05, Math.min(0.95, frac)) * sLen));
                 cs = sampleAtArc(s, sp.s0() + sc2);
                 vCut = cs.v();
-                cutX = sc2;
                 half = splitLanes(ls.lanes, sc2, left);
             } else {
                 double dur = sp.t1() - sp.t0();
@@ -4109,21 +4398,25 @@ public class Coaster {
                         Math.max(0.05, Math.min(0.95, frac)) * dur));
                 cs = sampleAtTime(s, sp.t0() + tc);
                 vCut = cs.v();
-                cutX = tc;
                 half = splitLanes(ls.lanes, tc, left);
             }
             LaneSection kp = ls instanceof GeoSection
                 ? new GeoSection(half, left ? vCut : ls.vDesign)
                 : new ForceSection(half, left ? vCut : ls.vDesign);
-            kp.domain(ls.domain());   // the kept half stays native
-            // a kept-RIGHT half of an ABS-heading section rebases at
-            // the cut (v19.8, D237 — the splitSectionAt rule)
-            if (left && ls.ypAbsolute && ls.yawPitchGlobal) {
-                double hCut = BezierBaker.exactAt(ls.lanes.get(1), cutX);
-                for (BezierBaker.Node nd : kp.lanes.get(1)) {
-                    nd.val -= hCut;
-                }
-            }
+            kp.domain(ls.domain());   // the kept half stays native —
+            // INCLUDING its axis/rate/behavior flags (v19.9, D238
+            // sweep find: they were silently dropped since v16.x —
+            // "the unconverted side keeps its original
+            // representation EXACTLY" read a global/°/m/absolute
+            // section's kept half as local °/s rates)
+            kp.rollGlobal = ls.rollGlobal;
+            kp.yawPitchGlobal = ls.yawPitchGlobal;
+            kp.ratePerMeter = ls.ratePerMeter;
+            kp.rollAbsolute = ls.rollAbsolute;
+            kp.ypAbsolute = ls.ypAbsolute;
+            // (the D237 kept-right abs-heading rebase is GONE —
+            // v19.9, D238: piece-relative heading, same piece, the
+            // kept half's values carry verbatim)
             keep = kp;
         } else if (sec instanceof StraightCurveSection sc) {
             double cutArc = scCutClamp(sc,
@@ -4154,7 +4447,8 @@ public class Coaster {
         }
         LaneSection conv = fitLanes(convSide,
             left ? sec.vDesign() : vCut, toGeo, dt, spacing, adaptTol,
-            outDom, rollG, ypG, rateM, rollAbs, ypAbs, sec, sp);   // D236
+            outDom, rollG, ypG, rateM, rollAbs, ypAbs, sec, sp,
+            pieceHeadDeg(r, pieceIdx));   // D236; piece-relative D238
         // BOTH halves continue the original's DESIGN speed profile, so
         // a conflicted (pinned) section leaves two conflicted halves —
         // the pin rides onto each (v15.1, D99; unpinned originals get
@@ -4248,15 +4542,10 @@ public class Coaster {
             carryInfluence(ls, a, xc, false);
             carryInfluence(ls, b, xc, true);
         }
-        // ABSOLUTE heading REBASES at the cut (v19.8, D237): the
-        // heading lane is SECTION-ENTRY-relative — every section
-        // generates with its entry heading stripped (D199) — so the
-        // right half's values re-zero at the cut. Elevation is a
-        // world quantity and carries as-is.
-        if (ls.ypAbsolute && ls.yawPitchGlobal) {
-            double hCut = BezierBaker.exactAt(ls.lanes.get(1), xc);
-            for (BezierBaker.Node nd : b.lanes.get(1)) nd.val -= hCut;
-        }
+        // (the D237 abs-heading rebase at the cut is GONE — v19.9,
+        // D238: the heading lane is PIECE-relative now, and both
+        // halves stay in the same piece, so the values carry
+        // verbatim like elevation and bank)
         // speed controls partition at the cut, native axis — exact
         // (v18.0, D160; straddling controls clip into two)
         a.speedCtls.addAll(SpeedControl.portion(ls.speedCtls, 0, xc));
@@ -4310,13 +4599,10 @@ public class Coaster {
             for (BezierBaker.Node nd : b.lanes.get(L)) {
                 BezierBaker.Node c = nd.copy();
                 c.t += dA;
-                // ABS heading LIFT (v19.8, D237): B's entry-relative
-                // headings continue from A's end heading — the split
-                // rebase's exact inverse (round-trips lossless)
-                if (L == 1 && a.ypAbsolute && a.yawPitchGlobal) {
-                    c.val += a.lanes.get(1)
-                        .get(a.lanes.get(1).size() - 1).val;
-                }
+                // (the D237 abs-heading LIFT is GONE — v19.9, D238:
+                // piece-relative headings share one zero within the
+                // piece, so the values append verbatim; the split
+                // rebase it inverted is gone too — still lossless)
                 lb.add(c);
             }
             List<BezierBaker.Node> m = new ArrayList<>(la);
@@ -4668,24 +4954,19 @@ public class Coaster {
         LaneSection conv = fitLanes(
             withEntry(r.samples(), sp, dt),
             sec.vDesign(), toGeo, dt, spacing, adaptTol,
-            outDom, rollG, ypG, rateM, rollAbs, ypAbs, sec, sp);   // D236:
-            // the source's speed controls drive the re-time march
-        // ROLL-ONLY convert (v18.2, D169 — user spec): when nothing
-        // but the roll axis/behavior changes, lanes 0/1 keep their
-        // AUTHORED nodes bit-exactly — Gv/Gl (or pitch/yaw) targets
-        // mean exactly what they meant under any roll representation;
-        // only the roll lane re-fits to the measured bank/rate in the
-        // new semantics. The whole conversion residual then lives in
-        // lane 2 alone.
-        if (sec instanceof LaneSection src && !src.influenced()
-                && toGeo == (src instanceof GeoSection)
-                && outDom == src.domain()
-                && rateM == src.ratePerMeter
-                && ypG == src.yawPitchGlobal
-                && ypAbs == src.ypAbsolute   // lanes 0/1 keep meaning (D237)
-                && (rollG != src.rollGlobal
-                    || rollAbs != src.rollAbsolute)) {
-            preserveNonRollLanes(src, conv);
+            outDom, rollG, ypG, rateM, rollAbs, ypAbs, sec, sp,
+            pieceHeadDeg(r, pieceIdx));   // D236: the source's speed
+            // controls drive the re-time march; piece-relative D238
+        // PER-LANE preserve (v19.9, D238, generalizing D169's
+        // roll-only case): every lane whose meaning the flag flips
+        // don't touch keeps its AUTHORED nodes bit-exactly — a
+        // roll-only change keeps lanes 0/1, a yaw/pitch-only change
+        // keeps the roll lane, a rate-unit-only change keeps the
+        // absolute-angle lanes. The conversion residual lives in
+        // the lanes that actually change meaning.
+        if (sec instanceof LaneSection src) {
+            preserveLanes(src, conv, laneKeepMap(src, toGeo, outDom,
+                rollG, ypG, rateM, rollAbs, ypAbs));
         }
         // a SPEED-CONFLICTED section stays conflicted through a convert
         // (v15.1, D99 — user rule: "the geo section should still have
@@ -4761,7 +5042,8 @@ public class Coaster {
         if (s.size() < 5) return false;
         piece.sections.set(secIdx,
             fitLanes(s, bs.vDesign, toGeo, dt, spacing, adaptTol,
-                outDom, rollG, ypG, rateM, rollAbs, ypAbs));
+                outDom, rollG, ypG, rateM, rollAbs, ypAbs,
+                pieceHeadDeg(pieceIdx)));   // conv stays mid-piece (D238)
         if (pieceIdx + 1 < pieces.size()) {
             TrackPiece next = pieces.get(pieceIdx + 1);
             if (strictSeam) {

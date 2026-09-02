@@ -831,24 +831,58 @@ public class FvdDesigner extends Application {
 
     /** GLOBAL SPINNER STEP MODIFIERS + WHEEL (v19.8, D237 — user
      *  spec, every spinner present and future; installed by
-     *  numericEditor, the one route every numeric spinner takes):
-     *  the scroll WHEEL steps any spinner by its increment; CTRL
-     *  (wheel or arrow click) steps at ONE TENTH of the increment;
-     *  SHIFT SNAPS to the next round multiple of the (possibly
-     *  Ctrl-scaled) increment instead of blindly adding — 0.435
+     *  numericEditor, the one route every numeric spinner takes;
+     *  modifiers SWAPPED in v19.12, D241 — user spec): the scroll
+     *  WHEEL steps any spinner by its increment; SHIFT (wheel or
+     *  arrow click) steps at ONE TENTH of the increment; CTRL
+     *  SNAPS to the next round multiple of the (possibly
+     *  Shift-scaled) increment instead of blindly adding — 0.435
      *  steps up to 0.5, then 0.6. Plain arrow clicks keep the
-     *  native skin path (auto-repeat); a consumed modifier press
-     *  never arms the skin's Timeline, so no release handling is
-     *  needed. The 1-2-5 snap-step spinners keep their own walker
+     *  native skin path (auto-repeat); a consumed MODIFIER press
+     *  arms our OWN HoldRepeat at the native cadence since v19.11
+     *  (D240, user spec: click-and-hold steadily adjusts on every
+     *  spinner — the consumed press never reaches the skin's
+     *  Timeline, so we repeat ourselves; modifiers captured at
+     *  press). The 1-2-5 snap-step spinners keep their own walker
      *  (the series IS their step); the wheel drives it directly.
      *  Wheel events always CONSUME — spinners sit over the plot and
      *  inside menu popups, and an unconsumed wheel would zoom or
      *  scroll whatever is behind. */
     private static final String STEP_MOD_TAG = "fvd-spinner-stepmods";
 
+    /** Hold-to-repeat at the native SpinnerBehavior cadence
+     *  (v19.11, D240 — verified vs javafx-controls 26: immediate
+     *  step, 300 ms initial delay, then a step every 60 ms). One
+     *  per control; start() ticks once at press. */
+    static final class HoldRepeat {
+        private static final double INITIAL_MS = 300, REPEAT_MS = 60;
+        private javafx.animation.Timeline tl;
+
+        void start(Runnable tick) {
+            stop();
+            tick.run();
+            tl = new javafx.animation.Timeline(
+                new javafx.animation.KeyFrame(
+                    javafx.util.Duration.ZERO, e -> tick.run()),
+                new javafx.animation.KeyFrame(
+                    javafx.util.Duration.millis(REPEAT_MS)));
+            tl.setDelay(javafx.util.Duration.millis(INITIAL_MS));
+            tl.setCycleCount(javafx.animation.Animation.INDEFINITE);
+            tl.playFromStart();
+        }
+
+        void stop() {
+            if (tl != null) {
+                tl.stop();
+                tl = null;
+            }
+        }
+    }
+
     static void installSpinnerSteps(Spinner<?> sp) {
         if (sp.getProperties().containsKey(STEP_MOD_TAG)) return;
         sp.getProperties().put(STEP_MOD_TAG, Boolean.TRUE);
+        HoldRepeat rep = new HoldRepeat();
         sp.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED,
             e -> {
                 if (!e.isControlDown() && !e.isShiftDown()) return;
@@ -860,8 +894,20 @@ public class FvdDesigner extends Application {
                 if (dir == 0) return;
                 e.consume();
                 sp.requestFocus();
-                modStep(sp, dir, e.isControlDown(), e.isShiftDown());
+                // hold-to-repeat with press-time modifiers (D240);
+                // Shift = tenth, Ctrl = snap since D241 (swapped)
+                final boolean slow = e.isShiftDown();
+                final boolean snap = e.isControlDown();
+                rep.start(() -> modStep(sp, dir, slow, snap));
             });
+        sp.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_RELEASED,
+            e -> rep.stop());
+        sp.disabledProperty().addListener((o, w, dis) -> {
+            if (dis) rep.stop();
+        });
+        sp.sceneProperty().addListener((o, w, sc) -> {
+            if (sc == null) rep.stop();
+        });
         sp.addEventFilter(javafx.scene.input.ScrollEvent.SCROLL, e -> {
             if (sp.isDisabled()) return;
             // Shift+wheel arrives as HORIZONTAL scroll on Windows —
@@ -873,7 +919,8 @@ public class FvdDesigner extends Application {
             int dir = wheel > 0 ? 1 : -1;
             if (sp.getValueFactory() instanceof
                     SpinnerValueFactory.DoubleSpinnerValueFactory) {
-                modStep(sp, dir, e.isControlDown(), e.isShiftDown());
+                // Shift = tenth, Ctrl = snap since D241 (swapped)
+                modStep(sp, dir, e.isShiftDown(), e.isControlDown());
             } else if (sp.getValueFactory() != null) {
                 if (dir > 0) sp.getValueFactory().increment(1);
                 else sp.getValueFactory().decrement(1);
@@ -897,28 +944,29 @@ public class FvdDesigner extends Application {
         return 0;
     }
 
-    /** One modified step: Ctrl = tenth-increments, Shift = snap to
-     *  the next round multiple. Commits typed-but-uncommitted text
-     *  first (the D191 discipline), kills float dust at 0.1% of the
-     *  quantum (the LiveNum recipe — never fixed decimals, the
-     *  1e-5-step air-friction spinner needs the scale), clamps
+    /** One modified step: slow = tenth-increments (Shift since
+     *  D241), snap = the next round multiple (Ctrl since D241 —
+     *  the pair swapped on user spec). Commits typed-but-uncommitted
+     *  text first (the D191 discipline), kills float dust at 0.1%
+     *  of the quantum (the LiveNum recipe — never fixed decimals,
+     *  the 1e-5-step air-friction spinner needs the scale), clamps
      *  explicitly (programmatic setValue does NOT clamp), and writes
      *  through the factory so every existing value listener — undo
      *  wiring included — fires unchanged. */
     @SuppressWarnings("unchecked")
     private static void modStep(Spinner<?> spr, int dir,
-                                boolean ctrl, boolean shift) {
+                                boolean slow, boolean snap) {
         commitTyped(spr);
         Spinner<Double> sp = (Spinner<Double>) spr;
         SpinnerValueFactory.DoubleSpinnerValueFactory f =
             (SpinnerValueFactory.DoubleSpinnerValueFactory)
                 sp.getValueFactory();
         double q = f.getAmountToStepBy();
-        if (ctrl) q /= 10;
+        if (slow) q /= 10;
         Double cur = sp.getValue();
         double v = cur == null ? 0 : cur;
         double nv;
-        if (shift) {
+        if (snap) {
             nv = dir > 0 ? (Math.floor(v / q + 1e-9) + 1) * q
                          : (Math.ceil(v / q - 1e-9) - 1) * q;
         } else {
@@ -1271,17 +1319,14 @@ public class FvdDesigner extends Application {
         d2r.setFocusTraversable(false);
         d2r.setStyle("-fx-font-size: 11px;");
         Tooltip.install(d2r, new Tooltip(
-            "Bring the design orientation to the real one: the shape\n"
-            + "re-solves under gravity at the real frame (graphs stay\n"
-            + "put, geometry re-bends), conflict closed."));
+            "Adopt the real orientation as the design — graphs stay,\n"
+            + "the shape re-solves; conflict closed."));
         Button r2d = new Button("Real → Design Orientation");
         r2d.setFocusTraversable(false);
         r2d.setStyle("-fx-font-size: 11px;");
         Tooltip.install(r2d, new Tooltip(
-            "Bring the real orientation back to the design one: the\n"
-            + "piece (and its rigidly carried chain) un-rotates onto\n"
-            + "the orientation the graphs were authored at — shape\n"
-            + "preserved, conflict closed."));
+            "Un-rotate the piece (and its carried chain) back to the\n"
+            + "design orientation — shape kept; conflict closed."));
         BridgeSection binto = bridgeInto(pieceIdx);
         boolean machine = binto != null
             && binto.optMode == BridgeSection.OPT_POS_YAW;
@@ -1320,15 +1365,33 @@ public class FvdDesigner extends Application {
         });
         d2r.setOnAction(e -> {
             if (docApplying) return;
-            editor.pushUndoSnapshot();
             TrackPiece p = live.get();
-            p.designPitchDeg = p.pitchDeg;
-            p.designRollDeg = p.rollDeg;
-            markDirty();
-            rebuildTrack();
-            syncPlacementSpinners();
-            updateBridgeControls();
-            editor.redrawFromViewport();
+            // ABSOLUTE lanes pin their angles regardless of the
+            // entry frame (v19.11, D240 — the user's "Design to
+            // real not working" file): a plain design := true write
+            // SNAPS the track back to the design shape after one
+            // integration step (probed: 28.9 m off his 37 m
+            // section). When the piece carries absolute lanes, a
+            // dialog offers per-quantity Preserve (that snap, as an
+            // informed choice) vs Convert (refit the lane from the
+            // CURRENT true curves so the on-screen shape keeps).
+            boolean anyYp = false, anyBank = false;
+            for (Section s : p.sections) {
+                if (s instanceof LaneSection ls && !ls.reversed()) {
+                    if (ls instanceof GeoSection && ls.ypAbsolute
+                            && ls.yawPitchGlobal) {
+                        anyYp = true;
+                    }
+                    if (ls.rollAbsolute && ls.rollGlobal) {
+                        anyBank = true;
+                    }
+                }
+            }
+            if (anyYp || anyBank) {
+                editor.showDesignToRealDialog(pieceIdx, anyYp, anyBank);
+                return;
+            }
+            designToRealDirect(pieceIdx);
             sync.run();
         });
         r2d.setOnAction(e -> {
@@ -1354,6 +1417,24 @@ public class FvdDesigner extends Application {
             return new VBox(4, GraphEditor.grayHint(lock, hint), btns);
         }
         return new VBox(4, lock, btns);
+    }
+
+    /** The classic Design → Real write (design := true; the shape
+     *  re-solves at the real frame). One undo step. Shared by the
+     *  no-absolute-lanes button path and the D240 dialog's
+     *  all-Preserve pick. */
+    void designToRealDirect(int pieceIdx) {
+        if (pieceIdx >= coaster.pieces.size()) return;
+        editor.pushUndoSnapshot();
+        TrackPiece p = coaster.pieces.get(pieceIdx);
+        p.designPitchDeg = p.pitchDeg;
+        p.designRollDeg = p.rollDeg;
+        markDirty();
+        rebuildTrack();
+        syncPlacementSpinners();
+        updateBridgeControls();
+        editor.redrawFromViewport();
+        syncDesignReadout();
     }
 
     /** D222: refresh the design-orientation readout + the lock-shape
@@ -1775,6 +1856,7 @@ public class FvdDesigner extends Application {
             trueRates = null;
             docSettled = true;
             for (Viewport3D vp : viewports) vp.rebuildMeshes();
+            syncNoCoasterPanel();   // the D239 empty-piece button
             return;
         }
         TrackCompiler.Result compiled =
@@ -1841,6 +1923,10 @@ public class FvdDesigner extends Application {
         statMaxGv = maxGv;
         for (Viewport3D vp : viewports) vp.rebuildMeshes();
         updatePovStats();
+        // the empty-coaster placeholder follows every mutation —
+        // incl. the FLOATING wizard's placeholder piece appearing/
+        // discarding and Switch Coaster emptying a source (D239)
+        syncNoCoasterPanel();
     }
 
     /** Gesture-end / pre-save hook (v18.28, D200): if the last
@@ -1921,21 +2007,109 @@ public class FvdDesigner extends Application {
             ? Coaster.worldRates(sb, trueRates[j][1], trueRates[j][2],
                 trueRates[j][3])
             : wa;
-        statsLabel.setText(String.format(
-            "POV   X: %.3f   Y: %.3f   Z: %.3f   |   Speed: %.3f m/s   |   Vertical G: %.3f   |   Lateral G: %.3f"
-            + "   |   Pitch: %s   |   Yaw: %s   |   Roll: %s",
-            pa.x() + (pb.x() - pa.x()) * f,
-            pa.y() + (pb.y() - pa.y()) * f,
-            pa.z() + (pb.z() - pa.z()) * f,
-            trueV[i] + (trueV[j] - trueV[i]) * f,
-            trueFelt[i][0] + (trueFelt[j][0] - trueFelt[i][0]) * f,
-            trueFelt[i][1] + (trueFelt[j][1] - trueFelt[i][1]) * f,
-            // elevation raw; heading NEGATED to reported-left (the
-            // D186 display boundary); bank raw; worldRates' rows
-            // are {elevation', heading', bank'}, already reported
-            angTxt(lerpAngle(ea[1], eb[1], f), lerpNan(wa[0], wb[0], f)),
-            angTxt(-lerpAngle(ea[0], eb[0], f), lerpNan(wa[1], wb[1], f)),
-            angTxt(lerpAngle(ea[2], eb[2], f), lerpNan(wa[2], wb[2], f))));
+        // FIXED SLOTS (v19.10, D239): each value renders into its
+        // own pre-sized label — see buildPovRow
+        povSet(0, String.format("%.3f", z3(pa.x() + (pb.x() - pa.x()) * f)));
+        povSet(1, String.format("%.3f", z3(pa.y() + (pb.y() - pa.y()) * f)));
+        povSet(2, String.format("%.3f", z3(pa.z() + (pb.z() - pa.z()) * f)));
+        povSet(3, String.format("%.3f m/s",
+            z3(trueV[i] + (trueV[j] - trueV[i]) * f)));
+        povSet(4, String.format("%.3f",
+            z3(trueFelt[i][0] + (trueFelt[j][0] - trueFelt[i][0]) * f)));
+        povSet(5, String.format("%.3f",
+            z3(trueFelt[i][1] + (trueFelt[j][1] - trueFelt[i][1]) * f)));
+        // elevation raw; heading NEGATED to reported-left (the
+        // D186 display boundary); bank raw; worldRates' rows
+        // are {elevation', heading', bank'}, already reported
+        povSet(6, angTxt(lerpAngle(ea[1], eb[1], f),
+            lerpNan(wa[0], wb[0], f)));
+        povSet(7, angTxt(-lerpAngle(ea[0], eb[0], f),
+            lerpNan(wa[1], wb[1], f)));
+        povSet(8, angTxt(lerpAngle(ea[2], eb[2], f),
+            lerpNan(wa[2], wb[2], f)));
+        if (povRow != null) {
+            povRow.setVisible(true);
+            statsLabel.setVisible(false);
+        }
+    }
+
+    // ---- the fixed-slot POV bar (v19.10, D239 — user spec: values
+    // must not jump around horizontally between signs/digit counts).
+    // One label per field; each slot's width is measured from a
+    // worst-case TEMPLATE in the actual font, values left-anchor
+    // inside it, and an extreme value RATCHETS its slot wider once
+    // (never narrower), so overlap can't happen and the layout moves
+    // at most once per extreme — never per frame. Captions are their
+    // own fixed labels, so a value's sign flip or digit change never
+    // moves any caption. The full bar width is available (his note:
+    // no more real-time statistics planned). ----
+    static final Font STATS_FONT = Font.font(12);
+    private HBox povRow;
+    private Label[] povVal;
+    private double[] povW;
+
+    private static double statsTextW(String s) {
+        javafx.scene.text.Text t = new javafx.scene.text.Text(s);
+        t.setFont(STATS_FONT);
+        return Math.ceil(t.getLayoutBounds().getWidth()) + 2;
+    }
+
+    private void buildPovRow() {
+        String[] caps = { "X:", "Y:", "Z:", "Speed:",
+            "Vertical G:", "Lateral G:", "Pitch:", "Yaw:", "Roll:" };
+        String[] tmpl = { "-888.888", "-888.888", "-888.888",
+            "888.888 m/s", "-88.888", "-88.888",
+            "-888.888° (-888.888°/s)", "-888.888° (-888.888°/s)",
+            "-888.888° (-888.888°/s)" };
+        // "|" separators close the classic groups: after Z, and
+        // between every later field
+        java.util.Set<Integer> sepAfter = java.util.Set.of(2, 3, 4, 5, 6, 7);
+        povVal = new Label[caps.length];
+        povW = new double[caps.length];
+        povRow = new HBox();
+        povRow.setAlignment(Pos.CENTER_LEFT);
+        povRow.setPadding(new Insets(4, 8, 4, 8));
+        povRow.setMinWidth(0);
+        Label tag = new Label("POV");
+        tag.setTextFill(Color.rgb(200, 205, 215));
+        tag.setFont(STATS_FONT);
+        tag.setPadding(new Insets(0, 10, 0, 0));
+        povRow.getChildren().add(tag);
+        for (int k = 0; k < caps.length; k++) {
+            Label cap = new Label(caps[k]);
+            cap.setTextFill(Color.rgb(200, 205, 215));
+            cap.setFont(STATS_FONT);
+            cap.setPadding(new Insets(0, 4, 0, k == 0 ? 0 : 10));
+            Label val = new Label();
+            val.setTextFill(Color.rgb(200, 205, 215));
+            val.setFont(STATS_FONT);
+            val.setAlignment(Pos.CENTER_LEFT);
+            povW[k] = statsTextW(tmpl[k]);
+            val.setMinWidth(povW[k]);
+            val.setPrefWidth(povW[k]);
+            povVal[k] = val;
+            povRow.getChildren().addAll(cap, val);
+            if (sepAfter.contains(k)) {
+                Label sep = new Label("|");
+                sep.setTextFill(Color.rgb(120, 125, 140));
+                sep.setFont(STATS_FONT);
+                sep.setPadding(new Insets(0, 0, 0, 10));
+                povRow.getChildren().add(sep);
+            }
+        }
+        povRow.setVisible(false);   // statsLabel owns the bar until
+                                    // the first POV update
+    }
+
+    private void povSet(int k, String s) {
+        if (povVal == null) return;
+        double need = statsTextW(s);
+        if (need > povW[k]) {   // ratchet — never shrink
+            povW[k] = need;
+            povVal[k].setMinWidth(need);
+            povVal[k].setPrefWidth(need);
+        }
+        povVal[k].setText(s);
     }
 
     /** Wrap-aware lerp of two angle readings (degrees, ±180); NaN on
@@ -1962,9 +2136,10 @@ public class FvdDesigner extends Application {
      *  undefined. Three decimals like the rest of the stats line
      *  (v18.48, user spec). */
     private static String angTxt(double ang, double rate) {
-        return (Double.isNaN(ang) ? "—" : String.format("%.3f°", ang))
+        return (Double.isNaN(ang) ? "—"
+                : String.format("%.3f°", z3(ang)))
             + " (" + (Double.isNaN(rate) ? "—"
-                : String.format("%.3f°/s", rate)) + ")";
+                : String.format("%.3f°/s", z3(rate))) + ")";
     }
 
     void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx,
@@ -2036,16 +2211,28 @@ public class FvdDesigner extends Application {
         boolean geo = mode == 1;
         String[] names = geo ? GEO_LANE_BTN : FORCE_LANE_BTN;
         Color[] cols = geo ? GEO_LANE_COLORS : LANE_COLORS;
+        // ABSOLUTE lanes wear their own names + colors — Elevation /
+        // Heading (v19.9, D238) and Bank (v19.10, D239 — the roll
+        // button used to keep "Roll" with only the tint changing)
+        boolean ypAbs = mode == 1 && !delta && editor != null
+            && editor.activeAbsYp();
+        boolean rollAbs = mode != 2 && editor != null
+            && editor.activeAbsRoll();
         for (int i = 0; i < 3; i++) {
             if (laneButtons[i] == null) continue;
             // roll takes no deltas (v15.4, D102): the influence
             // surface offers Gv/Gl or pitch/yaw only
-            laneButtons[i].setText((delta && i < 2 ? "Δ " : "") + names[i]);
+            laneButtons[i].setText((delta && i < 2 ? "Δ " : "")
+                + (ypAbs && i < 2 ? (i == 0 ? "Elevation" : "Heading")
+                    : rollAbs && i == 2 ? "Bank"
+                    : names[i]));
             laneButtons[i].setDisable(mode == 2 || (delta && i == 2));
             // an ABSOLUTE-BANK section's lane-2 button wears the bank
-            // red like its curve (v18.2, user spec)
-            Color bc = i == 2 && mode != 2 && editor != null
-                && editor.activeAbsRoll() ? BANK_COLOR : cols[i];
+            // color like its curve (v18.2, user spec)
+            Color bc = i == 2 && rollAbs ? BANK_COLOR
+                : ypAbs && i < 2
+                ? (i == 0 ? ELEV_ABS_COLOR : HEAD_ABS_COLOR)
+                : cols[i];
             laneButtons[i].setStyle(TOOLBTN_STYLE + String.format(
                 " -fx-text-fill: rgb(%d,%d,%d);",
                 (int) (bc.getRed() * 255), (int) (bc.getGreen() * 255),
@@ -2070,10 +2257,16 @@ public class FvdDesigner extends Application {
         if (resPitchCheck == null) return;
         String tru = resLastDelta ? "True " : "";
         String ru = settings.resRateM() ? "°/m" : "°/s";
+        // absolute yaw/pitch behavior (v19.9, D238): comps 1/2 are
+        // elevation/heading ANGLES in the force view
+        boolean ypAbs = !resLastGeo && settings.resYpAbs()
+            && settings.resYpG();
         resPitchCheck.setText(tru
-            + (resLastGeo ? "Vertical G (g)" : "Pitch rate (" + ru + ")"));
+            + (resLastGeo ? "Vertical G (g)"
+                : ypAbs ? "Elevation (°)" : "Pitch rate (" + ru + ")"));
         resYawCheck.setText(tru
-            + (resLastGeo ? "Lateral G (g)" : "Yaw rate (" + ru + ")"));
+            + (resLastGeo ? "Lateral G (g)"
+                : ypAbs ? "Heading (°)" : "Yaw rate (" + ru + ")"));
         resRollCheck.setText(tru
             + (settings.resRollAbs() && settings.resRollG()
                 ? "Bank (°)" : "Roll rate (" + ru + ")"));
@@ -2110,8 +2303,10 @@ public class FvdDesigner extends Application {
     void tintResChecks() {
         if (resPitchCheck == null) return;
         Color[] pal = resLastGeo ? LANE_COLORS : GEO_LANE_COLORS;
-        tintResCheck(resPitchCheck, pal[0]);
-        tintResCheck(resYawCheck, pal[1]);
+        boolean ypAbs = !resLastGeo && settings.resYpAbs()
+            && settings.resYpG();   // D238
+        tintResCheck(resPitchCheck, ypAbs ? ELEV_ABS_COLOR : pal[0]);
+        tintResCheck(resYawCheck, ypAbs ? HEAD_ABS_COLOR : pal[1]);
         tintResCheck(resRollCheck,
             settings.resRollAbs() && settings.resRollG()
                 ? BANK_COLOR : pal[2]);
@@ -2122,8 +2317,18 @@ public class FvdDesigner extends Application {
     // horizontal (time-changing) guide line, the POV position marker
     static final Color TIME_COLOR = Color.rgb(200, 165, 255);
     // BANK color — the resulting bank overlay AND real absolute-bank
-    // lanes (v17.9, D146): red-orange (D145's near-red walked back)
-    static final Color BANK_COLOR = Color.rgb(235, 70, 45);
+    // lanes (v17.9, D146): red-orange, nudged MORE ORANGE in v19.10
+    // (D239, user spec — still darker/hotter than the roll lane's
+    // pale orange rgb(255,170,90))
+    static final Color BANK_COLOR = Color.rgb(240, 110, 35);
+    // ABSOLUTE elevation/heading lane colors (v19.9, D238 — user
+    // spec: elevation darker/bluer than the pitch-rate teal; heading
+    // re-specced YELLOW-GREEN in v19.10 (D239 — was amber): between
+    // the yaw yellow rgb(245,215,80) and the Lat-G green
+    // rgb(120,220,130), distinct from both — the BANK_COLOR pattern
+    // for lanes 0/1, worn by curves, buttons AND resulting overlays)
+    static final Color ELEV_ABS_COLOR = Color.rgb(40, 150, 200);
+    static final Color HEAD_ABS_COLOR = Color.rgb(180, 225, 45);
 
 
     Stage stage;
@@ -2212,6 +2417,32 @@ public class FvdDesigner extends Application {
             + (extra == null ? "" : " " + extra);
     }
 
+    /** outlineStyle over an ARBITRARY single background (v19.11,
+     *  D240) — the same D233 alignment rule for non-button controls
+     *  (a TextField keeps its own inner background via the
+     *  -fx-control-inner-background lookup). */
+    /** Normalize ESSENTIALLY-zero values to exact +0.0 before
+     *  display (D244; threshold re-specced in v19.16, D245 — user:
+     *  sub-display dust KEEPS its sign so "-0.000" honestly means
+     *  "a little negative"): only |v| < 1e-6 — true zero, −0.0 (a
+     *  flat handle's slope is 0/negative-effInDt), and deep dust —
+     *  collapses to "0.000"; anything from 1e-6 up still formats
+     *  with its real sign. Use before any %.3f-class format of a
+     *  value that can hit zero. */
+    static double z3(double v) {
+        return Math.abs(v) < 1e-6 ? 0.0 : v;
+    }
+
+    static String outlineStyleBg(String bg, double radius,
+                                 String borderColor) {
+        return "-fx-background-color: " + bg + ";"
+            + " -fx-background-insets: 0;"
+            + " -fx-background-radius: " + radius + ";"
+            + " -fx-border-insets: 0; -fx-border-radius: " + radius + ";"
+            + " -fx-border-width: 2;"
+            + " -fx-border-color: " + borderColor + ";";
+    }
+
     private static final String LOCK_BASE_STYLE =
         "-fx-font-size: 10px; -fx-padding: 1 4 1 4;";
     private static final String LOCK_OPEN_STYLE = LOCK_BASE_STYLE
@@ -2234,10 +2465,8 @@ public class FvdDesigner extends Application {
             refreshGizmos(false);   // rings follow the locks live (D188)
         });
         Tooltip.install(b, new Tooltip(
-            "Lock/unlock this orientation of the next piece.\n"
-            + "Locked = frozen (the bridge bends to meet it);\n"
-            + "unlocked = editable, and \"Optimize position and\n"
-            + "orientation\" aligns it to the natural continuation."));
+            "Lock/unlock this axis of the next piece. Locked = held\n"
+            + "(the bridge bends to it); unlocked = editable/optimized."));
         return b;
     }
 
@@ -2284,10 +2513,8 @@ public class FvdDesigner extends Application {
             refreshGizmos(false);   // rings follow the locks live (D188)
         });
         Tooltip.install(b, new Tooltip(
-            "Lock/unlock the pitch/roll at this piece's START.\n"
-            + "Locked (default) = frozen at its value. When a bridge\n"
-            + "connects into this piece these are the SAME padlocks\n"
-            + "as its bridge panel."));
+            "Lock/unlock the pitch/roll at this piece's start —\n"
+            + "shared with the connecting bridge's padlocks."));
         return b;
     }
     private SplitPane mainSplit;           // 3D view over graph panel
@@ -2339,12 +2566,13 @@ public class FvdDesigner extends Application {
     }
 
     /** The 1-6 VIEW-DIRECTION keys (v18.11, user spec — FIXED digit
-     *  keys, the POV A/D precedent; they replace T/Shift+T):
-     *  1 Front, 2 Back, 3 Right, 4 Left, 5 Top, 6 Tangent to
-     *  Selection. 1-5 fire only while a pane is CAPTURED or the
-     *  mouse is over a view — over the graph, 1/2/3 stay lane
-     *  switches. 6 fires from the graph too, aimed at the
-     *  last-hovered pane. Returns true when handled. */
+     *  keys, the POV A/D precedent; they replace T/Shift+T),
+     *  numbered in DROPDOWN order since v19.13 (D242): 1 Top,
+     *  2 Front, 3 Back, 4 Right, 5 Left, 6 Tangent to Selection.
+     *  1-5 fire only while a pane is CAPTURED or the mouse is over
+     *  a view — over the graph, 1/2/3 stay lane switches. 6 fires
+     *  from the graph too, aimed at the last-hovered pane. Returns
+     *  true when handled. */
     boolean handleViewDigit(KeyEvent e) {
         if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown()
                 || e.isMetaDown()) {
@@ -2375,12 +2603,15 @@ public class FvdDesigner extends Application {
             return false;   // the graph keeps 1/2/3 as lane switches
         }
         target.exitRideModes();
-        if (d == 5) {
+        // DROPDOWN-ORDER numbering since v19.13 (D242, user spec):
+        // 1 Top, 2 Front, 3 Back, 4 Right, 5 Left, 6 Tangent (was
+        // 1-4 sides, 5 Top)
+        if (d == 1) {
             if (!(target.orthoView && target.orthoTop)) {
                 target.orthoEnterTop();
             }
         } else {
-            target.setOrthoSideMode(d == 6 ? 4 : d - 1);
+            target.setOrthoSideMode(d == 6 ? 4 : d - 2);
         }
         return true;
     }
@@ -2402,7 +2633,44 @@ public class FvdDesigner extends Application {
      *  External applications (Alt-Tab, the Windows key) are
      *  untouched — the focus-loss story stays as it was. Idempotent;
      *  every capture entry/exit calls it. */
-    private final List<Object[]> captureWired = new ArrayList<>();
+    private final List<CaptureRec> captureWired = new ArrayList<>();
+    private javafx.collections.ListChangeListener<javafx.stage.Window>
+        captureWinWatch;
+
+    /** One wired tool window's capture state (v19.11, D240): the
+     *  filters, the scene cursor, every NODE cursor we nulled (the
+     *  text-caret I-beam beats a scene-level NONE — the deepest
+     *  non-null cursor wins), and the Stage's resizable flag (a
+     *  decorated Stage's native resize borders show OS cursors
+     *  JavaFX can't suppress; non-resizable kills those zones). */
+    private static final class CaptureRec {
+        final javafx.scene.Scene sc;
+        final javafx.event.EventHandler<javafx.scene.input.MouseEvent>
+            move, press;
+        final javafx.event.EventHandler<javafx.scene.input.ScrollEvent>
+            scroll;
+        final javafx.scene.Cursor prevScene;
+        final java.util.IdentityHashMap<javafx.scene.Node,
+            javafx.scene.Cursor> stash = new java.util.IdentityHashMap<>();
+        final Stage stg;
+        final boolean wasResizable;
+        int moveCount;
+
+        CaptureRec(javafx.scene.Scene sc,
+                javafx.event.EventHandler<javafx.scene.input.MouseEvent> move,
+                javafx.event.EventHandler<javafx.scene.input.MouseEvent> press,
+                javafx.event.EventHandler<javafx.scene.input.ScrollEvent> scroll,
+                javafx.scene.Cursor prevScene, Stage stg,
+                boolean wasResizable) {
+            this.sc = sc;
+            this.move = move;
+            this.press = press;
+            this.scroll = scroll;
+            this.prevScene = prevScene;
+            this.stg = stg;
+            this.wasResizable = wasResizable;
+        }
+    }
 
     /** Tool windows during fly/POV capture (v19.8, D237 — user spec,
      *  superseding D235's hide-and-reshow): every open tool window
@@ -2413,79 +2681,148 @@ public class FvdDesigner extends Application {
      *  window sitting under the warped hidden cursor no longer
      *  starves the view — the D235 freeze), a RIGHT-click over one
      *  releases the capture like anywhere else, and every other
-     *  press/scroll is swallowed. Release unwires and restores the
-     *  cursors. */
+     *  press/scroll is swallowed. Release unwires and restores
+     *  everything. HARDENED in v19.11 (D240 — the user's cursor
+     *  flashes): every NODE-level cursor in the window is stashed
+     *  and nulled (the TextField I-beam came from CSS and outranked
+     *  the scene NONE), resizable Stages go non-resizable for the
+     *  capture (the OS resize-border cursors), OWNER-CHAIN Stages
+     *  wire too (a color picker owned by Rail Settings), windows
+     *  OPENED MID-CAPTURE wire via a Window-list watch (Ctrl+Z
+     *  rebuilds the seam pop-out; Ctrl+E opens Export), and the
+     *  move filter re-sweeps node cursors every 25th event (skins
+     *  can grow styled sub-nodes late). */
     void syncCaptureWindows() {
         boolean captured = capturedViewport() != null;
         if (captured) {
-            if (!captureWired.isEmpty()) return;   // already wired
             for (javafx.stage.Window w
                     : new ArrayList<>(javafx.stage.Window.getWindows())) {
-                if (w == stage || !w.isShowing()) continue;
-                if (w instanceof javafx.stage.Popup p && p.isAutoHide()) {
-                    continue;   // dies on the capture click by itself
-                }
-                if (!(w instanceof javafx.stage.Popup)
-                        && !(w instanceof Stage s && s.getOwner() == stage)) {
-                    continue;
-                }
-                javafx.scene.Scene sc = w.getScene();
-                if (sc == null) continue;
-                javafx.event.EventHandler<javafx.scene.input.MouseEvent>
-                    move = e -> {
-                        Viewport3D vp = capturedViewport();
-                        if (vp != null) vp.flyLook(e);
-                        e.consume();
-                    };
-                javafx.event.EventHandler<javafx.scene.input.MouseEvent>
-                    press = e -> {
-                        if (e.getButton()
-                                == javafx.scene.input.MouseButton.SECONDARY) {
-                            Viewport3D vp = capturedViewport();
-                            if (vp != null) vp.releaseCapture();
-                        }
-                        e.consume();
-                    };
-                javafx.event.EventHandler<javafx.scene.input.ScrollEvent>
-                    scroll = javafx.event.Event::consume;
-                sc.addEventFilter(
-                    javafx.scene.input.MouseEvent.MOUSE_MOVED, move);
-                sc.addEventFilter(
-                    javafx.scene.input.MouseEvent.MOUSE_DRAGGED, move);
-                sc.addEventFilter(
-                    javafx.scene.input.MouseEvent.MOUSE_PRESSED, press);
-                sc.addEventFilter(
-                    javafx.scene.input.ScrollEvent.SCROLL, scroll);
-                javafx.scene.Cursor prev = sc.getCursor();
-                sc.setCursor(javafx.scene.Cursor.NONE);
-                captureWired.add(new Object[]{ sc, move, press, scroll, prev });
+                wireCaptureWindow(w);
             }
-        } else if (!captureWired.isEmpty()) {
-            for (Object[] rec : captureWired) {
-                javafx.scene.Scene sc = (javafx.scene.Scene) rec[0];
-                @SuppressWarnings("unchecked")
-                javafx.event.EventHandler<javafx.scene.input.MouseEvent>
-                    move = (javafx.event.EventHandler<
-                        javafx.scene.input.MouseEvent>) rec[1];
-                @SuppressWarnings("unchecked")
-                javafx.event.EventHandler<javafx.scene.input.MouseEvent>
-                    press = (javafx.event.EventHandler<
-                        javafx.scene.input.MouseEvent>) rec[2];
-                @SuppressWarnings("unchecked")
-                javafx.event.EventHandler<javafx.scene.input.ScrollEvent>
-                    scroll = (javafx.event.EventHandler<
-                        javafx.scene.input.ScrollEvent>) rec[3];
-                sc.removeEventFilter(
-                    javafx.scene.input.MouseEvent.MOUSE_MOVED, move);
-                sc.removeEventFilter(
-                    javafx.scene.input.MouseEvent.MOUSE_DRAGGED, move);
-                sc.removeEventFilter(
-                    javafx.scene.input.MouseEvent.MOUSE_PRESSED, press);
-                sc.removeEventFilter(
-                    javafx.scene.input.ScrollEvent.SCROLL, scroll);
-                sc.setCursor((javafx.scene.Cursor) rec[4]);
+            if (captureWinWatch == null) {
+                captureWinWatch = ch -> {
+                    while (ch.next()) {
+                        if (!ch.wasAdded()) continue;
+                        for (javafx.stage.Window w : ch.getAddedSubList()) {
+                            javafx.application.Platform.runLater(() -> {
+                                if (capturedViewport() != null) {
+                                    wireCaptureWindow(w);
+                                }
+                            });
+                        }
+                    }
+                };
+                javafx.stage.Window.getWindows()
+                    .addListener(captureWinWatch);
+            }
+        } else if (!captureWired.isEmpty() || captureWinWatch != null) {
+            if (captureWinWatch != null) {
+                javafx.stage.Window.getWindows()
+                    .removeListener(captureWinWatch);
+                captureWinWatch = null;
+            }
+            for (CaptureRec rec : captureWired) {
+                rec.sc.removeEventFilter(
+                    javafx.scene.input.MouseEvent.MOUSE_MOVED, rec.move);
+                rec.sc.removeEventFilter(
+                    javafx.scene.input.MouseEvent.MOUSE_DRAGGED, rec.move);
+                rec.sc.removeEventFilter(
+                    javafx.scene.input.MouseEvent.MOUSE_PRESSED, rec.press);
+                rec.sc.removeEventFilter(
+                    javafx.scene.input.ScrollEvent.SCROLL, rec.scroll);
+                for (var en : rec.stash.entrySet()) {
+                    en.getKey().setCursor(en.getValue());
+                }
+                rec.sc.setCursor(rec.prevScene);
+                if (rec.stg != null) rec.stg.setResizable(rec.wasResizable);
             }
             captureWired.clear();
+        }
+    }
+
+    /** Does this window take the capture wiring? Non-autohide
+     *  Popups, and Stages owned (transitively, D240) by the main
+     *  stage. */
+    private boolean captureQualifies(javafx.stage.Window w) {
+        if (w == stage || !w.isShowing()) return false;
+        if (w instanceof javafx.stage.Popup p) {
+            return !p.isAutoHide();   // autohide dies on the capture
+                                      // click by itself
+        }
+        if (w instanceof Stage s) {
+            for (javafx.stage.Window o = s.getOwner(); o != null;
+                    o = o instanceof Stage st ? st.getOwner() : null) {
+                if (o == stage) return true;
+            }
+        }
+        return false;
+    }
+
+    private void wireCaptureWindow(javafx.stage.Window w) {
+        if (!captureQualifies(w)) return;
+        javafx.scene.Scene sc = w.getScene();
+        if (sc == null) return;
+        for (CaptureRec r : captureWired) {
+            if (r.sc == sc) return;   // already wired
+        }
+        Stage stg = w instanceof Stage s ? s : null;
+        boolean wasRes = stg != null && stg.isResizable();
+        javafx.event.EventHandler<javafx.scene.input.MouseEvent> press =
+            e -> {
+                if (e.getButton()
+                        == javafx.scene.input.MouseButton.SECONDARY) {
+                    Viewport3D vp = capturedViewport();
+                    if (vp != null) vp.releaseCapture();
+                }
+                e.consume();
+            };
+        javafx.event.EventHandler<javafx.scene.input.ScrollEvent> scroll =
+            javafx.event.Event::consume;
+        javafx.scene.Cursor prev = sc.getCursor();
+        CaptureRec[] hole = new CaptureRec[1];
+        javafx.event.EventHandler<javafx.scene.input.MouseEvent> move =
+            e -> {
+                Viewport3D vp = capturedViewport();
+                if (vp != null) vp.flyLook(e);
+                // cheap periodic re-sweep: a mouse-move is exactly
+                // the moment a stray cursor could show (D240)
+                CaptureRec rec = hole[0];
+                if (rec != null && ++rec.moveCount % 25 == 0) {
+                    sweepCursors(sc.getRoot(), rec.stash);
+                }
+                e.consume();
+            };
+        CaptureRec rec = new CaptureRec(sc, move, press, scroll, prev,
+            stg, wasRes);
+        hole[0] = rec;
+        sc.addEventFilter(
+            javafx.scene.input.MouseEvent.MOUSE_MOVED, move);
+        sc.addEventFilter(
+            javafx.scene.input.MouseEvent.MOUSE_DRAGGED, move);
+        sc.addEventFilter(
+            javafx.scene.input.MouseEvent.MOUSE_PRESSED, press);
+        sc.addEventFilter(
+            javafx.scene.input.ScrollEvent.SCROLL, scroll);
+        sc.setCursor(javafx.scene.Cursor.NONE);
+        sweepCursors(sc.getRoot(), rec.stash);
+        if (stg != null) stg.setResizable(false);
+        captureWired.add(rec);
+    }
+
+    /** Null out every node-level cursor under n, stashing the old
+     *  values for the unwire restore (D240 — putIfAbsent keeps the
+     *  first stash across re-sweeps). */
+    private static void sweepCursors(javafx.scene.Node n,
+            java.util.Map<javafx.scene.Node, javafx.scene.Cursor> stash) {
+        javafx.scene.Cursor c = n.getCursor();
+        if (c != null && c != javafx.scene.Cursor.NONE) {
+            stash.putIfAbsent(n, c);
+            n.setCursor(javafx.scene.Cursor.NONE);
+        }
+        if (n instanceof javafx.scene.Parent p) {
+            for (javafx.scene.Node k : p.getChildrenUnmodifiable()) {
+                sweepCursors(k, stash);
+            }
         }
     }
 
@@ -2906,10 +3243,8 @@ public class FvdDesigner extends Application {
             editor.setBridgeGap(v);
         });
         Tooltip.install(bridgeGapSpinner, new Tooltip(
-            "Length of this bridge along the track: each change slides\n"
-            + "the next piece along the seams' natural continuation —\n"
-            + "a split turn re-joins around its own circle — and the\n"
-            + "bridge re-solves to it (placement optimization)."));
+            "Bridge length along the track — each change slides the\n"
+            + "next piece along the natural continuation and re-solves."));
         updateBridgeControls();
 
         Region spacer = new Region();
@@ -2919,17 +3254,16 @@ public class FvdDesigner extends Application {
         // with Space and the view-label dropdown, user spec)
 
         // just "Append" (v11.1): it appends whatever the active section
-        // authors — seconds on lane sections, ELEMENTS on straight/curve
-        Button appendBtn = new Button("Append");
+        // authors — seconds on lane sections, ELEMENTS on straight/curve.
+        // The "(A)" shortcut tag + short tooltip are D241 (user spec).
+        Button appendBtn = new Button(
+            "Append (" + settings.shortcut("append") + ")");
         appendBtn.setFocusTraversable(false);
         appendBtn.setStyle(btnStyle);
         appendBtn.setOnAction(e -> editor.appendAction());
         Tooltip.install(appendBtn, new Tooltip(
-            "Lane section — no selection: extend the ride 1 s\n"
-            + "(distance-domain sections: 10 m); node selected:\n"
-            + "insert a flat hold of the same size after it\n"
-            + "(everything later shifts along).\n"
-            + "Straight/curve section: append a 10 m straight element."));
+            "Extend the section — 1 s (distance: 10 m), as a flat hold\n"
+            + "after the selected node; s/c: append a 10 m straight."));
 
         toolbar.setAlignment(Pos.CENTER_LEFT);
         toolbar.getChildren().addAll(rippleLbl, rippleTCheck, rippleVCheck,
@@ -2942,13 +3276,29 @@ public class FvdDesigner extends Application {
         MenuBar menuBar = buildMenuBar();
 
         statsLabel.setTextFill(Color.rgb(200, 205, 215));
-        statsLabel.setFont(Font.font(12));
+        statsLabel.setFont(STATS_FONT);
         statsLabel.setPadding(new Insets(4, 8, 4, 8));
         statsLabel.setStyle("-fx-background-color: rgb(25,28,36);");
         statsLabel.setMaxWidth(Double.MAX_VALUE);
+        // FIXED-SLOT POV row (v19.10, D239 — user spec: the readouts
+        // must not jump around horizontally): the POV stats render
+        // into per-field labels with slot widths pre-measured from
+        // worst-case templates, stacked over the plain statsLabel.
+        // Any message written to statsLabel (refusal reasons, save/
+        // load lines) reclaims the bar until the next POV update.
+        buildPovRow();
+        StackPane statsBar = new StackPane(povRow, statsLabel);
+        statsBar.setStyle("-fx-background-color: rgb(25,28,36);");
+        statsBar.setMaxWidth(Double.MAX_VALUE);
+        StackPane.setAlignment(povRow, Pos.CENTER_LEFT);
+        StackPane.setAlignment(statsLabel, Pos.CENTER_LEFT);
+        statsLabel.textProperty().addListener((o, a, b2) -> {
+            statsLabel.setVisible(true);
+            povRow.setVisible(false);
+        });
 
         BorderPane bottom = new BorderPane();
-        bottom.setTop(new VBox(statsLabel, toolbar));
+        bottom.setTop(new VBox(statsBar, toolbar));
         bottom.setCenter(editor);
         bottom.setMinHeight(0);       // allow the divider to crush it fully
         editor.setMinHeight(0);
@@ -3051,6 +3401,7 @@ public class FvdDesigner extends Application {
         stage.centerOnScreen();
         devShots();
         devMenu();
+        gridShots();
     }
 
     /** DEV HOOK (v19.5): `-Dfvd.devmenu=1` — Robot-drive the Coaster
@@ -3197,6 +3548,82 @@ public class FvdDesigner extends Application {
                 });
             });
         });
+    }
+
+    /** DEV HOOK (v19.13, D242): `-Dfvd.gridshot=<dir>` walks the
+     *  primary viewport through a ladder of camera poses over the
+     *  startup layout — low grazing, mid orbit, high, very high
+     *  (base-decade flips), a boundary straddle, and the top-ortho
+     *  lens — snapshotting the pane to PNGs in <dir>, then exits.
+     *  The floor grid's whole envelope in one headless-ish run.
+     *  Inert without the property. */
+    private void gridShots() {
+        String dir = System.getProperty("fvd.gridshot");
+        if (dir == null || dir.isBlank()) return;
+        java.io.File d = new java.io.File(dir);
+        d.mkdirs();
+        Viewport3D vp = viewports.get(0);
+        // {name, pivotX, pivotY, pivotZ, yaw, pitch, dist} + "ortho"
+        Object[][] poses = {
+            { "low-graze",  0.0, 5.0, 0.0, 25.0, -6.0, 40.0 },
+            { "mid-orbit",  0.0, 15.0, 0.0, 40.0, -25.0, 160.0 },
+            { "high",       0.0, 20.0, 0.0, 10.0, -45.0, 700.0 },
+            { "very-high",  0.0, 20.0, 0.0, 10.0, -55.0, 3000.0 },
+            { "base-below", 0.0, 0.0, 0.0, 30.0, -90.0, 480.0 },
+            { "base-above", 0.0, 0.0, 0.0, 30.0, -90.0, 560.0 },
+            { "pov-height", 0.0, 2.0, 0.0, 70.0, -3.0, 12.0 },
+            { "ortho-top",  0.0, 0.0, 0.0, 0.0, 0.0, 300.0 },
+            { "ortho-far",  0.0, 0.0, 0.0, 0.0, 0.0, 3000.0 },
+        };
+        java.util.concurrent.atomic.AtomicInteger step =
+            new java.util.concurrent.atomic.AtomicInteger();
+        Runnable[] adv = { null };
+        adv[0] = () -> {
+            int i = step.getAndIncrement();
+            if (i >= poses.length) {
+                javafx.application.Platform.exit();
+                System.exit(0);
+                return;
+            }
+            Object[] p = poses[i];
+            String name = (String) p[0];
+            boolean ortho = name.startsWith("ortho");
+            // set the PERSPECTIVE pose first, then enter the ortho
+            // lens — orthoEnter derives its zoom from the live pose
+            if (vp.orthoView) vp.exitOrthoRestorePose();
+            vp.applyCameraWorld(new double[]{
+                (Double) p[1], (Double) p[2], (Double) p[3],
+                (Double) p[4], (Double) p[5], (Double) p[6] });
+            if (ortho) vp.orthoEnterTop();
+            // let a few timer frames land the alphas/rebuilds
+            javafx.animation.PauseTransition pt =
+                new javafx.animation.PauseTransition(
+                    javafx.util.Duration.millis(400));
+            pt.setOnFinished(ev -> {
+                try {
+                    javafx.scene.image.WritableImage img =
+                        vp.pane.snapshot(null, null);
+                    int w = (int) img.getWidth(), h = (int) img.getHeight();
+                    java.awt.image.BufferedImage bi =
+                        new java.awt.image.BufferedImage(w, h,
+                            java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                    javafx.scene.image.PixelReader pr = img.getPixelReader();
+                    for (int yy = 0; yy < h; yy++) {
+                        for (int xx = 0; xx < w; xx++) {
+                            bi.setRGB(xx, yy, pr.getArgb(xx, yy));
+                        }
+                    }
+                    javax.imageio.ImageIO.write(bi, "png",
+                        new java.io.File(d, String.format(
+                            "grid-%02d-%s.png", i, name)));
+                } catch (Exception ex) {
+                    System.err.println("gridshot: " + ex);
+                }
+                adv[0].run();
+            });
+            pt.play();
+        };
+        javafx.application.Platform.runLater(adv[0]);
     }
 
     private void handleKey(KeyEvent e) {
@@ -3607,14 +4034,20 @@ public class FvdDesigner extends Application {
         Menu fileMenu = new Menu("File", null, newItem, saveItem, saveAsItem,
             loadItem, new SeparatorMenuItem(), exportItem);
 
-        // --- Edit: app-wide settings, persisted across runs ---
+        // --- Edit: app-wide settings, persisted across runs (a D241
+        // "Preferences" rename was REVERSED same round, D242) ---
         MenuItem shortcutsItem = new MenuItem("Shortcuts…");
         shortcutsItem.setOnAction(e -> dialogs.showShortcutsDialog());
         // renamed Options→Snapping in v16.14: after the viewport rows
         // moved to the View menu, snapping is all that's left
         MenuItem optionsItem = new MenuItem("Snapping…");
         optionsItem.setOnAction(e -> dialogs.showOptionsDialog());
-        Menu editMenu = new Menu("Edit", null, shortcutsItem, optionsItem);
+        // Resolution Scale (v19.12, D241): whole-UI scale factor,
+        // applied by coaster.Main at the next launch
+        MenuItem scaleItem = new MenuItem("Resolution Scale…");
+        scaleItem.setOnAction(e -> dialogs.showResolutionScaleDialog());
+        Menu editMenu = new Menu("Edit", null, shortcutsItem,
+            optionsItem, scaleItem);
 
         // --- Coaster: per-coaster settings, saved in the .fvd file ---
         heartSpinner = new Spinner<>(new SpinnerValueFactory.DoubleSpinnerValueFactory(-3.0, 3.0, heartOffset, 0.1));
@@ -3717,11 +4150,9 @@ public class FvdDesigner extends Application {
         tieRow.setAlignment(Pos.CENTER_LEFT);
         // gray-out explainers (v16.13): a bridged-in piece's owned
         // values say to edit through the BRIDGE instead
-        String bridgeOwned = "The bridge or STRICT SEAM connecting "
-            + "into this piece owns this value — edit through the "
-            + "bridge's placement rows, or the seam's settings (click "
-            + "the double line): locked axes hold the piece's original "
-            + "orientation, unlocked ones follow the seam.";
+        String bridgeOwned = "The bridge or strict seam connecting "
+            + "into this piece owns this value — edit it through the "
+            + "bridge rows or the seam's settings.";
         placementRow = new HBox(8, startLbl,
             GraphEditor.grayHint(startXSpinner, bridgeOwned),
             GraphEditor.grayHint(startYSpinner, bridgeOwned),
@@ -3755,10 +4186,8 @@ public class FvdDesigner extends Application {
             activePieceRef(), () -> activePieceRef().setDispRoll(v, true)));
         pieceLockPitchBtn = placementLockBtn(1);
         pieceLockRollBtn = placementLockBtn(2);
-        String tiltGray = "Locked — open the padlock to edit. When a "
-            + "bridge connects into this piece the padlocks live on "
-            + "the BRIDGE (one shared state), and its optimize-"
-            + "orientation mode owns the unlocked axes.";
+        String tiltGray = "Locked — open the padlock to edit (a "
+            + "connecting bridge's padlocks are these same locks).";
         tiltPlacementRow = new HBox(8, tiltLbl,
             pieceLockPitchBtn, GraphEditor.grayHint(piecePitchSpinner, tiltGray),
             pieceLockRollBtn, GraphEditor.grayHint(pieceRollSpinner, tiltGray));
@@ -3781,11 +4210,9 @@ public class FvdDesigner extends Application {
         bridgeModeP = new RadioButton("Optimize position");
         bridgeModeN = new RadioButton("No optimization");
         Tooltip.install(bridgeModePY, new Tooltip(
-            "Places the next piece on the track's natural continuation\n"
-            + "and rotates its UNLOCKED axes (the padlocks on yaw/pitch/\n"
-            + "roll) to meet it; locked axes keep their values and the\n"
-            + "bridge bends to them. Grayed out while all three are\n"
-            + "locked — unlock at least one axis to optimize orientation."));
+            "Place the next piece on the natural continuation, aligning\n"
+            + "its unlocked axes; locked axes hold and the bridge bends\n"
+            + "to them."));
         RadioButton[] modeBtns = { bridgeModePY, bridgeModeP, bridgeModeN };
         for (int m = 0; m < 3; m++) {
             final int mode = m;
@@ -3820,10 +4247,8 @@ public class FvdDesigner extends Application {
             refreshBridgeRows();
         });
         Tooltip.install(bridgeOptLenCheck, new Tooltip(
-            "Pick the length automatically: the shortest bridge whose\n"
-            + "transition is (near-)as smooth as any longer one. Pieces\n"
-            + "split at a smooth spot collapse to zero — the app then\n"
-            + "offers to connect them directly."));
+            "Pick the length automatically — the shortest bridge that\n"
+            + "is (near-)as smooth as any longer one."));
         bridgeLenRow = new HBox(8, bridgeGapLbl,
             GraphEditor.grayHint(bridgeGapSpinner,
                 "Uncheck Optimize length to type a length."),
@@ -3914,18 +4339,15 @@ public class FvdDesigner extends Application {
         fricRollRow = new HBox(8, fricRollLbl, fricRollSpinner);
         fricRollRow.setAlignment(Pos.CENTER_LEFT);
         Tooltip.install(fricRollRow, new Tooltip(
-            "Rolling/mechanical losses: constant deceleration μ·g per\n"
-            + "meter of track (dimensionless m/m). Default 0.03 ≈ NL2;\n"
-            + "0 = the old loss-free model. Applies to the whole\n"
-            + "coaster — design profiles and the true ride both shed."));
+            "Rolling losses: constant deceleration μ·g per meter.\n"
+            + "Default 0.03 ≈ NL2; 0 = loss-free."));
         Label fricAirLbl = new Label("Air resistance (m⁻¹)");
         fricAirLbl.setTextFill(Color.BLACK);
         fricAirRow = new HBox(8, fricAirLbl, fricAirSpinner);
         fricAirRow.setAlignment(Pos.CENTER_LEFT);
         Tooltip.install(fricAirRow, new Tooltip(
-            "Air resistance: deceleration k·v² with k in 1/m.\n"
-            + "Default 1.0×10⁻⁴ ≈ NL2. Fast track sheds much more\n"
-            + "than slow track."));
+            "Air drag: deceleration k·v² (k in 1/m).\n"
+            + "Default 1.0×10⁻⁴ ≈ NL2."));
 
         // (the rail-color radios live in THIS menu's "Rail Color"
         // section since v17.10 — Dialogs.railColorItems assigns the
@@ -4177,6 +4599,38 @@ public class FvdDesigner extends Application {
         ButtonType r = a.showAndWait().orElse(ButtonType.CANCEL);
         if (r == save) return saveDesign(false);   // cancelled chooser = stay
         return r == dont;
+    }
+
+    /** RESTART the app in place (v19.13, D242 — the Resolution Scale
+     *  dialog's "Apply and Restart"): the scale property is baked in
+     *  at toolkit boot (platform fact, D241), so the closest thing to
+     *  a live apply is a fresh instance — same JVM, same JVM args
+     *  (module path included), same classpath, launched on
+     *  coaster.Main. Runs the unsaved-changes gate first; a spawn
+     *  failure leaves this instance running with a stats reason. */
+    void restartApp() {
+        if (!confirmSaveDiscard()) return;
+        try {
+            String javaBin = new java.io.File(
+                System.getProperty("java.home"),
+                "bin" + java.io.File.separator + "java.exe")
+                .getAbsolutePath();
+            List<String> cmd = new ArrayList<>();
+            cmd.add(javaBin);
+            cmd.addAll(java.lang.management.ManagementFactory
+                .getRuntimeMXBean().getInputArguments());
+            cmd.add("-cp");
+            cmd.add(System.getProperty("java.class.path"));
+            cmd.add("coaster.Main");
+            new ProcessBuilder(cmd)
+                .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+                .redirectError(ProcessBuilder.Redirect.INHERIT)
+                .start();
+            javafx.application.Platform.exit();
+        } catch (Exception ex) {
+            statsLabel.setText("Restart failed (" + ex.getMessage()
+                + ") — relaunch manually to apply the scale.");
+        }
     }
 
     /** File > New (Ctrl+N): offer to save, then start a fresh EMPTY
@@ -4648,9 +5102,15 @@ public class FvdDesigner extends Application {
     }
 
     /** No-coaster panel sync (D230): the editor shows a placeholder
-     *  while the document has no coaster. */
+     *  while the document has no coaster. Since v19.10 (D239) it
+     *  also drives the EMPTY-COASTER placeholder — a coaster with
+     *  zero pieces (its last piece moved away via Switch Coaster)
+     *  offers a centered "Add Floating Piece" button; the wizard's
+     *  placeholder piece clears the condition while it is open. */
     void syncNoCoasterPanel() {
-        if (editor != null) editor.setNoCoaster(!hasCoaster());
+        if (editor == null) return;
+        editor.setNoCoaster(!hasCoaster());
+        editor.setEmptyPiece(hasCoaster() && coaster.pieces.isEmpty());
     }
 
     /** Snapshot the UI-side per-coaster cosmetics for DesignIO. */
@@ -4980,7 +5440,12 @@ public class FvdDesigner extends Application {
     }
 
     public static void main(String[] args) {
-        launch(args);
+        // delegate to the D241 launcher so the Resolution Scale
+        // applies even here — though a direct `java coaster.
+        // FvdDesigner` can never honor it (the java launcher
+        // pre-initializes the toolkit for an Application main class
+        // before main() runs); pom.xml launches coaster.Main.
+        Main.main(args);
     }
 }
 
