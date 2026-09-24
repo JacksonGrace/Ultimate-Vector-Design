@@ -477,7 +477,11 @@ public class AppSettings {
 
     private void save() {
         try (FileWriter out = new FileWriter(file)) {
-            props.store(out, "FVD Coaster Designer settings");
+            // the display name (v19.20, D249) — a LITERAL mirror of
+            // FvdDesigner.APP_NAME: this pure-Java layer never imports
+            // the shell; Properties ignores the comment on load, and
+            // the FILE name stays ~/.fvd-designer.properties
+            props.store(out, "Ultimate Vector Design settings");
         } catch (IOException ignored) {
             // settings that fail to persist shouldn't kill the app
         }

@@ -83,7 +83,10 @@ public final class Nl2ElemExporter {
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
           .append("<root>\n")
           .append("\t<element>\n")
-          .append("\t\t<description>FVD Coaster Designer Export</description>\n");
+          // the display name (v19.20, D249) — a literal mirror of
+          // FvdDesigner.APP_NAME (pure Java, no shell import);
+          // LabelGate pins it, Nl2ElemProbe compares geometry only
+          .append("\t\t<description>Ultimate Vector Design Export</description>\n");
 
         for (int k = 0; k <= nSeg; k++) {
             Vec3 v = rotA(zNeg(pos[k]).sub(anchor), dx, dz);

@@ -50,6 +50,13 @@ public class Coaster {
         return new FVDIntegrator.Friction(fricRoll, fricAir);
     }
 
+    /** The compile step every path integrates at (0.01 s — the
+     *  shell's FvdDesigner.INTEGRATE_DT reads this since v19.20,
+     *  D249): the bridge march's LOCKSTEP inner settle re-captures
+     *  the target's head at this dt so its stamped signature is
+     *  bitwise the next compile's capture. */
+    public static final double INTEGRATE_DT = 0.01;
+
     public final List<TrackPiece> pieces = new ArrayList<>();
 
     // (The Phase-1 SpeedRegion placeholder record retired in v18.0,
@@ -111,6 +118,7 @@ public class Coaster {
         out.ratePerMeter = prev.ratePerMeter;
         out.rollAbsolute = prev.rollAbsolute;   // v16.7, D118
         out.ypAbsolute = prev.ypAbsolute;       // v19.8, D237
+        out.endFollows(true);   // a fresh hold follows the end (D248)
         return out;
     }
 
@@ -120,7 +128,8 @@ public class Coaster {
      *  lane's final value) instead of copying rate lanes as forces. */
     public static ForceSection holdSection(double gv, double gl, double roll,
                                            double vDesign) {
-        return new ForceSection(LaneSection.holdLanes(gv, gl, roll), vDesign);
+        return (ForceSection) new ForceSection(
+            LaneSection.holdLanes(gv, gl, roll), vDesign).endFollows(true);
     }
 
     /** ENTER influence mode (v15.0 D98; re-specced v15.4 D102 — user:
@@ -493,6 +502,432 @@ public class Coaster {
         }
     }
 
+    // ---------- COPY (v19.18, D247 — the Track Piece panel's Copy) ----------
+
+    /** The Copy button's fixed world offset (m along +Z): the copy
+     *  sits beside the original, never on top of it. World +Z is
+     *  rider-LEFT of a +X heading — a literal world offset, not a
+     *  side-relative one (predictable and bitwise-rigid per D199). */
+    public static final double COPY_DZ = 5;
+
+    /** Deep copy of a 3-lane node-list set (null-safe) — the undo
+     *  snapshot's copyLanes, model-side so the copy op is gate-
+     *  testable without the shell. */
+    private static List<List<BezierBaker.Node>> copyLanes(
+            List<List<BezierBaker.Node>> lanes) {
+        if (lanes == null) return null;
+        List<List<BezierBaker.Node>> copy = new ArrayList<>(3);
+        for (List<BezierBaker.Node> lane : lanes) {
+            List<BezierBaker.Node> laneCopy = new ArrayList<>(lane.size());
+            for (BezierBaker.Node n : lane) laneCopy.add(n.copy());
+            copy.add(laneCopy);
+        }
+        return copy;
+    }
+
+    /** A DEEP COPY of one section (D247) — coverage == the undo
+     *  snapshot's SecState/restorePieces: lanes, delta lanes, every
+     *  domain/axis/unit/behavior flag, the influence pair (vAuthored
+     *  copies unconditionally — inert without delta lanes, exact
+     *  with them), speed controls + marks, s/c elements, bridges. All
+     *  lists are NEW objects (the editor holds list references).
+     *  SESSION flags start fresh on the copy (viewOtherDomain /
+     *  viewOtherRate / editInfluence = false — a copy is a NEW
+     *  section, not a restore of the same one; the view flags auto-
+     *  drop on leaving a section anyway) and baseCurves stays null
+     *  (the first compile recomputes it). A BRIDGE copies through
+     *  BridgeSection.copy() and then (a) optSig := null — FIRST SIGHT
+     *  is record-only in autoReoptimizeBridges, and the signature
+     *  carries the WORLD entry position, so a kept array would read
+     *  as changed after the dz translation and re-place the copied
+     *  target on the first rebuild; lastOptDist rides along so the
+     *  march spine still renders; (b) noneStash := null (a shared
+     *  transient); (c) the stored solve poses translate by dz (they
+     *  re-capture every compile — a translated cache just keeps an
+     *  accidental orphan honest). ONE place for these rules so a
+     *  future whole-coaster copy inherits them. */
+    public static Section copySection(Section s, double dz) {
+        if (s instanceof BridgeSection bs) {
+            BridgeSection b = bs.copy();
+            b.optSig = null;
+            b.noneStash = null;
+            Vec3 d = new Vec3(0, 0, dz);
+            if (b.solvedEntry != null) {
+                b.solvedEntry = new TrackPose(b.solvedEntry.pos().add(d),
+                    b.solvedEntry.orient());
+            }
+            if (b.solvedTarget != null) {
+                b.solvedTarget = new TrackPose(b.solvedTarget.pos().add(d),
+                    b.solvedTarget.orient());
+            }
+            return b;
+        }
+        if (s instanceof StraightCurveSection sc) {
+            List<StraightCurveSection.Element> els =
+                new ArrayList<>(sc.elements.size());
+            for (StraightCurveSection.Element e : sc.elements) els.add(e.copy());
+            StraightCurveSection out = new StraightCurveSection(els, sc.vDesign);
+            out.reversed = sc.reversed;
+            out.vPinned = sc.vPinned;
+            out.viewOtherDomain = false;
+            out.speedCtls.addAll(SpeedControl.copyList(sc.speedCtls));
+            out.speedMarks.addAll(sc.speedMarks);
+            return out;
+        }
+        LaneSection ls = (LaneSection) s;
+        LaneSection out = ls instanceof GeoSection
+            ? new GeoSection(copyLanes(ls.lanes), ls.vDesign)
+            : new ForceSection(copyLanes(ls.lanes), ls.vDesign);
+        out.reversed = ls.reversed;
+        out.vPinned = ls.vPinned;
+        out.domain = ls.domain;
+        out.viewOtherDomain = false;
+        out.viewOtherRate = false;
+        out.rollGlobal = ls.rollGlobal;
+        out.yawPitchGlobal = ls.yawPitchGlobal;
+        out.ratePerMeter = ls.ratePerMeter;
+        out.rollAbsolute = ls.rollAbsolute;
+        out.ypAbsolute = ls.ypAbsolute;
+        out.inflRollGlobal = ls.inflRollGlobal;
+        out.inflYawPitchGlobal = ls.inflYawPitchGlobal;
+        out.deltaLanes = copyLanes(ls.deltaLanes);
+        out.vAuthored = ls.vAuthored;
+        out.editInfluence = false;
+        out.baseCurves = null;
+        System.arraycopy(ls.endFollows, 0, out.endFollows, 0, 3);   // D248
+        out.speedCtls.addAll(SpeedControl.copyList(ls.speedCtls));
+        out.speedMarks.addAll(ls.speedMarks);
+        return out;
+    }
+
+    /** COPY A RUN (v19.18, D247 — the Track Piece panel's "Copy",
+     *  user spec "copy of the track piece": a RUN = pieces chained by
+     *  trailing bridges or strict follow links is what the user calls
+     *  the track piece — a lone follower's stored placement is its
+     *  frozen pre-attach pose and a lone bridge-ending piece would
+     *  leave an orphan bridge still aimed at the ORIGINAL target, so
+     *  the connected whole is the only copy that lands 5 m away
+     *  bitwise). Appends consecutive deep copies (TrackPiece.copy)
+     *  at the END of the piece list — inserting mid-list would
+     *  re-index every later piece and could hijack a following
+     *  piece's followPrev — so every internal link copies verbatim:
+     *  copied followers follow copied predecessors, copied bridges
+     *  target the copied next piece. The head's followPrev is
+     *  normalized to false (a run head never actively follows; an
+     *  inert orphaned-follower flag would glue the copy onto the
+     *  current last piece). REFUSES (−1) when the LAST piece of the
+     *  LIST ends in an ORPHAN bridge — a bridge always targets the
+     *  next list entry, so appending after it would hand that bridge
+     *  the copy's head as its target and move the ORIGINAL track.
+     *  The test is on the list end, not the copied run's end (D247
+     *  review fix): copying ANY run appends at the list end, and a
+     *  run whose last piece ends in a live bridge extends through its
+     *  target, so the run-end case is a subset of this one. No
+     *  compile, no reconcile writes on the first rebuild: interior
+     *  spans are bitwise the source's (canonical generation), copied
+     *  bridges are first-sight record-only. Returns the copied head's
+     *  index. */
+    public int copyRun(int runStart, int runEnd, double dz) {
+        if (runStart < 0 || runStart > runEnd || runEnd >= pieces.size()) {
+            return -1;
+        }
+        if (listEndsInOrphanBridge()) {
+            return -1;   // orphan bridge at the list end — see above
+        }
+        int head = pieces.size();
+        for (int p = runStart; p <= runEnd; p++) {
+            TrackPiece cp = pieces.get(p).copy(dz);
+            if (p == runStart) cp.followPrev = false;
+            pieces.add(cp);
+        }
+        return head;
+    }
+
+    /** True when the piece list's LAST piece ends in a bridge — an
+     *  orphan by construction (nothing follows it in the list), which
+     *  would seize any piece appended after it as its target. The
+     *  copyRun refusal + the UI's gray reason share this test (D247). */
+    public boolean listEndsInOrphanBridge() {
+        if (pieces.isEmpty()) return false;
+        List<Section> tail = pieces.get(pieces.size() - 1).sections;
+        return !tail.isEmpty()
+            && tail.get(tail.size() - 1) instanceof BridgeSection;
+    }
+
+    // ---- RUN TOPOLOGY (v19.19, D248): the ONE definition of a run
+    // — pieces chained by trailing bridges OR strict-seam follows —
+    // that the editor (GraphEditor.runStart/runEnd/followsPrev/
+    // endsWithBridge delegate here), the naming helpers
+    // (SectionNames) and the headless gates share. Out-of-range
+    // indices are tolerated (false / p itself). ----
+
+    /** Piece p's last section is a bridge. */
+    public boolean endsWithBridge(int p) {
+        if (p < 0 || p >= pieces.size()) return false;
+        List<Section> s = pieces.get(p).sections;
+        return !s.isEmpty() && s.get(s.size() - 1) instanceof BridgeSection;
+    }
+
+    /** Piece p is a STRICT-SEAM follower of p−1 (v17.1, D135) — the
+     *  rule the compiler applies: the flag is ignored when bridged-in
+     *  or when either side is empty. */
+    public boolean followsPrev(int p) {
+        return p > 0 && p < pieces.size() && pieces.get(p).followPrev
+            && !endsWithBridge(p - 1)
+            && !pieces.get(p - 1).sections.isEmpty()
+            && !pieces.get(p).sections.isEmpty();
+    }
+
+    /** Piece p is BRIDGED INTO — the previous piece ends in a bridge,
+     *  so the boundary entering p is a bridge exit (the junction's
+     *  "(bridge)" form). Checked BEFORE followsPrev by every naming
+     *  site: a bridged-in piece's stale followPrev flag is inert. */
+    public boolean bridgedInto(int p) {
+        return p > 0 && p < pieces.size() && endsWithBridge(p - 1);
+    }
+
+    /** First piece of the connected RUN holding piece p; p itself
+     *  when out of range. */
+    public int runStartOf(int p) {
+        if (p < 0 || p >= pieces.size()) return p;
+        while (p > 0 && (endsWithBridge(p - 1) || followsPrev(p))) p--;
+        return p;
+    }
+
+    /** DELETE A RUN (v19.20, D249 — the Track Piece window's
+     *  "Delete…"): removes pieces [head..runEndOf(head)] — the whole
+     *  connected run, trailing bridge and bridged-in targets included
+     *  (a lone piece is a run of one). `head` must be a run HEAD
+     *  (runStartOf(head) == head) — the UI resolves the active
+     *  piece's run first. The coaster's ONLY run may go: an empty
+     *  coaster is legal (D239, the "Add Floating Piece" placeholder).
+     *  The successor's followPrev is normalized inert when it now
+     *  heads the list or sits behind a bridge-ending piece (the D248
+     *  deleteSection rule) — by the run topology it is already false
+     *  (a follower of the run's tail would be IN the run) and the
+     *  piece before a run head never ends in a bridge (endsWithBridge
+     *  would have absorbed the head into that run, and an orphan
+     *  bridge is necessarily the LIST's last piece), so nothing
+     *  re-targets; the belt stays cheap. v0 is the CALLER's (the
+     *  ride entry's design speed when run 0 goes — the Switch-Coaster
+     *  precedent). Returns the index to ACTIVATE: the run after (now
+     *  at `head`) when one exists, else the previous run's head;
+     *  −1 when the coaster is empty now; −2 refused (bad index / not
+     *  a run head — nothing touched). */
+    public int deleteRun(int head) {
+        if (head < 0 || head >= pieces.size()
+                || runStartOf(head) != head) {
+            return -2;
+        }
+        int re = runEndOf(head);
+        pieces.subList(head, re + 1).clear();
+        if (pieces.isEmpty()) return -1;
+        if (head < pieces.size()) {
+            TrackPiece succ = pieces.get(head);
+            if (succ.followPrev
+                    && (head == 0 || endsWithBridge(head - 1))) {
+                succ.followPrev = false;
+            }
+            return head;
+        }
+        return runStartOf(pieces.size() - 1);
+    }
+
+    /** Last piece of the connected RUN holding piece p; p itself
+     *  when out of range. */
+    public int runEndOf(int p) {
+        if (p < 0 || p >= pieces.size()) return p;
+        while (p < pieces.size() - 1
+                && (endsWithBridge(p) || followsPrev(p + 1))) p++;
+        return p;
+    }
+
+    /** The run HEADS in list order — one entry per run (v19.19, D248
+     *  — RUN AS PIECE: the toolbar selector, the '+' attach/bridge
+     *  lists and the export picker enumerate these). Empty list on
+     *  an empty coaster. Allocates: menu builders and the selector
+     *  refresh only — never per redraw. */
+    public List<Integer> runHeads() {
+        List<Integer> heads = new ArrayList<>();
+        for (int p = 0; p < pieces.size(); p = runEndOf(p) + 1) heads.add(p);
+        return heads;
+    }
+
+    /** Number of runs (the "n" of "Piece k/n"). */
+    public int runCount() {
+        int n = 0;
+        for (int p = 0; p < pieces.size(); p = runEndOf(p) + 1) n++;
+        return n;
+    }
+
+    /** 1-based ordinal of the run holding piece p (the "k" of
+     *  "Piece k/n" — keyed off runStartOf(p), so a member piece reads
+     *  its run's number); 0 out of range. */
+    public int runOrdinal(int p) {
+        if (p < 0 || p >= pieces.size()) return 0;
+        int head = runStartOf(p), n = 0;
+        for (int q = 0; q <= head; q = runEndOf(q) + 1) n++;
+        return n;
+    }
+
+    /** DRY RUN of moveRun (D248): true when the run headed by `head`
+     *  may be moved to come right after piece `afterIdx`. Refuses a
+     *  non-head, an afterIdx inside the block, a destination piece
+     *  that ENDS IN A BRIDGE (the block's head would be seized as its
+     *  target — TrackCompiler targets pieces.get(p + 1)), and a block
+     *  that itself ends in an ORPHAN bridge unless it stays where it
+     *  is. An orphan-bridge run is NECESSARILY the list's last run (a
+     *  bridge-ending tail with a piece after it would have absorbed
+     *  that piece as its target), so the only landing that keeps the
+     *  bridge orphan is "already last" — afterIdx + 1 == head, the
+     *  '+' lists' "(next)" no-move case; anywhere else the piece
+     *  landing after it becomes that bridge's target — the moved run
+     *  swallows the following run, and an optimize-mode bridge with a
+     *  recorded signature would MOVE the swallowed run's head on the
+     *  next rebuild. Also refuses a destination that is not the END
+     *  of its own run (D248 review fix): the block lands at afterIdx +
+     *  1, and with a strict follower there moveRun (which touches no
+     *  follower flag) would splice the block into the middle of that
+     *  run — the follower re-chained onto the block's tail. The UI's
+     *  callers always pass the active run's tail, so this is the
+     *  model-side guard; the no-move case afterIdx + 1 == head still
+     *  passes (a run head never follows afterIdx). The UI grays the
+     *  entries with these reasons; the model guards anyway (the
+     *  copyRun precedent). */
+    public boolean canMoveRun(int head, int afterIdx) {
+        int n = pieces.size();
+        if (head < 0 || head >= n || afterIdx < 0 || afterIdx >= n) return false;
+        if (runStartOf(head) != head) return false;
+        int re = runEndOf(head);
+        if (afterIdx >= head && afterIdx <= re) return false;
+        if (endsWithBridge(afterIdx)) return false;
+        if (runEndOf(afterIdx) != afterIdx) return false;   // mid-run landing
+        if (endsWithBridge(re) && afterIdx + 1 != head) return false;
+        return true;
+    }
+
+    /** MOVE A WHOLE RUN (v19.19, D248 — RUN AS PIECE): the contiguous
+     *  block head..runEndOf(head) reorders, in order, to come right
+     *  after piece `afterIdx` — the piece list IS the ride timeline
+     *  (D73), so bridging to / attaching a run means "this whole run
+     *  follows". Internal links are index-relative and the block
+     *  keeps its order, so every follower still follows its
+     *  predecessor inside the block and every internal bridge still
+     *  targets the next block element (signatures carry no index and
+     *  no heading — nothing re-places). No TrackPiece field is
+     *  touched EXCEPT the head's followPrev, normalized to false (the
+     *  copyRun rule: an inert orphaned-follower flag at index 0 or
+     *  behind a deleted bridge must not turn into a live follow at the
+     *  new slot). For a run of one this is movePiece with
+     *  connectStrict's index arithmetic, bitwise (RunGate f). Returns
+     *  the moved head's new index, or −1 (list untouched) when
+     *  canMoveRun refuses. */
+    public int moveRun(int head, int afterIdx) {
+        if (!canMoveRun(head, afterIdx)) return -1;
+        int re = runEndOf(head);
+        List<TrackPiece> block = new ArrayList<>(pieces.subList(head, re + 1));
+        pieces.subList(head, re + 1).clear();
+        int t = afterIdx > re ? afterIdx - block.size() : afterIdx;
+        pieces.addAll(t + 1, block);
+        block.get(0).followPrev = false;
+        return t + 1;
+    }
+
+    /** connectStrict for a WHOLE RUN (D248): moveRun the run headed
+     *  by `head` to follow piece `targetIdx`, then the exact
+     *  connectStrict tail on the moved head (followPrev + the three
+     *  locks + seedStrictValues from its pre-attach entry pose — the
+     *  D247 conflict-preserving attach). Returns the head's new index
+     *  (the follower), or −1 with the list untouched when canMoveRun
+     *  refuses. */
+    public int connectStrictRun(int targetIdx, int head,
+                                boolean lockYaw, boolean lockPitch,
+                                boolean lockRoll) {
+        int to = moveRun(head, targetIdx);
+        if (to < 0) return -1;
+        TrackPiece f = pieces.get(to);
+        f.followPrev = true;
+        f.sLockYaw = lockYaw;
+        f.sLockPitch = lockPitch;
+        f.sLockRoll = lockRoll;
+        seedStrictValues(f, f.entryPose().orient());
+        return to;
+    }
+
+    /** Flattened index of piece p's FIRST section (its first span). */
+    private static int spanBase(Coaster c, int p) {
+        int b = 0;
+        for (int q = 0; q < p; q++) b += c.pieces.get(q).sections.size();
+        return b;
+    }
+
+    /** The compiled ARC LENGTH of the run headed by `head` — every
+     *  section of every member piece incl. bridges (the selector /
+     *  '+' / export labels, D248); NaN without spans or before the
+     *  compile covers the run. */
+    public static double runLengthM(Coaster c, List<TrackCompiler.Span> spans,
+                                    int head) {
+        if (c == null || spans == null || head < 0 || head >= c.pieces.size()) {
+            return Double.NaN;
+        }
+        int re = c.runEndOf(head);
+        int b = spanBase(c, head), e = spanBase(c, re + 1);
+        if (e > spans.size()) return Double.NaN;
+        double len = 0;
+        for (int k = b; k < e; k++) len += spans.get(k).sLen();
+        return len;
+    }
+
+    /** The run headed by `head` as a compiled SAMPLE RANGE {i0, i1}
+     *  inclusive (the export picker, D248): the head's first span to
+     *  the tail's last span — every member's samples incl. bridges
+     *  and the seam samples INSIDE the run. A run head is never a
+     *  continuation (TrackCompiler: continuation = bridgedIn ||
+     *  followed), so its first sample is its own entry; the D223
+     *  per-piece export's "dropped seam sample" prepend (D84) is
+     *  therefore dead here — under flat sample indexing that test was
+     *  always true and handed a DETACHED piece one foreign sample
+     *  from the previous piece, closed with the run picker. null when
+     *  the spans don't cover the run or the range is degenerate. */
+    public static int[] runSampleRange(Coaster c, List<TrackCompiler.Span> spans,
+                                       int head) {
+        if (c == null || spans == null || head < 0 || head >= c.pieces.size()) {
+            return null;
+        }
+        int re = c.runEndOf(head);
+        int b = spanBase(c, head), e = spanBase(c, re + 1);
+        if (e <= b || e > spans.size()) return null;
+        int i0 = spans.get(b).i0();
+        int i1 = spans.get(e - 1).i1();
+        return i1 > i0 ? new int[]{ i0, i1 } : null;
+    }
+
+    /** {x, y, z, reportedYaw, trueV} 5 m past the END of the RUN
+     *  holding piece p along its exit heading (level) — the floating
+     *  wizard's default placement (D248: the run TAIL's end, not the
+     *  active member's — "5 m past the track piece's end"); null
+     *  without a compile covering the run. trueV may be null (design
+     *  speed then). */
+    public static double[] runTailEnd(Coaster c, List<FVDIntegrator.Sample> samples,
+                                      List<TrackCompiler.Span> spans,
+                                      double[] trueV, int p) {
+        if (c == null || samples == null || spans == null) return null;
+        if (p < 0 || p >= c.pieces.size()) return null;
+        int re = c.runEndOf(p);
+        int e = spanBase(c, re + 1);
+        if (e == 0 || e > spans.size()) return null;
+        int i1 = spans.get(e - 1).i1();
+        if (i1 < 0 || i1 >= samples.size()) return null;
+        FVDIntegrator.Sample sm = samples.get(i1);
+        Vec3 t = sm.T();
+        double hl = Math.hypot(t.x(), t.z());
+        double hx = hl > 1e-9 ? t.x() / hl : 1, hz = hl > 1e-9 ? t.z() / hl : 0;
+        double heading = Math.toDegrees(Math.atan2(-hz, hx));   // internal
+        double v = trueV != null && i1 < trueV.length ? trueV[i1] : sm.v();
+        return new double[]{ sm.pos().x() + 5 * hx, sm.pos().y(),
+            sm.pos().z() + 5 * hz, -heading, v };
+    }
+
     /** A sample range mirrored into the opposite travel direction,
      *  world positions kept: T and R flip, U stays, felt Gl negates
      *  (the D67 identities), t/s re-base from the old end. The
@@ -619,6 +1054,168 @@ public class Coaster {
             q = Quat.aboutAxis(q.T(), Math.toRadians(bankDeg)).mul(q);
         }
         return q;
+    }
+
+    // ---------- strict-seam TWO TIERS (v19.18, D247) ----------
+    // A follower's DESIGN orientation is its designPose() (the
+    // compiler's follower branch generates there since D247); its REAL
+    // orientation is the follow contract (strictEntry). The gap is the
+    // seam's conflict tilt — exactly the `tq` the compile applies.
+
+    /** The seam's CONFLICT TILT for follower `followerIdx` given the
+     *  previous piece's exit pose: real (the follow contract) on top of
+     *  design — the same product TrackCompiler's follower branch tilts
+     *  by. Pure-heading gaps live inside it too (see
+     *  isSeamOrientConflict). */
+    public Quat seamConflictTilt(int followerIdx, TrackPose prevExit) {
+        TrackPiece f = pieces.get(followerIdx);
+        return strictEntry(prevExit, f).orient()
+            .mul(f.designPose().orient().conjugate());
+    }
+
+    /** Does a seam tilt count as an ORIENTATION conflict? Near-identity
+     *  (|w| > 1 − 1e-14 — the compiler's own IDENTITY short-circuit) is
+     *  none, and neither is a PURE WORLD-Y rotation (a heading-only
+     *  re-aim commutes with gravity exactly — rigid placement, the
+     *  D199-accepted follower re-aim): only a tilt with a horizontal
+     *  axis component (hypot(x, z) > 1e-9) reshapes the felt ride. */
+    public static boolean isSeamOrientConflict(Quat tq) {
+        if (Math.abs(tq.w()) > 1 - 1e-14) return false;
+        return Math.hypot(tq.x(), tq.z()) > 1e-9;
+    }
+
+    /** The LOCKSTEP-mode lockstep for a follower (D247 — the model
+     *  half of GraphEditor.seamEdit; mode-keyed since D249):
+     *  `before`/`after` are the follower's REAL {heading, elevation,
+     *  bank} around a seam write (followerEuler); under LOCKSTEP the
+     *  DESIGN tier moves by the same Euler delta (applyDesignEulerDelta
+     *  — elevation → designPitchDeg, bank → designRollDeg wrapped
+     *  ±180, then kept inside ±360 like editRoll) so the design/real
+     *  difference stays CONSTANT and the shape re-solves — the D222
+     *  invariance on the seam. REAL_ONLY = the real angles move
+     *  alone, the conflict absorbs the edit (today's locked behavior,
+     *  bitwise); DESIGN_ONLY takes seamEdit's own design branch (the
+     *  same delta applied to the design tier with the held values
+     *  restored) and returns true here. Heading never touches the
+     *  design tier (it is rigid); a NaN angle on either side (vertical
+     *  frame) leaves the tier alone. POLE GUARD (D247 review fix):
+     *  the triples are CANONICAL (elevation within ±90, heading/bank
+     *  flipping by 180 past straight up/down — the D224 NL2 flip)
+     *  while a held pitch runs ±360, so a write carrying the real
+     *  frame OVER the pole reads as "elevation unchanged, bank +180"
+     *  and would roll the design tier 180° about T for a 10° pitch
+     *  turn. Either side within 0.1° of vertical, or the flip
+     *  signature itself (heading AND bank both jumping by more than
+     *  90° — a typed yaw alone moves only the heading), leaves the
+     *  tier alone and returns FALSE so the caller can post the
+     *  reason; true = applied or nothing to do. */
+    public static boolean seamDesignLockstep(TrackPiece f, double[] before,
+                                             double[] after) {
+        if (f.orientMode != TrackPiece.OrientMode.LOCKSTEP) return true;
+        return applyDesignEulerDelta(f, before, after);
+    }
+
+    /** The shared design-tier Euler-delta write (D249 — factored out
+     *  of seamDesignLockstep so the DESIGN_ONLY seam branch applies
+     *  the identical math): design elevation += after[1] − before[1],
+     *  design bank += wrap180(after[2] − before[2]); null / NaN sides
+     *  = nothing to do (true); the pole guard above returns false with
+     *  the tier untouched. */
+    public static boolean applyDesignEulerDelta(TrackPiece f, double[] before,
+                                                double[] after) {
+        if (before == null || after == null) return true;
+        if (Double.isNaN(before[1]) || Double.isNaN(before[2])
+                || Double.isNaN(after[1]) || Double.isNaN(after[2])) {
+            return true;
+        }
+        boolean flipped = !Double.isNaN(before[0]) && !Double.isNaN(after[0])
+            && Math.abs(TrackPiece.wrap180(after[0] - before[0])) > 90
+            && Math.abs(TrackPiece.wrap180(after[2] - before[2])) > 90;
+        if (Math.abs(before[1]) > 89.9 || Math.abs(after[1]) > 89.9
+                || flipped) {
+            return false;   // crossed the pole — misattributed otherwise
+        }
+        f.designPitchDeg += after[1] - before[1];
+        f.designRollDeg = TrackPiece.wrap360(
+            f.designRollDeg + TrackPiece.wrap180(after[2] - before[2]));
+        return true;
+    }
+
+    /** DESIGN-tier absolute write for a follower (v19.20, D249 — the
+     *  seam window's pitch/roll boxes and the seam rig's rings under
+     *  DESIGN_ONLY, which show the design elevation/bank): axis 1 =
+     *  design elevation := deg, axis 2 = design bank := deg (shortest
+     *  way, wrap180 like the lockstep), through the design frame's
+     *  Euler triple (eulerOf(designPose())). The held angles, locks
+     *  and the real entry are untouched — the conflict changes by the
+     *  design delta. Refuses (false, nothing written) when the design
+     *  frame is vertical (no Euler triple) or the axis is yaw (heading
+     *  is shared, never a design quantity); callers post the reason
+     *  and rebuild. */
+    public static boolean seamDesignSet(TrackPiece f, int axis, double deg) {
+        if (axis != 1 && axis != 2) return false;
+        double[] g = eulerOf(f.designPose().orient());
+        if (Double.isNaN(g[1]) || Double.isNaN(g[2])
+                || Math.abs(g[1]) > 89.9) {
+            return false;
+        }
+        if (axis == 1) {
+            f.designPitchDeg += deg - g[1];
+        } else {
+            f.designRollDeg = TrackPiece.wrap360(
+                f.designRollDeg + TrackPiece.wrap180(deg - g[2]));
+        }
+        return true;
+    }
+
+    /** Seam REAL → DESIGN (D247, the seam window's "Real → Design
+     *  Orientation"): hold the follower's pitch and roll AT ITS DESIGN
+     *  elevation/bank (both padlocks lock; yaw untouched — heading is
+     *  placement, never a conflict). Afterwards the seam tilt is
+     *  heading-only ⇒ no ≠o, and the track is a RIGID image of what
+     *  it was (generation untouched; SeamShapeGate 3). Refuses (false)
+     *  when the design frame is vertical (no Euler triple — the caller
+     *  posts the reason) or the piece is not an active follower. */
+    public boolean seamRealToDesign(int followerIdx) {
+        if (!followerActive(followerIdx)) return false;
+        TrackPiece f = pieces.get(followerIdx);
+        double[] g = eulerOf(f.designPose().orient());
+        if (Double.isNaN(g[0]) || Double.isNaN(g[2])) return false;
+        f.sPitchDeg = g[1];
+        f.sRollDeg = g[2];
+        f.sLockPitch = true;
+        f.sLockRoll = true;
+        return true;
+    }
+
+    /** Does a USER placement edit on `p` carry its connected
+     *  downstream rigidly (v19.19, D248 — the ONE predicate
+     *  FvdDesigner.placementEdit and PlacementGate read; mode-keyed
+     *  since D249)? Only a REAL_ONLY piece whose "Affect Subsequent
+     *  Strict Seams" flag is ON: LOCKSTEP pieces reshape and their
+     *  downstream updates naturally (D222), DESIGN_ONLY never moves
+     *  the real entry (nothing to carry — the flag is inert there),
+     *  and the flag OFF stops the edit at the piece's own exit
+     *  junction (bridge or seam). */
+    public static boolean carriesDownstream(TrackPiece p) {
+        return p.orientMode == TrackPiece.OrientMode.REAL_ONLY
+            && p.affectSubsequentSeams;
+    }
+
+    /** The carry HALF of a user placement edit (D248): the caller ran
+     *  its write between capturing `before` and `after` (the edited
+     *  piece's effective entry poses); this applies carryDownstream
+     *  when carriesDownstream(pieces[pieceIdx]) says so and returns
+     *  whether it did. Null poses (a follower without a compiled seam)
+     *  carry nothing. */
+    public boolean carryAfterEdit(int pieceIdx, TrackPose before,
+                                  TrackPose after,
+                                  List<TrackCompiler.Span> spans) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return false;
+        if (!carriesDownstream(pieces.get(pieceIdx))) return false;
+        if (before == null || after == null) return false;
+        carryDownstream(pieceIdx, before, after, spans);
+        return true;
     }
 
     /** RIGID DOWNSTREAM CARRY (v19.0, D221): a hand edit to an
@@ -793,6 +1390,57 @@ public class Coaster {
         return np;
     }
 
+    /** INSERT A SECTION AT A SEAM (v19.18, D247 — the seam menu's
+     *  "Insert section…"): `added` lands INSIDE piece pieceIdx at
+     *  list index secIdx (secIdx == size = append). The STRUCTURAL
+     *  step only — the caller builds `added` (the editor's hold
+     *  recipe reads its compiled arrays; the gates pass a hold of
+     *  their own). Two shapes:
+     *  <ul><li>lockDownstream on an INTERIOR seam: makeSeamStrict
+     *  (pieceIdx, secIdx) runs FIRST — it compiles the CURRENT,
+     *  pre-insert document and freezes the downstream at its present
+     *  shape AND orientation (all three axes locked at the seam's
+     *  current angles, D235) — and `added` is then APPENDED to the
+     *  upstream piece. The follower's position follows the new exit
+     *  by the follow contract; its shape is bitwise, its locked
+     *  orientation unchanged; its design speed stays independent
+     *  (the D135 honest ≠v). Order matters: appending first would
+     *  freeze the re-chained, gravity-re-solved downstream.</li>
+     *  <li>otherwise a plain list insert: the sections after it
+     *  re-chain through the new one (force sections re-solve from
+     *  its exit frame — the '+'-style continuation semantics) and
+     *  the reconcile re-freezes their design speeds on the next
+     *  rebuild (interior k>0 sections; a follower's first section
+     *  is never re-frozen). The STRICT-seam case IS this branch:
+     *  the caller passes the UPSTREAM piece and secIdx = its size —
+     *  the existing follower's held angles hold, its position
+     *  follows.</li></ul>
+     *  Speed controls, marks and influence are per section OBJECT,
+     *  so nothing of theirs moves. Returns {piece, section} of the
+     *  inserted section, or null (bad indices / the boundary isn't
+     *  compiled — nothing mutated then). */
+    public int[] insertSectionAtSeam(int pieceIdx, int secIdx,
+                                     Section added, boolean lockDownstream,
+                                     double dt) {
+        if (added == null || pieceIdx < 0 || pieceIdx >= pieces.size()) {
+            return null;
+        }
+        TrackPiece piece = pieces.get(pieceIdx);
+        int n = piece.sections.size();
+        if (secIdx < 0 || secIdx > n) return null;
+        if (lockDownstream && secIdx > 0 && secIdx < n) {
+            // freeze the downstream at its PRE-insert shape: the
+            // split moves the tail out by reference, the head piece
+            // object keeps sections [0, secIdx)
+            int np = makeSeamStrict(pieceIdx, secIdx, dt);
+            if (np < 0) return null;
+            piece.sections.add(added);
+            return new int[]{ pieceIdx, piece.sections.size() - 1 };
+        }
+        piece.sections.add(secIdx, added);
+        return new int[]{ pieceIdx, secIdx };
+    }
+
     /** Is piece p an ACTIVE follower (the compiler's guard)? */
     boolean followerActive(int p) {
         if (p <= 0 || p >= pieces.size()) return false;
@@ -814,14 +1462,9 @@ public class Coaster {
      *  gravity in the stored frame. The follow itself stays ACTIVE
      *  (flags + discontinuous values untouched). */
     boolean bakeFollow(int followerIdx, TrackCompiler.Result r) {
-        if (!followerActive(followerIdx)) return false;
-        int spanIdx = -1;
-        for (int p = 0; p < followerIdx; p++) {
-            spanIdx += pieces.get(p).sections.size();
-        }
-        if (spanIdx < 0 || spanIdx >= r.spans().size()) return false;
+        TrackPose eff = followContract(followerIdx, r);
+        if (eff == null) return false;
         TrackPiece f = pieces.get(followerIdx);
-        TrackPose eff = strictEntry(r.spans().get(spanIdx).exit(), f);
         f.x = eff.pos().x();
         f.y = eff.pos().y();
         f.z = eff.pos().z();
@@ -830,12 +1473,31 @@ public class Coaster {
         f.yawDeg = 0;
         f.pitchDeg = 0;
         f.rollDeg = 0;
-        // the DESIGN tier resets too (D222): dead while following,
-        // but a leftover would ACTIVATE generation the moment the
-        // piece stops being a follower
+        // the DESIGN tier resets too: since D247 a follower GENERATES
+        // through its design deltas (TrackCompiler's follower branch),
+        // so this bake IS the seam's "Design → Real Orientation" —
+        // design := the follow contract, the seam tilt closes to the
+        // identity (the pure link; SeamShapeGate 4). Follow, locks and
+        // held angles stay — it does NOT detach (detachStrictSeam is
+        // the detaching twin).
         f.designPitchDeg = 0;
         f.designRollDeg = 0;
         return true;
+    }
+
+    /** The follow contract of an ACTIVE follower read off a compile —
+     *  strictEntry at the previous piece's exit span — or null when
+     *  the piece is not an active follower or the compile has no exit
+     *  for it yet. Shared by bakeFollow and detachStrictSeam (D247). */
+    TrackPose followContract(int followerIdx, TrackCompiler.Result r) {
+        if (!followerActive(followerIdx)) return null;
+        int spanIdx = -1;
+        for (int p = 0; p < followerIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        if (spanIdx < 0 || spanIdx >= r.spans().size()) return null;
+        return strictEntry(r.spans().get(spanIdx).exit(),
+                           pieces.get(followerIdx));
     }
 
     /** MAKE SMOOTHING REAL (v19.3, D232 — user spec): re-author a
@@ -1052,6 +1714,7 @@ public class Coaster {
         prevLeft.rollAbsolute = lPrev.rollAbsolute;
         prevLeft.ypAbsolute = lPrev.ypAbsolute;
         prevLeft.vPinned = lPrev.vPinned;
+        System.arraycopy(lPrev.endFollows, 0, prevLeft.endFollows, 0, 3);
         List<List<BezierBaker.Node>> rightLanes =
             splitLanes(lNext.lanes, cutB, true);
         LaneSection nextRight = lNext instanceof GeoSection
@@ -1063,6 +1726,7 @@ public class Coaster {
         nextRight.ratePerMeter = lNext.ratePerMeter;
         nextRight.rollAbsolute = lNext.rollAbsolute;
         nextRight.ypAbsolute = lNext.ypAbsolute;
+        System.arraycopy(lNext.endFollows, 0, nextRight.endFollows, 0, 3);
         // the ABS heading rebase at the window end (piece-relative
         // since v19.9, D238): B re-anchors at the window end, so
         // EVERY absolute heading lane in B re-zeroes there — the
@@ -1187,13 +1851,38 @@ public class Coaster {
     /** SPLIT TRACK AT a strict seam (v17.1): bake the CURRENT
      *  effective placement into the stored fields (the piece stays
      *  exactly where it sits) and drop the follow — an ordinary
-     *  detached piece from here on. */
+     *  detached piece from here on. CONFLICT-PRESERVING since v19.18
+     *  (D247 review fix): bakeFollow is the seam's Design → Real
+     *  (it zeroes the design tier), so routing a detach through it
+     *  silently re-solved a design-tilted follower against gravity
+     *  while connectStrict (D5) had preserved that conflict on attach
+     *  — attach→detach was no longer an involution. Now the position
+     *  bakes, the TRUE tier is decomposed onto the follow contract
+     *  (decomposeNear, branch-continuous about the current deltas)
+     *  and baseOrient, the canonical pair and the DESIGN deltas stay
+     *  untouched: yaw is a world-Y rotation of designPose (additive
+     *  psi ⇒ generation bitwise) and the seam's ≠o becomes the free
+     *  piece's ≠o (SeamShapeGate 9). A vertical frame on either side
+     *  (no Euler triple) falls back to the bakeFollow bake. */
     public boolean detachStrictSeam(int followerIdx, double dt) {
         if (!followerActive(followerIdx)) return false;
-        if (!bakeFollow(followerIdx, TrackCompiler.compile(this, dt))) {
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        TrackPose eff = followContract(followerIdx, r);
+        if (eff == null) return false;
+        TrackPiece f = pieces.get(followerIdx);
+        double[] d = TrackPiece.decomposeNear(f.baseOrient, eff.orient(),
+            f.yawDeg, f.pitchDeg, f.rollDeg);
+        if (d != null) {
+            f.x = eff.pos().x();
+            f.y = eff.pos().y();
+            f.z = eff.pos().z();
+            f.yawDeg = TrackPiece.wrap360(d[0]);
+            f.pitchDeg = d[1];
+            f.rollDeg = TrackPiece.wrap360(d[2]);
+        } else if (!bakeFollow(followerIdx, r)) {
             return false;
         }
-        pieces.get(followerIdx).followPrev = false;
+        f.followPrev = false;
         return true;
     }
 
@@ -1226,6 +1915,22 @@ public class Coaster {
         f.sLockYaw = lockYaw;
         f.sLockPitch = lockPitch;
         f.sLockRoll = lockRoll;
+        // ATTACH PRESERVES A TWO-TIER CONFLICT FOR FREE (v19.18, D247
+        // — no fold, deliberately): the stored placement, the
+        // canonical pair AND the design deltas stay untouched
+        // (movePiece only reorders the list), and since D247 the
+        // compiler's follower branch GENERATES through designPose/
+        // designCanon, so a design-tilted piece keeps generating
+        // bitwise the shape it had as a free piece; the held TRUE
+        // angles seeded below from entryPose() (its pre-attach real
+        // elevation/bank) make the seam tilt reproduce the old
+        // conflict tilt plus the seam's heading delta — a rigid image
+        // in the world (SeamShapeGate 1), and a (0,0)-design piece
+        // stays the historic path bitwise (SeamShapeGate 2). The same
+        // holds for makeSeamStrict on a tilted piece: splitPiece hands
+        // the cut piece the DESIGN chain + the tilt as its own true-
+        // tier deltas (D224), so its generation is bitwise and its
+        // world placement holds to Euler dust.
         seedStrictValues(f, f.entryPose().orient());
         // smoothing OFF by default when connecting pieces (v17.4;
         // D141 — user spec; hand-made strict seams stay sharp)
@@ -1643,10 +2348,21 @@ public class Coaster {
                                     double dist, boolean orient) {
         TrackPiece t = pieces.get(targetIdx);
         boolean[] align = alignFlags(bs, orient);
-        // (D222: the march writes the TRUE deltas directly below —
-        // conflict-writes by convention, never the design tier — so
-        // an aligned target can never reshape-loop the optimizer;
-        // D221's explicit flag flip is gone with the routing model.)
+        // ONE TIER RULE (v19.20, D249 — superseding D222's "the march
+        // writes the TRUE tier by convention"): the alignment goes
+        // through the target's editPitch/editRoll like every user
+        // writer, so LOCKSTEP moves both tiers (the march can never
+        // open a conflict — the target re-solves, its head dynamics
+        // shift the signature and ONE more re-march settles: a
+        // contracting fixed point, OrientModeGate g4), REAL_ONLY
+        // writes the true tier only (bitwise the historic write —
+        // the shape is a rigid image, the conflict grows) and
+        // DESIGN_ONLY is defensive: optimize-orientation is
+        // unavailable there (item O grays the radio), so a file that
+        // still holds the pair writes TRUE only like REAL_ONLY
+        // rather than re-solving the design blindly. Yaw is shared.
+        boolean designOnly =
+            t.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
         Vec3 tB = bs.solvedTarget.T(), uB = bs.solvedTarget.U();
         double d = dist > 0 ? dist
             : Math.max(1, bs.solvedTarget.pos().sub(bs.solvedEntry.pos()).length());
@@ -1667,8 +2383,10 @@ public class Coaster {
                 && Math.abs(endT.y()) < 0.999) {
             double dp = Math.asin(Math.max(-1, Math.min(1, endT.y())))
                       - Math.asin(Math.max(-1, Math.min(1, tB.y())));
-            t.pitchDeg = Math.max(-85, Math.min(85,
+            double np = Math.max(-85, Math.min(85,
                 t.pitchDeg + Math.toDegrees(dp)));
+            if (designOnly) t.pitchDeg = np;
+            else t.editPitch(np);   // REAL_ONLY: pitchDeg = np, bitwise
         }
         if (align[2] && ha2 > 1e-6) {
             double endH2 = 1 - endT.y() * endT.y();
@@ -1679,14 +2397,111 @@ public class Coaster {
                         1 - tB.y() * tB.y());
                 while (dr > Math.PI) dr -= 2 * Math.PI;
                 while (dr < -Math.PI) dr += 2 * Math.PI;
-                t.rollDeg += Math.toDegrees(dr);
-                while (t.rollDeg > 360) t.rollDeg -= 360;
-                while (t.rollDeg < -360) t.rollDeg += 360;
+                // editRoll's wrap360 IS the old while-loop pair on the
+                // true tier (bitwise); LOCKSTEP wraps the design too
+                double nr = t.rollDeg + Math.toDegrees(dr);
+                if (designOnly) t.rollDeg = TrackPiece.wrap360(nr);
+                else t.editRoll(nr);
             }
         }
         t.x = st[0].x();
         t.y = st[0].y();
         t.z = st[0].z();
+    }
+
+    /** LOCKSTEP INNER SETTLE (v19.20, D249): under the one tier rule
+     *  an optimize-orientation alignment of a LOCKSTEP target moves
+     *  its DESIGN tier too, so the target RE-SOLVES against gravity
+     *  and its head dynamics (accB/jerkB/rollB — the B side of the
+     *  march's blend) shift; the march's natural end then shifts by a
+     *  fraction of the alignment (measured gain 0.2-0.4 per pass:
+     *  ∂κ_head/∂pitch ≈ g·sinθ/v² times the blend's ~d/2 lever), so
+     *  left to the rebuild loop the fixed point took 13-23 whole-
+     *  document compiles (probed on the OrientModeGate fixture; the
+     *  loop's 12 + 40 cap held, but a live gesture's 12-pass tube
+     *  showed a mid-cascade target). This inner loop settles it
+     *  HERE: re-capture the target's head exactly as the next compile
+     *  will (TrackCompiler.captureTargetHead at INTEGRATE_DT) and
+     *  re-align until the deltas fall under 1e-9° (≤ 24 rounds, each
+     *  integrating only the target's first section), so the stamped
+     *  signature already matches the next capture and the outer loop
+     *  sees a fixed point in one pass (gated g4). REAL_ONLY /
+     *  DESIGN_ONLY targets never re-solve under the march (true-tier
+     *  writes) — the historic path, bitwise; a yaw-only alignment
+     *  never re-solves either (heading commutes with gravity).
+     *  REST GUARANTEE (D249 review fix — determinism contract (b)):
+     *  whatever the convergence, the target's head is re-captured
+     *  ONCE MORE after the last alignment, so the signature
+     *  optimizeBridge stamps equals the NEXT compile's capture (a
+     *  converged loop repeats its last capture to < 1e-9; the loop
+     *  used to stamp the PENULTIMATE capture on a 24-round exit, and
+     *  a slow pitched target — vDesign 2-8 m/s at ±25-30°, probed —
+     *  left the auto pass re-marching through the rebuild loop's
+     *  whole 12 + 40 cap on EVERY rebuild, the D197 "reopened coaster
+     *  keeps changing" class). Such a target has a REPELLING fixed
+     *  point (the pitch↔head-curvature gain exceeds 1 — no step size
+     *  converges, so damping is no fix); the loop STOPS HONESTLY:
+     *  each round snapshots the placement before its alignment, an
+     *  unconverged exit restores the round with the SMALLEST delta,
+     *  and a round whose pitch lands on the ±85° clamp ends the loop.
+     *  The stamped placement then fails marchSpine's 2 cm / 0.3°
+     *  landing test and the bridge renders the honest septic instead
+     *  of cascading. Returns whether any round ran — the target may
+     *  have moved, optimizeBridge's re-knee reads it. */
+    private boolean settleLockstepAlign(BridgeSection bs, int targetIdx,
+                                        double dist, boolean orient) {
+        TrackPiece t = pieces.get(targetIdx);
+        if (!orient || t.orientMode != TrackPiece.OrientMode.LOCKSTEP) {
+            return false;
+        }
+        boolean[] align = alignFlags(bs, orient);
+        if (!align[1] && !align[2]) return false;
+        double[] best = null;    // the pre-alignment placement of the
+                                 // smallest-delta round (D249 review)
+        double bestDelta = Double.POSITIVE_INFINITY;
+        boolean converged = false;
+        for (int round = 0; round < 24; round++) {
+            TrackCompiler.captureTargetHead(bs, t, INTEGRATE_DT, fric());
+            double[] pre = placementOf(t);
+            alignPieceForBridge(bs, targetIdx, dist, orient);
+            double delta = Math.max(
+                Math.abs(TrackPiece.wrap180(t.yawDeg - pre[3])),
+                Math.max(Math.abs(t.pitchDeg - pre[4]),
+                    Math.abs(TrackPiece.wrap180(t.rollDeg - pre[5]))));
+            if (delta < bestDelta) {
+                bestDelta = delta;
+                best = pre;
+            }
+            if (delta < 1e-9) {
+                converged = true;
+                break;
+            }
+            // the pitch clamp: the march's natural end is steeper
+            // than the alignment can express — stop honestly
+            if (align[1] && Math.abs(t.pitchDeg) >= 85) break;
+        }
+        if (!converged && best != null) restorePlacement(t, best);
+        // the MANDATORY re-capture: stamp == the next compile's capture
+        TrackCompiler.captureTargetHead(bs, t, INTEGRATE_DT, fric());
+        return true;
+    }
+
+    /** The settle loop's placement snapshot {x, y, z, yaw, pitch,
+     *  roll, designPitch, designRoll} (D249 review fix). */
+    private static double[] placementOf(TrackPiece t) {
+        return new double[] { t.x, t.y, t.z, t.yawDeg, t.pitchDeg,
+            t.rollDeg, t.designPitchDeg, t.designRollDeg };
+    }
+
+    private static void restorePlacement(TrackPiece t, double[] s) {
+        t.x = s[0];
+        t.y = s[1];
+        t.z = s[2];
+        t.yawDeg = s[3];
+        t.pitchDeg = s[4];
+        t.rollDeg = s[5];
+        t.designPitchDeg = s[6];
+        t.designRollDeg = s[7];
     }
 
     /** What the NEXT compile will capture if the march at length d
@@ -1873,6 +2688,28 @@ public class Coaster {
                                  // the march spine reproduces from it
                                  // (v13.12, D86)
         alignPieceForBridge(bs, targetIdx, dist, alignYaw);
+        boolean settled = settleLockstepAlign(bs, targetIdx, dist, alignYaw);
+        // RE-KNEE (D249 review fix): under "Optimize length" the
+        // caller's dist is the knee of the seams as the COMPILE
+        // captured them, but a LOCKSTEP settle moves the target's
+        // head dynamics (accB / jerkB / rollB / vB) and the knee IS
+        // a function of the seam states (D82 / D155) — optSignature
+        // stores 0 in the length slot while optLen is on, so once the
+        // settle converged the next compile found sigEq true and the
+        // stale knee stayed (probed: the gate fixture 9.00 → 8.00 m,
+        // vDesign 24 optLen 9.00 → 6.50 m). ONE extra pass off the
+        // settled seams: a contracting knee converges in one; a
+        // still-moving knee keeps the second answer (bounded by
+        // design — never a loop; the rest guarantee re-captures).
+        if (settled && bs.optLen) {
+            double d2 = optimalBridgeLength(bs, alignYaw);
+            if (Math.abs(d2 - dist) > 1e-9) {
+                dist = d2;
+                bs.lastOptDist = d2;
+                alignPieceForBridge(bs, targetIdx, dist, alignYaw);
+                settleLockstepAlign(bs, targetIdx, dist, alignYaw);
+            }
+        }
         // SEPTIC-FALLBACK tangents (v17.15, D156): the fallback lens
         // used to be the raw requested length — when the march missed
         // its own placement (an unconverged extreme), 120 m tangents
@@ -1962,13 +2799,43 @@ public class Coaster {
      *  re-freeze vDesign (shape speed-independent — both resolutions
      *  coincide). Bridges have no split (pure geometry in Pass D);
      *  REVERSED sections refuse (§5.3's rule — reversal itself is
-     *  the convert-based rebuild now, v17.0 D134). */
+     *  the convert-based rebuild now, v17.0 D134). The bakes below
+     *  are PIECE-wide — on an orientation-conflicted piece the UI
+     *  therefore isolates a section range first (v19.18, D247 — see
+     *  isolateRange) and chains this op over it one section at a
+     *  time; a pure speed conflict calls it directly, as always.
+     *  Runs under withSeamsSuspended since v19.20 (D249): the fit
+     *  already read compileForFit and the follow bake the same
+     *  result, so nothing inside depends on the two lengths — the
+     *  wrapper keeps the four resolve ops uniform. */
     public boolean makeGraphsReal(int pieceIdx, int secIdx, double dt,
                                   double spacing, double adaptTol) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return false;
+        return withSeamsSuspended(pieceIdx,
+            () -> makeGraphsRealBody(pieceIdx, secIdx, dt, spacing, adaptTol));
+    }
+
+    private boolean makeGraphsRealBody(int pieceIdx, int secIdx, double dt,
+                                       double spacing, double adaptTol) {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
         TrackCompiler.Result r = compileForFit(dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        if (spanIdx >= r.spans().size()) return false;
+        TrackCompiler.Span sp = r.spans().get(spanIdx);
+        // the too-short refusal runs BEFORE any bake (v19.18, D247 —
+        // the leak: the follow/tilt bakes below mutated the piece and
+        // THEN the `< 4` test returned false, so a refused first
+        // preview run left a half-baked document with no undo entry;
+        // the range flow's composite op inserts seams first and made
+        // the hole visible). s/c sections have nothing to fit and
+        // keep passing whatever their span length.
+        if (!(sec instanceof StraightCurveSection)
+                && sp.i1() - sp.i0() < 4) return false;
         // a STRICT-SEAM follower BAKES its follow rotation into the
         // stored placement (D136 — the D106 lesson: without it the
         // next compile applied the follow rotation a SECOND time on
@@ -1981,11 +2848,6 @@ public class Coaster {
         if (followerActive(pieceIdx)) {
             bakeFollow(pieceIdx, r);
         }
-        int spanIdx = secIdx;
-        for (int p = 0; p < pieceIdx; p++) {
-            spanIdx += pieces.get(p).sections.size();
-        }
-        TrackCompiler.Span sp = r.spans().get(spanIdx);
         // anchor at the SEAM sample — the very sample the reconcile
         // compares and writes at (v19.8, D237: the ops used to read
         // one dt INSIDE, so a fresh resolve moved by ~mm/s dust on
@@ -2013,7 +2875,6 @@ public class Coaster {
             sec.vPinned(false);   // resolved: re-join the speed flow
             return true;
         }
-        if (sp.i1() - sp.i0() < 4) return false;
         LaneSection realFit = fitLanes(
             withEntry(r.samples(), sp, dt),
             vTrue, sec instanceof GeoSection, dt, spacing, adaptTol,
@@ -2111,8 +2972,20 @@ public class Coaster {
                 }
             }
         }
-        piece.designPitchDeg = piece.pitchDeg;
-        piece.designRollDeg = piece.rollDeg;
+        if (followerActive(pieceIdx)) {
+            // a strict-seam FOLLOWER's "design := real" is the follow
+            // bake (v19.18, D247 — the seam window's Design → Real
+            // Orientation): baseOrient := the follow contract, both
+            // tiers zero, follow + locks + held angles kept. It reads
+            // the SAME compileForFit result the fit just read — the
+            // D136 rule: baking a follow changes the generation frame,
+            // so a second compile here would hand the refit lanes a
+            // frame they were not fitted against.
+            bakeFollow(pieceIdx, r);
+        } else {
+            piece.designPitchDeg = piece.pitchDeg;
+            piece.designRollDeg = piece.rollDeg;
+        }
         return true;
     }
 
@@ -2136,6 +3009,44 @@ public class Coaster {
             for (int i = 0; i < pieces.size(); i++) {
                 pieces.get(i).sSmoothLen = stash[i];
             }
+        }
+    }
+
+    /** RESOLVE UNDER SEAM SMOOTHING (v19.20, D249 — item C): run `op`
+     *  with the strict-seam SMOOTHING of piece pieceIdx's OWN seam and
+     *  of the seam right AFTER it (pieces[pieceIdx+1]'s) suspended —
+     *  both lengths set to 0, restored BITWISE (the same doubles) in
+     *  a finally, so every compile the op makes (makeSeamStrict's
+     *  boundary cut, the follow bake) reads the same unsmoothed
+     *  frames the fit / speed anchor read through compileForFit. The
+     *  resolve ops used to MIX compiles (bakeFollow WITH smoothing,
+     *  the anchor without) and the range flow refused smoothed seams
+     *  outright; the smoothing re-applies on top of the resolved
+     *  shape next compile. SCOPED, not compileForFit's all-off: an
+     *  unrelated smoothed seam keeps its blend during the op. The
+     *  restore goes by piece OBJECT, not index — isolateRange's
+     *  splits move the successor down the list and the pieces born
+     *  inside the op (TrackPiece's ctor default 0) own freshly
+     *  inserted sharp seams and never inherit a stash. A piece
+     *  removed by the op (absorbFollower) keeps its restored value
+     *  harmlessly. Nested calls (the chained convert's step lambda
+     *  around the model ops that suspend again) stash the inner 0
+     *  and restore 0 — a no-op by construction. */
+    public <T> T withSeamsSuspended(int pieceIdx,
+                                    java.util.function.Supplier<T> op) {
+        TrackPiece own = pieceIdx >= 0 && pieceIdx < pieces.size()
+            ? pieces.get(pieceIdx) : null;
+        TrackPiece next = pieceIdx >= 0 && pieceIdx + 1 < pieces.size()
+            ? pieces.get(pieceIdx + 1) : null;
+        double ownLen = own != null ? own.sSmoothLen : 0;
+        double nextLen = next != null ? next.sSmoothLen : 0;
+        if (own != null) own.sSmoothLen = 0;
+        if (next != null) next.sSmoothLen = 0;
+        try {
+            return op.get();
+        } finally {
+            if (own != null) own.sSmoothLen = ownLen;
+            if (next != null) next.sSmoothLen = nextLen;
         }
     }
 
@@ -2232,8 +3143,21 @@ public class Coaster {
      *  speed to its true entry speed; the geometry re-derives from
      *  the same graphs at the new speed (the shape changes — the
      *  user's explicit trade). Reversed sections refuse (reversal
-     *  is the convert-based rebuild now, v17.0 D134). */
+     *  is the convert-based rebuild now, v17.0 D134). The bakes are
+     *  PIECE-wide — on an orientation-conflicted piece the UI runs
+     *  refreezeRange over an isolated section range instead (v19.18,
+     *  D247); a pure speed conflict calls this directly, as always.
+     *  Runs under withSeamsSuspended since v19.20 (D249): the follow
+     *  bake below used to read a compile WITH smoothing while the
+     *  speed anchor (refreezeSpeedOnly's compileForFit) read without
+     *  — on a smoothed follower the two disagreed by the blend. */
     public boolean refreezeSpeed(int pieceIdx, int secIdx, double dt) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return false;
+        return withSeamsSuspended(pieceIdx,
+            () -> refreezeSpeedBody(pieceIdx, secIdx, dt));
+    }
+
+    private boolean refreezeSpeedBody(int pieceIdx, int secIdx, double dt) {
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
@@ -2282,6 +3206,119 @@ public class Coaster {
             ? r.spans().get(spanIdx - 1).i1()
             : r.spans().get(spanIdx).i0()]));
         sec.vPinned(false);   // re-join the speed flow
+        return true;
+    }
+
+    // ---------- RANGE-SCOPED orientation resolve (v19.18, D247) ----------
+    // An orientation conflict is a PIECE property (the design→true
+    // tilt, or a follower's held seam angles vs its design tier), so
+    // today's per-section resolve ops bake the WHOLE piece: every
+    // sibling section re-solves against gravity at the real frame —
+    // sections the user never asked about reshape. The range flow
+    // (user spec) isolates sections [k..m] of the piece as their OWN
+    // piece behind inserted STRICT seams first: the upstream part
+    // keeps its conflict as its own piece, the remainder keeps it as
+    // an all-locked follower (local shape bitwise by the canonical
+    // pair, world placement to Euler dust — the D71/D224 split rule),
+    // and only the range resolves. A trailing BRIDGE is never in a
+    // range and never gets a seam (it re-solves live, as bridges do).
+
+    /** Index of the piece's last NON-BRIDGE section, −1 if none. */
+    public int lastNonBridge(int pieceIdx) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return -1;
+        List<Section> secs = pieces.get(pieceIdx).sections;
+        for (int i = secs.size() - 1; i >= 0; i--) {
+            if (!(secs.get(i) instanceof BridgeSection)) return i;
+        }
+        return -1;
+    }
+
+    /** ISOLATE sections [k..m] of a piece as their own piece (D247):
+     *  (i) a strict seam AFTER m when m is not the last non-bridge
+     *  section (the remainder [m+1..] — trailing bridge included —
+     *  becomes an all-locked follower keeping its conflict), then
+     *  (ii) a strict seam BEFORE k when k > 0 (the range becomes
+     *  piece pieceIdx+1). (i) runs first so m+1 is still in the
+     *  original numbering. Returns the RANGE piece's index, −1 when
+     *  a seam could not be made (an uncompiled boundary — the UI
+     *  pre-checks every span, so a partial state is not expected;
+     *  callers hold an undo snapshot regardless). k == m == the
+     *  last section of a one-section piece = no seams at all.
+     *  Both cuts read the withSeamsSuspended compile since v19.20
+     *  (D249) — the inserted seams land on the same unsmoothed
+     *  frames the range's fit / speed anchor read; the original
+     *  seams' smoothing comes back (by object) around them. */
+    public int isolateRange(int pieceIdx, int k, int m, double dt) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return -1;
+        return withSeamsSuspended(pieceIdx,
+            () -> isolateRangeBody(pieceIdx, k, m, dt));
+    }
+
+    private int isolateRangeBody(int pieceIdx, int k, int m, double dt) {
+        int last = lastNonBridge(pieceIdx);
+        if (k < 0 || k > m || m > last) return -1;
+        if (m < last && makeSeamStrict(pieceIdx, m + 1, dt) < 0) return -1;
+        if (k > 0) {
+            int rp = makeSeamStrict(pieceIdx, k, dt);
+            return rp < 0 ? -1 : rp;
+        }
+        return pieceIdx;
+    }
+
+    /** SET DESIGN TO REAL over an isolated RANGE piece (D247): the
+     *  refreezeSpeed prologue on the range piece (bake the tilt if the
+     *  tiers conflict, then the follow if it follows — both PIECE-
+     *  level, so every range section re-solves from the real frame
+     *  exactly as today's op makes a whole piece do), the SPEED half
+     *  on its first section (vDesign := the true seam speed, D237's
+     *  anchor) and an UN-PIN of the other non-bridge sections so the
+     *  reconcile re-derives them from the new compile. The interior
+     *  sections deliberately get NO refreezeSpeedOnly of their own —
+     *  a fresh compileForFit per section would write pre-reconcile
+     *  stale values the exact settle rewrites anyway (D200's fixed
+     *  point). Equivalent per section to today's refreezeSpeed
+     *  restricted to the range (RangeResolveGate g2/g4). Runs under
+     *  withSeamsSuspended since v19.20 (D249) — the refreezeSpeed
+     *  rationale: the follow bake and the speed anchor read the
+     *  same unsmoothed seam frames. */
+    public boolean refreezeRange(int rp, double dt) {
+        if (rp < 0 || rp >= pieces.size()) return false;
+        return withSeamsSuspended(rp, () -> refreezeRangeBody(rp, dt));
+    }
+
+    private boolean refreezeRangeBody(int rp, double dt) {
+        TrackPiece piece = pieces.get(rp);
+        if (piece.sections.isEmpty()) return false;
+        Section first = piece.sections.get(0);
+        if (first.reversed() || first instanceof BridgeSection) return false;
+        if (piece.orientConflict()) piece.bakeTilt();
+        if (followerActive(rp)) {
+            bakeFollow(rp, TrackCompiler.compile(this, dt));
+        }
+        if (!refreezeSpeedOnly(rp, 0, dt)) return false;
+        for (int i = 1; i < piece.sections.size(); i++) {
+            Section s = piece.sections.get(i);
+            if (s instanceof BridgeSection || s.reversed()) continue;
+            s.vPinned(false);
+        }
+        return true;
+    }
+
+    /** ABSORB a just-converted follower back into the converted piece
+     *  before it (D247 — the chained "Convert Real to Design" re-joins
+     *  the range one section at a time): the follow link drops and
+     *  the sections append as a plain continuation — NO pin (the
+     *  fitted section already starts at the true seam speed, so the
+     *  reconcile's re-derivation is a dust-level no-op), and any
+     *  follower AFTER it (the still-unconverted rest of the range, or
+     *  the remainder) now follows the merged piece. False when the
+     *  pair is not an active follower and its predecessor. */
+    public boolean absorbFollower(int prevIdx, int followerIdx) {
+        if (followerIdx != prevIdx + 1 || !followerActive(followerIdx)) {
+            return false;
+        }
+        pieces.get(followerIdx).followPrev = false;
+        attachPiece(prevIdx, followerIdx);
         return true;
     }
 
@@ -2335,8 +3372,10 @@ public class Coaster {
      *  search inside, LINEAR EXTRAPOLATION past both ends (the edge
      *  segment's slope — end-node drags and end-of-lane nodes keep
      *  meaning something beyond the compiled extent, the s/c cursor
-     *  rule). */
-    static double mapCol(double[][] map, int from, int to, double x) {
+     *  rule). PUBLIC since v19.20 (D249, item S1) so StripGate pins the
+     *  strip's display-axis snap round trip through the editor's own
+     *  map read. */
+    public static double mapCol(double[][] map, int from, int to, double x) {
         int n = map.length;
         if (n == 0) return x;
         if (n == 1) return map[0][to] + (x - map[0][from]);
@@ -2611,8 +3650,15 @@ public class Coaster {
                 // the user's "conflict not getting resolved" file): a
                 // seam gap dv is an ENERGY offset ~2·vTrue·dv, which
                 // reads as dv·vTrue/vMin at the section's slowest
-                // point — the SAME quantity the ≠v badge tests (the
-                // D106 whole-span max). The old constant entry test
+                // point — the quantity the ≠v badge tested until
+                // v19.17 (the D106 whole-span max). Since v19.18
+                // (D247) the BADGE tests the RAW entry gap only (an
+                // interior-only split is an ORIENTATION conflict, ≠o)
+                // while this reconcile KEEPS its amplified gate — the
+                // two measure different things by design: a sub-0.2
+                // seam gap with a slow interior can split the true
+                // strokes with no ≠v, and this gate still recognizes
+                // the user's resolution there. The old constant entry test
                 // let every gap in (0.2/amp, 0.2) trip the badge
                 // downstream while the reconcile REFUSED to recognize
                 // the user's resolution and snapped it back each
@@ -4414,6 +5460,10 @@ public class Coaster {
             kp.ratePerMeter = ls.ratePerMeter;
             kp.rollAbsolute = ls.rollAbsolute;
             kp.ypAbsolute = ls.ypAbsolute;
+            // the kept half inherits the END-FOLLOW flags (D248 — a
+            // split is not an edit; the belt clears a half that is
+            // no longer hold-shaped)
+            System.arraycopy(ls.endFollows, 0, kp.endFollows, 0, 3);
             // (the D237 kept-right abs-heading rebase is GONE —
             // v19.9, D238: piece-relative heading, same piece, the
             // kept half's values carry verbatim)
@@ -4535,6 +5585,10 @@ public class Coaster {
             h.rollAbsolute = ls.rollAbsolute;
             h.ypAbsolute = ls.ypAbsolute;
             h.vPinned(ls.vPinned());
+            // both halves inherit the END-FOLLOW flags (D248 — a
+            // split is not an edit; the left half's cut node IS its
+            // end, a 1-node right hold neither defines nor follows)
+            System.arraycopy(ls.endFollows, 0, h.endFollows, 0, 3);
         }
         if (ls.influenced()) {   // both halves stay influenced (D234;
                                  // hybrid-exact since D236 — the
@@ -4559,6 +5613,25 @@ public class Coaster {
         return true;
     }
 
+    /** Value/slope tolerance of {@link #mergeSections}' seam tests
+     *  (the D131 matched tolerance, shared by every branch since
+     *  v19.18 D247): two seam values (or slopes) within this are
+     *  "equal" — split nodes and B-matched seams are bit-equal
+     *  copies, so the lossless boundary sits exactly where it did. */
+    public static final double MERGE_EPS = 1e-9;
+
+    /** The STEP length of a keep-both-values merge (v19.18, D247):
+     *  the domain's MINIMUM TRANSITION — 0.01 s TIME / 0.1 m
+     *  DISTANCE. Mirrors the editor's GraphEditor.MIN_GAP (0.01,
+     *  seconds) and GraphEditor.minGapOf (DISTANCE ? 0.1 : MIN_GAP),
+     *  which are editor-private (Coaster is pure Java); keep the
+     *  three in step. On the physics bake grid (0.01 s / 0.05 m) a
+     *  step this long is a one-to-two-cell linear ramp whatever the
+     *  handles do — "very steep" IS the felt jump at the seam. */
+    public static double mergeStepLen(Section.Domain d) {
+        return d == Section.Domain.DISTANCE ? 0.1 : 0.01;
+    }
+
     /** CONNECT two adjacent LIKE sections into one (v16.19, D131 —
      *  the split's inverse, user spec): secIdx and secIdx+1 of the
      *  piece merge when they share type, domain and every axis/rate/
@@ -4567,11 +5640,28 @@ public class Coaster {
      *  sides own a seam node they become ONE node — a seam that was
      *  MATCHED (equal value + slope, what B leaves behind) merges
      *  losslessly (split→connect round-trips to the original,
-     *  gated), an unmatched seam takes the AVERAGE of the two
-     *  values and the AVERAGE of the two handle slopes on both
-     *  handles (smooth — the user's rule); a side whose lane held
-     *  early just appends, the hold becoming a real segment. The
-     *  merged section keeps the FIRST's vDesign and pin. */
+     *  gated). An UNMATCHED seam KEEPS BOTH VALUES since v19.18
+     *  (D247, user re-spec superseding D131's average value + slope
+     *  and D132's held-side averaging): equal values with differing
+     *  slopes = ONE BROKEN node carrying A's in handle and B's out
+     *  handle verbatim; differing values = a STEP over δ =
+     *  {@link #mergeStepLen}(domain) — A's value at seam−δ (A's last
+     *  segment shrinks by δ, its handles keeping their SLOPES by the
+     *  D105 dv rescale) and B's value AT the seam (B's node times,
+     *  speed controls and marks stay put), flat facing handles,
+     *  each node broken unless its outer slope is flat. Fallbacks:
+     *  A's last segment shorter than 2δ → the step mirrors onto B's
+     *  side (B's first node moves to seam+δ); both short → δ' =
+     *  max(gap)/2; both zero → the old average. A lane that HELD
+     *  early (A ended before the seam) contributes its held value
+     *  with slope 0: equal values → b0 keeps its value with a flat
+     *  in handle and its own out handle (broken unless that slope
+     *  is flat — a B-matched hold still merges bit-identically to
+     *  D132); differing → a flat HOLD node at seam−δ, then b0 at
+     *  the seam (the hold's dead out handle is killed either way,
+     *  D132). The merged section keeps the FIRST's vDesign and
+     *  pin; B's vDesign is dropped (the seam is gone, nothing to
+     *  re-freeze). Gated by MergeGate. */
     public boolean mergeSections(int pieceIdx, int secIdx) {
         TrackPiece piece = pieces.get(pieceIdx);
         if (secIdx < 0 || secIdx + 1 >= piece.sections.size()) return false;
@@ -4628,44 +5718,131 @@ public class Coaster {
                 seam.outDv = startB.outDv;
                 seam.straightOut = startB.straightOut;
                 seam.levelOut = startB.levelOut;
-                boolean matched = Math.abs(endA.val - startB.val) <= 1e-9
-                    && Math.abs(sIn - sOut) <= 1e-9;
+                boolean matched = Math.abs(endA.val - startB.val) <= MERGE_EPS
+                    && Math.abs(sIn - sOut) <= MERGE_EPS;
                 if (matched) {
                     seam.smooth = true;
+                    m.set(m.size() - 1, seam);
+                } else if (Math.abs(endA.val - startB.val) <= MERGE_EPS) {
+                    // KEEP BOTH SLOPES (v19.18, D247): equal values,
+                    // differing slopes → the node as built — A's in
+                    // handle, B's out handle, both verbatim — marked
+                    // BROKEN (nothing re-collinearizes a smooth node
+                    // at redraw, but the next drag would mirror the
+                    // partner; a "smooth" kink is a lie)
+                    seam.smooth = false;
+                    m.set(m.size() - 1, seam);
                 } else {
-                    seam.val = (endA.val + startB.val) / 2;
-                    double sAvg = (sIn + sOut) / 2;
-                    seam.inDv = sAvg * inDt;
-                    seam.outDv = sAvg * outDt;
-                    seam.smooth = true;
+                    // KEEP BOTH VALUES (v19.18, D247, superseding the
+                    // D131 average): a STEP over δ — A's value at
+                    // seam−δ, B's value AT the seam, flat facing
+                    // handles. Preferred host = A's last segment
+                    // (shrinks by δ; B's node times, controls and
+                    // marks keep their +dA offsets); it mirrors onto
+                    // B's first segment when A's is shorter than 2δ,
+                    // both short → δ' = max(gap)/2, both zero (two
+                    // one-node lanes) → the old average as the last
+                    // resort. The step's outer handles keep their
+                    // SLOPES through the D105 dv rescale (the
+                    // fraction already rescales the x-run).
+                    double gA = la.size() >= 2
+                        ? endA.t - la.get(la.size() - 2).t : 0;
+                    double gB = lb.size() >= 2 ? lb.get(1).t - startB.t : 0;
+                    double delta = mergeStepLen(a.domain());
+                    if (gA < 2 * delta && gB < 2 * delta) {
+                        delta = Math.max(gA, gB) / 2;
+                    }
+                    if (delta < 1e-9) {
+                        seam.val = (endA.val + startB.val) / 2;
+                        double sAvg = (sIn + sOut) / 2;
+                        seam.inDv = sAvg * inDt;
+                        seam.outDv = sAvg * outDt;
+                        seam.smooth = true;
+                        m.set(m.size() - 1, seam);
+                    } else if (gA >= 2 * delta) {
+                        // LEFT node = endA moved to seam−δ: in handle
+                        // kept (slope-preserving rescale of it and
+                        // of prev's out handle), out handle FLAT and
+                        // UNLOCKED — enforceLockLane would otherwise
+                        // level the right node onto the left across
+                        // the step (levelOut) or re-chord the flat
+                        // handles (straightOut)
+                        BezierBaker.Node left = endA.copy();
+                        left.t = endA.t - delta;
+                        double r = (gA - delta) / gA;
+                        la.get(la.size() - 2).outDv *= r;   // shared with m
+                        left.inDv *= r;
+                        left.outFrac = BezierBaker.DEFAULT_FRAC;
+                        left.outDv = 0;
+                        left.straightOut = false;
+                        left.levelOut = false;
+                        left.smooth = Math.abs(sIn) <= MERGE_EPS;
+                        // RIGHT node = the seam node at dA: B's value,
+                        // in handle flat, out handle + locks = B's
+                        seam.val = startB.val;
+                        seam.inFrac = BezierBaker.DEFAULT_FRAC;
+                        seam.inDv = 0;
+                        seam.smooth = Math.abs(sOut) <= MERGE_EPS;
+                        m.set(m.size() - 1, left);
+                        m.add(seam);
+                    } else {
+                        // MIRROR: A's last segment is too short — the
+                        // left node stays endA at the seam (out flat,
+                        // unlocked), B's first node moves to seam+δ
+                        // with a flat in handle and its out handle's
+                        // slope kept (its next node's in handle too)
+                        BezierBaker.Node left = endA.copy();
+                        left.outFrac = BezierBaker.DEFAULT_FRAC;
+                        left.outDv = 0;
+                        left.straightOut = false;
+                        left.levelOut = false;
+                        left.smooth = Math.abs(sIn) <= MERGE_EPS;
+                        BezierBaker.Node right = startB.copy();
+                        right.t = startB.t + delta;
+                        double r = (gB - delta) / gB;
+                        right.outDv *= r;
+                        lb.get(1).inDv *= r;
+                        right.inFrac = BezierBaker.DEFAULT_FRAC;
+                        right.inDv = 0;
+                        right.smooth = Math.abs(sOut) <= MERGE_EPS;
+                        m.set(m.size() - 1, left);
+                        m.add(right);
+                    }
                 }
-                m.set(m.size() - 1, seam);
                 for (int k = 1; k < lb.size(); k++) m.add(lb.get(k));
             } else {
                 // A's lane HELD to the seam: its value there is the
-                // hold, its slope 0 — and the seam node (B's node 0)
-                // takes the AVERAGE of the two sides like every other
-                // seam (v16.20, user rule: the dividing node averages
-                // value and handle slope; a held side contributes its
-                // held value + flat slope). A B-MATCHED hold (equal
-                // value, slope 0) therefore still merges losslessly.
+                // hold, its slope 0 — the held side contributes that
+                // pair like any seam side (v16.20), and since v19.18
+                // (D247, superseding the D132 average) BOTH values are
+                // KEPT: equal values → b0 keeps its value with a flat
+                // in handle and its own out handle (broken unless
+                // that slope is flat — a B-MATCHED hold, equal value
+                // + slope 0, merges bit-identically to D132);
+                // differing → a flat HOLD node at seam−δ (the hold
+                // becomes a real flat segment) then b0 AT the seam
+                // with a flat in handle and its out handle verbatim.
                 // Both facing handles of the revived segment carried
                 // DEAD data while the lanes ended here (a lane's last
                 // node keeps its out fields, unused) — appending them
                 // verbatim bent the join (D132, the user's "connect
                 // after Shift+B changes the slope"): endA leaves the
-                // hold FLAT, b0's handles re-derive from the average.
+                // hold FLAT, b0's in handle is flat.
                 BezierBaker.Node b0 = lb.get(0);
                 double outDt = lb.size() >= 2
                     ? BezierBaker.effOutDt(b0, lb.get(1)) : 0;
                 double sOut = Math.abs(outDt) > 1e-12 ? b0.outDv / outDt : 0;
-                double sAvg = sOut / 2;          // held side is flat
-                b0.val = (endA.val + b0.val) / 2;
-                double inDtNew = BezierBaker.effInDt(endA, b0);
-                b0.inDv = Math.abs(inDtNew) > 1e-12 ? sAvg * inDtNew : 0;
-                if (Math.abs(outDt) > 1e-12) b0.outDv = sAvg * outDt;
-                b0.smooth = true;
                 endA.outDv = 0;
+                b0.inDv = 0;
+                b0.smooth = Math.abs(sOut) <= MERGE_EPS;
+                if (Math.abs(endA.val - b0.val) > MERGE_EPS) {
+                    double gH = b0.t - endA.t;      // > 1e-9 here
+                    double delta = mergeStepLen(a.domain());
+                    if (gH < 2 * delta) delta = gH / 2;
+                    // flat default handles, smooth (flat/flat is
+                    // collinear), no locks
+                    m.add(new BezierBaker.Node(b0.t - delta, endA.val));
+                }
                 m.addAll(lb);
             }
             merged.add(m);

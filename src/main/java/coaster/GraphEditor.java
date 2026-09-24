@@ -182,24 +182,61 @@ class GraphEditor extends Region {
     }
 
     /** Viewport empty-click deselect (v18.19, D190 — graph-editor
-     *  parity: a clean click not on a marker clears the selection). */
+     *  parity: a clean click not on a marker clears the selection).
+     *  Also a PLOT-SIDE TAKE-OVER (v19.20, D249): a lit speed control
+     *  / mark unlights too — takePlotSelection runs BEFORE the early
+     *  return (gizmo/ball presses and empty-track clicks land here). */
     void deselectFromViewport() {
-        if (selIdx < 0 && selSet.isEmpty()) return;
+        boolean strip = takePlotSelection();
+        if (selIdx < 0 && selSet.isEmpty()) {
+            if (strip) redraw();   // the strip must unlight
+            return;
+        }
         selIdx = -1;
         selSet.clear();
         refreshMarkers();
         redraw();
     }
 
+    /** A node MARKER's single click: the node owns the selection —
+     *  takePlotSelection first (D249: under a lit control spFocus was
+     *  left true, so the index landed on the STRIP surface — the
+     *  "markers unselectable while a control is selected" bug). */
     void selectNodeFromViewport(int idx) {
         List<BezierBaker.Node> ln = active();
         if (idx < 0 || idx >= ln.size()) return;
+        takePlotSelection();
         refreshOffset();
         selIdx = idx;
         selSet.clear();
         selSet.add(idx);
         ensureSelectedVisible();
         redraw();
+    }
+
+    /** A node MARKER's double-click (v19.19, D248): select the node
+     *  and open its LIVE editor — the graph's own node double-click.
+     *  Refuses with a stats reason while the density preview / split
+     *  line owns the document (the graph path refuses silently at its
+     *  press guard; D235 wants the sentence) and while the start
+     *  screen is up (its rows own the piece's speed and placement —
+     *  node 0's row would write v0 behind the WizardState). Clears
+     *  the strip focus first: spDoubleClick shares selIdx with the
+     *  main lane, and the marker set is always the main lane's. */
+    void openNodeEditorFromViewport(int idx) {
+        if (app.convertBusy()) {
+            app.statsLabel.setText(FvdDesigner.CONVERT_BUSY_MSG);
+            return;
+        }
+        if (startPanelActive()) {
+            app.statsLabel.setText(WIZARD_OPEN_WHY);
+            return;
+        }
+        List<BezierBaker.Node> ln = active();
+        if (idx < 0 || idx >= ln.size()) return;
+        takePlotSelection();   // the one choke since D249 (was a bare spFocus = false)
+        selectNodeFromViewport(idx);
+        showNodeEditor(idx);
     }
 
     /** Re-center a MANUAL zoom window on the selected node when it
@@ -241,34 +278,26 @@ class GraphEditor extends Region {
     // the old behavior).
 
     private boolean endsWithBridge(int p) {
-        List<Section> s = app.coaster.pieces.get(p).sections;
-        return !s.isEmpty() && s.get(s.size() - 1) instanceof BridgeSection;
+        return app.coaster.endsWithBridge(p);   // ONE definition (D248)
     }
 
     /** Piece p is a STRICT-SEAM follower of p−1 (v17.1, D135) — the
      *  same rule the compiler applies: follow is ignored when
-     *  bridged-in or orphaned. */
+     *  bridged-in or orphaned. Delegates to Coaster since v19.19
+     *  (D248 — the run topology has one definition). */
     boolean followsPrev(int p) {
-        return p > 0 && app.coaster.pieces.get(p).followPrev
-            && !endsWithBridge(p - 1)
-            && !app.coaster.pieces.get(p - 1).sections.isEmpty()
-            && !app.coaster.pieces.get(p).sections.isEmpty();
+        return app.coaster.followsPrev(p);
     }
 
     /** First piece of the connected run containing the active piece —
      *  pieces chained by trailing bridges OR strict seams (v17.1). */
     private int runStart() {
-        int p = activePiece;
-        while (p > 0 && (endsWithBridge(p - 1) || followsPrev(p))) p--;
-        return p;
+        return app.coaster.runStartOf(activePiece);
     }
 
     /** Last piece of the connected run containing the active piece. */
     private int runEnd() {
-        int p = activePiece;
-        while (p < app.coaster.pieces.size() - 1
-                && (endsWithBridge(p) || followsPrev(p + 1))) p++;
-        return p;
+        return app.coaster.runEndOf(activePiece);
     }
 
     /** Run bounds for the viewport (v13.4): the WHOLE bridged run
@@ -276,6 +305,37 @@ class GraphEditor extends Region {
     int runStartPiece() { return runStart(); }
 
     int runEndPiece() { return runEnd(); }
+
+    // ---- NAMING (v19.19, D248 — user spec; SectionNames holds the
+    // text, LabelGate pins it) ----
+
+    /** "Force Section n" / "Geometric Section n" / "S/C Section n" /
+     *  "Bridge Section n": the per-TYPE ordinal of (p, k) across the
+     *  WHOLE run in run order. Badges, the badge menu's title row,
+     *  the range/Convert/Orientation/Insert dialogs and the resolve
+     *  gray reasons all read it. */
+    String sectionTitle(int p, int k) {
+        return SectionNames.sectionTitle(app.coaster, p, k);
+    }
+
+    /** 0 = piece p is its run's head (no junction), else the 1-based
+     *  index of the boundary entering p among the run's boundaries —
+     *  plain strict seams AND bridge exits counted together. */
+    int junctionOrdinal(int p) {
+        return SectionNames.junctionOrdinal(app.coaster, p);
+    }
+
+    /** "Strict Seam n" / "Strict Seam n (bridge)"; null at a run head. */
+    String junctionTitle(int p) {
+        return SectionNames.junctionTitle(app.coaster, p);
+    }
+
+    /** EXACTLY the toolbar text that owns (p, k)'s placement:
+     *  "Track Piece ▴" with no junction left of the section, else the
+     *  junction's title + " ▴" (a bridge section: its own exit). */
+    String ownerButtonLabel(int p, int k) {
+        return SectionNames.ownerButtonLabel(app.coaster, p, k);
+    }
 
     /** Extent of piece p's section k in the current AXIS units (the
      *  sectionDur recipe, any piece): seconds on the time axis, meters
@@ -400,6 +460,27 @@ class GraphEditor extends Region {
             && followsPrev(rl.get(i + 1).piece());
     }
 
+    /** The seam menu's "Insert section…" row (v19.18, D247): pL/kL =
+     *  the upstream piece + its left section, insertIdx = where the
+     *  section lands in pL, strict = the boundary is a strict seam.
+     *  Pre-checked per the D235 rule — an uncompiled boundary grays
+     *  with the reason (the hold recipe needs the seam sample). The
+     *  action ACTIVATES the upstream section first (the Connect
+     *  handler's pattern) so the dialog's reads address pL. */
+    private MenuItem insertSectionItem(int pL, int kL, int insertIdx,
+                                       boolean strict) {
+        if (spanAt(pL, kL) == null) {
+            return grayItem("Insert section…",
+                "This boundary isn't compiled yet.");
+        }
+        MenuItem insert = new MenuItem("Insert section…");
+        insert.setOnAction(ev -> {
+            activateRunSec(pL, kL);
+            showInsertSectionDialog(pL, kL, insertIdx, strict);
+        });
+        return insert;
+    }
+
     /** The seam dropdown (user spec): make-strict on ordinary section
      *  boundaries; settings / un-strict on strict ones; split always. */
     private void showSeamMenu(int i, double screenX, double screenY) {
@@ -409,9 +490,19 @@ class GraphEditor extends Region {
         boolean strict = seamStrict(rl, i);
         ContextMenu cm = new ContextMenu();
         if (strict) {
-            MenuItem settings = new MenuItem("Strict seam orientation…");
+            // "Strict Seam n…" — the junction's run ordinal, the seam
+            // window's own title (v19.19, D248; "Strict seam
+            // orientation…" until then)
+            MenuItem settings = new MenuItem(seamTitle(right.piece()) + "…");
             settings.setOnAction(ev ->
                 showStrictSeamSettings(right.piece()));
+            // INSERT SECTION… (v19.18, D247): on a strict seam the
+            // section APPENDS to the UPSTREAM piece before the seam —
+            // the follower keeps its shape and held angles, its
+            // position follows the new exit
+            int upL = right.piece() - 1;
+            int upK = app.coaster.pieces.get(upL).sections.size() - 1;
+            MenuItem insert = insertSectionItem(upL, upK, upK + 1, true);
             // ENABLE/DISABLE smoothing (v17.4, D141 — user spec): off
             // by default on hand-made strict seams; bridge converts
             // and piece connects arrive with it ON at 1 m
@@ -463,6 +554,10 @@ class GraphEditor extends Region {
             MenuItem un = new MenuItem("Un-strict seam");   // (D232:
                 // the explainer parenthetical left the label)
             un.setOnAction(ev -> {
+                // the seam is about to vanish (D247 review fix) AND the
+                // pieces after it shift down one — the index-resolved
+                // bridge window closes too (D248 review fix)
+                hideJunctionWindows();
                 pushUndoSnapshot();
                 int fp = right.piece();
                 if (app.coaster.unstrictSeam(fp)) {
@@ -488,6 +583,7 @@ class GraphEditor extends Region {
             MenuItem split = new MenuItem(
                 "Split track at seam (detach piece)");
             split.setOnAction(ev -> {
+                hideSeamPopup();   // the seam is about to vanish (D247 review fix)
                 pushUndoSnapshot();
                 if (app.coaster.detachStrictSeam(right.piece(),
                         FvdDesigner.INTEGRATE_DT)) {
@@ -501,11 +597,13 @@ class GraphEditor extends Region {
                 }
                 redraw();
             });
-            cm.getItems().addAll(settings, smTog, smReal, un, split);
+            cm.getItems().addAll(settings, insert, smTog, smReal, un, split);
         } else if (right.section() > 0) {
             // CONNECT the two sections into one (D136 — the badge's
             // "Connect with previous section", now living here):
-            // like sections only, the mergeSections rules
+            // like sections only, the mergeSections rules (an
+            // unmatched seam keeps BOTH values as a steep step since
+            // D247 — no averaging)
             List<Section> ps =
                 app.coaster.pieces.get(right.piece()).sections;
             Section sa = ps.get(right.section() - 1);
@@ -535,9 +633,18 @@ class GraphEditor extends Region {
                     + " domain and axis settings.");
             }
             cm.getItems().add(conn);
+            // INSERT SECTION… (v19.18, D247): lands at this boundary
+            // inside the piece; its "Lock Subsequent Track Shape"
+            // makes the seam after it strict first
+            cm.getItems().add(insertSectionItem(right.piece(),
+                right.section() - 1, right.section(), false));
             MenuItem make = new MenuItem(
                 "Make seam strict (freeze downstream shape)…");
             make.setOnAction(ev -> {
+                // the split inserts a piece: every later index shifts,
+                // so the index-resolved junction windows close first
+                // (D248 review fix)
+                hideJunctionWindows();
                 pushUndoSnapshot();
                 int np = app.coaster.makeSeamStrict(right.piece(),
                     right.section(), FvdDesigner.INTEGRATE_DT);
@@ -577,8 +684,45 @@ class GraphEditor extends Region {
         redraw();
     }
 
-    private javafx.stage.Popup seamPopup;
+    /** The open strict seam WINDOW (v19.19, D248 — an owned Stage via
+     *  LiveWindow; a Popup until then) + the coaster it opened on;
+     *  null = closed. NULL-BEFORE-HIDE through hideSeamPopup. */
+    private Stage seamWin;
+    private Coaster seamWinCoaster;
+    /** The open seam window's FOLLOWER index (D248 review fix — the
+     *  toolbar toggle compares it, the bridgeWinPiece pattern); −1
+     *  while closed. */
+    private int seamWinPiece = -1;
     private boolean seamSyncing;
+    /** The open seam window's ONE read-only resync (v19.18, D247):
+     *  every row (padlock, value, enabled state), the design
+     *  readouts and the resolve buttons' visibility refresh from it.
+     *  Spinner writes inside it are SKIPPED while that spinner's
+     *  editor holds focus (a typed value is never overwritten). Set
+     *  by showStrictSeamSettings, nulled by hideSeamPopup; registered
+     *  as a model hook (seamHook) on show. Null = no window. Never
+     *  pushes undo or marks dirty. */
+    Runnable seamSync;
+    /** The FORCED twin (D248): runs from docRestoreHooks after an
+     *  undo/redo restore — the restored values land even in a focused
+     *  box (index-resolved handlers replaced the D247 in-place
+     *  re-open). */
+    private Runnable seamForceSync;
+
+    /** The ONE stable model-hook Runnable for the seam window (D247):
+     *  registered in FvdDesigner.modelHooks when the window shows,
+     *  removed in hideSeamPopup; runs the current seamSync (which is
+     *  itself identity-guarded, so a stale window's sync is inert). */
+    private final Runnable seamHook = () -> {
+        Runnable s = seamSync;
+        if (s != null) s.run();
+    };
+
+    /** Its docRestoreHooks twin (D248). */
+    private final Runnable seamRestoreHook = () -> {
+        Runnable s = seamForceSync;
+        if (s != null) s.run();
+    };
 
     /** The strict seam's WORLD position — the follower's first
      *  compiled sample; the 3D seam gizmo anchors here (v17.3,
@@ -605,9 +749,131 @@ class GraphEditor extends Region {
         return f.entryPose().orient();
     }
 
+    /** ORIENTATION CONFLICT of piece p (v19.18, D247 — the one
+     *  predicate the badge's ≠o, the seam window's readout/buttons
+     *  and the range-resolve trigger key off): a strict-seam FOLLOWER
+     *  is conflicted when its seam tilt (real follow contract vs its
+     *  design orientation — Coaster.seamConflictTilt off the previous
+     *  piece's compiled exit) has a horizontal axis component; a
+     *  pure heading re-aim is rigid and never counts. False before
+     *  the first compile (no span to read). Every other piece keeps
+     *  TrackPiece.orientConflict() (the two stored tiers). */
+    boolean orientConflictAt(int p) {
+        if (p < 0 || p >= app.coaster.pieces.size()) return false;
+        if (followsPrev(p)) {
+            TrackPiece prev = app.coaster.pieces.get(p - 1);
+            TrackCompiler.Span psp = spanAt(p - 1, prev.sections.size() - 1);
+            if (psp == null) return false;
+            return Coaster.isSeamOrientConflict(
+                app.coaster.seamConflictTilt(p, psp.exit()));
+        }
+        return app.coaster.pieces.get(p).orientConflict();
+    }
+
+    /** THE seam write choke (v19.18, D247; mode-keyed v19.20, D249):
+     *  run a follower's seam write (held angles / locks) through
+     *  app.placementEdit with the orientation-mode routing on top —
+     *  the follower's REAL {heading, elevation, bank} (followerEuler,
+     *  the follow contract) is read before and after the write, and
+     *  under LOCKSTEP the DESIGN tier moves by the same Euler delta
+     *  (Coaster.seamDesignLockstep: the design/real difference stays
+     *  constant, the shape re-solves — the D222 invariance on the
+     *  seam). REAL_ONLY = the real angles move alone and the seam's
+     *  conflict absorbs the edit — today's locked behavior bitwise
+     *  (no design write at all). DESIGN_ONLY moves the design frame
+     *  ONLY: a write that changes just the held pitch/roll VALUES
+     *  (locks and yaw as before) has its real Euler delta applied to
+     *  the design tier (Coaster.applyDesignEulerDelta) and the held
+     *  values RESTORED, so the real entry never moves and the held
+     *  angles stay untouched; padlock toggles and yaw are real-side
+     *  in every mode (the locks are the real contract, heading is
+     *  shared). The seam window's design boxes use the explicit
+     *  seamEditDesign path instead (an unlocked axis's held value
+     *  cannot move the real, so there is no delta to divert).
+     *  Heading never touches the design tier. Every seam write routes
+     *  here: the pop-out's spinners, padlocks (a toggle-OFF jumps the
+     *  real angle onto the upstream value = an adjustment), ↺ and
+     *  Cancel, and both gizmo paths below. Callers push undo /
+     *  markDirty / rebuild themselves. */
+    void seamEdit(int fi, Runnable write) {
+        if (fi < 0 || fi >= app.coaster.pieces.size()) {
+            write.run();
+            return;
+        }
+        TrackPiece f = app.coaster.pieces.get(fi);
+        TrackPiece.OrientMode mode = f.orientMode;
+        double[] before = mode == TrackPiece.OrientMode.REAL_ONLY
+            ? null : followerEuler(fi);
+        // the DESIGN_ONLY divert reads the held state around the write
+        final double hp0 = f.sPitchDeg, hr0 = f.sRollDeg;
+        final boolean lp0 = f.sLockPitch, lr0 = f.sLockRoll,
+            ly0 = f.sLockYaw;
+        app.placementEdit(fi, () -> {
+            write.run();
+            if (mode == TrackPiece.OrientMode.LOCKSTEP && before != null
+                    && !Coaster.seamDesignLockstep(f, before,
+                        followerEuler(fi))) {
+                // the pole guard (D247 review fix): the canonical
+                // triples can't attribute a crossing, so the tier
+                // stays put and the seam window is the place to fix it
+                app.statsLabel.setText(SEAM_POLE_MSG);
+            } else if (mode == TrackPiece.OrientMode.DESIGN_ONLY
+                    && before != null
+                    && f.sLockPitch == lp0 && f.sLockRoll == lr0
+                    && f.sLockYaw == ly0
+                    && (f.sPitchDeg != hp0 || f.sRollDeg != hr0)) {
+                double[] after = followerEuler(fi);
+                f.sPitchDeg = hp0;   // the real entry never moves
+                f.sRollDeg = hr0;
+                if (!Coaster.applyDesignEulerDelta(f, before, after)) {
+                    app.statsLabel.setText(SEAM_POLE_MSG);
+                }
+            }
+        });
+    }
+
+    /** The seam window's yaw-row tooltip (D249): heading is
+     *  placement — one number for both tiers. */
+    static final String YAW_SHARED_TIP = "Heading is shared by the real"
+        + " and design orientation — this row always edits the held/real"
+        + " heading.";
+    /** The seam window's design-box gray / refusal (D249). */
+    static final String DESIGN_VERTICAL_MSG = "The design orientation"
+        + " points straight up/down — set the real orientation first.";
+
+    /** The pole guard's stats reason (D247 review fix; shared by the
+     *  LOCKSTEP and DESIGN_ONLY seam branches since D249). */
+    static final String SEAM_POLE_MSG = "Seam edit crossed straight"
+        + " up/down — the design tier was left alone;"
+        + " adjust it in the seam window.";
+
+    /** DESIGN-tier seam write (v19.20, D249 — the seam window's
+     *  pitch/roll boxes and the seam rig's rings while the follower
+     *  edits its design orientation): design elevation (axis 1) /
+     *  bank (axis 2) := deg through Coaster.seamDesignSet; held
+     *  angles, locks and the real entry untouched, no carry (the real
+     *  never moves). A vertical design frame refuses with a stats
+     *  reason. Callers push undo / markDirty / rebuild themselves;
+     *  returns whether anything was written. */
+    boolean seamEditDesign(int fi, int axis, double deg) {
+        if (fi < 0 || fi >= app.coaster.pieces.size()) return false;
+        TrackPiece f = app.coaster.pieces.get(fi);
+        if (!Coaster.seamDesignSet(f, axis, deg)) {
+            // ONE sentence for the vertical refusal (D249 review fix:
+            // the box's gray, the ↺ and this write said it two ways)
+            app.statsLabel.setText(axis == 0
+                ? "Heading is shared by both tiers — edit it as the"
+                    + " real yaw."
+                : DESIGN_VERTICAL_MSG);
+            return false;
+        }
+        return true;
+    }
+
     /** Seam-gizmo write path (v17.3, D140): set a DISCONTINUOUS
      *  axis's held angle. No undo of its own — the viewport pushes
-     *  one per gesture, the gizmo contract. */
+     *  one per gesture, the gizmo contract. Routes through seamEdit
+     *  since D247 (the Lock-Track-Shape lockstep). */
     void gizmoSetSeamOrient(int pieceIdx, int axis, double deg) {
         if (pieceIdx < 0 || pieceIdx >= app.coaster.pieces.size()) {
             return;
@@ -615,15 +881,28 @@ class GraphEditor extends Region {
         TrackPiece f = app.coaster.pieces.get(pieceIdx);
         if (!f.followPrev) return;
         double v = FvdDesigner.clamp(deg, -360, 360);
-        if (axis == 0 ? !f.sLockYaw
-                : axis == 1 ? !f.sLockPitch : !f.sLockRoll) {
+        boolean designAxis = axis != 0
+            && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+        if (!designAxis && (axis == 0 ? !f.sLockYaw
+                : axis == 1 ? !f.sLockPitch : !f.sLockRoll)) {
             return;
         }
-        app.placementEdit(pieceIdx, () -> {   // D221 rigid carry
-            if (axis == 0) f.sYawDeg = v;
-            else if (axis == 1) f.sPitchDeg = v;
-            else f.sRollDeg = v;
-        });
+        if (designAxis) {
+            // DESIGN_ONLY (v19.20, D249 — item O): the seam rig is
+            // re-aimed at the DESIGN frame and its pitch/roll rings
+            // build regardless of the padlocks with baseVal = the
+            // design elevation/bank (Viewport3D.buildSeamGizmo), so
+            // `deg` IS the absolute design angle — Coaster.seamDesignSet
+            // through seamEditDesign; the real entry stays put, the
+            // held angles and locks are untouched
+            if (!seamEditDesign(pieceIdx, axis, v)) return;
+        } else {
+            seamEdit(pieceIdx, () -> {   // D221 rigid carry + D247 lockstep
+                if (axis == 0) f.sYawDeg = v;
+                else if (axis == 1) f.sPitchDeg = v;
+                else f.sRollDeg = v;
+            });
+        }
         app.markDirty();
         app.rebuildTrack();
         redraw();
@@ -639,7 +918,14 @@ class GraphEditor extends Region {
         }
         TrackPiece f = app.coaster.pieces.get(pieceIdx);
         if (!f.followPrev) return;
-        app.placementEdit(pieceIdx, () -> {   // D221 rigid carry
+        if (f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY) {
+            // DESIGN_ONLY (D249, item O): the local sink rotates the
+            // DESIGN pose (Viewport3D.seamLocal) and hands over the
+            // rotated frame's eulers — the design-frame write path
+            gizmoSetSeamDesignAll(pieceIdx, yaw, pitch, roll);
+            return;
+        }
+        seamEdit(pieceIdx, () -> {   // D221 rigid carry + D247 lockstep
             if (f.sLockYaw) {
                 f.sYawDeg = FvdDesigner.clamp(yaw, -360, 360);
             }
@@ -655,14 +941,62 @@ class GraphEditor extends Region {
         redraw();
     }
 
+    /** The seam rig's COMBINED write under DESIGN_ONLY (v19.20, D249
+     *  — item O): the local sink rotated the DESIGN pose about the
+     *  drawn axis and passes the rotated frame's eulers — heldYaw =
+     *  the held heading the press-time yaw plus the rotation's
+     *  heading delta (written to the REAL-side held yaw when that
+     *  axis is locked: heading is placement, never a design
+     *  quantity), elev / bank = the ABSOLUTE design elevation / bank
+     *  (Coaster.seamDesignSet, elevation first so the bank write
+     *  keeps it exact). The real entry never moves through the design
+     *  writes; a vertical design frame refuses with the stats reason.
+     *  One rebuild; no undo of its own (the gizmo contract). */
+    void gizmoSetSeamDesignAll(int pieceIdx, double heldYaw, double elev,
+                               double bank) {
+        if (pieceIdx < 0 || pieceIdx >= app.coaster.pieces.size()) {
+            return;
+        }
+        TrackPiece f = app.coaster.pieces.get(pieceIdx);
+        if (!f.followPrev) return;
+        boolean any = false;
+        // the held yaw writes only when it actually CHANGED (D249
+        // review fix): the roll ring — and the pitch ring on an
+        // unbanked design frame or under Global axes — hands back the
+        // press-time heading plus eulerOf's ~1e-14° dust, and the
+        // write ran through seamEdit → placementEdit on every drag
+        // event, re-aiming the REAL entry the design mode promises
+        // never moves (plus a carry under affectSubsequentSeams). The
+        // Local-mode banked pitch ring's heading delta (degrees —
+        // heading is placement) still lands; floating dust never does.
+        if (f.sLockYaw && !Double.isNaN(heldYaw)
+                && Math.abs(TrackPiece.wrap180(heldYaw - f.sYawDeg)) > 1e-9) {
+            seamEdit(pieceIdx, () ->
+                f.sYawDeg = FvdDesigner.clamp(heldYaw, -360, 360));
+            any = true;
+        }
+        if (!Double.isNaN(elev) && seamEditDesign(pieceIdx, 1, elev)) {
+            any = true;
+        }
+        if (!Double.isNaN(bank) && seamEditDesign(pieceIdx, 2, bank)) {
+            any = true;
+        }
+        if (!any) return;
+        app.markDirty();
+        app.rebuildTrack();
+        redraw();
+    }
+
     /** The follower's CURRENT effective entry orientation as
      *  {heading, elevation, bank} (deg). Read ANALYTICALLY from the
      *  follow contract (previous piece's exit through strictEntry)
      *  since v17.2 — with seam SMOOTHING on, the compiled entry
      *  sample sits inside the blend window and showed (and toggle-ON
      *  captured) the half-blended angle. Sample read = the fallback;
-     *  last resort the discontinuous values. */
-    private double[] followerEuler(int followerIdx) {
+     *  last resort the discontinuous values. Package-private since
+     *  D247 (the seam window's real readout + seamEdit's lockstep
+     *  read it; the design readout is eulerOf(designPose())). */
+    double[] followerEuler(int followerIdx) {
         TrackPiece f = app.coaster.pieces.get(followerIdx);
         if (followerIdx > 0 && f.followPrev) {
             TrackPiece prev = app.coaster.pieces.get(followerIdx - 1);
@@ -689,162 +1023,349 @@ class GraphEditor extends Region {
     // in v19.7, D236: grayItem rows carry the FULL dry-run sentence
     // on a hover tooltip instead.)
 
-    /** Hide the seam pop-out while the APP loses OS focus and bring
-     *  it back on refocus (v19.6, D235 — the pv pattern's third
-     *  copy: a Popup floats above other applications otherwise). */
-    private boolean seamFocusHooked, seamFocusHidden;
-    private double seamHidX, seamHidY;
-
-    private void hookSeamFocus() {
-        if (seamFocusHooked || canvas.getScene() == null
-                || canvas.getScene().getWindow() == null) return;
-        seamFocusHooked = true;
-        canvas.getScene().getWindow().focusedProperty()
-            .addListener((o, was, is) -> {
-                if (!is && seamPopup != null && seamPopup.isShowing()) {
-                    seamHidX = seamPopup.getX();
-                    seamHidY = seamPopup.getY();
-                    seamPopup.hide();
-                    seamFocusHidden = true;
-                } else if (is && seamFocusHidden) {
-                    seamFocusHidden = false;
-                    if (seamPopup != null) {
-                        seamPopup.show(canvas.getScene().getWindow(),
-                            seamHidX, seamHidY);
-                    }
-                }
-            });
+    /** Tear the strict seam window down NULL-BEFORE-HIDE with the
+     *  sync mute held across the close (v19.18, D247 — THE undo bug's
+     *  root cause: closing un-focuses the window's focus owner, the
+     *  auto-focused spinner editor, whose focus-loss commit re-parsed
+     *  the "#.##" text into a value that differed from the stored
+     *  full-precision angle; the value listener then ran as a user
+     *  edit — pushing a snapshot and clearing the redo branch: undo
+     *  worked once, then Ctrl+Z / Ctrl+Shift+Z were dead). With the
+     *  field nulled first every handler's identity guard (win !=
+     *  seamWin, via seamLive) rejects the stray event, and
+     *  seamSyncing covers the value listener's first check. Every
+     *  teardown site routes through here; the live-window hooks
+     *  de-register here (D247/D248). An owned Stage needs no
+     *  app-focus hide (the D235 hookSeamFocus pattern is gone). */
+    void hideSeamPopup() {
+        Stage old = seamWin;
+        if (old == null) return;
+        seamWin = null;
+        seamWinCoaster = null;
+        seamWinPiece = -1;
+        seamSync = null;   // the window's resyncs die with it (D247)
+        seamForceSync = null;
+        app.modelHooks.remove(seamHook);   // live-window de-registration
+        docRestoreHooks.remove(seamRestoreHook);
+        seamSyncing = true;
+        try {
+            old.close();
+        } finally {
+            seamSyncing = false;
+        }
     }
 
-    /** The strict seam SETTINGS pop-out (reworked D136; PADLOCK round
-     *  v18.32, D204 — user spec reverting the labeled "Discontinuous"
-     *  toggle to a plain LOCK button): one row per axis — a 🔒/🔓
-     *  toggle (red outline while locked), a value spinner, and a ↺.
-     *  UNLOCKED 🔓 = the axis follows the seam (the spinner grays and
-     *  just shows the live value); LOCKED 🔒 = the axis holds the
-     *  spinner's angle — type or arrow it. Locking ALWAYS captures
-     *  the CURRENT value (nothing jumps — the D145 first-open
-     *  creation-angle seed is REMOVED, v19.6 D235 user spec). ↺
-     *  returns the value from WHEN THIS WINDOW WAS OPENED; an axis
-     *  that was unlocked at open falls back to the stored
-     *  placement's angle (for a direct attach: the orientation the
-     *  piece had BEFORE attaching). Apply keeps, Cancel reverts. */
-    void showStrictSeamSettings(int followerIdx) {
-        if (followerIdx < 0 || followerIdx >= app.coaster.pieces.size()) {
+    /** Hide BOTH junction windows before a structural op that shifts
+     *  piece indices (D248 — the seam window and the bridge window
+     *  are index-resolved; a shifted index would point them at the
+     *  wrong junction). */
+    void hideJunctionWindows() {
+        hideSeamPopup();
+        app.closeBridgeWindow();
+    }
+
+    /** Pre-hide the speed-control popup before a structural op that
+     *  removes its section (D249 — the Track Piece window's Delete…;
+     *  null-before-hide, the spAfterRebuild self-hide would only
+     *  catch it AFTER the rebuild). */
+    void hideSpeedPopup() { spHideCtlPopup(); }
+
+    /** The strict seam window's SELF-VALIDATION (D247 review fix —
+     *  the spAfterRebuild pattern; INDEX-based since D248): true only
+     *  while `win` is still the live window AND piece `idx` of the
+     *  window's coaster still follows a strict seam. A window
+     *  outlived by its seam (a structural op that shifted the piece
+     *  list, a piece that stopped following, a coaster switch) tears
+     *  itself down here with a stats reason instead of reading — or
+     *  writing — the wrong piece; a window that was already torn
+     *  down (win != seamWin) is simply inert. */
+    private boolean seamLive(Stage win, int idx) {
+        if (win == null || win != seamWin) return false;
+        if (app.coaster == seamWinCoaster && idx >= 0
+                && idx < app.coaster.pieces.size() && followsPrev(idx)) {
+            return true;
+        }
+        hideSeamPopup();
+        app.statsLabel.setText("The strict seam window closed — its seam"
+            + " no longer exists.");
+        return false;
+    }
+
+    /** The seam window's "Design → Real Orientation" (v19.18, D247):
+     *  adopt the follower's REAL orientation (the follow contract) as
+     *  its design — Coaster.bakeFollow: baseOrient := the effective
+     *  entry, both tiers zero, the follow + locks + held angles KEPT
+     *  (it does not detach). The graphs stay, the shape re-solves at
+     *  the real frame, the seam's ≠o closes. With ABSOLUTE lanes on
+     *  the follower the D240 Preserve/Convert dialog intervenes (the
+     *  Track Piece window's rule — Coaster.designToRealConvert bakes
+     *  the follow for an active follower). One undo step. */
+    void seamDesignToReal(int fi) {
+        if (!app.coaster.followerActive(fi)) {
+            app.statsLabel.setText("Design → Real refused — this piece"
+                + " no longer follows a strict seam.");
             return;
         }
-        TrackPiece f = app.coaster.pieces.get(followerIdx);
-        if (!f.followPrev) return;
-        if (seamPopup != null) {
-            seamPopup.hide();
-            seamPopup = null;
+        TrackPiece f = app.coaster.pieces.get(fi);
+        boolean anyYp = false, anyBank = false;
+        for (Section s : f.sections) {
+            if (s instanceof LaneSection ls && !ls.reversed()) {
+                if (ls instanceof GeoSection && ls.ypAbsolute
+                        && ls.yawPitchGlobal) {
+                    anyYp = true;
+                }
+                if (ls.rollAbsolute && ls.rollGlobal) anyBank = true;
+            }
         }
+        if (anyYp || anyBank) {
+            showDesignToRealDialog(fi, anyYp, anyBank);
+            return;
+        }
+        // refusal checked BEFORE the snapshot (D247 review fix — a
+        // refused op must not clear the redo branch)
+        TrackCompiler.Result r = TrackCompiler.compile(app.coaster,
+            FvdDesigner.INTEGRATE_DT);
+        if (app.coaster.followContract(fi, r) == null) {
+            app.statsLabel.setText("Design → Real refused — the seam"
+                + " has no compiled exit to read yet.");
+            return;
+        }
+        pushUndoSnapshot();
+        app.coaster.bakeFollow(fi, r);
+        app.markDirty();
+        app.rebuildTrack();
+        app.syncPlacementSpinners();
+        app.updateBridgeControls();
+        redrawFromViewport();
+        if (seamSync != null) seamSync.run();
+    }
+
+    /** The seam window's "Real → Design Orientation" (v19.18, D247):
+     *  hold the follower's pitch and roll AT the design elevation/bank
+     *  (Coaster.seamRealToDesign — both padlocks lock, yaw untouched),
+     *  so the seam tilt becomes heading-only: shape kept as a rigid
+     *  image, ≠o closed. Runs through placementEdit like the panel's
+     *  twin — a shape-locked follower carries its own downstream by
+     *  the same rigid delta. Refuses with a stats reason when the
+     *  design frame is vertical (no angles to hold). One undo step. */
+    void seamRealToDesign(int fi) {
+        if (!app.coaster.followerActive(fi)) {
+            app.statsLabel.setText("Real → Design refused — this piece"
+                + " no longer follows a strict seam.");
+            return;
+        }
+        TrackPiece f = app.coaster.pieces.get(fi);
+        double[] g = Coaster.eulerOf(f.designPose().orient());
+        if (Double.isNaN(g[0]) || Double.isNaN(g[2])) {
+            app.statsLabel.setText("Real → Design refused — the design"
+                + " orientation points straight up or down, so there"
+                + " is no elevation/bank to hold at the seam.");
+            return;
+        }
+        pushUndoSnapshot();
+        app.placementEdit(fi, () -> app.coaster.seamRealToDesign(fi));
+        app.markDirty();
+        app.rebuildTrack();
+        app.syncPlacementSpinners();
+        app.updateBridgeControls();
+        redrawFromViewport();
+        if (seamSync != null) seamSync.run();
+    }
+
+    /** The seam window's title (v19.19, D248): "Strict Seam n" — the
+     *  junction's run ordinal; the bare prefix if the piece is no
+     *  follower any more (undo mid-refresh — seamLive tears the
+     *  window down on the next hook). */
+    String seamTitle(int followerIdx) {
+        String t = junctionTitle(followerIdx);
+        return t != null ? t : SectionNames.STRICT_SEAM.trim();
+    }
+
+    /** THE STRICT SEAM WINDOW — "Strict Seam n" (v19.19, D248 — user
+     *  spec: the D136/D204/D247 dark pop-out rebuilt as a LiveWindow
+     *  Stage in the unified three-window layout). One row per axis,
+     *  VERTICAL: [Yaw (heading °)][spinner][🔒][↺], a thin separator,
+     *  [Pitch (°)][spinner][🔒][↺][design elevation], [Roll (°)]
+     *  [spinner][🔒][↺][design bank]; then the ORIENTATION-MODE row
+     *  (v19.20, D249: "Edit Real and Design Orientation
+     *  Independently" → "Edit real orientation (locks track shape)" /
+     *  "Edit design orientation" → "Affect Subsequent Strict Seams" —
+     *  the follower's own mode; under DESIGN_ONLY the pitch/roll
+     *  boxes show and edit the DESIGN elevation/bank — enabled
+     *  regardless of the padlocks, Coaster.seamDesignSet, the real
+     *  entry and held angles untouched — the readouts read "real …"
+     *  (followerEuler) and the yaw row still edits the held/real
+     *  heading; the grey readouts show whenever the check is on or
+     *  the seam is conflicted and CLICK-SWAP the mode), the Design ↔
+     *  Real row (shown while orientConflictAt), and the
+     *  [Confirm][Cancel] footer. The seam PADLOCK SEMANTICS are kept
+     *  (🔒 red = the axis holds an editable angle, 🔓 green = it
+     *  follows the seam — and the bridge padlocks mean the SAME since
+     *  v19.20, D249: 🔒 = held/typeable, 🔓 = the bridge's); locking ALWAYS captures
+     *  the CURRENT value (nothing jumps, D235); ↺ returns the value
+     *  from WHEN THIS WINDOW WAS OPENED, an axis unlocked at open
+     *  falling back to the stored placement's angle (a direct attach:
+     *  the orientation from BEFORE the attach). Every held-angle
+     *  write goes through seamEdit (the D247 lockstep — with the
+     *  shape UNLOCKED, the default since D248, the design tier moves
+     *  with the seam edit and the follower re-solves). INDEX-RESOLVED
+     *  (D248): every handler resolves the follower BY INDEX (`live`)
+     *  and the window survives undo/redo through its hooks — the
+     *  D247 in-place re-open is gone; seamLive tears it down with a
+     *  stats reason when the seam no longer exists or another
+     *  coaster is active. Confirm / Enter / X keep, Cancel / Esc
+     *  restore EVERY piece's open-time placement (the D249 full-scope
+     *  PlacementSnapshot through FvdDesigner.cancelRestore, re-captured
+     *  after an undo restore) as one more undo step. Every write
+     *  refuses under convertBusy(). */
+    void showStrictSeamSettings(int followerIdx) {
+        if (followerIdx < 0 || followerIdx >= app.coaster.pieces.size()) {
+            LiveWindow.dropAnchor(app);   // D248 review fix: no stale anchor
+            return;
+        }
+        if (!followsPrev(followerIdx)) {
+            LiveWindow.dropAnchor(app);
+            return;
+        }
+        hideSeamPopup();   // null-before-hide (v19.18, D247)
+        final Coaster openC = app.coaster;
+        TrackPiece f0 = openC.pieces.get(followerIdx);
         // the state this open found — Cancel and ↺ revert to it (D235)
-        boolean[] openLocks = { f.sLockYaw, f.sLockPitch, f.sLockRoll };
-        double[] openDegs = { f.sYawDeg, f.sPitchDeg, f.sRollDeg };
-        javafx.stage.Popup pop = new javafx.stage.Popup();
-        pop.setAutoHide(false);   // Apply or Cancel only (v17.8, D145)
-        seamPopup = pop;
-        // MODELESS ride keys (D222 bug fix — "fly can't move with the
-        // seam menu open"): this was the one editor-hosting window
-        // without the D166 forwarder, so W/A/S/D died in the popup's
-        // focused scene while mouse-look (focus-free) kept working.
-        // setOnShown covers BOTH show branches below (the gizmo-
-        // anchored one returns early).
-        pop.setOnShown(ev -> app.installDocUndoKeys(pop.getScene()));   // D227: global undo
-        hookSeamFocus();   // hide on app focus loss, return on refocus
-                           // (v19.6, D235 — the pv pattern; the popup
-                           // floated over other applications)
-        GridPane grid = new GridPane();
-        grid.setHgap(8);
-        grid.setVgap(6);
-        // DARK like the Track Piece panel since v19.3 (D232, user spec
-        // — the white holdover read as a foreign window; v17.3's
-        // verdict reversed)
-        grid.setStyle("-fx-background-color: rgb(35,38,46);"
-            + " -fx-padding: 12; -fx-border-color: rgb(90,95,110);"
-            + " -fx-border-radius: 6; -fx-background-radius: 6;");
-        Label head = new Label("Strict seam orientation");   // D235 name
-        head.setTextFill(Color.WHITE);
-        head.setStyle("-fx-font-size: 12px; -fx-font-weight: bold;"
-            + " -fx-text-fill: white;");
-        grid.add(head, 0, 0, 4, 1);
-        // MOVABLE (v17.3, user spec — the pv popup's grab pattern):
-        // drag any non-control spot
-        double[] grab = new double[2];
-        grid.setOnMousePressed(e -> {
-            grab[0] = e.getScreenX() - pop.getX();
-            grab[1] = e.getScreenY() - pop.getY();
-        });
-        grid.setOnMouseDragged(e -> {
-            pop.setX(e.getScreenX() - grab[0]);
-            pop.setY(e.getScreenY() - grab[1]);
-        });
-        String[] names = { "Yaw (heading °)", "Pitch (°)", "Roll (bank °)" };
-        Runnable[] rowSyncs = new Runnable[3];
+        final boolean[] openLocks = { f0.sLockYaw, f0.sLockPitch, f0.sLockRoll };
+        final double[] openDegs = { f0.sYawDeg, f0.sPitchDeg, f0.sRollDeg };
+        // + the design tier and both routing flags (D247/D248) — and
+        // the base the tier was captured AGAINST: a Design → Real bake
+        // (direct or through the D240 preview) replaces baseOrient,
+        // and restoring the old deltas onto a NEW base would invent a
+        // tilt that never existed, so Cancel restores the tier only
+        // while the base is the open-time object
+        // the open-time DESIGN elevation/bank — ↺ under DESIGN_ONLY
+        // returns the design box to it (absolute world angles, valid
+        // whatever happened to baseOrient meanwhile — D249)
+        final double[] openDesignEuler =
+            Coaster.eulerOf(f0.designPose().orient());
+        // Cancel's FULL-SCOPE record (D249): every piece + bridge, by
+        // identity; re-captured after an undo restore (seamForceSync)
+        final PlacementSnapshot[] openSnap = { PlacementSnapshot.capture(openC) };
+        final int[] openGen = { app.docGen };
+        // LIVE piece resolution (D248): by index, on the open-time
+        // coaster — null once the window's seam is gone
+        final java.util.function.Supplier<TrackPiece> live = () ->
+            app.coaster == openC && followerIdx < app.coaster.pieces.size()
+                ? app.coaster.pieces.get(followerIdx) : null;
+        final Stage[] winRef = new Stage[1];
+        final java.util.function.BooleanSupplier alive = () ->
+            seamLive(winRef[0], followerIdx);
+        VBox box = new VBox(6);
+        // ONE resync for the whole window (D247): the row syncs take a
+        // FORCE flag — false (the live hook / a rebuild) skips a
+        // spinner whose editor holds focus, true (an explicit action
+        // in this window, an undo restore) always writes; tailSync =
+        // readouts + button visibility + the flag row
+        List<java.util.function.Consumer<Boolean>> rowSyncs =
+            new ArrayList<>();
+        Runnable[] tailSync = new Runnable[1];
+        java.util.function.Consumer<Boolean> syncAll = force -> {
+            for (java.util.function.Consumer<Boolean> rs : rowSyncs) {
+                rs.accept(force);
+            }
+            if (tailSync[0] != null) tailSync[0].run();
+        };
+        final String[] labels = { "Yaw (heading °)", "Pitch (°)", "Roll (°)" };
+        // the OTHER-TIER readouts (D249): click = swap the mode through
+        // the flag row's one writer (built below; resolved at click)
+        final LiveWindow.FlagRow[] flagsRef = new LiveWindow.FlagRow[1];
+        final LiveWindow.Readout[] designLbls = { null,
+            new LiveWindow.Readout(() -> {
+                if (flagsRef[0] != null) flagsRef[0].swap();
+            }),
+            new LiveWindow.Readout(() -> {
+                if (flagsRef[0] != null) flagsRef[0].swap();
+            }) };
         for (int a = 0; a < 3; a++) {
             final int axis = a;
-            Label lbl = new Label(names[a]);
-            lbl.setTextFill(Color.WHITE);   // dark panel (D232)
-            lbl.setStyle("-fx-font-size: 11px; -fx-text-fill: white;");
-            // a plain PADLOCK (v18.32, D204 — the "Discontinuous"
-            // label reverted on user spec): 🔒 = the axis holds an
-            // editable angle, 🔓 = it follows the seam
-            javafx.scene.control.ToggleButton disc =
-                new javafx.scene.control.ToggleButton("🔒");
-            disc.setFocusTraversable(false);
-            Tooltip.install(disc, new Tooltip(
-                "Locked = hold the typed angle; unlocked = follow the seam"));
-            javafx.scene.control.Spinner<Double> sp =
-                new javafx.scene.control.Spinner<>(
-                    new javafx.scene.control.SpinnerValueFactory
-                        .DoubleSpinnerValueFactory(-360, 360, 0, 1));
-            sp.setPrefWidth(86);
+            // the seam PADLOCK (v18.32, D204; bridge-style look since
+            // D248): 🔒 red = the axis holds an editable angle,
+            // 🔓 green = it follows the seam — the bridge padlocks
+            // read the same way since D249 (🔒 = held/typeable)
+            ToggleButton disc = LiveWindow.lockToggle(
+                "Locked = hold the typed angle; unlocked = follow the seam");
+            Spinner<Double> sp = new Spinner<>(
+                new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                    -360, 360, 0, 1));
+            // the seam keeps its ±360 factory on EVERY axis — a loaded
+            // held pitch past ±90 (pole passes) must never clip
+            sp.setPrefWidth(LiveWindow.SPIN_W);
             sp.setEditable(true);
             FvdDesigner.numericEditor(sp, true);   // + focus commit (D191)
-            Button rst = new Button();
-            rst.setGraphic(FvdDesigner.resetIcon());   // v18.11 round icon
-            rst.setFocusTraversable(false);
-            Tooltip.install(rst, new Tooltip(
+            if (axis == 0) {
+                // heading is placement — one tier in every mode (D249)
+                Tooltip.install(sp, new Tooltip(YAW_SHARED_TIP));
+            }
+            Button rst = LiveWindow.revertBtn(
                 "Back to the value from when this window was opened"
                 + " (an axis locked during this session: back to its"
-                + " stored placement angle)"));
-            Runnable sync = () -> {
+                + " stored placement angle)");
+            // the DESIGN box (D249): under DESIGN_ONLY a pitch/roll row
+            // shows the design elevation/bank and is editable regardless
+            // of the padlock; a vertical design frame grays it
+            java.util.function.Consumer<Boolean> sync = force -> {
+                TrackPiece f = live.get();
+                if (f == null) return;
                 boolean on = axis == 0 ? f.sLockYaw
                     : axis == 1 ? f.sLockPitch : f.sLockRoll;
-                disc.setSelected(on);
-                disc.setText(on ? "🔒" : "🔓");
-                // the red outline IS the discontinuity telltale —
-                // drawn with the ALIGNED outline pattern (D233: the
-                // default button background made it sit crooked)
-                disc.setStyle(FvdDesigner.outlineStyle(
-                    "-fx-font-size: 11px; -fx-text-fill: black;"
-                    + " -fx-padding: 1 5 1 5;",
-                    on ? "rgb(220,70,70)" : "transparent"));
+                boolean dAxis = axis != 0
+                    && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+                double[] dg = dAxis ? Coaster.eulerOf(f.designPose().orient())
+                                    : null;
+                boolean dVert = dAxis && (Double.isNaN(dg[axis])
+                    || Math.abs(dg[1]) > 89.9);
                 seamSyncing = true;
-                // yaw DISPLAYS left-positive (v18.15, D186): the UI
-                // negates at this boundary; sYawDeg stays internal
-                double dv = on
-                    ? (axis == 0 ? f.sYawDeg
-                        : axis == 1 ? f.sPitchDeg : f.sRollDeg)
-                    : followerEuler(followerIdx)[axis];
-                sp.getValueFactory().setValue(axis == 0 ? -dv : dv);
-                seamSyncing = false;
-                sp.setDisable(!on);
-                rst.setDisable(!on);
+                try {
+                    disc.setSelected(!on);   // selected = 🔓 = follows
+                    // a LIVE resync never overwrites a box being typed
+                    // into (D247 — the live-window rule; an explicit
+                    // action in this window, or an undo restore,
+                    // forces the write)
+                    if (force || app.docRestoring()
+                            || !sp.getEditor().isFocused()) {
+                        // yaw DISPLAYS left-positive (v18.15, D186):
+                        // the UI negates at this boundary; sYawDeg
+                        // stays internal
+                        double dv = dAxis ? (dVert ? 0 : dg[axis])
+                            : on
+                            ? (axis == 0 ? f.sYawDeg
+                                : axis == 1 ? f.sPitchDeg : f.sRollDeg)
+                            : followerEuler(followerIdx)[axis];
+                        sp.getValueFactory().setValue(axis == 0 ? -dv : dv);
+                    }
+                } finally {
+                    seamSyncing = false;
+                }
+                sp.setDisable(dAxis ? dVert : !on);
+                rst.setDisable(dAxis ? dVert : !on);
             };
-            rowSyncs[a] = sync;
+            rowSyncs.add(sync);
             disc.setOnAction(ev -> {
+                // IDENTITY GUARD + self-validation (v19.18, D247): a
+                // torn-down window's handlers are inert; + the
+                // density-preview transaction guard
+                if (!alive.getAsBoolean()) return;
+                TrackPiece f = live.get();
+                if (f == null) return;
+                if (app.convertBusy()) { sync.accept(true); return; }
                 pushUndoSnapshot();
-                boolean on = disc.isSelected();
+                boolean on = !disc.isSelected();
                 // the write runs through the D221 carry: unlocking an
                 // axis re-aims the follower onto the seam, and a
-                // RIGID follower carries its own downstream rigidly
-                app.placementEdit(followerIdx, () -> {
+                // RIGID follower carries its own downstream rigidly —
+                // via the seamEdit choke since D247 (a toggle-OFF
+                // jumps the real angle onto the upstream value = an
+                // adjustment the unlocked-shape lockstep follows)
+                seamEdit(followerIdx, () -> {
                     if (on) {
                         // locking ALWAYS holds the CURRENT angle —
-                        // nothing ever jumps (v19.6, D235: the D145
-                        // first-open creation seed is removed)
+                        // nothing ever jumps (v19.6, D235)
                         double cur = followerEuler(followerIdx)[axis];
                         if (axis == 0) f.sYawDeg = cur;
                         else if (axis == 1) f.sPitchDeg = cur;
@@ -857,16 +1378,54 @@ class GraphEditor extends Region {
                 app.markDirty();
                 app.rebuildTrack();
                 app.syncPlacementSpinners();
-                for (Runnable rsy : rowSyncs) rsy.run();
+                syncAll.accept(true);
+                app.refreshGizmos(false);   // rings follow the locks (D188)
                 redraw();
             });
             sp.valueProperty().addListener((o, was, val) -> {
+                // seamSyncing mutes the syncs' own writes and the
+                // hide-time focus-loss commit of a teardown (D247)
                 if (seamSyncing || val == null) return;
+                if (!alive.getAsBoolean()) return;
+                TrackPiece f = live.get();
+                if (f == null) return;
                 boolean on = axis == 0 ? f.sLockYaw
                     : axis == 1 ? f.sLockPitch : f.sLockRoll;
-                if (!on) return;
+                boolean dAxis = axis != 0
+                    && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+                if (!on && !dAxis) return;
+                if (app.convertBusy()) {
+                    // the F3 transaction guard: revert the box muted
+                    seamSyncing = true;
+                    sp.getValueFactory().setValue(was);
+                    seamSyncing = false;
+                    return;
+                }
+                if (dAxis) {
+                    // the DESIGN write (D249): absolute design
+                    // elevation/bank through Coaster.seamDesignSet —
+                    // held angles, locks and the real entry untouched;
+                    // a vertical design frame is refused BEFORE the
+                    // undo push (the box reverts muted + stats)
+                    double[] g = Coaster.eulerOf(f.designPose().orient());
+                    if (Double.isNaN(g[1]) || Double.isNaN(g[2])
+                            || Math.abs(g[1]) > 89.9) {
+                        seamSyncing = true;
+                        sp.getValueFactory().setValue(was);
+                        seamSyncing = false;
+                        app.statsLabel.setText(DESIGN_VERTICAL_MSG);
+                        return;
+                    }
+                    pushUndoSnapshot();
+                    seamEditDesign(followerIdx, axis, val);
+                    app.markDirty();
+                    app.rebuildTrack();
+                    redraw();
+                    syncAll.accept(false);
+                    return;
+                }
                 pushUndoSnapshot();
-                app.placementEdit(followerIdx, () -> {
+                seamEdit(followerIdx, () -> {   // the D247 choke
                     if (axis == 0) {
                         f.sYawDeg = -val;   // typed = reported (D186)
                     } else if (axis == 1) {
@@ -878,10 +1437,37 @@ class GraphEditor extends Region {
                 app.markDirty();
                 app.rebuildTrack();
                 redraw();
+                // the readout/buttons follow (the lockstep may have
+                // moved the design tier); this box keeps its text
+                syncAll.accept(false);
             });
             rst.setOnAction(ev -> {
+                if (!alive.getAsBoolean()) return;
+                TrackPiece f = live.get();
+                if (f == null) return;
+                if (app.convertBusy()) return;   // the F3 transaction guard
+                if (axis != 0
+                        && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY) {
+                    // ↺ on the DESIGN box (D249): back to the open-time
+                    // design elevation/bank (absolute; refused before
+                    // the undo push when either frame is vertical)
+                    double v0 = openDesignEuler[axis];
+                    double[] g = Coaster.eulerOf(f.designPose().orient());
+                    if (Double.isNaN(v0) || Double.isNaN(g[1])
+                            || Double.isNaN(g[2]) || Math.abs(g[1]) > 89.9) {
+                        app.statsLabel.setText(DESIGN_VERTICAL_MSG);
+                        return;
+                    }
+                    pushUndoSnapshot();
+                    seamEditDesign(followerIdx, axis, v0);
+                    app.markDirty();
+                    app.rebuildTrack();
+                    syncAll.accept(true);
+                    redraw();
+                    return;
+                }
                 pushUndoSnapshot();
-                app.placementEdit(followerIdx, () -> {
+                seamEdit(followerIdx, () -> {   // the D247 choke
                     double v;
                     if (openLocks[axis]) {
                         // held when this window opened → back to that
@@ -904,92 +1490,186 @@ class GraphEditor extends Region {
                 });
                 app.markDirty();
                 app.rebuildTrack();
-                for (Runnable rsy : rowSyncs) rsy.run();
+                syncAll.accept(true);
                 redraw();
             });
-            sync.run();
-            // grayed-while-unlocked = explained on hover (D235)
-            grid.addRow(a + 1, lbl, disc,
-                grayHint(sp, "Following the seam — lock 🔒 to hold "
-                    + "an angle."),
-                grayHint(rst, "Lock 🔒 first — ↺ then restores the "
-                    + "stored placement's angle."));
+            sync.accept(true);
+            // grayed-while-following = explained on hover (D235); the
+            // design box's own gray = a vertical design frame (D249)
+            java.util.function.Supplier<String> spWhy = () -> {
+                TrackPiece f = live.get();
+                return f != null && axis != 0
+                    && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
+                    ? DESIGN_VERTICAL_MSG
+                    : "Following the seam — lock 🔒 to hold an angle.";
+            };
+            java.util.function.Supplier<String> rstWhy = () -> {
+                TrackPiece f = live.get();
+                return f != null && axis != 0
+                    && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
+                    ? DESIGN_VERTICAL_MSG
+                    : "Lock 🔒 first — ↺ then restores the stored"
+                        + " placement's angle.";
+            };
+            box.getChildren().add(LiveWindow.orientRow(labels[a],
+                grayHint(sp, spWhy), disc, grayHint(rst, rstWhy),
+                designLbls[a] == null ? null : designLbls[a].node));
+            if (a == 0) box.getChildren().add(LiveWindow.thinSeparator());
         }
-        // (the v17.2 Smoothing spinner row moved onto the seam itself
-        // — the drag DIAMOND, v17.3 D140, the s/c pattern; the D221
-        // orientation-link rows LEFT this panel in D222, user spec —
-        // seam orientations work classically, the lock-shape surface
-        // is the Track Piece panel only)
-        Button apply = new Button("Apply");
-        apply.setDefaultButton(true);
-        apply.setOnAction(ev -> {
-            pop.hide();
-            seamPopup = null;
-        });
-        Button cancel = new Button("Cancel");
-        cancel.setCancelButton(true);
-        cancel.setOnAction(ev -> {
-            // back to the state this open found (v17.8, D145); the
-            // live edits pushed their own undo steps — the revert is
-            // one more
-            boolean changed = f.sLockYaw != openLocks[0]
-                || f.sLockPitch != openLocks[1]
-                || f.sLockRoll != openLocks[2]
-                || f.sYawDeg != openDegs[0]
-                || f.sPitchDeg != openDegs[1]
-                || f.sRollDeg != openDegs[2];
-            if (changed) {
-                pushUndoSnapshot();
-                app.placementEdit(followerIdx, () -> {
-                    f.sLockYaw = openLocks[0];
-                    f.sLockPitch = openLocks[1];
-                    f.sLockRoll = openLocks[2];
-                    f.sYawDeg = openDegs[0];
-                    f.sPitchDeg = openDegs[1];
-                    f.sRollDeg = openDegs[2];
-                });
-                app.markDirty();
+        // the ORIENTATION-MODE row (D249) — the follower's own; a pure
+        // flip moves nothing and rebuilds nothing, one undo step each;
+        // a follower is never a bridge target, so the design radio has
+        // no exclusion here; a flip re-reads every box (the pitch/roll
+        // rows swap tiers), the Track Piece window and the seam rig
+        LiveWindow.FlagRow flags = LiveWindow.flagRow(live,
+            () -> alive.getAsBoolean() && !app.docApplying()
+                && !app.convertBusy(),
+            this::pushUndoSnapshot, app::markDirty, null, null, () -> {
+                syncAll.accept(true);
+                app.syncPlacementSpinners();
+                app.refreshGizmos(false);
+            });
+        flagsRef[0] = flags;
+        box.getChildren().add(flags.node);
+        // Design ↔ Real (D247), shown while the seam is conflicted;
+        // a follower is never march-owned (a bridged-in piece does
+        // not follow), so Real → Design never grays here
+        LiveWindow.ResolveRow resolve = LiveWindow.resolveRow(
+            () -> {
+                if (!alive.getAsBoolean() || app.convertBusy()) return;
+                seamDesignToReal(followerIdx);
+                if (winRef[0] == seamWin) syncAll.accept(true);
+            },
+            () -> {
+                if (!alive.getAsBoolean() || app.convertBusy()) return;
+                seamRealToDesign(followerIdx);
+                if (winRef[0] == seamWin) syncAll.accept(true);
+            },
+            () -> null, () -> null);
+        box.getChildren().add(resolve.node);
+        tailSync[0] = () -> {
+            TrackPiece f = live.get();
+            if (f == null) return;
+            boolean conflict = orientConflictAt(followerIdx);
+            // the readouts show the OTHER tier than the boxes edit
+            // (D249): the follower's DESIGN orientation = designPose()
+            // (base⊕yaw⊕design deltas) [1] elevation, [2] bank — or,
+            // under DESIGN_ONLY, the REAL one (followerEuler, the
+            // follow contract); shown while conflicted or while the
+            // independent check is on, click = swap the mode
+            boolean dOnly = f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+            boolean show = conflict
+                || f.orientMode != TrackPiece.OrientMode.LOCKSTEP;
+            double[] g = !show ? null
+                : dOnly ? followerEuler(followerIdx)
+                : Coaster.eulerOf(f.designPose().orient());
+            boolean swap = LiveWindow.swappable(f, null);
+            String pre = LiveWindow.readoutPrefix(f);
+            designLbls[1].set(show, pre, g == null ? Double.NaN : g[1], swap);
+            designLbls[2].set(show, pre, g == null ? Double.NaN : g[2], swap);
+            resolve.setShown(conflict);
+            resolve.sync.run();
+            flags.sync.run();
+            LiveWindow.refit(app, winRef[0]);   // managed rows changed?
+        };
+        tailSync[0].run();
+        Runnable onConfirm = () -> hideSeamPopup();
+        Runnable onCancel = () -> {
+            if (!alive.getAsBoolean()) return;
+            if (app.convertBusy()) return;   // the F3 transaction guard
+            // back to the state this open (or the last undo restore)
+            // found — EVERY piece's placement, by identity, direct
+            // writes (the D249 full-scope record; the live edits
+            // pushed their own undo steps, the revert is one more). A
+            // typed-but-unentered box is DISCARDED first (D247)
+            if (app.cancelRestore(openSnap[0], openGen[0]) > 0) {
                 app.rebuildTrack();
                 app.syncPlacementSpinners();
+                app.updateBridgeControls();
+                app.refreshGizmos(false);
             }
-            pop.hide();
-            seamPopup = null;
+            hideSeamPopup();
             redraw();
-        });
-        HBox foot = new HBox(8, apply, cancel);
-        foot.setAlignment(Pos.CENTER_RIGHT);
-        grid.add(foot, 0, 4, 4, 1);
-        pop.getContent().add(grid);
-        seamPopupIdx = followerIdx;   // D227: the undo re-open knows it
-        if (seamPopupReopenAt != null) {
-            // rebuilt in place after an undo/redo (D227)
-            pop.show(canvas.getScene().getWindow(),
-                seamPopupReopenAt[0], seamPopupReopenAt[1]);
-            return;
-        }
-        if (app.popupAnchorX != null) {
-            // opened from the seam gizmo: show near the click
-            // (v18.19, D190)
-            pop.show(canvas.getScene().getWindow(),
-                app.popupAnchorX + 14, app.popupAnchorY + 10);
-            app.popupAnchorX = app.popupAnchorY = null;
-            return;
-        }
-        // anchor at the seam's on-screen x (the follower's first strip)
-        double sx = -1;
+        };
+        // anchor at the seam's on-screen x (the follower's first
+        // strip) when it is on screen, else the toolbar's junction
+        // button; a pending gizmo anchor wins inside LiveWindow
+        double ax = Double.NaN;
         for (RunSec rs : runLayout()) {
             if (rs.piece() == followerIdx && rs.section() == 0) {
-                sx = tToX(rs.t0());
+                double sx = tToX(rs.t0());
+                if (sx >= MARGIN_LEFT && sx <= canvas.getWidth()) {
+                    Point2D at = canvas.localToScreen(sx, 0);
+                    if (at != null) ax = at.getX();
+                }
                 break;
             }
         }
-        Point2D at = canvas.localToScreen(
-            sx >= MARGIN_LEFT && sx <= canvas.getWidth()
-                ? sx : canvas.getWidth() / 2,
-            MARGIN_TOP + 30);
-        if (at != null) {
-            pop.show(canvas.getScene().getWindow(), at.getX(), at.getY());
+        if (Double.isNaN(ax)) ax = app.junctionButtonAnchorX();
+        if (Double.isNaN(ax)) {
+            double[] cb = canvasScreenBox();
+            ax = cb != null ? cb[0] + MARGIN_LEFT : 0;
         }
+        Stage win = LiveWindow.show(app, seamTitle(followerIdx), box,
+            onConfirm, onCancel, ax);
+        winRef[0] = win;
+        seamWin = win;
+        seamWinCoaster = openC;
+        seamWinPiece = followerIdx;
+        seamSync = () -> {
+            // a stale hook is inert; a window whose seam is gone tears
+            // itself down (D247 review fix)
+            if (!seamLive(win, followerIdx)) return;
+            win.setTitle(seamTitle(followerIdx));   // D248: live numbering
+            syncAll.accept(false);
+        };
+        seamForceSync = () -> {
+            if (!seamLive(win, followerIdx)) return;
+            win.setTitle(seamTitle(followerIdx));
+            syncAll.accept(true);   // an undo restore outranks typing
+            // the restore replaced the piece objects: Cancel's record
+            // re-bases on them (the Track Piece / bridge windows'
+            // re-capture rule, D249)
+            openSnap[0] = PlacementSnapshot.capture(app.coaster);
+            openGen[0] = app.docGen;
+        };
+        // LIVE (D247): the window follows seam ring drags, Track Piece
+        // edits and undo through the shell's model hooks — stable
+        // Runnables (seamHook / seamRestoreHook) that run whatever
+        // seamSync / seamForceSync currently are; de-registered in
+        // hideSeamPopup
+        if (!app.modelHooks.contains(seamHook)) app.modelHooks.add(seamHook);
+        if (!docRestoreHooks.contains(seamRestoreHook)) {
+            docRestoreHooks.add(seamRestoreHook);
+        }
+        // closed by other means (the app closing its owned windows):
+        // the same teardown, identity-guarded
+        win.setOnHidden(ev -> { if (seamWin == win) hideSeamPopup(); });
+    }
+
+    /** The graph canvas's SCREEN box {minX, minY, maxX, maxY} — the
+     *  live windows place themselves just above its top edge
+     *  (LiveWindow.place, D248); null before the canvas is on
+     *  screen. */
+    double[] canvasScreenBox() {
+        if (canvas.getScene() == null) return null;
+        javafx.geometry.Bounds b = canvas.localToScreen(
+            canvas.getBoundsInLocal());
+        return b == null ? null
+            : new double[]{ b.getMinX(), b.getMinY(), b.getMaxX(), b.getMaxY() };
+    }
+
+    /** The screen x of the active lane's node `idx` (the node editor's
+     *  placement anchor, D248); NaN when off screen. */
+    private double nodeScreenX(int idx) {
+        List<BezierBaker.Node> ln = active();
+        if (idx < 0 || idx >= ln.size() || canvas.getScene() == null) {
+            return Double.NaN;
+        }
+        double x = ltToX(ln.get(idx).t);
+        if (x < MARGIN_LEFT || x > canvas.getWidth()) return Double.NaN;
+        Point2D at = canvas.localToScreen(x, 0);
+        return at == null ? Double.NaN : at.getX();
     }
 
     /** The run strip under global time t, or null. */
@@ -1031,6 +1711,19 @@ class GraphEditor extends Region {
         refreshOffset();
         redraw();
         app.syncWizardPanel();   // the wizard follows its piece (D231)
+    }
+
+    /** Activate piece p's section k from the viewport's REVEAL BALLS
+     *  (v19.18, D247 — every junction of the run wears a ball, and a
+     *  click activates that piece/section): the in-run switch keeps
+     *  the zoom, out-of-run targets take the full piece switch
+     *  (activateRunSec's own fallback). NOT activateAt(seam time):
+     *  activateGlobal picks the first span with t ≤ t1, and a
+     *  follower's first sample time equals the previous span's t1
+     *  (D86), so the UPSTREAM section would activate. */
+    void activatePieceSection(int p, int k) {
+        if (p < 0 || p >= app.coaster.pieces.size()) return;
+        activateRunSec(p, k);
     }
 
     void setActivePiece(int p) {
@@ -1109,6 +1802,61 @@ class GraphEditor extends Region {
             && ls.editInfluence && ls.influenced() ? ls : null;
     }
 
+    // ---------- PRISTINE-LANE END FOLLOW (v19.19, D248) ----------
+    // LaneSection.endFollows: a hold lane created untouched FOLLOWS
+    // the section end — after any gesture that moves a lane's last
+    // node, every still-following lane's last node lands on the new
+    // end (growing AND shrinking the section). The editor owns the
+    // semantics: touch*() clears a lane's flag at its first write (the
+    // one clearing choke, called at every lane-writing sink),
+    // syncFollowingEnds() performs the write (at the sinks that can
+    // move a last node, BEFORE their redraw + rebuild — never during
+    // an undo restore), and the top of every redraw runs ONLY
+    // clearStaleFollows() — the belt clears a follower that stopped
+    // being hold-shaped and never moves a node: a redraw can't
+    // rebuild, so a move there would leave the graph ahead of the
+    // compiled track (D248 review fix; the brief's "auto-cleared,
+    // never moved"). The arithmetic lives in LaneSection so
+    // EndFollowGate drives it.
+
+    /** The active section as a LaneSection (any surface), else null. */
+    private LaneSection activeLaneSec() {
+        List<Section> secs = sections();
+        return activeSection < secs.size()
+            && secs.get(activeSection) instanceof LaneSection ls ? ls : null;
+    }
+
+    /** Clear the END-FOLLOW flag of `lane` when it is one of the
+     *  active section's own lanes (identity — a delta lane, a
+     *  speed-control graph or a foreign list is a no-op). */
+    private void touchLane(List<BezierBaker.Node> lane) {
+        LaneSection.touchLane(activeLaneSec(), lane);
+    }
+
+    /** touchLane on the editing surface's lane (strip = no-op). */
+    private void touchActive() {
+        if (surfStrip) return;
+        touchLane(active());
+    }
+
+    /** The follow WRITE on the active section's OWN lanes (never the
+     *  delta surface's). Guarded against undo restores. */
+    private void syncFollowingEnds() {
+        if (app.docApplying() || app.docRestoring()) return;
+        LaneSection ls = activeLaneSec();
+        if (ls == null) return;
+        LaneSection.syncFollowingEnds(ls, minGapOf(ls));
+    }
+
+    /** The redraw BELT (D248 review fix): CLEAR only — see
+     *  LaneSection.clearStaleFollows. Guarded like the write. */
+    private void clearStaleFollows() {
+        if (app.docApplying() || app.docRestoring()) return;
+        LaneSection ls = activeLaneSec();
+        if (ls == null) return;
+        LaneSection.clearStaleFollows(ls);
+    }
+
     /** The active section as an influenced LaneSection (whatever
      *  surface is showing), else null. */
     private LaneSection activeInfluenced() {
@@ -1118,13 +1866,23 @@ class GraphEditor extends Region {
             && ls.influenced() ? ls : null;
     }
 
-    /** Piece p carries a rigid pitch/roll tilt (v15.2, D100): its
-     *  FORCE sections' recorded felt deviates from the authored lanes
-     *  (the design/real orientation split) — geo rates are
-     *  rotation-invariant and stay true. */
-    private boolean pieceTilted(int p) {
-        TrackPiece tp = app.coaster.pieces.get(p);
-        return tp.pitchDeg != 0 || tp.rollDeg != 0;
+    /** Piece p's REAL orientation differs from its DESIGN orientation
+     *  (v19.19, D248 — the one predicate the true-stroke reference,
+     *  the inactive-strip rule and the B-match analytic guard key
+     *  off; was pieceTilted = the pre-v19.0 true-tier test `pitchDeg
+     *  != 0 || rollDeg != 0`, which missed a DESIGN-tier conflict
+     *  (D222: rollDeg 0, designRollDeg 30) and a strict follower's
+     *  held-seam tilt (D247) — the compile tilts rigidly in both
+     *  cases while the drawing kept comparing the true felt against
+     *  the already-tilted compiled felt: the invisible lateral-G
+     *  band): a free piece's two tiers (TrackPiece.orientConflict)
+     *  or a follower's seam tilt with a horizontal component
+     *  (Coaster.isSeamOrientConflict) — TrackCompiler applies a
+     *  rigid tiltLine there, so every force lane and every geo
+     *  world-axis/absolute lane deviates from the authored lanes
+     *  (LaneSection.tiltDeviates decides per lane). */
+    private boolean pieceConflicted(int p) {
+        return orientConflictAt(p);
     }
 
     // ---------- x-AXIS DOMAIN (v16.0, D103) ----------
@@ -1884,50 +2642,65 @@ class GraphEditor extends Region {
             }
             cm.getItems().addAll(lane, sc);
         }
-        List<TrackPiece> pieces = app.coaster.pieces;
-        // pieces already INSIDE this bridged run are not bridge/attach
-        // targets (v13.4): they're connected — reordering or dissolving
-        // one would tear the chain apart
+        // RUN AS PIECE (v19.19, D248 — user vocabulary: a connected
+        // run IS "the track piece"): both lists offer the OTHER RUNS
+        // by their heads — a pick moves the WHOLE run (head..tail,
+        // Coaster.moveRun) to come next on the timeline. Pieces
+        // INSIDE this run are never targets (v13.4): they're
+        // connected — reordering one would tear the chain apart.
+        // Pre-checked per entry (never a silent click, D235): the
+        // wizard's pending piece and a run ending in an orphan bridge
+        // that would not land at the list end gray with their reasons.
         int rs = runStart(), re = runEnd();
-        boolean hasOutside = pieces.size() > re - rs + 1;
+        List<Integer> heads = app.coaster.runHeads();
+        boolean hasOutside = heads.size() > 1;
         if (endsBridge) {
             cm.getItems().add(grayItem("Bridge to piece", bridgeWhy));
         } else if (hasOutside) {
-            // ANY outside piece (v13.1): the chosen one reorders to come
-            // next on the timeline — connecting MEANS "this one follows"
             Menu bridge = new Menu("Bridge to piece");
-            for (int p = 0; p < pieces.size(); p++) {
-                if (p >= rs && p <= re) continue;
-                TrackPiece tp = pieces.get(p);
-                MenuItem it = new MenuItem(String.format(Locale.US,
-                    "Piece %d — %s%s", p + 1, app.pieceLengthLabel(p),
-                    p == activePiece + 1 ? " (next)" : ""));
-                final int idx = p;
+            for (int h : heads) {
+                if (h >= rs && h <= re) continue;
+                String label = String.format(Locale.US, "Piece %d — %s%s",
+                    app.coaster.runOrdinal(h), app.runLengthLabel(h),
+                    h == re + 1 ? " (next)" : "");
+                String why = runPickWhy(h, re);
+                if (why != null) {
+                    bridge.getItems().add(grayItem(label, why));
+                    continue;
+                }
+                MenuItem it = new MenuItem(label);
+                final int idx = h;
                 it.setOnAction(ev -> addBridgeTo(idx));
                 bridge.getItems().add(it);
             }
             cm.getItems().add(bridge);
         } else {
             cm.getItems().add(grayItem("Bridge to piece",
-                "Needs another piece outside this run to bridge to."));
+                "Needs another track piece outside this one to bridge to."));
         }
         if (!hasOutside) {
             cm.getItems().add(grayItem("Attach floating piece",
-                "No detached piece exists to attach."));
+                "No detached track piece exists to attach."));
         } else {
-            // attaching = the floating piece's sections CONTINUE this
-            // piece's chain (its own placement is discarded — §0 keeps
-            // every section's local shape)
+            // attaching = the run's sections CONTINUE this piece's
+            // chain through a strict seam (its head's placement is
+            // discarded — §0 keeps every section's local shape)
             if (endsBridge) {
                 cm.getItems().add(
                     grayItem("Attach floating piece", bridgeWhy));
             } else {
                 Menu attach = new Menu("Attach floating piece");
-                for (int p = 0; p < pieces.size(); p++) {
-                    if (p >= rs && p <= re) continue;
-                    MenuItem it = new MenuItem(String.format(Locale.US,
-                        "Piece %d — %s", p + 1, app.pieceLengthLabel(p)));
-                    final int idx = p;
+                for (int h : heads) {
+                    if (h >= rs && h <= re) continue;
+                    String label = String.format(Locale.US, "Piece %d — %s",
+                        app.coaster.runOrdinal(h), app.runLengthLabel(h));
+                    String why = runPickWhy(h, re);
+                    if (why != null) {
+                        attach.getItems().add(grayItem(label, why));
+                        continue;
+                    }
+                    MenuItem it = new MenuItem(label);
+                    final int idx = h;
                     it.setOnAction(ev -> attachFloating(idx));
                     attach.getItems().add(it);
                 }
@@ -1937,33 +2710,117 @@ class GraphEditor extends Region {
         // ADD FLOATING PIECE (v19.1, D226; below Attach since v19.2 —
         // user order; renamed from "…section…" in v19.10, D239): the
         // start screen minus friction — a new detached piece with its
-        // own first section
-        MenuItem floating = new MenuItem("Add floating piece…");
-        floating.setOnAction(ev -> app.showStartWizard(StartPanel.Mode.FLOATING));
+        // own first section. It appends at the LIST END, so an orphan
+        // bridge there would seize it as its target (the copyRun rule,
+        // D248) — grayed with the reason.
+        MenuItem floating;
+        if (app.coaster.listEndsInOrphanBridge()) {
+            floating = grayItem("Add floating piece…", ORPHAN_END_WHY);
+        } else {
+            floating = new MenuItem("Add floating piece…");
+            floating.setOnAction(ev -> app.showStartWizard(StartPanel.Mode.FLOATING));
+        }
         cm.getItems().add(floating);
         showMenu(cm, screenX, screenY);
     }
 
+    /** The '+' lists' gray reason for picking the run headed by `h`
+     *  to follow the run tail `re` — null when the pick is allowed
+     *  (v19.19, D248): the wizard's PENDING piece (attaching it would
+     *  strand WizardState.pieceIdx and turn the placeholder into real
+     *  track), then Coaster.canMoveRun's refusals — a run ending in an
+     *  orphan bridge that would not land at the list end (the landing
+     *  piece would be seized as that bridge's target). A pick that
+     *  already sits right after the tail moves nothing and is always
+     *  allowed (the "(next)" case). */
+    private String runPickWhy(int h, int re) {
+        // the OPEN wizard's piece, picked or not (D248 review fix —
+        // isPendingPiece is the RENDER gate, and the tile is picked
+        // from open since D232, so it never fired here)
+        if (app.isWizardPiece(app.activeCoaster, h)) return WIZARD_OPEN_WHY;
+        if (h == re + 1) return null;
+        if (!app.coaster.canMoveRun(h, re)) return ORPHAN_BLOCK_WHY;
+        return null;
+    }
+
+    /** The apply-time stats sentence for a Coaster.canMoveRun refusal
+     *  (the menu was built, the model changed under it — D247's
+     *  "ops that can still fail at apply time post the full
+     *  sentence"); mirrors canMoveRun's cases in order. */
+    private String moveRefuseWhy(int head, int after) {
+        Coaster c = app.coaster;
+        int n = c.pieces.size();
+        if (head < 0 || head >= n || after < 0 || after >= n) {
+            return "that track piece no longer exists.";
+        }
+        if (c.runStartOf(head) != head) {
+            return "that piece is not the head of its track piece.";
+        }
+        if (after >= head && after <= c.runEndOf(head)) {
+            return "that track piece already contains this piece.";
+        }
+        if (c.endsWithBridge(after)) {
+            return "this piece ends with a bridge; extend the next piece instead.";
+        }
+        if (c.runEndOf(after) != after) {
+            return "that piece is not the end of its track piece.";
+        }
+        return ORPHAN_BLOCK_WHY;
+    }
+
+    /** The '+' lists' and selector's pending-wizard-piece reason. */
+    static final String WIZARD_OPEN_WHY =
+        "Finish or cancel the open start screen first.";
+    /** A picked run ending in an orphan bridge that can't land last. */
+    static final String ORPHAN_BLOCK_WHY = "This track piece ends in an"
+        + " orphaned bridge — delete or convert it first.";
+    /** The list's LAST piece ends in an orphan bridge — nothing may
+     *  be appended after it (the floating wizard, Copy). */
+    static final String ORPHAN_END_WHY = "The coaster's last track piece"
+        + " ends in an orphaned bridge — delete or convert it first.";
+
     /** Append a live-following bridge from the ACTIVE piece's end to
-     *  piece `target`'s entry (v13.0 D72, any-piece + live v13.1 D73).
-     *  A non-adjacent target REORDERS to come right after this piece —
-     *  the piece order is the ride timeline, and connecting means
-     *  "this one follows". One undo step. */
+     *  the RUN headed by `target` (v13.0 D72, any-piece + live v13.1
+     *  D73; WHOLE RUNS since v19.19, D248). A non-adjacent target run
+     *  REORDERS as a block (Coaster.moveRun) to come right after this
+     *  piece — the piece order is the ride timeline, and connecting
+     *  means "this one follows". Pre-checked BEFORE the undo push
+     *  (D247: a refusal pushes nothing, never clears redo); the
+     *  index-resolved seam / speed windows pre-hide (the list shifts
+     *  under them). One undo step. */
     private void addBridgeTo(int target) {
         List<TrackPiece> pieces = app.coaster.pieces;
         if (target == activePiece || target >= pieces.size()) return;
         TrackCompiler.Span endSp = spanOf(sections().size() - 1);
         if (endSp == null) return;
+        boolean moves = target != activePiece + 1;
+        if (app.isWizardPiece(app.activeCoaster, target)) {
+            app.statsLabel.setText(WIZARD_OPEN_WHY);   // apply-time twin
+            return;                                    // of the gray (D248)
+        }
+        if (moves && !app.coaster.canMoveRun(target, activePiece)) {
+            app.statsLabel.setText("Bridge refused — "
+                + moveRefuseWhy(target, activePiece));
+            return;   // pre-checked: no undo step pushed
+        }
         double vEnd = app.lastSamples != null
             && endSp.i1() < app.lastSamples.size()
             ? app.lastSamples.get(endSp.i1()).v() : sections()
                 .get(sections().size() - 1).vDesign();
+        hideJunctionWindows();   // piece indices shift (D248 — the
+        spHideCtlPopup();    // attachFloating precedent; index-resolved
+                             // windows would resync onto another piece)
+        if (moves) app.dropGizmoReveals();   // Reveal(piece, kind) is an
+                                             // INDEX too (D248 review fix)
         pushUndoSnapshot();
         TrackPose end = endSp.exit();   // capture BEFORE the reorder
         TrackPiece tp = pieces.get(target);
-        if (target != activePiece + 1) {
-            if (target < activePiece) activePiece--;   // list shifts
-            app.coaster.movePiece(pieces.indexOf(tp), activePiece + 1);
+        if (moves) {
+            int nh = app.coaster.moveRun(target, activePiece);
+            // the target lands right after the active tail, whatever
+            // moved: the active index is one before it (a block from
+            // BELOW shifted us down by its whole length)
+            activePiece = nh - 1;
         }
         BridgeSection br = BridgeSection.solve(end, tp.entryPose(), vEnd);
         // a FRESH bridge moves nothing, so its placement mode says so
@@ -2079,7 +2936,15 @@ class GraphEditor extends Region {
     /** Does the ACTIVE piece end speed-conflicted (design vs true at
      *  its last sample)? The '+' menu forks there (v15.2, D101). */
     private boolean pieceEndDrifted() {
-        TrackCompiler.Span sp = spanOf(sections().size() - 1);
+        return seamDrifted(sections().size() - 1);
+    }
+
+    /** Does the ACTIVE piece's section kLeft END speed-conflicted
+     *  (design vs true at its last sample)? pieceEndDrifted
+     *  generalized to any seam (v19.18, D247 — the seam-insert
+     *  dialog's fork row reads the seam it inserts at). */
+    private boolean seamDrifted(int kLeft) {
+        TrackCompiler.Span sp = spanOf(kLeft);
         if (sp == null || !trueArraysReady()
                 || sp.i1() >= app.trueV.length) return false;
         int e = Math.min(sp.i1(), app.lastSamples.size() - 1);
@@ -2091,20 +2956,26 @@ class GraphEditor extends Region {
      *  graphs real"; renamed D234): resolve this
      *  section's design/true split KEEPING the shape — lanes re-fit
      *  at the true entry speed through the density preview; s/c just
-     *  re-freezes (shape speed-independent, no preview needed). */
+     *  re-freezes (shape speed-independent, no preview needed).
+     *  Since v19.18 (D247) this is the PURE-SPEED path — an
+     *  orientation-conflicted piece routes to resolveRangeReal. */
     private void makeGraphsReal(int k) {
         List<Section> secs = sections();
         if (k < 0 || k >= secs.size()) return;
         Section sec = secs.get(k);
         int piece = activePiece;
         if (sec instanceof StraightCurveSection) {
-            pushUndoSnapshot();
+            // pushed only on success (the D247 rule; D249 review fix)
+            FvdDesigner.DocState pre = snapshot();
             if (app.coaster.makeGraphsReal(piece, k,
                     FvdDesigner.INTEGRATE_DT,
                     Coaster.NODE_SPACING_DEFAULT, 0)) {
+                pushUndo(pre);
+                app.markDirty();
                 app.rebuildTrack();
                 refreshOffset();
             } else {
+                rollbackTo(pre);
                 app.statsLabel.setText("Convert refused — nothing "
                     + "compiled for this section yet.");   // D235
             }
@@ -2122,32 +2993,571 @@ class GraphEditor extends Region {
 
     /** "Re-freeze design speed" (v14.5, D97): the OTHER split
      *  resolution — graphs kept, geometry re-derives at the true
-     *  entry speed. One undo step. */
+     *  entry speed. One undo step. Since v19.18 (D247) this is the
+     *  PURE-SPEED path — an orientation-conflicted piece routes to
+     *  resolveRangeRefreeze. */
     private void refreezeSpeed(int k) {
         if (k < 0 || k >= sections().size()) return;
-        pushUndoSnapshot();
+        // snapshot first, pushed only on success (the D247 rule; D249
+        // review fix — a refusal left a pushed step behind, and the
+        // op's tilt/follow bakes precede its refusal, so the rollback
+        // also undoes a partial bake)
+        FvdDesigner.DocState pre = snapshot();
         if (app.coaster.refreezeSpeed(activePiece, k,
                 FvdDesigner.INTEGRATE_DT)) {
+            pushUndo(pre);
             app.markDirty();
             app.rebuildTrack();
             refreshOffset();
         } else {
+            rollbackTo(pre);
             app.statsLabel.setText("Set Design to Real refused — "
                 + "nothing compiled for this section yet.");   // D235
         }
         redraw();
     }
 
+    // ---------- RANGE-SCOPED orientation resolve (v19.18, D247) ----------
+    // An orientation conflict is PIECE-wide, and today's resolve ops
+    // bake the whole piece — every sibling section reshaped. On a
+    // conflicted piece the badge's two resolve items run the RANGE
+    // flow instead (user spec): sections [k..m] of the piece are
+    // isolated behind inserted strict seams (Coaster.isolateRange),
+    // "Set Design to Real" bakes + refreezes the range piece in one
+    // step (Coaster.refreezeRange), and "Convert Real to Design" is a
+    // CHAINED density preview — one section per Apply, each
+    // intermediate document honest, Ctrl+Z stepping back a section.
+    // A pure speed conflict keeps today's single-section ops bitwise.
+
+    // (badgeBase — the unnumbered "Geo·m ◀ fx" badge text — went in
+    // v19.19, D248, and its FORM is back as SectionNames.badgeLabel
+    // since v19.20, D249 — the drawn badge reverted on user hand
+    // test; sectionTitle + tags name the range dialog's sections.)
+
+    /** Why the range resolve can't run from section k of piece p —
+     *  the gray-out reason (D235 rule), null = it can. Checked at
+     *  menu build AND again when the dialog's Resolve fires. */
+    private String rangeResolveWhy(int p, int k) {
+        List<TrackPiece> pcs = app.coaster.pieces;
+        if (p < 0 || p >= pcs.size()) return "The piece is gone.";
+        int last = app.coaster.lastNonBridge(p);
+        List<Section> secs = pcs.get(p).sections;
+        if (k < 0 || k > last) {
+            return "Only a section before the piece's trailing bridge "
+                + "can start a range.";
+        }
+        // (the D247 smoothed-seam refusals are GONE since v19.20,
+        // D249: the range ops run under Coaster.withSeamsSuspended —
+        // the inserted seams are cut and the follow bakes read the
+        // same unsmoothed frames the fit reads, and the smoothing
+        // comes back around the resolved range)
+        for (int i = k; i <= last; i++) {
+            Section s = secs.get(i);
+            if (s.reversed()) {
+                return sectionTitle(p, i) + " is reversed — a reversed "
+                    + "section can't be re-fitted (reversal is the "
+                    + "convert-based rebuild; reverse the piece back "
+                    + "first).";
+            }
+            TrackCompiler.Span sp = spanAt(p, i);
+            if (sp == null) return "This piece isn't compiled yet.";
+            if (s instanceof LaneSection && sp.i1() - sp.i0() < 4) {
+                return sectionTitle(p, i) + " is too short to measure — "
+                    + "lengthen it first.";
+            }
+        }
+        return null;
+    }
+
+    /** Badge > Resolve conflict > "Set Design to Real" on an
+     *  orientation-conflicted piece: pick the range end, then bake +
+     *  refreeze the isolated range (one undo step). */
+    private void resolveRangeRefreeze(int k) {
+        final int piece = activePiece;
+        withRangeEnd(piece, k, m -> runRefreezeRange(piece, k, m));
+    }
+
+    /** Badge > Resolve conflict > "Convert Real to Design" on an
+     *  orientation-conflicted piece: pick the range end, then run the
+     *  chained preview. */
+    private void resolveRangeReal(int k) {
+        final int piece = activePiece;
+        withRangeEnd(piece, k, m -> startRangeChain(piece, k, m));
+    }
+
+    /** k == the piece's last non-bridge section (one-section pieces
+     *  included) resolves alone — no dialog; otherwise the end-section
+     *  dialog picks m ∈ [k, last] (default last). */
+    private void withRangeEnd(int piece, int k,
+                              java.util.function.IntConsumer go) {
+        int last = app.coaster.lastNonBridge(piece);
+        if (k < 0 || last < 0 || k > last) return;
+        if (k == last) {
+            go.accept(k);
+            return;
+        }
+        showRangeEndDialog(piece, k, last, go);
+    }
+
+    /** The end-section picker (D247): a small dark owned modal Stage
+     *  — "Resolve from section k+1 through:" + a ChoiceBox of the
+     *  candidate end sections labeled by their badge text. */
+    private void showRangeEndDialog(int piece, int k, int last,
+                                    java.util.function.IntConsumer go) {
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.initModality(Modality.WINDOW_MODAL);
+        dlg.setTitle("Resolve orientation conflict");
+        VBox box = new VBox(8);
+        box.setPadding(new Insets(14));
+        box.setStyle("-fx-background-color: rgb(38,42,53);");
+        String txt = "-fx-text-fill: rgb(210,215,225);";
+        // run-wide section titles + badge tags (v19.19, D248)
+        Label head = new Label("Resolve from " + sectionTitle(piece, k)
+            + " through:");
+        head.setStyle(txt);
+        javafx.scene.control.ChoiceBox<String> end =
+            new javafx.scene.control.ChoiceBox<>();
+        List<Section> secs = app.coaster.pieces.get(piece).sections;
+        for (int j = k; j <= last; j++) {
+            end.getItems().add(sectionTitle(piece, j)
+                + SectionNames.tags(secs.get(j), false));
+        }
+        end.getSelectionModel().select(last - k);   // default: the last
+        end.setMaxWidth(Double.MAX_VALUE);
+        Tooltip.install(end, new Tooltip("The last section of the range "
+            + "to resolve — sections after it keep their shape."));
+        Label note = new Label("A strict seam after the chosen section "
+            + "keeps the rest of the piece exactly as it is.");
+        note.setStyle(txt + " -fx-font-size: 11px;");
+        note.setWrapText(true);
+        note.setMaxWidth(320);
+        Button ok = new Button("Resolve");
+        ok.setDefaultButton(true);
+        Button cancel = new Button("Cancel");
+        cancel.setCancelButton(true);
+        cancel.setOnAction(ev -> dlg.close());
+        ok.setOnAction(ev -> {
+            int m = k + Math.max(0, end.getSelectionModel().getSelectedIndex());
+            dlg.close();
+            go.accept(m);
+        });
+        HBox buttons = new HBox(8, ok, cancel);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        box.getChildren().addAll(head, end, note, buttons);
+        Scene sc = new Scene(box);
+        dlg.setScene(sc);
+        app.installDocUndoKeys(sc);   // the D227 rule (undo keys global)
+        app.installViewKeys(sc);      // ride keys live (v18.1)
+        dlg.show();
+    }
+
+    /** Put a REFUSED op's pre-op snapshot back: the document may be
+     *  partially mutated (the range flow's structural steps), so the
+     *  snapshot goes back in place with NO history entry — the honest
+     *  "nothing happened". The snapshot is taken BEFORE the op and
+     *  pushed only on success (D247 review fix: a pushed-then-popped
+     *  refusal still cleared the redo branch and marked the document
+     *  dirty). */
+    private void rollbackTo(FvdDesigner.DocState pre) {
+        boolean wasDirty = app.isDirty();
+        applySnapshot(pre);   // marks dirty like every restore
+        if (!wasDirty) app.clearDirty();
+    }
+
+    /** SET DESIGN TO REAL over [k..m] (D247): isolate, then
+     *  Coaster.refreezeRange — one undo step, then the make-strict
+     *  refresh sequence on the range piece's first section. */
+    private void runRefreezeRange(int piece, int k, int m) {
+        String why = rangeResolveWhy(piece, k);   // the doc may have moved
+        if (why != null || m > app.coaster.lastNonBridge(piece)) {
+            app.statsLabel.setText("Set Design to Real refused — "
+                + (why != null ? why : "the piece changed while the "
+                    + "dialog was open."));
+            redraw();
+            return;
+        }
+        // the modal took the global undo keys, so the tilt that raised
+        // the ≠o may be gone by now (D247 review fix — item F's rule)
+        if (!orientConflictAt(piece)) {
+            app.statsLabel.setText("Set Design to Real refused — the "
+                + "piece's design and real orientations already agree.");
+            redraw();
+            return;
+        }
+        hideJunctionWindows();   // piece indices shift under the new seams (D248)
+        FvdDesigner.DocState pre = snapshot();
+        // both steps under ONE suspension of the piece's own seam and
+        // the seam after it (D249): the cut at the range end, the cut
+        // before k and the range piece's follow bake then read the
+        // same unsmoothed frames (the model ops suspend again inside
+        // — nested = a no-op)
+        boolean ok = app.coaster.withSeamsSuspended(piece, () -> {
+            int rp = app.coaster.isolateRange(piece, k, m,
+                FvdDesigner.INTEGRATE_DT);
+            return rp >= 0 && app.coaster.refreezeRange(rp,
+                FvdDesigner.INTEGRATE_DT);
+        });
+        int rp = k > 0 ? piece + 1 : piece;   // isolateRange's result
+        if (!ok) {
+            rollbackTo(pre);
+            app.statsLabel.setText("Set Design to Real refused — a "
+                + "boundary of the range isn't compiled yet.");
+            redraw();
+            return;
+        }
+        pushUndo(pre);   // one undo step, pushed only on success
+        activateRunSec(rp, 0);
+        app.markDirty();
+        app.rebuildTrack();
+        app.updatePieceButton();
+        app.syncPlacementSpinners();
+        refreshOffset();
+        redraw();
+        app.statsLabel.setText(k == m
+            ? "Resolved section " + (k + 1) + " — the rest of the piece "
+              + "keeps its shape behind strict seams."
+            : "Resolved sections " + (k + 1) + "–" + (m + 1) + " — the "
+              + "rest of the piece keeps its shape behind strict seams.");
+    }
+
+    /** A CHAINED "Convert Real to Design" over [k..m] (D247): step pos
+     *  converts section k+pos; `conv` = the piece accumulating the
+     *  converted sections ([k..k+pos] after step pos's Apply); the
+     *  unconverted rest [k+pos+1..m] waits as the locked follower
+     *  conv+1 until absorbed. */
+    private static final class RangeChain {
+        final int piece, k, m, conv;
+        int pos;
+        RangeChain(int piece, int k, int m) {
+            this.piece = piece;
+            this.k = k;
+            this.m = m;
+            this.conv = k > 0 ? piece + 1 : piece;   // isolateRange's result
+        }
+        int count() { return m - k + 1; }
+    }
+    private RangeChain chain;
+    /** True while the chain itself opens/cancels a preview — the
+     *  cancel path must not end the chain then. */
+    private boolean chainOpening;
+
+    /** Is a range chain's preview up (the convert-UI key branch's
+     *  Ctrl+Z routes to chainStepBack then)? */
+    boolean chainActive() { return chain != null && pvBefore != null; }
+
+    private void startRangeChain(int piece, int k, int m) {
+        String why = rangeResolveWhy(piece, k);   // the doc may have moved
+        if (why != null || m > app.coaster.lastNonBridge(piece)) {
+            app.statsLabel.setText("Convert Real to Design refused — "
+                + (why != null ? why : "the piece changed while the "
+                    + "dialog was open."));
+            redraw();
+            return;
+        }
+        // the modal took the global undo keys: the ≠o may be gone, or
+        // the piece may have left the active run (D247 review fix)
+        if (!orientConflictAt(piece)) {
+            app.statsLabel.setText("Convert Real to Design refused — the "
+                + "piece's design and real orientations already agree.");
+            redraw();
+            return;
+        }
+        if (piece < runStart() || piece > runEnd()) {
+            app.statsLabel.setText("Convert Real to Design refused — the "
+                + "piece is no longer part of the run being edited.");
+            redraw();
+            return;
+        }
+        hideJunctionWindows();   // piece indices shift under the new seams (D248)
+        chain = new RangeChain(piece, k, m);
+        chainStep();
+    }
+
+    /** The composite ConvertOp of the chain's current step — run by
+     *  pvRerun against pvBefore on every density change, so the
+     *  structural work re-executes deterministically per run:
+     *  step 0 = isolate the range + (if more follow) split [k+1..m]
+     *  off as a locked follower keeping the conflict + make section k
+     *  real; step pos > 0 = split [i+1..m] off the waiting follower +
+     *  make its section i real (bakes the follow) + absorb it into the
+     *  converted piece. */
+    private ConvertOp chainOp(RangeChain ch) {
+        final double dt = FvdDesigner.INTEGRATE_DT;
+        final int i = ch.k + ch.pos;
+        // every step runs under Coaster.withSeamsSuspended (D249): the
+        // structural cuts (isolateRange, the extra makeSeamStrict) and
+        // the follow bakes read the same unsmoothed frames the fit
+        // reads; pieces are resolved BY INDEX per run (pvRerun restores
+        // pvBefore and adopts fresh objects — the stash is taken fresh
+        // each time and restored on the objects it was taken from)
+        if (ch.pos == 0) {
+            return (sp, tol) -> app.coaster.withSeamsSuspended(ch.piece,
+                () -> {
+                    int rp = app.coaster.isolateRange(ch.piece, ch.k, ch.m,
+                        dt);
+                    if (rp != ch.conv) return false;
+                    if (ch.m > ch.k
+                            && app.coaster.makeSeamStrict(rp, 1, dt) < 0) {
+                        return false;
+                    }
+                    return app.coaster.makeGraphsReal(rp, 0, dt, sp, tol);
+                });
+        }
+        return (sp, tol) -> {
+            int f = ch.conv + 1;
+            if (f >= app.coaster.pieces.size()) return false;
+            // the converted piece's OWN seam (step 0 cut under it)
+            // plus the waiting follower's and the one after it
+            return app.coaster.withSeamsSuspended(ch.conv,
+                () -> app.coaster.withSeamsSuspended(f, () -> {
+                    if (i < ch.m && app.coaster.makeSeamStrict(f, 1, dt) < 0) {
+                        return false;
+                    }
+                    if (!app.coaster.makeGraphsReal(f, 0, dt, sp, tol)) {
+                        return false;
+                    }
+                    return app.coaster.absorbFollower(ch.conv, f);
+                }));
+        };
+    }
+
+    /** Open the chain's current step: a LANE section gets the density
+     *  preview (Apply advances the chain from commitDensityPreview),
+     *  an s/c section applies directly (one undo step, its shape is
+     *  speed-independent — nothing to tune) and advances at once. */
+    private void chainStep() {
+        RangeChain ch = chain;
+        if (ch == null) return;
+        int sp = ch.pos == 0 ? ch.piece : ch.conv + 1;   // holds section i now
+        int sk = ch.pos == 0 ? ch.k : 0;
+        List<TrackPiece> pcs = app.coaster.pieces;
+        if (sp >= pcs.size() || sk >= pcs.get(sp).sections.size()) {
+            chain = null;
+            app.statsLabel.setText("Range resolve stopped — the range's "
+                + "next section is gone.");
+            redraw();
+            return;
+        }
+        Section sec = pcs.get(sp).sections.get(sk);
+        ConvertOp op = chainOp(ch);
+        Runnable act = () -> {
+            activePiece = ch.conv;
+            activeSection = ch.pos;
+        };
+        if (sec instanceof StraightCurveSection) {
+            FvdDesigner.DocState pre = snapshot();
+            if (!op.apply(Coaster.NODE_SPACING_DEFAULT, 0)) {
+                rollbackTo(pre);
+                chain = null;
+                // the run-wide title (brief L.6; D248 review fix — the
+                // raw piece-local index matched no label)
+                app.statsLabel.setText("Range resolve stopped — "
+                    + sectionTitle(sp, sk) + " isn't compiled yet.");
+                redraw();
+                return;
+            }
+            pushUndo(pre);   // pushed only on success (D247 review fix)
+            act.run();
+            activePiece = (int) FvdDesigner.clamp(activePiece, 0,
+                pcs.size() - 1);
+            activeSection = (int) FvdDesigner.clamp(activeSection, 0,
+                sections().size() - 1);
+            app.lanes = lanesFor(sections().get(activeSection));
+            selIdx = -1;
+            selSet.clear();
+            elSel = -1;
+            syncLaneButtons();
+            app.markDirty();
+            app.rebuildTrack();
+            app.updatePieceButton();
+            app.syncPlacementSpinners();
+            refreshOffset();
+            redraw();
+            if (ch.pos + 1 < ch.count()) {
+                ch.pos++;
+                chainStep();
+            } else {
+                chain = null;
+                app.statsLabel.setText("Range resolved — every section "
+                    + "of the range is converted; the seams around it "
+                    + "stay strict.");
+            }
+            return;
+        }
+        // the preview's reference curves read spanOf(sk) on the ACTIVE
+        // piece — activate the step's section first (pvBefore is null
+        // here, so the activation-change cancel can't fire)
+        activateRunSec(sp, sk);
+        chainOpening = true;
+        try {
+            beginDensityPreview(sk, sec instanceof GeoSection, true, op,
+                act);
+        } finally {
+            chainOpening = false;
+        }
+        if (!previewActive()) {
+            chain = null;   // the refused-run message already posted
+            return;
+        }
+        app.statsLabel.setText(String.format(Locale.US,
+            "Range resolve — %s (%d of %d): tune the node density, "
+            + "then Apply (Ctrl+Z steps back to the previous section).",
+            sectionTitle(sp, sk), ch.pos + 1, ch.count()));
+    }
+
+    /** Ctrl+Z inside a chained preview (D247): cancel the open
+     *  preview, undo the PREVIOUS section's Apply and re-open that
+     *  section's preview (step 0 re-opens the composite op, so the
+     *  seams come back with it); s/c steps had no preview and are
+     *  stepped over; at step 0 the chain just ends (nothing changed). */
+    void chainStepBack() {
+        RangeChain ch = chain;
+        if (ch == null) return;
+        chainOpening = true;   // keep the chain across the cancel
+        try {
+            cancelDensityPreview();
+        } finally {
+            chainOpening = false;
+        }
+        boolean undone = false;
+        while (true) {
+            if (ch.pos == 0) {
+                chain = null;
+                app.statsLabel.setText(undone
+                    ? "Range resolve ended — stepped back past its first "
+                      + "section (the document is as it was before it)."
+                    : "Range resolve cancelled — nothing changed.");
+                redraw();
+                return;
+            }
+            ch.pos--;
+            undo();   // the previous step's Apply (or direct s/c step)
+            undone = true;
+            int sp = ch.pos == 0 ? ch.piece : ch.conv + 1;
+            int sk = ch.pos == 0 ? ch.k : 0;
+            List<TrackPiece> pcs = app.coaster.pieces;
+            boolean sc = sp < pcs.size()
+                && sk < pcs.get(sp).sections.size()
+                && pcs.get(sp).sections.get(sk)
+                    instanceof StraightCurveSection;
+            if (!sc) break;   // an s/c step has no preview to re-open
+        }
+        chainStep();
+    }
+
+    /** BRIDGE CONTEXT (v19.19, D248): the piece whose TRAILING bridge
+     *  the bridge API below addresses while a bridge WINDOW is open on
+     *  it — the window is an owned Stage that outlives activation
+     *  changes (a graph click, a POV ride), and its rows must keep
+     *  editing THEIR bridge; −1 = the active section (the historic
+     *  scoping, bitwise). Set only inside withBridge; the drawing /
+     *  hit-test code keeps reading activeBridge() (the active
+     *  section) — it never runs under a context. */
+    private int bridgeCtx = -1;
+
+    /** The piece the bridge API addresses (see bridgeCtx). */
+    int bridgePieceCtx() {
+        return bridgeCtx >= 0 && bridgeCtx < app.coaster.pieces.size()
+            ? bridgeCtx : activePiece;
+    }
+
+    /** Run `body` with the bridge API scoped to piece p's trailing
+     *  bridge (p < 0 = the active section, a plain call). */
+    void withBridge(int p, Runnable body) {
+        int was = bridgeCtx;
+        bridgeCtx = p;
+        try {
+            body.run();
+        } finally {
+            bridgeCtx = was;
+        }
+    }
+
+    <T> T withBridge(int p, java.util.function.Supplier<T> body) {
+        int was = bridgeCtx;
+        bridgeCtx = p;
+        try {
+            return body.get();
+        } finally {
+            bridgeCtx = was;
+        }
+    }
+
+    /** The bridge the API addresses: the context piece's trailing
+     *  bridge (orphan allowed — bridgeOrphan says), else the active
+     *  section's. */
+    private BridgeSection ctxBridge() {
+        if (bridgeCtx < 0) return activeBridge();
+        if (bridgeCtx >= app.coaster.pieces.size()) return null;
+        List<Section> secs = app.coaster.pieces.get(bridgeCtx).sections;
+        return !secs.isEmpty()
+            && secs.get(secs.size() - 1) instanceof BridgeSection b ? b : null;
+    }
+
+    /** The context bridge's compiled span (the active section's
+     *  without a context). */
+    private TrackCompiler.Span ctxBridgeSpan() {
+        if (bridgeCtx < 0) return spanOf(activeSection);
+        if (bridgeCtx >= app.coaster.pieces.size()) return null;
+        return spanAt(bridgeCtx,
+            app.coaster.pieces.get(bridgeCtx).sections.size() - 1);
+    }
+
     /** The bridge lost its target piece (deleted/attached): it stays
      *  frozen at its last capture — the badge's warning state. */
     private boolean bridgeOrphan(BridgeSection bs) {
-        return activePiece + 1 >= app.coaster.pieces.size();
+        return bridgePieceCtx() + 1 >= app.coaster.pieces.size();
+    }
+
+    /** Is the ACTIVE section a bridge (orphan or not)? — the toolbar's
+     *  junction button reads it (D248); never context-scoped. */
+    boolean activeSectionIsBridge() {
+        return activeBridge() != null;
+    }
+
+    /** The open strict seam window, or null (the winshot dev hook). */
+    Stage seamWindow() { return seamWin; }
+
+    /** The toolbar junction button's seam toggle (D248): open = close
+     *  WITHOUT revert (Confirm semantics), else open follower idx's
+     *  window. */
+    void toggleSeamWindow(int followerIdx) {
+        // the SAME follower's window closes; another follower's is
+        // torn down by showStrictSeamSettings and the requested one
+        // opens (D248 review fix — a bare null test closed piece 2's
+        // window when piece 4's button was clicked and opened nothing;
+        // the bridgeWinPiece pattern)
+        if (seamWin != null && seamWinPiece == followerIdx
+                && app.coaster == seamWinCoaster) {
+            hideSeamPopup();
+            return;
+        }
+        showStrictSeamSettings(followerIdx);
+    }
+
+    /** After the bridge window's Cancel restored piece p's trailing
+     *  bridge + target fields (D248): re-land the march at the
+     *  restored requested length in the optimize modes (optimizeBridge
+     *  stamps the signature, so the next rebuild is a no-op —
+     *  determinism contract b), a plain rebuild for a manual bridge
+     *  (the septic re-captures). */
+    void reapplyBridgeAfterRestore(int p) {
+        BridgeSection bs = trailingBridge(p);
+        if (bs != null && bs.optMode != BridgeSection.OPT_NONE) {
+            applyBridgeGap(p, bs, bs.lastOptDist > 0 ? bs.lastOptDist
+                : Math.max(1, gizmoBridgeGap(p)));
+        } else {
+            app.rebuildTrack();
+            refreshOffset();
+            redraw();
+        }
     }
 
     /** The toolbar GAP spinner shows for an active, non-orphaned
-     *  bridge (v13.2). */
+     *  bridge (v13.2) — the context bridge under withBridge (D248). */
     boolean activeBridgeWithTarget() {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         return bs != null && !bridgeOrphan(bs);
     }
 
@@ -2165,7 +3575,7 @@ class GraphEditor extends Region {
      *  and get stuck"). Manual bridges keep the honest compiled
      *  arc. */
     double requestedBridgeGap() {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         if (bs != null && !bridgeOrphan(bs)
                 && bs.optMode != BridgeSection.OPT_NONE
                 && bs.lastOptDist > 0) {
@@ -2175,11 +3585,11 @@ class GraphEditor extends Region {
     }
 
     double activeBridgeGap() {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         if (bs == null || bridgeOrphan(bs)) return 0;
-        TrackCompiler.Span sp = spanOf(activeSection);
+        TrackCompiler.Span sp = ctxBridgeSpan();
         if (sp != null && sp.sLen() > 1e-6) return sp.sLen();
-        return app.coaster.pieces.get(activePiece + 1).entryPose().pos()
+        return app.coaster.pieces.get(bridgePieceCtx() + 1).entryPose().pos()
             .sub(bs.solvedEntry.pos()).length();
     }
 
@@ -2191,7 +3601,7 @@ class GraphEditor extends Region {
      *  around a split turn's own circle) and the live bridge follows.
      *  Arrow bursts coalesce into one undo step. */
     void setBridgeGap(double dist) {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         if (bs == null || bridgeOrphan(bs) || dist <= 0
                 || bs.optMode == BridgeSection.OPT_NONE
                 || bs.optLen) return;   // auto length owns the spinner
@@ -2210,8 +3620,18 @@ class GraphEditor extends Region {
      *  ratio: every length round trip drifted the sweep a little and
      *  the shape got rougher — the user's "different each time". */
     private void applyBridgeGap(BridgeSection bs, double dist) {
-        boolean povOn = povInsideActiveBridge();
-        app.coaster.optimizeBridge(bs, activePiece + 1, dist,
+        applyBridgeGap(bridgePieceCtx(), bs, dist);   // bitwise: same target
+    }
+
+    /** Piece-indexed twin (v19.18, D247 — the bridge-end ball of ANY
+     *  piece of the run reveals its rig, so the gizmo paths resolve
+     *  the bridge by the piece it trails, not the active one): the
+     *  target is piece p+1; the POV clamp (v17.11) applies only while
+     *  the edited bridge is the ACTIVE piece's active section — the
+     *  case the bridge window's POV clamp guards. */
+    private void applyBridgeGap(int p, BridgeSection bs, double dist) {
+        boolean povOn = p == activePiece && povInsideActiveBridge();
+        app.coaster.optimizeBridge(bs, p + 1, dist,
             bs.optMode == BridgeSection.OPT_POS_YAW);
         app.rebuildTrack();
         if (povOn) clampPovIntoActiveBridge();
@@ -2234,7 +3654,7 @@ class GraphEditor extends Region {
     /** Keep the POV position ON the active bridge while its settings
      *  are being edited (v17.11, user spec): shrinking the length
      *  used to drop the parked POV into the NEXT piece, whose ride
-     *  follow then activated it and closed the Bridge-properties
+     *  follow then activated it and closed the bridge properties
      *  panel mid-edit. Runs synchronously inside the edit event, so
      *  the POV timer never sees the position off the bridge. */
     private void clampPovIntoActiveBridge() {
@@ -2253,7 +3673,7 @@ class GraphEditor extends Region {
     }
 
     boolean bridgeOptLen() {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         return bs != null && bs.optLen;
     }
 
@@ -2261,7 +3681,7 @@ class GraphEditor extends Region {
      *  Coaster.optimalBridgeLength's knee — the spinner and end-line
      *  drag disable; off = the length is the user's again. */
     void setBridgeOptLen(boolean on) {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         if (bs == null || bs.optLen == on) return;
         pushUndoSnapshot();
         bs.optLen = on;
@@ -2312,20 +3732,25 @@ class GraphEditor extends Region {
      *  piece FOLLOWS with every axis unlocked (the seamless re-join,
      *  shape frozen), and the seam settings pop up. */
     private void attachThroughBridge() {
-        List<Section> secs = sections();
+        int bp = bridgePieceCtx();   // the context piece's bridge (D248)
+        List<Section> secs = app.coaster.pieces.get(bp).sections;
         int k = secs.size() - 1;
         if (!(secs.get(k) instanceof BridgeSection bs2)
-                || activePiece + 1 >= app.coaster.pieces.size()) return;
+                || bp + 1 >= app.coaster.pieces.size()) return;
+        hideSeamPopup();   // the seam set changes (D247 review fix)
+        app.closeBridgeWindow();   // its bridge is about to vanish (D248)
         secs.remove(k);
         // seam Discontinuous defaults = the BRIDGE's locks (v17.12,
         // D153, user spec: the axes the bridge held stay held)
-        int np = app.coaster.connectStrict(activePiece, activePiece + 1,
+        int np = app.coaster.connectStrict(bp, bp + 1,
             bs2.lockYaw, bs2.lockPitch, bs2.lockRoll);
-        activeSection = Math.min(k, sections().size() - 1);
-        app.lanes = lanesFor(sections().get(activeSection));
-        selIdx = -1;
-        selSet.clear();
-        elSel = -1;
+        if (bp == activePiece) {
+            activeSection = Math.min(k, sections().size() - 1);
+            app.lanes = lanesFor(sections().get(activeSection));
+            selIdx = -1;
+            selSet.clear();
+            elSel = -1;
+        }
         syncLaneButtons();
         app.rebuildTrack();
         app.updatePieceButton();
@@ -2342,13 +3767,31 @@ class GraphEditor extends Region {
     // via the shared lastGapNanos clock.
 
     int bridgeOptMode() {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         return bs == null ? BridgeSection.OPT_POS_YAW : bs.optMode;
     }
 
+    /** setBridgeOptMode's stats reason for the D249 exclusion. */
+    static final String PY_REFUSED_DESIGN_MSG = "Optimize position and"
+        + " orientation refused — the next piece edits its design"
+        + " orientation; choose its real orientation first.";
+
     void setBridgeOptMode(int mode) {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         if (bs == null || bs.optMode == mode) return;
+        final int bp = bridgePieceCtx();   // the target is bp + 1 (D248)
+        if (mode == BridgeSection.OPT_POS_YAW) {
+            // the MUTUAL EXCLUSION belt (D249): a target editing its
+            // design orientation excludes optimize-orientation (the
+            // radio is grayed; a race with the hover lands here)
+            TrackPiece tgt = bridgeTargetPiece();
+            if (tgt != null
+                    && tgt.orientMode == TrackPiece.OrientMode.DESIGN_ONLY) {
+                app.statsLabel.setText(PY_REFUSED_DESIGN_MSG);
+                app.updateBridgeControls();   // re-select the real mode
+                return;
+            }
+        }
         int wasMode = bs.optMode;
         pushUndoSnapshot();
         bs.optMode = mode;
@@ -2368,8 +3811,8 @@ class GraphEditor extends Region {
                 bs.noneStash = null;
                 boolean untouched = false;
                 if (st != null
-                        && activePiece + 1 < app.coaster.pieces.size()) {
-                    TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+                        && bp + 1 < app.coaster.pieces.size()) {
+                    TrackPiece t = app.coaster.pieces.get(bp + 1);
                     untouched = Math.abs(t.x - st[1]) < 1e-9
                         && Math.abs(t.y - st[2]) < 1e-9
                         && Math.abs(t.z - st[3]) < 1e-9
@@ -2410,8 +3853,8 @@ class GraphEditor extends Region {
             if (mode == BridgeSection.OPT_NONE
                     && wasMode != BridgeSection.OPT_NONE
                     && !bridgeOrphan(bs)
-                    && activePiece + 1 < app.coaster.pieces.size()) {
-                TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+                    && bp + 1 < app.coaster.pieces.size()) {
+                TrackPiece t = app.coaster.pieces.get(bp + 1);
                 bs.noneStash = new double[]{ bs.optLen ? 1 : 0,
                     t.x, t.y, t.z, t.yawDeg, t.pitchDeg, t.rollDeg };
             }
@@ -2426,58 +3869,114 @@ class GraphEditor extends Region {
      *  starting orientation, a split piece's included). */
     double bridgeTargetOrient(int axis) {
         if (!activeBridgeWithTarget()) return 0;
-        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        return axis == 0 ? t.dispYaw() : axis == 1 ? t.dispPitch()
-                                                    : t.dispRoll();
+        TrackPiece t = app.coaster.pieces.get(bridgePieceCtx() + 1);
+        // the pitch/roll boxes show the tier the target's mode EDITS
+        // (D249): the design elevation/bank under DESIGN_ONLY
+        boolean dOnly = t.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+        return axis == 0 ? t.dispYaw()
+            : axis == 1 ? (dOnly ? t.dispDesignPitch() : t.dispPitch())
+            : (dOnly ? t.dispDesignRoll() : t.dispRoll());
+    }
+
+    /** The context bridge's TARGET piece (the piece after it), or
+     *  null without a live, non-orphaned bridge (D249 — the bridge
+     *  window's PY-exclusion reads its orientation mode). */
+    TrackPiece bridgeTargetPiece() {
+        if (!activeBridgeWithTarget()) return null;
+        int ti = bridgePieceCtx() + 1;
+        return ti < app.coaster.pieces.size() ? app.coaster.pieces.get(ti)
+                                              : null;
     }
 
     /** Write a next-piece DISPLAYED orientation and re-apply per mode
-     *  (v13.13): only reachable while the axis is UNLOCKED and the
-     *  mode isn't optimize-orientation (there the march owns the
-     *  unlocked axes). Bridge writes hit the TRUE tier only — the
-     *  classic behavior, D222 clarification. */
+     *  (v13.13): reachable for every EDITABLE axis since v19.20
+     *  (D249, the seam rule — BridgeSection.axisEditable: a HELD
+     *  (locked) axis in every mode = the typed value is what the
+     *  march meets, a free axis outside optimize-orientation; a free
+     *  axis under optimize-orientation is the march's and refuses —
+     *  its box is grayed with the reason). ROUTED through the
+     *  target's orientation mode since v19.19 (D248 — setDispPitch/
+     *  Roll(…, true) = editPitch/editRoll; the 3-state mode D249):
+     *  LOCKSTEP (the default) moves BOTH tiers, so the target
+     *  RE-SOLVES and the bridge re-marches once; REAL_ONLY = the real
+     *  tier alone, the conflict opens (the D222 classic); DESIGN_ONLY
+     *  = the design tier alone. The MARCH's own alignment
+     *  (Coaster.alignPieceForBridge) takes the SAME route since D249
+     *  — one tier rule for every writer. */
     void setBridgeTargetOrient(int axis, double deg) {
-        BridgeSection bs = activeBridge();
-        if (bs == null || bridgeOrphan(bs)
-                || bs.optMode == BridgeSection.OPT_POS_YAW) return;
-        if (axis == 0 ? bs.lockYaw : axis == 1 ? bs.lockPitch
-                                               : bs.lockRoll) return;
+        BridgeSection bs = ctxBridge();
+        if (bs == null || bridgeOrphan(bs)) return;
+        if (!bs.axisEditable(axis)) return;   // the march's axis (D249)
         long now = System.nanoTime();
         if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
         lastGapNanos = now;
-        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        app.placementEdit(activePiece + 1, () -> {   // D221 rigid carry
+        int bp = bridgePieceCtx();
+        TrackPiece t = app.coaster.pieces.get(bp + 1);
+        bridgeTargetWrite(bp, () -> {
             if (axis == 0) t.setDispYaw(deg);
-            else if (axis == 1) t.setDispPitch(deg, false);
-            else t.setDispRoll(deg, false);
+            else if (axis == 1) t.setDispPitch(deg, true);
+            else t.setDispRoll(deg, true);
         });
-        app.markDirty();
-        if (bs.optMode == BridgeSection.OPT_POS) {
-            if (bs.optLen) applyOptimalLength(bs);
-            else applyBridgeGap(bs, bs.lastOptDist > 0 ? bs.lastOptDist
-                : Math.max(1, activeBridgeGap()));
-        } else {
-            app.rebuildTrack();
-            refreshOffset();
-            redraw();
-        }
-        // the grayed Length box tracks the manual bridge live (v14.5)
+    }
+
+    /** ONE tail for every window write to the TARGET piece (D248 —
+     *  the bridge window's spinners, its ↺ reverts and Real → Design;
+     *  since v19.20 (D249) the target's Track Piece window rows + ↺
+     *  too, so the two windows are ONE route): the write runs through
+     *  placementEdit(bp + 1) (the D221 carry per the target's own
+     *  flags), then the bridge re-places per mode — BOTH optimize
+     *  modes at the current (or freshly kneed) length: OPT_POS
+     *  re-lands the position (the setBridgeTargetOrient recipe),
+     *  OPT_POS_YAW re-marches with alignYaw so the hump/twist MEETS a
+     *  freshly typed HELD value (D249 — a held axis is typeable there
+     *  now; the free axes re-align, the value the user just typed is
+     *  a held one by the enable rule) — else a plain rebuild; the
+     *  grayed Length box tracks a manual bridge live (v14.5).
+     *  Callers push undo / refuse non-editable axes themselves. */
+    void bridgeTargetWrite(int bp, Runnable write) {
+        BridgeSection bs = withBridge(bp, () -> ctxBridge());
+        if (bs == null || bp + 1 >= app.coaster.pieces.size()) return;
+        withBridge(bp, () -> {
+            app.placementEdit(bp + 1, write);
+            app.markDirty();
+            if (bs.optMode != BridgeSection.OPT_NONE && !bridgeOrphan(bs)) {
+                if (bs.optLen) applyOptimalLength(bs);
+                else applyBridgeGap(bs, bs.lastOptDist > 0 ? bs.lastOptDist
+                    : Math.max(1, activeBridgeGap()));
+            } else {
+                app.rebuildTrack();
+                refreshOffset();
+                redraw();
+            }
+        });
         app.updateBridgeControls();
     }
 
     boolean bridgeLock(int axis) {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         if (bs == null) return axis != 0;   // defaults for a dead panel
         return axis == 0 ? bs.lockYaw : axis == 1 ? bs.lockPitch
                                                   : bs.lockRoll;
     }
 
-    /** Toggle an orientation lock (v13.13): in optimize-orientation
-     *  mode the change re-applies immediately — unlocking an axis
-     *  aligns it to the march, locking freezes its current value and
-     *  the march meets it instead. */
+    /** Toggle an orientation lock (v13.13) — THE ONE lock choke since
+     *  v19.20 (D249): the bridge window's padlock AND the target's
+     *  Track Piece padlock (routed here through withBridge) share it,
+     *  so a flip behaves the same from either window. LOCKING
+     *  CAPTURES the current angle (the seam pattern, D235): the held
+     *  value IS the target piece's own yaw/pitch/roll field, so the
+     *  capture needs no write — the value the axis shows at the click
+     *  is the value the march meets from now on, and nothing jumps
+     *  (bitwise, PlacementGate h1c/h7). In optimize-orientation mode
+     *  the change re-applies immediately at the last requested length
+     *  (bitwise the historic re-march): unlocking hands the axis to
+     *  the march (it re-aligns and jumps to its natural value; under
+     *  LOCKSTEP both tiers move, under REAL_ONLY the conflict opens —
+     *  item M), locking makes the march meet the captured value
+     *  instead. In the other two modes a flip moves nothing — it only
+     *  changes which rings the bridge-end rig builds. One undo step. */
     void setBridgeLock(int axis, boolean locked) {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         if (bs == null || bridgeLock(axis) == locked) return;
         pushUndoSnapshot();
         if (axis == 0) bs.lockYaw = locked;
@@ -2491,24 +3990,26 @@ class GraphEditor extends Region {
             redraw();
         }
         app.updateBridgeControls();
+        app.syncPlacementSpinners();   // the target's Track Piece padlock (D249)
     }
 
 
     double bridgeTargetPos(int axis) {
         if (!activeBridgeWithTarget()) return 0;
-        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+        TrackPiece t = app.coaster.pieces.get(bridgePieceCtx() + 1);
         return axis == 0 ? t.x : axis == 1 ? t.y : t.z;
     }
 
     void setBridgeTargetPos(int axis, double v) {
-        BridgeSection bs = activeBridge();
+        BridgeSection bs = ctxBridge();
         if (bs == null || bridgeOrphan(bs)
                 || bs.optMode != BridgeSection.OPT_NONE) return;
         long now = System.nanoTime();
         if (now - lastGapNanos > 800_000_000L) pushUndoSnapshot();
         lastGapNanos = now;
-        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        app.placementEdit(activePiece + 1, () -> {   // D221 rigid carry
+        int bp = bridgePieceCtx();
+        TrackPiece t = app.coaster.pieces.get(bp + 1);
+        app.placementEdit(bp + 1, () -> {   // D221 rigid carry
             if (axis == 0) t.x = v;
             else if (axis == 1) t.y = v;
             else t.z = v;
@@ -2524,43 +4025,71 @@ class GraphEditor extends Region {
     // the gizmo reveal shows the piece's trailing bridge whatever
     // SECTION is active (user spec), so these resolve the bridge by
     // PIECE, not by the active section, and push NO undo — the
-    // viewport pushes once per gesture.
+    // viewport pushes once per gesture. PIECE-INDEXED since v19.18
+    // (D247 — every junction of the run wears a reveal ball, so the
+    // bridge-end ball of a NON-active piece reveals a rig whose
+    // writes must reach THAT piece's trailing bridge): the indexed
+    // forms take the piece the bridge trails (target = p + 1); the
+    // no-arg forms delegate to the active piece BITWISE (the toolbar
+    // spinner / end-line paths never changed).
 
     private BridgeSection trailingBridge() {
-        List<Section> secs = sections();
+        return trailingBridge(activePiece);
+    }
+
+    /** Piece p's trailing bridge with a live target, or null. */
+    private BridgeSection trailingBridge(int p) {
+        if (p < 0 || p >= app.coaster.pieces.size()) return null;
+        List<Section> secs = app.coaster.pieces.get(p).sections;
         return !secs.isEmpty()
             && secs.get(secs.size() - 1) instanceof BridgeSection bs
-            && !bridgeOrphan(bs) ? bs : null;
+            && p + 1 < app.coaster.pieces.size() ? bs : null;
     }
 
     /** The trailing bridge's length as the gizmo reads it (the
      *  requestedBridgeGap rule, piece-scoped). */
     double gizmoBridgeGap() {
-        BridgeSection bs = trailingBridge();
+        return gizmoBridgeGap(activePiece);
+    }
+
+    double gizmoBridgeGap(int p) {
+        BridgeSection bs = trailingBridge(p);
         if (bs == null) return 1;
         if (bs.optMode != BridgeSection.OPT_NONE && bs.lastOptDist > 0) {
             return bs.lastOptDist;
         }
-        TrackCompiler.Span sp = spanOf(sections().size() - 1);
+        TrackCompiler.Span sp =
+            spanAt(p, app.coaster.pieces.get(p).sections.size() - 1);
         if (sp != null && sp.sLen() > 1e-6) return sp.sLen();
-        return activePiece + 1 < app.coaster.pieces.size()
-            ? app.coaster.pieces.get(activePiece + 1).entryPose().pos()
+        return p + 1 < app.coaster.pieces.size()
+            ? app.coaster.pieces.get(p + 1).entryPose().pos()
                 .sub(bs.solvedEntry.pos()).length() : 1;
     }
 
     void gizmoSetBridgeGap(double dist) {
-        BridgeSection bs = trailingBridge();
+        gizmoSetBridgeGap(activePiece, dist);
+    }
+
+    void gizmoSetBridgeGap(int p, double dist) {
+        BridgeSection bs = trailingBridge(p);
         if (bs == null || dist <= 0
                 || bs.optMode == BridgeSection.OPT_NONE || bs.optLen) return;
         app.markDirty();
-        applyBridgeGap(bs, dist);
+        applyBridgeGap(p, bs, dist);
         app.updateBridgeControls();
     }
 
     /** Manual-mode target moved by the gizmo (the fields are already
      *  written — one rebuild + panel re-sync). */
     void gizmoBridgeMoved() {
-        boolean povOn = povInsideActiveBridge();
+        gizmoBridgeMoved(activePiece);
+    }
+
+    void gizmoBridgeMoved(int p) {
+        // the POV clamp (v17.11) guards the bridge window
+        // open on the ACTIVE bridge section — another piece's bridge
+        // has no panel to protect (D247)
+        boolean povOn = p == activePiece && povInsideActiveBridge();
         app.markDirty();
         app.rebuildTrack();
         if (povOn) clampPovIntoActiveBridge();   // v17.11
@@ -2570,18 +4099,27 @@ class GraphEditor extends Region {
     }
 
     void gizmoSetBridgeOrient(int axis, double deg) {
-        BridgeSection bs = trailingBridge();
+        gizmoSetBridgeOrient(activePiece, axis, deg);
+    }
+
+    /** A bridge-end ring write (v16.12): the rig builds rings for the
+     *  HELD (locked) axes only since v19.20 (D249 — the seam rig's
+     *  rule; manual + position modes, optimize-orientation keeps the
+     *  tangent arrow alone), so a ring drag IS a held-value write;
+     *  a free axis has no ring and refuses here defensively. */
+    void gizmoSetBridgeOrient(int p, int axis, double deg) {
+        BridgeSection bs = trailingBridge(p);
         if (bs == null || bs.optMode == BridgeSection.OPT_POS_YAW) return;
-        if (axis == 0 ? bs.lockYaw : axis == 1 ? bs.lockPitch
-                                               : bs.lockRoll) return;
-        if (activePiece + 1 >= app.coaster.pieces.size()) return;
-        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
+        if (!bs.axisLocked(axis)) return;   // no ring for a free axis (D249)
+        if (p + 1 >= app.coaster.pieces.size()) return;
+        TrackPiece t = app.coaster.pieces.get(p + 1);
         // RAW absolute coordinates from the ring (D224 — continuous
-        // through the pole), true tier only
-        app.placementEdit(activePiece + 1, () -> {   // D221 rigid carry
-            if (axis == 0) t.setRawAbsYaw(deg, false);
-            else if (axis == 1) t.setRawAbsPitch(deg, false);
-            else t.setRawAbsRoll(deg, false);
+        // through the pole), ROUTED through the target's orientation
+        // mode since v19.19 (D248/D249: LOCKSTEP = both tiers)
+        app.placementEdit(p + 1, () -> {   // D221 rigid carry
+            if (axis == 0) t.setRawAbsYaw(deg, true);
+            else if (axis == 1) t.setRawAbsPitch(deg, true);
+            else t.setRawAbsRoll(deg, true);
         });
         app.markDirty();
         if (bs.optMode == BridgeSection.OPT_POS) {
@@ -2590,8 +4128,8 @@ class GraphEditor extends Region {
             // PROMPT must not pop mid-drag
             double d = bs.optLen
                 ? Math.max(1, app.coaster.optimalBridgeLength(bs, false))
-                : Math.max(1, gizmoBridgeGap());
-            applyBridgeGap(bs, d);
+                : Math.max(1, gizmoBridgeGap(p));
+            applyBridgeGap(p, bs, d);
         } else {
             app.rebuildTrack();
             refreshOffset();
@@ -2601,24 +4139,34 @@ class GraphEditor extends Region {
     }
 
     /** The local ring's COMBINED bridge write (v18.19, D190): all
-     *  three next-piece deltas in one apply (locked axes hold),
-     *  same re-place tail as the per-axis path. */
+     *  three next-piece deltas in one apply — the HELD (locked) axes
+     *  take the decomposed values since v19.20 (D249, the seam rig's
+     *  rule: a free axis has no ring and is left alone, like a
+     *  following seam axis), same re-place tail as the per-axis
+     *  path. */
     void gizmoSetBridgeOrientAll(double yaw, double pitch, double roll) {
-        BridgeSection bs = trailingBridge();
+        gizmoSetBridgeOrientAll(activePiece, yaw, pitch, roll);
+    }
+
+    void gizmoSetBridgeOrientAll(int p, double yaw, double pitch,
+                                 double roll) {
+        BridgeSection bs = trailingBridge(p);
         if (bs == null || bs.optMode == BridgeSection.OPT_POS_YAW) return;
-        if (activePiece + 1 >= app.coaster.pieces.size()) return;
-        TrackPiece t = app.coaster.pieces.get(activePiece + 1);
-        app.placementEdit(activePiece + 1, () -> {   // D221 rigid carry
-            if (!bs.lockYaw) t.yawDeg = yaw;
-            if (!bs.lockPitch) t.pitchDeg = pitch;   // no clamp (D224)
-            if (!bs.lockRoll) t.rollDeg = roll;
+        if (p + 1 >= app.coaster.pieces.size()) return;
+        TrackPiece t = app.coaster.pieces.get(p + 1);
+        app.placementEdit(p + 1, () -> {   // D221 rigid carry
+            if (bs.lockYaw) t.yawDeg = yaw;
+            // routed through the orientation mode (D248/D249):
+            // editPitch/editRoll — no clamp either way (D224)
+            if (bs.lockPitch) t.editPitch(pitch);
+            if (bs.lockRoll) t.editRoll(roll);
         });
         app.markDirty();
         if (bs.optMode == BridgeSection.OPT_POS) {
             double d = bs.optLen
                 ? Math.max(1, app.coaster.optimalBridgeLength(bs, false))
-                : Math.max(1, gizmoBridgeGap());
-            applyBridgeGap(bs, d);
+                : Math.max(1, gizmoBridgeGap(p));
+            applyBridgeGap(p, bs, d);
         } else {
             app.rebuildTrack();
             refreshOffset();
@@ -2815,6 +4363,14 @@ class GraphEditor extends Region {
                                      boolean distTarget,
                                      ConvertOp op, Runnable activate) {
         cancelDensityPreview();          // one preview at a time
+        // the strict-seam pop-out comes down first (D247 review fix —
+        // the range flow's pattern): every pvRerun tick restores
+        // pvBefore and REPLACES the piece objects, so its captured
+        // follower would be an orphan for the preview's whole life
+        // both index-resolved junction windows (D248 review fix — a
+        // whole-bridge convert attaches the target and shifts every
+        // later piece; the seam window always hid here)
+        hideJunctionWindows();
         // EVERY open starts at "Optimal placement" (v18.32, D204 —
         // user spec): the adaptive fit is the default whatever the
         // last preview was left on; unchecking is per-open
@@ -2825,10 +4381,18 @@ class GraphEditor extends Region {
         pvOp = op;
         pvActivate = activate;
         if (!pvRerun()) {                // apply at the current density
+            // a REFUSED first run puts the pristine document BACK
+            // (v19.18, D247 — the leak: an op that mutates before
+            // refusing — the range flow's composite inserts seams
+            // first — used to leave those mutations in the doc with
+            // no undo entry; pvRerun re-snapshotted pvBefore right
+            // before the op, so it is exactly the pre-op state)
+            FvdDesigner.DocState st = pvBefore;
             pvBefore = null;
             pvOp = null;
             pvActivate = null;
             pvRef = null;
+            if (st != null) applySnapshot(st);
             // never refuse SILENTLY (v15.4, D102 — the "did nothing"
             // lesson): say why nothing happened
             app.statsLabel.setText(
@@ -2906,10 +4470,28 @@ class GraphEditor extends Region {
         // applySnapshot rebuild)
         app.settleIfPending();
         redraw();
+        // a RANGE CHAIN advances to its next section (v19.18, D247):
+        // this Apply was one undo step; the next section's preview
+        // opens against the committed document
+        if (chain != null) {
+            if (chain.pos + 1 < chain.count()) {
+                chain.pos++;
+                chainStep();
+            } else {
+                chain = null;
+                app.statsLabel.setText("Range resolved — every section "
+                    + "of the range is converted; the seams around it "
+                    + "stay strict.");
+            }
+        }
     }
 
-    /** Cancel: put the pristine state back, no history entry. */
+    /** Cancel: put the pristine state back, no history entry. Also
+     *  ENDS a range chain (D247) — the earlier Applies stay (each was
+     *  its own honest undo step), the rest of the range keeps its
+     *  conflict as a locked follower. */
     void cancelDensityPreview() {
+        if (!chainOpening) chain = null;
         if (pvBefore == null) {
             clearPv(true);
             return;
@@ -2921,8 +4503,12 @@ class GraphEditor extends Region {
 
     private void clearPv(boolean popupOnly) {
         if (pvPopup != null) {
-            pvPopup.hide();
+            // null-before-hide (v19.18, D247 — the tool-window
+            // teardown rule; the press filter already committed a
+            // typed spacing box before any button handler runs)
+            javafx.stage.Popup old = pvPopup;
             pvPopup = null;
+            old.hide();
         }
         pvFocusHidden = false;
         if (popupOnly) return;
@@ -3076,6 +4662,20 @@ class GraphEditor extends Region {
         // ride/fly keys keep working while the popup holds key focus
         // (v16.2, user report — forwarded to the viewport)
         if (pvPopup.getScene() != null) {
+            // UNDO KEYS under the preview (D247 review fix): the popup
+            // takes key focus on open and its spacing box swallowed
+            // Ctrl+Z as text undo, so a range chain's advertised
+            // "Ctrl+Z steps back" was dead until the user clicked the
+            // graph. A scene FILTER runs before the TextField's own
+            // handler: a chain steps back, plain undo/redo stay dead
+            // (the v14.4 rule) with the busy reason posted.
+            pvPopup.getScene().addEventFilter(KeyEvent.KEY_PRESSED, e -> {
+                boolean undo = app.matches("undo", e);
+                if (!undo && !app.matches("redo", e)) return;
+                if (undo && chainActive()) chainStepBack();
+                else app.statsLabel.setText(FvdDesigner.CONVERT_BUSY_MSG);
+                e.consume();
+            });
             pvPopup.getScene().addEventFilter(KeyEvent.KEY_PRESSED,
                 e -> app.forwardViewKey(e, true));
             pvPopup.getScene().addEventFilter(KeyEvent.KEY_RELEASED,
@@ -3475,6 +5075,23 @@ class GraphEditor extends Region {
      *  SHAPE frozen rigid, and the seam settings pop up. One undo
      *  step. */
     private void attachFloating(int p) {
+        // WHOLE RUNS since v19.19 (D248): the picked run moves as a
+        // block (Coaster.connectStrictRun); pre-checked BEFORE the
+        // undo push (D247 — a refusal pushes nothing)
+        if (app.isWizardPiece(app.activeCoaster, p)) {
+            app.statsLabel.setText(WIZARD_OPEN_WHY);   // apply-time twin
+            return;                                    // of the gray (D248)
+        }
+        if (!app.coaster.canMoveRun(p, activePiece)) {
+            app.statsLabel.setText("Attach refused — "
+                + moveRefuseWhy(p, activePiece));
+            return;
+        }
+        hideJunctionWindows();   // piece indices shift (D247 review fix; + the bridge window, D248)
+        spHideCtlPopup();   // the speed popup is index-resolved too (D248)
+        app.dropGizmoReveals();   // Reveal(piece, kind) holds an INDEX —
+                                  // a reorder would rig another piece
+                                  // of the merged run (D248 review fix)
         pushUndoSnapshot();
         // PITCH + ROLL always LOCK at the piece's PRE-ATTACH angles
         // (v19.8, D237, user spec — superseding D153's padlock
@@ -3482,9 +5099,14 @@ class GraphEditor extends Region {
         // it had, so a conflict-free layout stays conflict-free —
         // only the honest speed split at the seam remains. Yaw stays
         // unlocked (follows the seam heading, the attach semantics).
-        int np = app.coaster.connectStrict(activePiece, p,
+        int np = app.coaster.connectStrictRun(activePiece, p,
             false, true, true);
-        if (p < activePiece) activePiece--;   // list shifted under us
+        // the follower lands right after the active piece whatever
+        // moved (a block from BELOW shifted us down by its length)
+        activePiece = np - 1;
+        app.lanes = lanesFor(sections().get(activeSection));   // same
+                                                 // objects; re-pointed
+                                                 // by rule (D240)
         app.rebuildTrack();
         app.updatePieceButton();
         app.syncPlacementSpinners();
@@ -3517,6 +5139,7 @@ class GraphEditor extends Region {
                 + "isn't compiled yet.");   // never silent (D235)
             return;
         }
+        hideJunctionWindows();   // a new piece shifts every later index (D248 review fix)
         int np = app.coaster.splitPiece(activePiece, k, sp);
         if (np < 0) {
             app.statsLabel.setText("Couldn't split here.");   // D235
@@ -3761,11 +5384,8 @@ class GraphEditor extends Region {
         pvRef = ref;
     }
 
-    private static String modeName(Section s) {
-        return s instanceof GeoSection ? "Geo"
-             : s instanceof StraightCurveSection ? "Straight/curve"
-             : s instanceof BridgeSection ? "Bridge" : "Force";
-    }
+    // (modeName is GONE since v19.19, D248 — sectionTitle names
+    // sections everywhere.)
 
     /** Badge press anywhere in the run: a badge on ANOTHER piece's
      *  strip activates that section first (its menu actions — split,
@@ -3802,41 +5422,19 @@ class GraphEditor extends Region {
     private void showSectionMenu(int k, double screenX, double screenY) {
         Section sec = sections().get(k);
         ContextMenu cm = new ContextMenu();
-        String extra = sec instanceof StraightCurveSection s
-            ? String.format(Locale.US, " · %.0f m, %d elem",
-                s.totalLen(), s.elements.size())
-            : "";
-        // §5.2: a drifted section's info line carries the TRUE entry
-        // speed next to the design speed (the badge's ≠v, spelled
-        // out); a split that only develops INSIDE — a tilted piece —
-        // says so instead (v16.1, D106)
-        double[] es = entrySpeeds(activePiece, k);
         boolean drifted = sectionDrifted(activePiece, k);
-        String drift = es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS
-            ? String.format(Locale.US, " · entered %.1f m/s", es[1])
-            : drifted && !(sec instanceof BridgeSection)
-                ? " · true splits inside" : "";
-        MenuItem info = new MenuItem(String.format(Locale.US,
-            "%s section %d — design %.1f m/s%s%s%s%s%s%s%s%s",
-            modeName(sec), k + 1, sec.vDesign(),
-            sec instanceof LaneSection ili && ili.influenced()
-                ? String.format(Locale.US, " (authored %.1f)", ili.vAuthored)
-                : "",
-            sec instanceof LaneSection
-                && sec.domain() == Section.Domain.DISTANCE
-                ? " · distance (m)" : "",
-            sec instanceof LaneSection lgx && lgx.globalAxes()
-                ? (lgx.rollGlobal && lgx.yawPitchGlobal
-                    ? " · global axes" : lgx.rollGlobal
-                    ? " · global roll" : " · global yaw/pitch") : "",
-            sec instanceof LaneSection lrm && lrm.ratePerMeter
-                ? " · rates °/m" : "",
-            sec instanceof LaneSection lab && lab.rollAbsolute
-                && lab.rollGlobal ? " · abs roll" : "",
-            sec instanceof LaneSection lyp && lyp.ypAbsolute
-                && lyp.yawPitchGlobal ? " · abs yaw/pitch" : "",
-            drift, extra));
-        info.setDisable(true);
+        boolean orientC = sectionOrientConflict(activePiece, k);
+        // TITLE ROW (v19.19, D248 — user spec): the PURE run-wide
+        // section title (no tags — the badge above wears them),
+        // BOLD, never highlighted or focused-looking, and clicks on
+        // it never close the menu (labelItem, inert). NO tooltip
+        // since v19.20 (D249 — the D248 numbers tooltip removed on
+        // user hand test; the speeds live in "Initial design speed…"
+        // and the orientation angles in the placement windows).
+        Label title = new Label(sectionTitle(activePiece, k));
+        title.setStyle("-fx-font-weight: bold;"
+            + " -fx-text-fill: -fx-text-base-color;");
+        CustomMenuItem info = labelItem(title, null, true);
         // the per-section Reversed check moved to piece scope in v12.1
         // (Coaster menu > Reverse piece, D71); the ◀ badge still marks
         // sections whose flag is set — that is reversal's MECHANISM
@@ -3859,6 +5457,10 @@ class GraphEditor extends Region {
         // they live on the SEAM (click the boundary line) and on the
         // section's first node's right-click menu now.)
         cm.getItems().add(info);
+        // (the D247 ORIENTATION CONFLICT info line — design vs real
+        // angles — rode the title row's tooltip in v19.19, D248, and
+        // is GONE with it since v19.20, D249: the badge's ≠o glyph +
+        // the placement windows' readouts carry the angles)
         // SECTION SETTINGS (v16.0, D103 — user spec: the type/domain
         // options live with the section, where "force"/"geo" do): the
         // authoring DOMAIN — the radios CONVERT the lanes through the
@@ -3868,21 +5470,24 @@ class GraphEditor extends Region {
         // DISTANCE (radios read-only); bridges have neither. The
         // global/local axis options land here when they arrive.
         if (sec instanceof BridgeSection bsp) {
-            // BRIDGE PROPERTIES from the badge too (v17.14, D155,
-            // user request): the same panel the toolbar's "Bridge
-            // properties ▾" button opens — mode radios, length,
+            // the BRIDGE WINDOW from the badge too (v17.14, D155,
+            // user request): the same window the toolbar's junction
+            // button opens — "Bridge settings…" since v19.20 (D249,
+            // user spec; "Strict Seam n (bridge)…" in v19.19/D248,
+            // "Bridge properties…" before that): mode radios, length,
             // next-piece rows. Badges are two-click, so the section
             // is active by the time this menu shows; an orphaned
             // bridge has nothing to place (grayed, the badge-menu
             // discoverability rule, D132).
             MenuItem props;
+            String bTitle = SectionNames.BRIDGE_SETTINGS_ITEM;
             if (bridgeOrphan(bsp)) {
-                props = grayItem("Bridge properties…",
-                    "No following piece — the bridge is frozen at"
-                    + " its last shape.");
+                props = grayItem(bTitle,
+                    "This bridge has no following piece.");
             } else {
-                props = new MenuItem("Bridge properties…");
-                props.setOnAction(ev -> app.showPlacementPopup());
+                props = new MenuItem(bTitle);
+                final int bp = activePiece;
+                props.setOnAction(ev -> app.openBridgeWindow(bp));
             }
             cm.getItems().add(props);
         }
@@ -3956,24 +5561,81 @@ class GraphEditor extends Region {
         // resolution would move). Only a bridge DIRECTLY before the
         // section blocks everything (it re-blends to chase any
         // resolution — convert it first).
-        if (drifted && !(sec instanceof BridgeSection) && !sec.reversed()
+        // INITIAL DESIGN SPEED (v18.0, D162 — user spec): type the
+        // section's starting design speed directly; the ride entry
+        // routes to the Start-speed spinner, elsewhere it PINS (a
+        // deliberate conflict the reconcile leaves alone). ABOVE the
+        // resolve block and "Initial design speed…" since v19.19
+        // (D248, item S2 — user spec; was "Set initial design
+        // speed…" below it).
+        if (!(sec instanceof BridgeSection)) {
+            MenuItem initV = new MenuItem("Initial design speed…");
+            initV.setOnAction(ev -> showInitSpeedDialog(k));
+            cm.getItems().add(initV);
+        }
+        // TWO CONFLICT KINDS since v19.18 (D247): speedC = the
+        // entry-only ≠v, orientC = the piece-wide ≠o (design vs real
+        // orientation). Either opens the submenu; both ops resolve
+        // BOTH kinds (makeGraphsReal / refreezeSpeed bake the
+        // piece's tilt / follow before the speed work), and the
+        // submenu TITLE says what this click will resolve (the D235
+        // no-silent-click rule). The D141 smoothing
+        // hint replaces the submenu only for a PURE speed conflict —
+        // smoothing never creates an orientation conflict (the seam
+        // tilt is stamped before the smoothing pass), so with ≠o up
+        // the ops must stay reachable.
+        boolean speedC = drifted;
+        if (speedC && !orientC && !(sec instanceof BridgeSection)
+                && !sec.reversed()
                 && k == 0 && followsPrev(activePiece)
                 && smoothingCausedDrift(activePiece)) {
             // the conflict exists ONLY because of the seam smoothing
             // (v17.4, D141): the fix is the window, not a resolve op
-            MenuItem why = new MenuItem("Resolve conflict by "
-                + "decreasing seam smoothing size");
+            // (reworded v19.20, D249 — names the ◇ control)
+            MenuItem why = new MenuItem("Speed conflict caused by seam "
+                + "smoothing — shrink the ◇ window instead");
             why.setDisable(true);
             cm.getItems().add(why);
-        } else if (drifted && !(sec instanceof BridgeSection)
+        } else if ((speedC || orientC) && !(sec instanceof BridgeSection)
                 && !sec.reversed()) {
-            Menu resolve = new Menu("Resolve conflict");   // renamed D235
+            // the submenu TITLE names what the ops resolve (v19.19,
+            // D248 — user spec; the D247 disabled "Resolves: …" first
+            // line is gone; an orientation resolve's RANGE scope is
+            // stated by the end-section dialog + Help; D248's
+            // "Resolve SECTION conflict" reverted to "Resolve
+            // conflict" in v19.20, D249, on user hand test)
+            Menu resolve = new Menu("Resolve conflict: "
+                + (speedC && orientC ? "speed + orientation"
+                    : orientC ? "orientation" : "speed"));
+            BridgeSection binto = app.bridgeInto(activePiece);
+            boolean machineOrient = orientC && binto != null
+                && binto.optMode == BridgeSection.OPT_POS_YAW;
+            // labels re-specced v19.5 (D234, user): the fit op
+            // CONVERTS the real curves into the design ("Make
+            // graphs real" until then), the re-freeze SETS the
+            // design speed to the real one
+            String realLbl = "Convert Real to Design (keep track shape)…";
+            String refrLbl = "Set Design to Real (keep graphs, reshape)";
             if (leftIsBridge(k)) {
-                MenuItem why = new MenuItem(
-                    "The bridge before this section re-blends to follow "
-                    + "any resolution — convert the bridge first");
-                why.setDisable(true);
-                resolve.getItems().add(why);
+                // the two ops, grayed with the bridge sentence as
+                // their hover reason (D248 — was a lone disabled
+                // explainer line; the D235 gray-with-reason rule)
+                String bridgeWhy = "The bridge before this section "
+                    + "re-blends to follow any resolution — convert the "
+                    + "bridge first.";
+                resolve.getItems().addAll(grayItem(realLbl, bridgeWhy),
+                    grayItem(refrLbl, bridgeWhy));
+            } else if (machineOrient) {
+                // an optimize-ORIENTATION bridge writes this piece's
+                // true tier every compile (the march's alignment
+                // convention) — a resolve would bake a tilt the next
+                // auto re-optimize re-creates; the Track Piece
+                // panel's sentence (D247)
+                String own = "The optimize-orientation bridge owns this "
+                    + "piece's pitch/roll — switch the bridge mode or "
+                    + "lock its axes to hand-edit the orientation.";
+                resolve.getItems().addAll(grayItem(realLbl, own),
+                    grayItem(refrLbl, own));
             } else {
                 // make-real works right of another conflict too since
                 // v16.2 (user rule) — it fits THIS section's true
@@ -3982,28 +5644,28 @@ class GraphEditor extends Region {
                 // piece-firsts survive the reconcile), and downstream
                 // track re-chains with only the fit-residual
                 // reorientation. Only a direct bridge still blocks.
-                // labels re-specced v19.5 (D234, user): the fit op
-                // CONVERTS the real curves into the design ("Make
-                // graphs real" until then), the re-freeze SETS the
-                // design speed to the real one
-                MenuItem real = new MenuItem(
-                    "Convert Real to Design (keep track shape)…");
-                real.setOnAction(ev -> makeGraphsReal(k));
-                MenuItem refr = new MenuItem(
-                    "Set Design to Real (keep graphs, reshape)");
-                refr.setOnAction(ev -> refreezeSpeed(k));
-                resolve.getItems().addAll(real, refr);
+                // an ORIENTATION-conflicted piece takes the RANGE flow
+                // (v19.18, D247 — see the range block above); a pure
+                // speed conflict keeps today's single-section ops
+                String rangeWhy = orientC
+                    ? rangeResolveWhy(activePiece, k) : null;
+                if (rangeWhy != null) {
+                    resolve.getItems().addAll(grayItem(realLbl, rangeWhy),
+                        grayItem(refrLbl, rangeWhy));
+                } else {
+                    MenuItem real = new MenuItem(realLbl);
+                    MenuItem refr = new MenuItem(refrLbl);
+                    if (orientC) {
+                        real.setOnAction(ev -> resolveRangeReal(k));
+                        refr.setOnAction(ev -> resolveRangeRefreeze(k));
+                    } else {
+                        real.setOnAction(ev -> makeGraphsReal(k));
+                        refr.setOnAction(ev -> refreezeSpeed(k));
+                    }
+                    resolve.getItems().addAll(real, refr);
+                }
             }
             cm.getItems().add(resolve);
-        }
-        // SET INITIAL DESIGN SPEED (v18.0, D162 — user spec): type
-        // the section's starting design speed directly; the ride
-        // entry routes to the Start-speed spinner, elsewhere it PINS
-        // (a deliberate conflict the reconcile leaves alone)
-        if (!(sec instanceof BridgeSection)) {
-            MenuItem initV = new MenuItem("Set initial design speed…");
-            initV.setOnAction(ev -> showInitSpeedDialog(k));
-            cm.getItems().add(initV);
         }
         cm.getItems().addAll(new SeparatorMenuItem(), del);
         if (sec instanceof StraightCurveSection s) {
@@ -4354,7 +6016,7 @@ class GraphEditor extends Region {
         dlg.initOwner(app.stage);
         dlg.setTitle((inflSurf ? "Influence orientation settings — "
                                : "Orientation settings — ")
-            + (geo ? "geo" : "force") + " section " + (k + 1));
+            + sectionTitle(activePiece, k));   // run-wide title (D248)
         GridPane grid = new GridPane();
         grid.setHgap(10);
         grid.setVgap(8);
@@ -4436,10 +6098,74 @@ class GraphEditor extends Region {
                                 : new HBox(8, applyBox, bakeBox, close);
         buttons.setAlignment(Pos.CENTER_RIGHT);
         grid.add(buttons, 0, row, 2, 1);
+        // OWNER BUTTON (v19.19, D248 — user spec): the window that
+        // owns this section's PLACEMENT, labeled EXACTLY like its
+        // toolbar button (ownerButtonLabel — "Track Piece ▴" /
+        // "Strict Seam n ▴" / "Strict Seam n (bridge) ▴"). It CLOSES
+        // this dialog first: the bridge route activates the bridge
+        // section, and this dialog's k is active-piece-relative.
+        // Left-aligned under the action row so it reads as a link.
+        final int ownerPiece = activePiece;
+        Button owner = new Button(ownerButtonLabel(ownerPiece, k));
+        owner.setFocusTraversable(false);
+        Tooltip.install(owner, new Tooltip(
+            "Opens the window that owns this section's placement."));
+        // the wizard's Placement rows own a piece while it shows
+        // (D236) — grayed with the toolbar buttons' reason
+        owner.setDisable(startPanelActive());
+        owner.setOnAction(e2 -> {
+            dlg.close();
+            openOwnerWindow(ownerPiece, k);
+        });
+        HBox ownerRow = new HBox(grayHint(owner,
+            "Placement is edited in the start screen while it is open."));
+        ownerRow.setAlignment(Pos.CENTER_LEFT);
+        grid.add(ownerRow, 0, row + 1, 2, 1);
         sync.run();
         dlg.setScene(new Scene(grid));
         dlg.show();
         app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
+    }
+
+    /** Open the window that owns piece p's placement (v19.19, D248):
+     *  a run head → the Track Piece window; a strict follower → the
+     *  seam window; a bridged-in piece → the BRIDGE panel of the
+     *  previous piece's trailing bridge, activated first (the bridge
+     *  rows edit the ACTIVE bridge) — refused with CONVERT_BUSY_MSG
+     *  while a convert preview owns the document, since an activation
+     *  change would cancel it. Each target re-checks the wizard
+     *  itself (openTrackPieceWindow's stats sentence). The Track Piece
+     *  window shows the ACTIVE piece, so the run-head route activates
+     *  piece p (section k) first when the modeless dialog outlived
+     *  an activation change — the same convertBusy guard — and every
+     *  route opens its window FRESH (openPlacementPopup /
+     *  openBridgeWindow / showStrictSeamSettings: the toolbar
+     *  buttons' toggles would have CLOSED an open window — a click
+     *  doing the opposite of its label; D248 review fix). */
+    void openOwnerWindow(int p) {
+        openOwnerWindow(p, 0);
+    }
+
+    void openOwnerWindow(int p, int k) {
+        if (p < 0 || p >= app.coaster.pieces.size()) {
+            app.statsLabel.setText("The piece is gone.");
+            return;
+        }
+        if (junctionOrdinal(p) == 0) {
+            if (p != activePiece) {
+                if (app.convertBusy()) return;   // posts CONVERT_BUSY_MSG
+                activateRunSec(p, (int) FvdDesigner.clamp(k, 0,
+                    app.coaster.pieces.get(p).sections.size() - 1));
+            }
+            app.openPlacementPopup(false);
+        } else if (app.coaster.bridgedInto(p)) {
+            if (app.convertBusy()) return;   // posts CONVERT_BUSY_MSG
+            int bp = p - 1;
+            activateRunSec(bp, app.coaster.pieces.get(bp).sections.size() - 1);
+            app.openBridgeWindow(bp);   // "Bridge settings (Strict Seam n)" (D249)
+        } else {
+            showStrictSeamSettings(p);
+        }
     }
 
     /** Small gray caption under a dialog button (v16.7). */
@@ -4476,6 +6202,16 @@ class GraphEditor extends Region {
      *  any Convert pick commits through the density preview. */
     void showDesignToRealDialog(int pieceIdx, boolean anyYp,
                                 boolean anyBank) {
+        showDesignToRealDialog(pieceIdx, anyYp, anyBank, null);
+    }
+
+    /** + an `after` hook run at the dialog's APPLY, before either
+     *  route commits (v19.19, D248 — the bridge window stamps its
+     *  bridge SIG_STALE there so the target's Design → Real is
+     *  followed by a deterministic re-march; a cancelled dialog
+     *  stamps nothing). */
+    void showDesignToRealDialog(int pieceIdx, boolean anyYp,
+                                boolean anyBank, Runnable after) {
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
         // (the explainer paragraph was removed on user spec, D241 —
@@ -4516,11 +6252,30 @@ class GraphEditor extends Region {
         grid.add(buttons, 0, row, 2, 1);
         ok.setOnAction(ev -> {
             dlg.close();
+            // index-resolved target (D247): the piece may be gone or
+            // no longer conflicted after an undo under the dialog
+            if (pieceIdx >= app.coaster.pieces.size()) {
+                app.statsLabel.setText("Design → Real not applied — "
+                    + "that piece no longer exists.");
+                return;
+            }
+            if (!orientConflictAt(pieceIdx)) {
+                app.statsLabel.setText("Design → Real not applied — "
+                    + "the piece's design and real orientations "
+                    + "already agree.");
+                return;
+            }
             boolean cy = anyYp && ypConv.isSelected();
             boolean cb = anyBank && bkConv.isSelected();
             if (!cy && !cb) {
-                app.designToRealDirect(pieceIdx);   // all-Preserve =
-                return;                             // the classic snap
+                // D248: the caller's stamp lands RIGHT before the write
+                // and AFTER its undo push (review fixes — stamping ahead
+                // of setActivePiece's rebuild below let the auto pass
+                // consume it before anything was written, and a stamp
+                // ahead of the push rode into the snapshot's bridge
+                // copy so Ctrl+Z re-marched)
+                app.designToRealDirect(pieceIdx, after);   // all-Preserve =
+                return;                                    // the classic snap
             }
             // anchor the preview on the piece's first convertible
             // absolute section (reference curves + restore follow it)
@@ -4542,9 +6297,17 @@ class GraphEditor extends Region {
             boolean toGeo = sec instanceof GeoSection;
             boolean dist = sec.domain() == Section.Domain.DISTANCE;
             final int fp = pieceIdx, fk = kAbs;
+            // the caller's stamp runs INSIDE the preview op (D248 review
+            // fix): pvRerun restores the pristine snapshot (adopting
+            // NEW section objects) before every re-apply, so a stamp
+            // made earlier would sit on a dead object — and the
+            // snapshot precedes the op, so Cancel restores unstamped
             beginDensityPreview(fk, toGeo, true, dist,
-                (sp2, tol) -> app.coaster.designToRealConvert(fp, cy, cb,
-                    FvdDesigner.INTEGRATE_DT, sp2, tol),
+                (sp2, tol) -> {
+                    if (after != null) after.run();
+                    return app.coaster.designToRealConvert(fp, cy, cb,
+                        FvdDesigner.INTEGRATE_DT, sp2, tol);
+                },
                 () -> {
                     activePiece = fp;
                     activeSection = fk;
@@ -4552,7 +6315,11 @@ class GraphEditor extends Region {
         });
         dlg.setScene(new Scene(grid));
         dlg.show();
-        app.installViewKeys(dlg.getScene());   // ride keys live (v18.1)
+        // the D227 rule (D247 review fix): the dialog changes the track
+        // and its index-resolved re-checks presume undo works under
+        // it — global undo keys + ride keys (installDocUndoKeys
+        // installs the view keys too)
+        app.installDocUndoKeys(dlg.getScene());
     }
 
     /** Shared gray-out explainer (v16.10): why Absolute bank grays
@@ -4588,7 +6355,7 @@ class GraphEditor extends Region {
 
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
-        dlg.setTitle("Convert — " + modeName(sec) + " section " + (k + 1));
+        dlg.setTitle("Convert — " + sectionTitle(activePiece, k));   // D248
         GridPane grid = new GridPane();
         grid.setHgap(10);
         grid.setVgap(8);
@@ -4867,15 +6634,42 @@ class GraphEditor extends Region {
         return wrap;
     }
 
+    /** grayHint for a container ROW with a LIVE reason (v19.19, D248 —
+     *  the Track Piece window's flag row grays with the follower's
+     *  junction NAME, which renumbers under edits). */
+    static StackPane grayHint(javafx.scene.Node n,
+                              java.util.function.Supplier<String> how) {
+        StackPane wrap = new StackPane(n);
+        wrap.setAlignment(Pos.CENTER_LEFT);
+        Tooltip tip = new Tooltip();
+        tip.setShowDelay(Duration.millis(300));
+        tip.setOnShowing(ev -> tip.setText(how.get()));
+        Runnable sync = () -> {
+            if (n.isDisabled()) {
+                tip.setText(how.get());
+                Tooltip.install(wrap, tip);
+            } else {
+                Tooltip.uninstall(wrap, tip);
+            }
+        };
+        n.disabledProperty().addListener((o, was, dis) -> sync.run());
+        sync.run();
+        return wrap;
+    }
+
     /** grayHint with a LIVE reason (v19.6, D235 — one control, more
      *  than one possible cause): the tooltip text re-resolves every
-     *  time the control's disabled state flips on. */
+     *  time the control's disabled state flips on — AND at every
+     *  show since v19.18 (D247: the Track Piece panel's rows stay
+     *  disabled across a bridged-in → follower activation switch, so
+     *  the flip-time resolve alone left the previous reason). */
     static StackPane grayHint(Control c,
                               java.util.function.Supplier<String> how) {
         StackPane wrap = new StackPane(c);
         wrap.setAlignment(Pos.CENTER_LEFT);   // the D238 rule above
         Tooltip tip = new Tooltip();
         tip.setShowDelay(Duration.millis(300));
+        tip.setOnShowing(ev -> tip.setText(how.get()));
         Runnable sync = () -> {
             if (c.isDisabled()) {
                 tip.setText(how.get());
@@ -4898,20 +6692,38 @@ class GraphEditor extends Region {
     static MenuItem grayItem(String label, String why) {
         Label l = new Label(label);
         l.setStyle("-fx-text-fill: #999;");
-        // NO padding of our own — the .menu-item container already
-        // carries the row padding, and doubling it misaligned + fattened
-        // the row (v19.8, D237, user report)
-        l.setPadding(Insets.EMPTY);
-        l.setMaxWidth(Double.MAX_VALUE);
         Tooltip tip = new Tooltip(why);
         tip.setShowDelay(Duration.millis(300));
-        Tooltip.install(l, tip);
+        return labelItem(l, tip, false);
+    }
+
+    /** A CustomMenuItem holding a Label (v19.19, D248 — factored out
+     *  of grayItem for the badge menu's TITLE row): no padding of its
+     *  own (the .menu-item container carries the row padding —
+     *  doubling it misaligned + fattened the row, v19.8 D237), full
+     *  width, hideOnClick false, an optional tooltip installed on the
+     *  WHOLE row, and the self-measuring left pad. inert = the row
+     *  never LOOKS focused: an inline transparent background on the
+     *  skin's .menu-item container beats modena's :focused highlight
+     *  (inline styles outrank every stylesheet rule, pseudo-classes
+     *  included) and the label's inline text fill beats
+     *  ".menu-item:focused .label"; the cursor stays the default. */
+    static CustomMenuItem labelItem(Label l, Tooltip tip, boolean inert) {
+        l.setPadding(Insets.EMPTY);
+        l.setMaxWidth(Double.MAX_VALUE);
+        if (tip != null) Tooltip.install(l, tip);
         // the tooltip must fire over the WHOLE highlighted row, not
         // just the text — install on the .menu-item container once
         // the skin parents the label (D237)
         l.parentProperty().addListener((o, was, par) -> {
-            if (par != null) Tooltip.install(par, tip);
-            if (was != null) Tooltip.uninstall(was, tip);
+            if (par != null) {
+                if (tip != null) Tooltip.install(par, tip);
+                if (inert) {
+                    par.setStyle("-fx-background-color: transparent;");
+                    par.setCursor(Cursor.DEFAULT);
+                }
+            }
+            if (was != null && tip != null) Tooltip.uninstall(was, tip);
         });
         // SELF-MEASURING left pad (v19.10, D239 — the user's THIRD
         // alignment report on these rows, root-caused for real this
@@ -4981,9 +6793,21 @@ class GraphEditor extends Region {
         pushUndoSnapshot();
         boolean wasActive = k == activeSection;
         if (lastInPiece) {
-            app.coaster.pieces.remove(activePiece);
+            hideJunctionWindows();   // piece indices shift (D247 review fix; + the bridge window, D248)
+            List<TrackPiece> pcs = app.coaster.pieces;
+            pcs.remove(activePiece);
+            // the successor's follow flag becomes INERT when it now
+            // heads the list or sits behind a bridge-ending piece —
+            // normalize it so a later run move / attach can't turn
+            // the stale flag into a live follow (D248; a successor
+            // behind a plain piece re-glues onto it as before)
+            if (activePiece < pcs.size() && pcs.get(activePiece).followPrev
+                    && (activePiece == 0
+                        || app.coaster.endsWithBridge(activePiece - 1))) {
+                pcs.get(activePiece).followPrev = false;
+            }
             activePiece = (int) FvdDesigner.clamp(activePiece, 0,
-                app.coaster.pieces.size() - 1);
+                pcs.size() - 1);
             activeSection = 0;
             wasActive = true;
         } else {
@@ -5071,7 +6895,9 @@ class GraphEditor extends Region {
         Section added;
         if (mode == 2) {
             // straight/curve: a straight IS the seamless continuation
-            added = StraightCurveSection.straight(10, vEnd);
+            // (buildScStraight recomputes this same vEnd — bitwise;
+            // the seam insert shares it, D247)
+            added = buildScStraight(secs.size() - 1, real, 10);
         } else if (!tru && prev != null && !prev.reversed && !prev.influenced()
                 && (mode == 1) == prev instanceof GeoSection) {
             added = Coaster.continuation(prev, vEnd);
@@ -5081,7 +6907,8 @@ class GraphEditor extends Region {
                 ? (tru ? app.trueRates : app.resultRates)[endIdx]
                 : new double[4];
             added = new GeoSection(
-                LaneSection.holdLanes(endRates[1], endRates[2], rollEnd), vEnd);
+                LaneSection.holdLanes(endRates[1], endRates[2], rollEnd), vEnd)
+                .endFollows(true);   // a fresh hold follows the end (D248)
         } else {
             double gvEnd = tru ? app.trueFelt[endIdx][0]
                 : end != null ? end.Gv() : 1;
@@ -5092,8 +6919,7 @@ class GraphEditor extends Region {
         secs.add(added);
         activeSection = sections().size() - 1;
         app.lanes = lanesFor(added);
-        selIdx = -1;
-        selSet.clear();
+        defaultLane();   // a new section opens on lane 0 (D248)
         elSel = mode == 2 ? 0 : -1;
         axisLock = 0;
         handleViewExpand = false;
@@ -5309,7 +7135,21 @@ class GraphEditor extends Region {
         HBox buttons = new HBox(8, add, cancel);
         buttons.setAlignment(Pos.CENTER_RIGHT);
         grid.add(buttons, 0, row, 2, 1);
+        // Apply-only dialog (D247): the fork row's premises (drifted /
+        // the auto speeds) were read at open — re-check at Add and
+        // refuse with a reason if the piece end changed meanwhile
+        // (the seed fields deliberately stay as opened)
+        final int addPiece = activePiece, addCount = secs.size();
         add.setOnAction(ev -> {
+            if (activePiece != addPiece
+                    || sections().size() != addCount
+                    || pieceEndDrifted() != drifted) {
+                dlg.close();
+                app.statsLabel.setText("Section not added — the piece "
+                    + "end changed while the dialog was open; open "
+                    + "Add section again.");
+                return;
+            }
             double vCustom = Double.NaN;
             if (vLock.isSelected()) {
                 vCustom = FvdDesigner.clamp(
@@ -5333,6 +7173,379 @@ class GraphEditor extends Region {
         app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
     }
 
+    /** SESSION memory of the seam-insert dialog's "Initial length" per
+     *  domain (v19.18, D247 — the wizard's lenTime/lenDist behavior
+     *  with session scope: a non-live dialog has no document record
+     *  to ride; remembered across opens, never saved). Defaults = the
+     *  wizard's (NEW_START_LEN 5 s / CONT_HOLD_DIST 10 m); a
+     *  straight/curve section shares the meters slot. */
+    private double insLenTime = FvdDesigner.NEW_START_LEN;
+    private double insLenDist = Coaster.CONT_HOLD_DIST;
+
+    /** THE INSERT SECTION DIALOG (v19.18, D247 — the seam menu's
+     *  "Insert section…", user spec: every option of the Add dialog
+     *  plus the wizard's initial length): pL = the UPSTREAM piece (the
+     *  active piece — the menu action activates it first so the hold
+     *  recipe reads its arrays), kL = the seam's left section in it,
+     *  insertIdx = kL + 1, strictSeam = the boundary is a strict seam
+     *  (the section then APPENDS to pL before it — the follower keeps
+     *  its shape and held angles, its position follows). Rows in the
+     *  D143 canonical order with a THIRD Type radio "Straight / Curve"
+     *  (the wizard's tile — its lane rows gray with a reason), the
+     *  fork row when the seam is speed-conflicted (seamDrifted), the
+     *  padlocked design speed (custom clamp [0.1, 1e4] per D198), the
+     *  "Initial length" spinner (label follows the domain: seconds,
+     *  or meters for DISTANCE and s/c; per-domain session memory —
+     *  a flip folds the current value into the outgoing slot and
+     *  loads the target's) and, on NON-strict seams only, "Lock
+     *  Subsequent Track Shape" (a strict seam after the inserted
+     *  section, made BEFORE the insert so the downstream freezes at
+     *  its present shape). Apply-only: the targets re-resolve at Add
+     *  and a changed seam refuses with a stats reason (D247, item F).
+     *  One undo step per Add. */
+    private void showInsertSectionDialog(int pL, int kL, int insertIdx,
+                                         boolean strictSeam) {
+        if (activePiece != pL || kL < 0 || kL >= sections().size()) return;
+        List<Section> secs = sections();
+        Section prevSec = secs.get(kL);
+        LaneSection prev = prevSec instanceof LaneSection pl ? pl : null;
+        // auto speeds for the padlock display — the SEAM sample
+        TrackCompiler.Span endSp = spanOf(kL);
+        int endIdx = endSp != null && app.lastSamples != null
+            && endSp.i1() < app.lastSamples.size() ? endSp.i1() : -1;
+        double vCont = endIdx >= 0 ? app.lastSamples.get(endIdx).v()
+                                   : prevSec.vDesign();
+        double vReal = endIdx >= 0 && trueArraysReady()
+            && endIdx < app.trueV.length ? app.trueV[endIdx] : vCont;
+        boolean drifted = seamDrifted(kL);
+
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.setTitle("Insert section after " + sectionTitle(pL, kL));   // D248
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        int row = 0;
+
+        // TYPE — three radios: the Add dialog's pair + the wizard's
+        // straight/curve tile (J1: one dialog, the lane rows gray)
+        ToggleGroup mg = new ToggleGroup();
+        RadioButton mForce = new RadioButton("Force");
+        RadioButton mGeo = new RadioButton("Geometric");
+        RadioButton mSc = new RadioButton("Straight / Curve");
+        mForce.setToggleGroup(mg);
+        mGeo.setToggleGroup(mg);
+        mSc.setToggleGroup(mg);
+        RadioButton mOrig = prevSec instanceof StraightCurveSection ? mSc
+            : prev instanceof GeoSection ? mGeo : mForce;
+        mOrig.setSelected(true);
+        wireOriginal(mg, mOrig, null);
+        grid.addRow(row++, new Label("Type"), new HBox(10, mForce, mGeo, mSc));
+        String scHow = "Straight/curve sections have no lane options — "
+            + "set Type to Force or Geometric to choose them.";
+
+        ToggleGroup dg = new ToggleGroup();
+        RadioButton dTime = new RadioButton("Time");
+        RadioButton dDist = new RadioButton("Distance");
+        dTime.setToggleGroup(dg);
+        dDist.setToggleGroup(dg);
+        (prev != null && prev.domain() == Section.Domain.DISTANCE
+            ? dDist : dTime).setSelected(true);
+        wireOriginal(dg, prev != null
+            && prev.domain() == Section.Domain.DISTANCE ? dDist : dTime,
+            null);
+        grid.addRow(row++, new Label("Domain"),
+            new HBox(10, grayHint(dTime, scHow), grayHint(dDist, scHow)));
+
+        ToggleGroup ug = new ToggleGroup();
+        RadioButton uSec = new RadioButton("Per second (°/s)");
+        RadioButton uMet = new RadioButton("Per meter (°/m)");
+        uSec.setToggleGroup(ug);
+        uMet.setToggleGroup(ug);
+        (prev != null && prev.ratePerMeter ? uMet : uSec).setSelected(true);
+        wireOriginal(ug, prev != null && prev.ratePerMeter ? uMet : uSec,
+            null);
+        grid.addRow(row++, new Label("Rate units"),
+            new HBox(10, grayHint(uSec, scHow), grayHint(uMet, scHow)));
+
+        ToggleGroup yg = new ToggleGroup();
+        RadioButton yLocal = new RadioButton("Local");
+        RadioButton yGlobal = new RadioButton("Global (heading/elevation)");
+        yLocal.setToggleGroup(yg);
+        yGlobal.setToggleGroup(yg);
+        (prev != null && prev.yawPitchGlobal ? yGlobal : yLocal).setSelected(true);
+        wireOriginal(yg, prev != null && prev.yawPitchGlobal
+            ? yGlobal : yLocal, null);
+        String ypHow = "Yaw/pitch axes exist on geometric sections — "
+            + "set Type to Geometric to choose them.";
+        grid.addRow(row++, new Label("Yaw/pitch axis"),
+            new HBox(10, grayHint(yLocal, ypHow), grayHint(yGlobal, ypHow)));
+        Runnable syncYp = () -> {
+            boolean geoOn = mGeo.isSelected();
+            yLocal.setDisable(!geoOn);
+            yGlobal.setDisable(!geoOn);
+            if (!geoOn && yGlobal.isSelected()) yLocal.setSelected(true);
+        };
+        syncYp.run();
+
+        ToggleGroup yag = new ToggleGroup();
+        RadioButton ypaRate = new RadioButton("Rate");
+        RadioButton ypaAbs = new RadioButton("Absolute angles (°)");
+        ypaRate.setToggleGroup(yag);
+        ypaAbs.setToggleGroup(yag);
+        boolean prevYpAbs = prev != null && prev.ypAbsolute
+            && prev.yawPitchGlobal;
+        (prevYpAbs ? ypaAbs : ypaRate).setSelected(true);
+        wireOriginal(yag, prevYpAbs ? ypaAbs : ypaRate, null);
+        String ypaRateHow = "Yaw/pitch behavior exists on geometric "
+            + "sections — set Type to Geometric to choose it.";
+        grid.addRow(row++, new Label("Yaw/pitch behavior"),
+            new HBox(10, grayHint(ypaRate, ypaRateHow),
+                grayHint(ypaAbs, YP_ABS_HOW)));
+        Runnable syncYpA = () -> {
+            boolean geoOn = mGeo.isSelected();
+            boolean on = geoOn && yGlobal.isSelected();
+            ypaRate.setDisable(!geoOn);
+            ypaAbs.setDisable(!on);
+            if (!on && ypaAbs.isSelected()) ypaRate.setSelected(true);
+        };
+        mGeo.selectedProperty().addListener((o, w, n2) -> syncYpA.run());
+        yGlobal.selectedProperty().addListener((o, w, n2) -> syncYpA.run());
+        syncYpA.run();
+
+        ToggleGroup rg = new ToggleGroup();
+        RadioButton rLocal = new RadioButton("Local");
+        RadioButton rGlobal = new RadioButton("Global (bank vs horizon)");
+        rLocal.setToggleGroup(rg);
+        rGlobal.setToggleGroup(rg);
+        (prev != null && prev.rollGlobal ? rGlobal : rLocal).setSelected(true);
+        wireOriginal(rg, prev != null && prev.rollGlobal ? rGlobal : rLocal,
+            null);
+        grid.addRow(row++, new Label("Roll axis"),
+            new HBox(10, grayHint(rLocal, scHow), grayHint(rGlobal, scHow)));
+
+        ToggleGroup ag = new ToggleGroup();
+        RadioButton aRate = new RadioButton("Roll rate");
+        RadioButton aAbs = new RadioButton("Absolute bank (°)");
+        aRate.setToggleGroup(ag);
+        aAbs.setToggleGroup(ag);
+        boolean prevAbs = prev != null && prev.rollAbsolute
+            && prev.rollGlobal;
+        (prevAbs ? aAbs : aRate).setSelected(true);
+        wireOriginal(ag, prevAbs ? aAbs : aRate, null);
+        grid.addRow(row++, new Label("Roll behavior"),
+            new HBox(10, grayHint(aRate, scHow),
+                grayHint(aAbs, () -> mSc.isSelected() ? scHow : ABS_HOW)));
+        Runnable syncAbs = () -> {
+            boolean glob = rGlobal.isSelected() && !mSc.isSelected();
+            aAbs.setDisable(!glob);
+            if (!glob && aAbs.isSelected()) aRate.setSelected(true);
+        };
+        rg.selectedToggleProperty().addListener((o, w, n2) -> syncAbs.run());
+        syncAbs.run();
+        // the s/c pick grays every lane row (it has none)
+        Runnable syncSc = () -> {
+            boolean sc = mSc.isSelected();
+            for (RadioButton rb : new RadioButton[]{ dTime, dDist, uSec,
+                    uMet, rLocal, rGlobal, aRate }) {
+                rb.setDisable(sc);
+            }
+            syncYp.run();
+            syncYpA.run();
+            syncAbs.run();
+        };
+
+        ToggleGroup cg = new ToggleGroup();
+        RadioButton cCont = new RadioButton("Continue speed conflict");
+        RadioButton cReal = new RadioButton("Set to Real");
+        cCont.setToggleGroup(cg);
+        cReal.setToggleGroup(cg);
+        cCont.setSelected(true);
+        wireOriginal(cg, cCont, null);
+        if (drifted) {
+            grid.addRow(row++, new Label("Initial design speed"),
+                new HBox(10, cCont, cReal));
+        }
+
+        TextField vField = new TextField(
+            String.format(Locale.US, "%.2f", vCont));
+        vField.setPrefColumnCount(6);
+        vField.setTextFormatter(FvdDesigner.numFormatter());
+        vField.setDisable(true);
+        ToggleButton vLock = new ToggleButton("🔒");
+        vLock.setFocusTraversable(false);
+        vLock.selectedProperty().addListener((o, was, sel) -> {
+            vLock.setText(sel ? "🔓" : "🔒");
+            vField.setDisable(!sel);
+            if (!sel) {   // re-locked: track the auto value again
+                vField.setText(String.format(Locale.US, "%.2f",
+                    cReal.isSelected() ? vReal : vCont));
+            }
+        });
+        cg.selectedToggleProperty().addListener((o, was, sel) -> {
+            // the fork change RE-LOCKS the speed (v16.4, user rule)
+            if (vLock.isSelected()) {
+                vLock.setSelected(false);
+            } else {
+                vField.setText(String.format(Locale.US, "%.2f",
+                    cReal.isSelected() ? vReal : vCont));
+            }
+        });
+        mg.selectedToggleProperty().addListener((o, was, sel) -> syncSc.run());
+        syncSc.run();
+        grid.addRow(row++, new Label("Design speed (m/s)"),
+            new HBox(6, grayHint(vField, "Tracks the speed the seam "
+                + "implies — click the padlock to type a custom "
+                + "speed (a deliberate, pinned conflict)."), vLock));
+
+        // INITIAL LENGTH — the wizard's spinner (D236 behavior: the
+        // label follows the domain, s/c counts as meters, per-domain
+        // memory) built like StartPanel.spin
+        final boolean[] lenDist = { mSc.isSelected() || dDist.isSelected() };
+        Spinner<Double> lenSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(0.1, 10000,
+                lenDist[0] ? insLenDist : insLenTime, 1));
+        lenSp.setPrefWidth(86);
+        FvdDesigner.typable(lenSp, false);
+        Tooltip.install(lenSp, new Tooltip("Length of the inserted "
+            + "section in its own units — seconds for a time section, "
+            + "meters for a distance or straight/curve section. It "
+            + "holds the seam's end state flat over that length."));
+        Label lenLbl = new Label(lenDist[0]
+            ? "Initial length (m)" : "Initial length (s)");
+        Runnable syncLen = () -> {
+            boolean d = mSc.isSelected() || dDist.isSelected();
+            if (d != lenDist[0]) {
+                // fold the outgoing slot, load the target's
+                double cur = lenSp.getValue();
+                if (lenDist[0]) insLenDist = cur; else insLenTime = cur;
+                lenSp.getValueFactory().setValue(d ? insLenDist : insLenTime);
+                lenDist[0] = d;
+            }
+            lenLbl.setText(d ? "Initial length (m)" : "Initial length (s)");
+        };
+        mg.selectedToggleProperty().addListener((o, w, n2) -> syncLen.run());
+        dg.selectedToggleProperty().addListener((o, w, n2) -> syncLen.run());
+        grid.addRow(row++, lenLbl, lenSp);
+
+        // LOCK SUBSEQUENT TRACK SHAPE — non-strict seams only (a strict
+        // seam already freezes the downstream; the row is hidden
+        // there, the D132 inapplicable-row rule)
+        CheckBox lock = new CheckBox("Lock Subsequent Track Shape");
+        Tooltip.install(lock, new Tooltip("Adds a strict seam after the "
+            + "inserted section so the track after it keeps its shape "
+            + "(it moves to the new exit)."));
+        if (!strictSeam) grid.add(lock, 0, row++, 2, 1);
+
+        Button add = new Button("Add");
+        add.setDefaultButton(true);
+        Button cancel = new Button("Cancel");
+        cancel.setCancelButton(true);
+        HBox buttons = new HBox(8, add, cancel);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        grid.add(buttons, 0, row, 2, 1);
+        final int openCount = secs.size();
+        add.setOnAction(ev -> {
+            // a typed-but-unentered length commits first (Enter on
+            // the default button moves no focus — item E's lesson)
+            FvdDesigner.commitFocusedNumericEditor(dlg.getScene());
+            // index-resolve the targets at Add (item F): the piece,
+            // its section count and the seam's premises must hold
+            boolean stillStrict = pL + 1 < app.coaster.pieces.size()
+                && followsPrev(pL + 1);
+            if (activePiece != pL || sections().size() != openCount
+                    || (strictSeam && !stillStrict)
+                    || seamDrifted(kL) != drifted) {
+                dlg.close();
+                app.statsLabel.setText("Section not inserted — the seam "
+                    + "changed while the dialog was open; open Insert "
+                    + "section again.");
+                return;
+            }
+            if (spanOf(kL) == null) {
+                dlg.close();
+                app.statsLabel.setText("Insert refused — this boundary "
+                    + "isn't compiled yet.");
+                return;
+            }
+            double len = lenSp.getValue();
+            if (lenDist[0]) insLenDist = len; else insLenTime = len;
+            boolean sc = mSc.isSelected();
+            boolean real = drifted && cReal.isSelected();
+            double vCustom = Double.NaN;
+            if (vLock.isSelected()) {
+                vCustom = FvdDesigner.clamp(
+                    parseOr(vField, cReal.isSelected() ? vReal : vCont),
+                    0.1, 1e4);   // D198: admit a near-stall seam speed
+            }
+            boolean lockDown = !strictSeam && lock.isSelected();
+            if (lockDown) hideJunctionWindows();   // piece indices shift (D248)
+            // the snapshot is pushed only once the insert landed (D247
+            // review fix — a refusal must not clear the redo branch)
+            FvdDesigner.DocState pre = snapshot();
+            Section added;
+            if (sc) {
+                StraightCurveSection s = buildScStraight(kL, real, len);
+                if (!Double.isNaN(vCustom)) {
+                    double vAuto = s.vDesign();
+                    s.vDesign(vCustom);
+                    if (Math.abs(vCustom - vAuto) > 1e-6) s.vPinned = true;
+                }
+                added = s;
+            } else {
+                added = buildLaneHold(kL, mGeo.isSelected(), real,
+                    dDist.isSelected(), rGlobal.isSelected(),
+                    mGeo.isSelected() && yGlobal.isSelected(),
+                    uMet.isSelected(),
+                    aAbs.isSelected() && rGlobal.isSelected(),
+                    ypaAbs.isSelected() && mGeo.isSelected()
+                        && yGlobal.isSelected(),
+                    vCustom, len);
+            }
+            int[] at = app.coaster.insertSectionAtSeam(pL,
+                strictSeam ? sections().size() : insertIdx, added,
+                lockDown, FvdDesigner.INTEGRATE_DT);
+            dlg.close();
+            if (at == null) {
+                app.statsLabel.setText("Insert refused — this boundary "
+                    + "isn't compiled yet.");
+                redraw();   // refused: nothing mutated, nothing pushed
+                return;
+            }
+            pushUndo(pre);   // one undo step
+            // the union of the '+' and make-strict refresh sequences
+            activePiece = at[0];
+            activeSection = at[1];
+            app.lanes = lanesFor(added);
+            defaultLane();   // an inserted section opens on lane 0 (D248)
+            elSel = sc ? 0 : -1;
+            axisLock = 0;
+            handleViewExpand = false;
+            viewT0 = 0;
+            viewT1 = -1;
+            syncLaneButtons();
+            app.markDirty();
+            app.rebuildTrack();
+            app.updatePieceButton();
+            app.syncPlacementSpinners();
+            refreshOffset();
+            redraw();
+            app.statsLabel.setText(strictSeam
+                ? "Inserted a section before the strict seam — the track "
+                    + "after it kept its shape."
+                : lockDown
+                ? "Inserted a section — the track after it is now behind "
+                    + "a strict seam and kept its shape."
+                : "Inserted a section — the track after it re-solves "
+                    + "from the new exit.");
+        });
+        cancel.setOnAction(ev -> dlg.close());
+        dlg.setScene(new Scene(grid));
+        dlg.show();
+        app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
+    }
+
     /** Append a lane section with the dialog's full option set
      *  (v16.2). Hold values: the compiled (or true) end state in the
      *  new section's own semantics — GLOBAL-axis lanes hold ZERO
@@ -5346,11 +7559,46 @@ class GraphEditor extends Region {
                                 boolean rollAbs, boolean ypAbs,
                                 double vCustom) {
         pushUndoSnapshot();
+        List<Section> secs = sections();
+        // the '+' hold: after the LAST section, 1 s / 10 m (bitwise
+        // the pre-D247 recipe — the length is the only new parameter)
+        LaneSection added = buildLaneHold(secs.size() - 1, geo, real, dist,
+            rollG, ypG, rateM, rollAbs, ypAbs, vCustom,
+            dist ? Coaster.CONT_HOLD_DIST : 1);
+        secs.add(added);
+        activeSection = sections().size() - 1;
+        app.lanes = lanesFor(added);
+        defaultLane();   // a new section opens on lane 0 (D248)
+        elSel = -1;
+        viewT0 = 0;
+        viewT1 = -1;
+        syncLaneButtons();
+        app.rebuildTrack();
+        refreshOffset();
+        redraw();
+    }
+
+    /** THE HOLD RECIPE (v19.18, D247 — split out of addLaneSection so
+     *  the seam-menu insert shares it): a lane section holding the
+     *  end state of the ACTIVE piece's section prevSecIdx in the
+     *  requested semantics, over `len` of its own axis (seconds for
+     *  TIME, meters for DISTANCE — LaneSection.holdLanes puts the
+     *  two nodes at x = 0 and x = len). Reads the compiled arrays at
+     *  spanOf(prevSecIdx).i1() and pieceEntryHeadingDeg(activePiece)
+     *  — the caller activates the right piece first and calls at
+     *  rest. No undo, no list change: the caller places the
+     *  section. A custom speed PINS it (deliberate conflict). */
+    private LaneSection buildLaneHold(int prevSecIdx, boolean geo,
+                                      boolean real, boolean dist,
+                                      boolean rollG, boolean ypG,
+                                      boolean rateM, boolean rollAbs,
+                                      boolean ypAbs, double vCustom,
+                                      double len) {
         ypAbs = ypAbs && geo && ypG;   // geo + global only (D237)
         List<Section> secs = sections();
-        Section prevSec = secs.get(secs.size() - 1);
+        Section prevSec = secs.get(prevSecIdx);
         LaneSection prev = prevSec instanceof LaneSection pl ? pl : null;
-        TrackCompiler.Span endSp = spanOf(secs.size() - 1);
+        TrackCompiler.Span endSp = spanOf(prevSecIdx);
         int endIdx = endSp != null && app.lastSamples != null
             && endSp.i1() < app.lastSamples.size() ? endSp.i1() : -1;
         FVDIntegrator.Sample end = endIdx >= 0
@@ -5522,8 +7770,7 @@ class GraphEditor extends Region {
         }
         List<List<BezierBaker.Node>> lanes = LaneSection.holdLanes(
             ypAbs ? elevEnd : v0h, ypAbs ? headEnd : v1h,
-            rollAbs ? bankEnd : rollEnd,
-            dist ? Coaster.CONT_HOLD_DIST : 1);
+            rollAbs ? bankEnd : rollEnd, len);
         LaneSection added = geo ? new GeoSection(lanes, vEnd)
                                 : new ForceSection(lanes, vEnd);
         added.domain(dist ? Section.Domain.DISTANCE : Section.Domain.TIME);
@@ -5532,23 +7779,34 @@ class GraphEditor extends Region {
         added.ratePerMeter = rateM;
         added.rollAbsolute = rollAbs;
         added.ypAbsolute = ypAbs;
+        added.endFollows(true);   // a fresh hold follows the end (D248)
         if (!Double.isNaN(vCustom) && Math.abs(vCustom - vAuto) > 1e-6) {
             added.vPinned = true;   // deliberate conflict — keep it
         }
-        secs.add(added);
-        activeSection = sections().size() - 1;
-        app.lanes = lanesFor(added);
-        selIdx = -1;
-        selSet.clear();
-        elSel = -1;
-        axisLock = 0;
-        handleViewExpand = false;
-        viewT0 = 0;
-        viewT1 = -1;
-        syncLaneButtons();
-        app.rebuildTrack();
-        refreshOffset();
-        redraw();
+        return added;
+    }
+
+    /** The s/c STRAIGHT continuation of the active piece's section
+     *  prevSecIdx (v19.18, D247 — split out of addSection so the
+     *  seam-menu insert shares it): one straight of `len` m at the
+     *  section's end design speed (real = the TRUE end speed, the
+     *  "Transition to real" fork), with the D233 2 m entry ease. A
+     *  straight IS the seamless continuation whatever came before.
+     *  No undo, no list change. */
+    private StraightCurveSection buildScStraight(int prevSecIdx,
+                                                 boolean real, double len) {
+        List<Section> secs = sections();
+        Section prevSec = secs.get(prevSecIdx);
+        TrackCompiler.Span endSp = spanOf(prevSecIdx);
+        int endIdx = endSp != null && app.lastSamples != null
+            && endSp.i1() < app.lastSamples.size() ? endSp.i1() : -1;
+        FVDIntegrator.Sample end = endIdx >= 0
+            ? app.lastSamples.get(endIdx) : null;
+        boolean tru = real && endIdx >= 0 && trueArraysReady()
+            && endIdx < app.trueV.length;
+        double vEnd = tru ? Math.max(0.1, app.trueV[endIdx])
+            : end != null ? end.v() : prevSec.vDesign();
+        return StraightCurveSection.straight(len, vEnd);
     }
 
     // inactive-strip visibility (v9.6 user feel pass: 0.13 was too faint)
@@ -5610,10 +7868,16 @@ class GraphEditor extends Region {
                         // otherwise the compiled samples carry the
                         // warp (both coordinates ride every sample)
                         && (ls.domain() == Section.Domain.DISTANCE) == axisDist()
-                        // a TILTED piece's force felt deviates from
-                        // its lanes (v15.2) — derived there too; geo
-                        // rates are rotation-invariant and stay true
-                        && !(!actGeo && pieceTilted(rs.piece()))) {
+                        // an orientation-CONFLICTED piece's strips
+                        // draw DERIVED — the truth — wherever a lane
+                        // deviates under the rigid tilt (v15.2 for
+                        // force felt; v19.19 D248 extends it to any
+                        // conflict KIND — design tier / held seam —
+                        // and to geo WORLD-axis / absolute lanes);
+                        // local-rate geo strips are rotation-
+                        // invariant and keep their authored lanes
+                        && !(pieceConflicted(rs.piece())
+                            && LaneSection.tiltDeviatesAny(ls))) {
                     // an INFLUENCED strip's authored lanes no longer
                     // tell the truth — draw derived, like reversed
                     drawAuthoredStrip(gc, ls, rs.t0(), rs.dur());
@@ -5705,18 +7969,20 @@ class GraphEditor extends Region {
         return new double[]{ -dphi.dot(r), -dphi.dot(u), dphi.dot(t) };
     }
 
-    /** Per-lane SPIKE CARETS on a strict seam (v17.2 D138, re-spec'd
-     *  v17.3 D140): a chevron DIRECTLY on the seam line, per lane
-     *  whose rate graph would spike there, pointing the spike's sign
-     *  (seamSpikes), at the lane curve's own height. Enabled
-     *  Resulting overlays wear theirs on the overlay scale in the
-     *  overlay palette. A SMOOTHED seam draws none -- the blend
-     *  removed the instant change. */
-    private void drawSeamCarets(GraphicsContext gc, List<RunSec> rl,
-                                int i, double bx) {
-        if (!trueArraysReady()) return;
+    /** One placed seam caret (D249): its y on the line, direction,
+     *  color and the small (sub-threshold) form. */
+    private record CaretSpec(double y, boolean up, Color col, boolean small) { }
+
+    /** The strict seam's carets as PLACED (v19.20, D249 — factored
+     *  out of drawSeamCarets so the smoothing diamond can dodge them
+     *  too): the LANES carets + the enabled resulting overlays', with
+     *  the same caretY/upR/dnR rung arithmetic and no drawing. Empty
+     *  before the true arrays exist or without a seam spike. */
+    private List<CaretSpec> seamCarets(List<RunSec> rl, int i, double bx) {
+        List<CaretSpec> out = new ArrayList<>();
+        if (!trueArraysReady()) return out;
         double[] spike = seamSpikes(rl, i);
-        if (spike == null) return;
+        if (spike == null) return out;
         // stacks at the LINE'S edges (v17.4, D141 — user spec: fixed
         // positions signaling DIRECTION only, never riding the
         // curves: up-spikes near the top edge, down-spikes near the
@@ -5730,9 +7996,8 @@ class GraphEditor extends Region {
         int[] upR = { 0 }, dnR = { 0 };
         for (int L = 0; L < LANES; L++) {
             boolean up = spike[L] > 0;
-            drawCaret(gc, bx, caretY(bx, up, upR, dnR), up,
-                laneColor(L),
-                Math.abs(spike[L]) < CARET_KINK_MIN);
+            out.add(new CaretSpec(caretY(bx, up, upR, dnR), up,
+                laneColor(L), Math.abs(spike[L]) < CARET_KINK_MIN));
         }
         // enabled Resulting overlays: their components, their palette
         // (NOT the roll/bank overlay, v17.9 D146 — its spike is the
@@ -5744,10 +8009,26 @@ class GraphEditor extends Region {
             for (int comp = 1; comp <= 2; comp++) {
                 if (!resCompOn(comp)) continue;
                 boolean up = spike[comp - 1] > 0;
-                drawCaret(gc, bx, caretY(bx, up, upR, dnR), up,
+                out.add(new CaretSpec(caretY(bx, up, upR, dnR), up,
                     overlayColor(comp),
-                    Math.abs(spike[comp - 1]) < CARET_KINK_MIN);
+                    Math.abs(spike[comp - 1]) < CARET_KINK_MIN));
             }
+        }
+        return out;
+    }
+
+    /** Per-lane SPIKE CARETS on a strict seam (v17.2 D138, re-spec'd
+     *  v17.3 D140): a chevron DIRECTLY on the seam line, per lane
+     *  whose rate graph would spike there, pointing the spike's sign
+     *  (seamSpikes), at the lane curve's own height. Enabled
+     *  Resulting overlays wear theirs on the overlay scale in the
+     *  overlay palette. Smoothing never moves or hides a caret (the
+     *  D143 contract frames — seamSpikes). Placement = seamCarets
+     *  (D249); this only draws. */
+    private void drawSeamCarets(GraphicsContext gc, List<RunSec> rl,
+                                int i, double bx) {
+        for (CaretSpec c : seamCarets(rl, i, bx)) {
+            drawCaret(gc, bx, c.y(), c.up(), c.col(), c.small());
         }
     }
 
@@ -5798,26 +8079,49 @@ class GraphEditor extends Region {
     // geometric blend; Ctrl snaps by the element-length step; under
     // 0.5 m it snaps shut; the shaded band is the blend window) -----
 
+    /** The diamond's vertical clearance from a seam caret (px): its
+     *  7 px hit radius + the caret's 4.5 px half-height (D249). */
+    static final double SEAM_DIA_CARET_CLEAR = 12;
+
     /** The diamond's y on a seam line: the s/c diamonds' height,
      *  walked down the '+'-button ladder off any node it overlaps
-     *  (v17.5, D142 — the same dodge rule; draw and hit share it). */
-    private double seamDiaYAt(double bx) {
+     *  (v17.5, D142 — the same dodge rule; draw and hit share it) —
+     *  and off the seam's CARETS since v19.20 (D249: the first rung
+     *  MARGIN_TOP+48 sat on an up-caret's third rung, and node-dodged
+     *  carets landed anywhere): pass 1 = the first rung ≥ 22 px from
+     *  every node AND ≥ SEAM_DIA_CARET_CLEAR from every caret; pass 2
+     *  = the node-clear rung with the largest caret clearance; pass 3
+     *  = the historic best-node-distance fallback — nodes keep
+     *  priority, caret overlap is the accepted last resort. With no
+     *  carets pass 1 is the D142 walk bitwise. */
+    private double seamDiaYAt(List<RunSec> rl, int i, double bx) {
         double[] ladder = { MARGIN_TOP + 48,
                             MARGIN_TOP + plotHeight() * 0.30,
                             MARGIN_TOP + plotHeight() * 0.50,
                             MARGIN_TOP + plotHeight() * 0.70,
                             MARGIN_TOP + plotHeight() - 16 };
+        List<CaretSpec> carets = seamCarets(rl, i, bx);
         double best = ladder[0], bestD = -1;
+        double best2 = Double.NaN, best2C = -1;
         for (double cand : ladder) {
             double d = nearestNodePx(bx, cand);
-            if (d >= 22) return cand;
+            if (d >= 22) {
+                double c = Double.POSITIVE_INFINITY;
+                for (CaretSpec cs : carets) {
+                    c = Math.min(c, Math.abs(cand - cs.y()));
+                }
+                if (c >= SEAM_DIA_CARET_CLEAR) return cand;   // pass 1
+                if (c > best2C) { best2C = c; best2 = cand; }
+            }
             if (d > bestD) { bestD = d; best = cand; }
         }
-        return best;
+        if (!Double.isNaN(best2)) return best2;   // pass 2
+        return best;                              // pass 3
     }
     private int seamDragPiece = -1;    // follower piece being sized
     private double seamDragAxisX;      // the seam's axis coordinate
     private boolean seamDragRel;       // diamond = relative (v17.5)
+    private int seamDragSide;          // edge drag: -1 left / +1 right (D248)
     private double seamDragBase;       // length at the press
     private double seamDragPressS;     // arc at the press
     private double seamPressX, seamPressY;   // screen press (v17.17:
@@ -5837,7 +8141,7 @@ class GraphEditor extends Region {
                 continue;   // the menu's grayed row explains
             }
             double bx = tToX(rl.get(i).t0() + rl.get(i).dur());
-            if (Math.hypot(x - bx, y - seamDiaYAt(bx)) <= 7) {
+            if (Math.hypot(x - bx, y - seamDiaYAt(rl, i, bx)) <= 7) {
                 return i;
             }
         }
@@ -5880,8 +8184,11 @@ class GraphEditor extends Region {
         return -1;
     }
 
-    /** Press on a blend-band edge: the same sizing drag the diamond
-     *  runs (either edge — the window is symmetric about the seam). */
+    /** Press on a blend-band edge: an ABSOLUTE sizing drag of the
+     *  grabbed side (v19.19, D248 — one-sided: the window is twice
+     *  the arc from the seam to the cursor on that side, and 0 once
+     *  the cursor crosses the seam; the diamond keeps its relative
+     *  drag). */
     private boolean seamEdgePressed(MouseEvent e) {
         int i = seamEdgeHit(e.getX(), e.getY());
         if (i < 0) return false;
@@ -5890,6 +8197,9 @@ class GraphEditor extends Region {
         seamDragPiece = rl.get(i + 1).piece();
         seamDragAxisX = rl.get(i).t0() + rl.get(i).dur();
         seamDragRel = false;   // an edge drags the window absolutely
+        // which edge was grabbed (v19.19, D248): the drag is ONE-SIDED
+        // — past the seam the window is off and stays off
+        seamDragSide = e.getX() < tToX(seamDragAxisX) ? -1 : 1;
         return true;
     }
 
@@ -5980,14 +8290,18 @@ class GraphEditor extends Region {
             len = seamDragBase + 2 * (app.lastSamples.get(ic).s()
                 - seamDragPressS);
         } else {
-            len = 2 * Math.abs(app.lastSamples.get(ic).s()
-                - app.lastSamples.get(is).s());
+            // an EDGE: twice the arc from the seam on the grabbed side;
+            // crossing the seam turns smoothing OFF and the window
+            // stays off however far the cursor continues (v19.19,
+            // D248 — the historic |.| re-grew it on the far side)
+            len = Gestures.edgeWindowLen(app.lastSamples.get(ic).s(),
+                app.lastSamples.get(is).s(), seamDragSide);
         }
         if (snap) {
             double step = app.settings.snapLen();
             len = Math.round(len / step) * step;
         }
-        double next = len < 0.5 ? 0 : Math.min(len, 80);
+        double next = len < 0.5 ? 0 : Math.min(len, SEAM_SMOOTH_MAX);
         if (Math.abs(next - f.sSmoothLen) < 1e-9) {
             redraw();
             return;
@@ -6047,6 +8361,13 @@ class GraphEditor extends Region {
     private double smcLen;
     private boolean smcVal;
 
+    /** The seam smoothing DRAG cap (m) — 100 since v19.20 (D249,
+     *  user spec; 80 from v17.3/D140). The loader admits 0..200 (a
+     *  bigger loaded value drags down to this on the next drag only);
+     *  the compiler's own halves clamp (half a neighbor section) is
+     *  the geometric limit. */
+    static final double SEAM_SMOOTH_MAX = 100;
+
     /** Is piece p's ≠v caused ONLY by its seam smoothing (v17.4,
      *  D141)? True when the follower's first section drifts as
      *  compiled but would NOT drift with the window at zero — the
@@ -6075,16 +8396,21 @@ class GraphEditor extends Region {
         for (int q = 0; q < p; q++) {
             spanIdx += app.coaster.pieces.get(q).sections.size();
         }
-        double worst = 0;
+        // ENTRY sample only since v19.18 (D247 — the badge's ≠v is
+        // entry-only now, and this measure must agree with it so the
+        // red band tint and the menu hint never disagree with the
+        // glyph); same cache keys, the true read floored like
+        // entrySpeeds
+        double split = 0;
         if (spanIdx < r.spans().size()) {
             TrackCompiler.Span sp = r.spans().get(spanIdx);
-            int i1 = Math.min(sp.i1(), r.samples().size() - 1);
-            for (int i = sp.i0(); i <= i1; i++) {
-                worst = Math.max(worst, Math.abs(
-                    r.trueV()[i] - r.samples().get(i).v()));
+            int i0 = sp.i0();
+            if (i0 < r.trueV().length && i0 < r.samples().size()) {
+                split = Math.abs(Math.max(0.1, r.trueV()[i0])
+                    - r.samples().get(i0).v());
             }
         }
-        smcVal = worst <= DRIFT_EPS;
+        smcVal = split <= DRIFT_EPS;
         return smcVal;
     }
 
@@ -6101,7 +8427,7 @@ class GraphEditor extends Region {
         if (f.sSmoothLen <= 0.01 && seamScEdge(rl.get(i + 1).piece())) {
             return;
         }
-        double dy = seamDiaYAt(bx);
+        double dy = seamDiaYAt(rl, i, bx);
         boolean hov = i == hoverSeamDia
             && seamDragPiece != rl.get(i + 1).piece();
         gc.setGlobalAlpha(0.85);
@@ -6558,13 +8884,15 @@ class GraphEditor extends Region {
     }
 
     /** Max design/true SPEED split anywhere in piece p section k's
-     *  span (v16.1, D106): drift used to be tested at the ENTRY
-     *  only, which missed splits that develop INSIDE — a TILTED
+     *  span (v16.1, D106): the WHOLE-SPAN measure — a TILTED
      *  run-START piece has a matching entry speed but tilted heights
-     *  everywhere after it (the user's "changing the start section
-     *  should generate a conflict"). Callers exclude bridges (their
-     *  design-side speed blend legitimately leaves the pure-energy
-     *  profile mid-span). */
+     *  everywhere after it. Since v19.18 (D247) the BADGE's ≠v no
+     *  longer reads this (an interior-only split is an ORIENTATION
+     *  conflict and wears its own ≠o glyph); the span measure stays
+     *  for the span-based consumers — B's real-split fallback, which
+     *  must aim at the real curves wherever they split. Callers
+     *  exclude bridges (their design-side speed blend legitimately
+     *  leaves the pure-energy profile mid-span). */
     private double sectionDrift(int p, int k) {
         TrackCompiler.Span sp = spanAt(p, k);
         if (sp == null || app.trueV == null || app.lastSamples == null) {
@@ -6580,12 +8908,45 @@ class GraphEditor extends Region {
         return worst;
     }
 
-    /** Is piece p section k speed-conflicted (anywhere in its span)?
-     *  Bridges never are — their mid-span design blend is by design. */
-    private boolean sectionDrifted(int p, int k) {
+    /** Is piece p section k speed-split ANYWHERE in its span (the
+     *  D106 whole-span test)? Renamed from sectionDrifted in v19.18
+     *  (D247) — the badge's ≠v is entry-only now (sectionDrifted);
+     *  this span form serves B's real-split fallback. Bridges never
+     *  are — their mid-span design blend is by design. */
+    private boolean sectionDriftedSpan(int p, int k) {
         return !(app.coaster.pieces.get(p).sections.get(k)
                 instanceof BridgeSection)
             && sectionDrift(p, k) > DRIFT_EPS;
+    }
+
+    /** SPEED CONFLICT of piece p section k (v19.18, D247 — user
+     *  spec, superseding D106's whole-span test): the section ENTERS
+     *  at a true speed other than its design speed — |true − design|
+     *  at the span's first sample > DRIFT_EPS (entrySpeeds, the raw
+     *  entry gap; the reconcile keeps its own amplified seam gate).
+     *  A split that develops only INSIDE the span is no speed
+     *  conflict any more — it is the piece's orientation tilting
+     *  the heights, which wears the ≠o glyph (sectionOrientConflict)
+     *  and resolves piece-wide. Bridges never are — their mid-span
+     *  design blend is by design. */
+    private boolean sectionDrifted(int p, int k) {
+        if (app.coaster.pieces.get(p).sections.get(k)
+                instanceof BridgeSection) return false;
+        double[] es = entrySpeeds(p, k);
+        return es != null && Math.abs(es[1] - es[0]) > DRIFT_EPS;
+    }
+
+    /** ORIENTATION CONFLICT of piece p section k (v19.18, D247 —
+     *  the badge's " ≠o"): the piece's real orientation differs from
+     *  its design orientation (orientConflictAt — a free piece's two
+     *  tiers, a follower's seam tilt with a horizontal axis). Every
+     *  non-bridge section of the piece wears it together, since the
+     *  tilt is per piece and the resolve ops bake it piece-wide.
+     *  Bridges are pure geometry and never tilt. */
+    private boolean sectionOrientConflict(int p, int k) {
+        return !(app.coaster.pieces.get(p).sections.get(k)
+                instanceof BridgeSection)
+            && orientConflictAt(p);
     }
 
     /** {design v, true v} at piece p section k's first compiled
@@ -6626,18 +8987,16 @@ class GraphEditor extends Region {
         // laterals along with the original graph of no laterals").
         // derivedAt (== the compiled curves) equals the truth there
         // and would never split.
-        LaneSection inflDesign = activeInfl() == null ? activeInfluenced() : null;
-        if (inflDesign == null && activeInfl() == null && !activeGeo()
-                && pieceTilted(activePiece)
-                && sections().get(activeSection) instanceof ForceSection fsT
-                && !fsT.reversed) {
-            // TILTED piece, force view (v15.2): the drawn lanes are the
-            // authored felt, which the rigid tilt deviates from — same
-            // authored-reference rule as influence
-            inflDesign = fsT;
-        }
-        TrackCompiler.Span inflSpan = inflDesign != null
+        // ORIENTATION-CONFLICTED piece (v15.2 D100; every conflict
+        // KIND + per-lane since v19.19, D248 — see splitRefSection):
+        // the drawn lanes are the authored values, which the rigid
+        // tilt deviates from — same authored-reference rule as
+        // influence. ONE selector (splitRef) serves this loop AND the
+        // hover's trueSuffix, so the two can never disagree again.
+        LaneSection refSec = splitRefSection();
+        TrackCompiler.Span refSpan = refSec != null
             ? spanOf(activeSection) : null;
+        boolean[] refLanes = splitRefLanes(refSec);
         // SMOOTHED STRICT SEAMS (v17.10, user spec; BOTH SIDES from
         // EITHER neighbor since v19.6, D235 — user spec): inside a
         // smoothing window the drawn curves are the authored lanes
@@ -6649,7 +9008,12 @@ class GraphEditor extends Region {
         // clip to the active span, so each side only ever showed
         // its own half). The neighbor's half needs matching units
         // (same mode + axis flags) to read its authored lanes.
-        List<Object[]> smParts = inflDesign == null && activeInfl() == null
+        // Computed whenever the INFLUENCE surface is down (D248 —
+        // it used to be suppressed while the tilt branch fired, so
+        // a conflicted follower with a smoothed seam lost the
+        // neighbor half's reference; smoothedWindowParts is already
+        // null for an influenced active section).
+        List<Object[]> smParts = activeInfl() == null
             ? smoothedWindowParts() : null;
         gc.setLineWidth(1);
         // the ACTIVE lane's true stroke draws at full strength; the
@@ -6673,7 +9037,6 @@ class GraphEditor extends Region {
             ColPath path = new ColPath(gc);
             SeamWalk sw = new SeamWalk(seams, gAxis(ir[0]));
             for (int i = ir[0]; i <= ir[1]; i++) {
-                double t = app.resultRates[i][0];
                 double a = gAxis(i);          // axis coordinate (v16.0)
                 // rate-sourced strokes break exactly ON seams now
                 // (v18.35, D207 — span-clean rates, no trim band);
@@ -6683,29 +9046,8 @@ class GraphEditor extends Region {
                     path.endRun();
                     continue;
                 }
-                double ref = inflSpan != null
-                        && t >= inflSpan.t0() - 1e-9
-                        && t <= inflSpan.t1() + 1e-9
-                    ? BezierBaker.evalAt(inflDesign.lanes.get(L),
-                        inflDesign.domain() == Section.Domain.DISTANCE
-                            ? app.lastSamples.get(i).s() - inflSpan.s0()
-                            : t - inflSpan.t0())
-                    : derivedDisp(i, L);
-                if (smParts != null) {
-                    for (Object[] w : smParts) {
-                        if (i >= (Integer) w[0] && i <= (Integer) w[1]) {
-                            TrackCompiler.Span wsp =
-                                (TrackCompiler.Span) w[2];
-                            LaneSection wls = (LaneSection) w[3];
-                            ref = BezierBaker.evalAt(wls.lanes.get(L),
-                                wls.domain() == Section.Domain.DISTANCE
-                                    ? app.lastSamples.get(i).s()
-                                        - wsp.s0()
-                                    : t - wsp.t0());
-                            break;
-                        }
-                    }
-                }
+                double ref = splitRef(i, L, smParts, refSec, refSpan,
+                    refLanes);
                 double dy = valToY(L, ref);
                 double ty = valToY(L, trueDisp(i, L));
                 if (Math.abs(ty - dy) <= TRUE_SPLIT_PX) {
@@ -6718,6 +9060,105 @@ class GraphEditor extends Region {
         }
         gc.setGlobalAlpha(1.0);
         gc.setLineWidth(2);
+    }
+
+    /** The ACTIVE section whose AUTHORED lanes are the true stroke's
+     *  split reference inside its own span (v19.19, D248 — the one
+     *  place the choice is made, shared by drawTrueStrokes and the
+     *  hover's trueSuffix): a non-reversed LaneSection, off the
+     *  influence surface, that is EITHER influenced (the D98 design
+     *  view — the drawn lanes are what influencing deviates from) OR
+     *  sits on an orientation-CONFLICTED piece (pieceConflicted —
+     *  the rigid tilt deviates the recorded felt / world quantities
+     *  from the drawn lanes). Null = the derived (compiled) reference
+     *  everywhere: the influence surface (its deltas aren't the
+     *  measured quantity — the dotted resulting curve carries the
+     *  truth), s/c and bridge sections (their drawn curve IS the
+     *  derived felt), legacy reversed sections (authored lanes read
+     *  back-to-front — accepted corner), and before the first compile.
+     *  Which LANES of it take the authored reference is
+     *  splitRefLanes' call. */
+    private LaneSection splitRefSection() {
+        if (surfStrip || activeInfl() != null) return null;
+        List<Section> secs = sections();
+        if (activeSection >= secs.size()
+                || !(secs.get(activeSection) instanceof LaneSection ls)
+                || ls.reversed) return null;
+        if (spanOf(activeSection) == null) return null;
+        if (ls.influenced()) return ls;
+        return pieceConflicted(activePiece) ? ls : null;
+    }
+
+    /** Per-lane: does lane L of the reference section read its
+     *  AUTHORED value (true) or the derived one (false)? An
+     *  INFLUENCED reference keeps the D98 rule (all three authored);
+     *  a merely conflicted one takes LaneSection.tiltDeviates —
+     *  every force lane (the historic D100 rule, roll rate included
+     *  per the D248 brief), geo world-axis and absolute lanes deviate
+     *  under the tilt; geo local body rates are rotation-invariant
+     *  and keep the derived reference (an authored reference there
+     *  would only risk one-sample differencing dots at rate kinks).
+     *  All-false for a null reference. */
+    private boolean[] splitRefLanes(LaneSection refSec) {
+        boolean[] out = new boolean[LANES];
+        if (refSec == null) return out;
+        for (int L = 0; L < LANES; L++) {
+            out[L] = refSec.influenced()
+                || LaneSection.tiltDeviates(refSec, L);
+        }
+        return out;
+    }
+
+    /** An AUTHORED lane value in DISPLAYED units at compiled sample
+     *  i — the cross-rate view (v16.9, D121) draws a warped lane
+     *  through the speed profile, so the reference scales exactly
+     *  like derivedDisp (× v or × 1/v at the sample's design speed;
+     *  identity off the warp). Closes the native-vs-warped mismatch
+     *  the old tilt branch and the smoothed-window rows had (D248). */
+    private double authDisp(int i, int L, double val) {
+        if (!laneWarped(L)) return val;
+        double v = Math.max(0.5, app.lastSamples.get(i).v());
+        return val * (activeRatePM(L) ? v : 1 / v);
+    }
+
+    /** THE split reference (v19.19, D248): the DISPLAY-unit value the
+     *  drawn design curve has at compiled sample i on lane L — what
+     *  the thin true stroke (drawTrueStrokes) and the " (true …)"
+     *  hover (trueSuffix) compare the true value against. Priority:
+     *  (a) a smoothed-seam window row covering i → that row's
+     *  authored lane (the neighbor half included, D235); (b) the
+     *  reference section's authored lane while i sits inside its
+     *  span (time membership ±1e-9 — the seam sample at t0 reads the
+     *  section's x = 0, the historic influence-view rule) and lane L
+     *  is one of its authored-reference lanes; (c) the derived
+     *  (compiled) value. Authored reads take the section's own domain
+     *  (arc from s0, or time from t0) and the display warp. */
+    private double splitRef(int i, int L, List<Object[]> smParts,
+            LaneSection refSec, TrackCompiler.Span refSpan,
+            boolean[] refLanes) {
+        double t = app.resultRates[i][0];
+        if (smParts != null) {
+            for (Object[] w : smParts) {
+                if (i >= (Integer) w[0] && i <= (Integer) w[1]) {
+                    TrackCompiler.Span wsp = (TrackCompiler.Span) w[2];
+                    LaneSection wls = (LaneSection) w[3];
+                    return authDisp(i, L, BezierBaker.evalAt(
+                        wls.lanes.get(L),
+                        wls.domain() == Section.Domain.DISTANCE
+                            ? app.lastSamples.get(i).s() - wsp.s0()
+                            : t - wsp.t0()));
+                }
+            }
+        }
+        if (refSec != null && refSpan != null && refLanes[L]
+                && t >= refSpan.t0() - 1e-9
+                && t <= refSpan.t1() + 1e-9) {
+            return authDisp(i, L, BezierBaker.evalAt(refSec.lanes.get(L),
+                refSec.domain() == Section.Domain.DISTANCE
+                    ? app.lastSamples.get(i).s() - refSpan.s0()
+                    : t - refSpan.t0()));
+        }
+        return derivedDisp(i, L);
     }
 
     /** The smoothed-strict-seam windows touching the ACTIVE section
@@ -6785,28 +9226,23 @@ class GraphEditor extends Region {
      *  there (round A, §5.2). slope = the Shift readout, differenced
      *  by INDEX (±2 samples) and reported per DISPLAY-axis unit. */
     private String trueSuffix(int i, int L, boolean slope) {
-        if (!trueArraysReady()) return "";
-        double dv = derivedDisp(i, L), tv = trueDisp(i, L);
-        // inside a smoothed strict seam's window the reference is the
-        // AUTHORED lane (v19.7, D236, user spec — the drawTrueStrokes
-        // rule): the compiled samples ARE the blend there, so the old
-        // derived-vs-true test never split without a ≠v conflict and
-        // the hover hid the blended value the stroke was drawing
-        List<Object[]> smParts = smoothedWindowParts();
-        if (smParts != null && i < app.resultRates.length) {
-            double t = app.resultRates[i][0];
-            for (Object[] w : smParts) {
-                if (i >= (Integer) w[0] && i <= (Integer) w[1]) {
-                    TrackCompiler.Span wsp = (TrackCompiler.Span) w[2];
-                    LaneSection wls = (LaneSection) w[3];
-                    dv = BezierBaker.evalAt(wls.lanes.get(L),
-                        wls.domain() == Section.Domain.DISTANCE
-                            ? app.lastSamples.get(i).s() - wsp.s0()
-                            : t - wsp.t0());
-                    break;
-                }
-            }
-        }
+        if (!trueArraysReady() || i >= app.resultRates.length) return "";
+        // the reference is THE stroke's own (splitRef, v19.19 D248 —
+        // one selector for both surfaces): inside a smoothed strict
+        // seam's window the AUTHORED lane (v19.7, D236, user spec:
+        // the compiled samples ARE the blend there, so a derived-vs-
+        // true test never split without a ≠v and the hover hid the
+        // blended value the stroke was drawing); on an influenced
+        // section's design view or an orientation-CONFLICTED piece
+        // the authored lane on every deviating lane (D248 — the hover
+        // used to stay silent near a conflicted piece's entry while
+        // the stroke drew 0.5 g away); derived elsewhere.
+        LaneSection refSec = splitRefSection();
+        double dv = splitRef(i, L,
+            activeInfl() == null ? smoothedWindowParts() : null,
+            refSec, refSec != null ? spanOf(activeSection) : null,
+            splitRefLanes(refSec));
+        double tv = trueDisp(i, L);
         if (Math.abs(valToY(L, tv) - valToY(L, dv)) <= TRUE_SPLIT_PX) return "";
         if (!slope) return String.format(" (true %.2f)", tv);
         int[] w2 = slopeWin(i, 2);   // span-clamped (D207)
@@ -6909,24 +9345,28 @@ class GraphEditor extends Region {
             double dur = rs.dur();
             boolean dirty = rs.sec() instanceof BridgeSection bs
                 && rs.piece() + 1 >= app.coaster.pieces.size();
-            double[] es = entrySpeeds(rs.piece(), rs.section());
-            String label = (rs.sec() instanceof GeoSection ? "Geo"
-                    : rs.sec() instanceof StraightCurveSection ? "S/C"
-                    : rs.sec() instanceof BridgeSection
-                        ? (dirty ? "Bridge !" : "Bridge") : "Force")
-                // distance-domain lanes wear the meters tag (v16.0)
-                + (rs.sec() instanceof LaneSection
-                    && rs.sec().domain() == Section.Domain.DISTANCE
-                    ? "·m" : "")
-                + (rs.sec().reversed() ? " ◀" : "")
-                // influence mark (v15.0, D98)
-                + (rs.sec() instanceof LaneSection li && li.influenced()
-                    ? " fx" : "")
-                // §5.2 drift hint — ANYWHERE in the span since v16.1
-                // (D106: a tilted run-start piece splits inside while
-                // its entry matches); badge menu shows the numbers
-                + (sectionDrifted(rs.piece(), rs.section()) ? " ≠v" : "");
-            double bw = label.length() * 6 + 10;
+            // §5.2 speed-conflict glyph ≠v — ENTRY-ONLY since v19.18
+            // (D247, user spec: the section enters at a speed other
+            // than its design speed; D106's whole-span test is gone)
+            // — plus the ORIENTATION-conflict glyph ≠o (piece design
+            // != real; a follower's held seam angles vs its design
+            // orientation), spelled with a LOWERCASE o since v19.19
+            // (D248, user spec — was the degree sign). Both can show.
+            String glyphs
+                = (sectionDrifted(rs.piece(), rs.section()) ? " ≠v" : "")
+                + (sectionOrientConflict(rs.piece(), rs.section())
+                    ? " ≠o" : "");
+            // THE PRE-D248 FORM again since v19.20 (D249 — user hand
+            // test reversed D248's numbered title + width ladder):
+            // the short type word + tags + glyphs ("Geo ·m ◀ fx ≠v
+            // ≠o", "Bridge !"), no number; one form, no short
+            // fallback — a strip narrower than the box shows NO
+            // badge (the historic rule). The width stays MEASURED
+            // with a real Text (D248's fix over the length×6
+            // estimate is kept).
+            String label = SectionNames.badgeLabel(rs.sec(), dirty)
+                + glyphs;
+            double bw = badgeWidth(label);
             double x0 = Math.max(tToX(off), MARGIN_LEFT);
             double x1 = Math.min(tToX(off + dur), w - marginRight());
             if (x1 - x0 >= bw + 8) {   // strip too narrow on screen = no badge
@@ -6965,6 +9405,25 @@ class GraphEditor extends Region {
         gc.setTextBaseline(VPos.TOP);
     }
 
+    /** Text measurer for the badge width (D248; the ladder it served
+     *  is gone since D249) — the badge font is Font.font(10), set
+     *  once. */
+    private final javafx.scene.text.Text badgeMeas = badgeMeasText();
+
+    private static javafx.scene.text.Text badgeMeasText() {
+        javafx.scene.text.Text t = new javafx.scene.text.Text();
+        t.setFont(Font.font(10));
+        return t;
+    }
+
+    /** Badge box width for a label: the measured text width + 10 px
+     *  of side padding (the historic length×6+10 estimate under-
+     *  measured long titles). */
+    private double badgeWidth(String label) {
+        badgeMeas.setText(label);
+        return Math.ceil(badgeMeas.getLayoutBounds().getWidth()) + 10;
+    }
+
     /** Which RUN strip's badge is under this point; -1 for none (the
      *  stored index is into runLayout(), v13.4). */
     private int hitBadge(double x, double y) {
@@ -6988,6 +9447,8 @@ class GraphEditor extends Region {
     private int elSel = -1;            // selected element of the active s/c
     private int elDragBoundary = -1;   // element whose LENGTH is dragging
     private int elDragSmooth = -1;     // element whose ENTRY blend is dragging
+    private int scDragSide = 0;        // interior blend EDGE drag: -1/+1,
+                                       // 0 = the diamond (symmetric) — D248
     private boolean bridgeDragGap = false;   // bridge end line = gap drag (v13.3)
     private int rClickElem = -1;       // deferred right-click menu (pan-safe)
 
@@ -7405,6 +9866,7 @@ class GraphEditor extends Region {
         if (d >= 0) {   // 0 = the entry-ease diamond (D233)
             beginGesture();
             elDragSmooth = d;
+            scDragSide = 0;   // the diamond keeps its symmetric drag
             lastDragX = e.getX();
             lastDragY = e.getY();
             lastDragSnap = e.isControlDown();
@@ -7439,6 +9901,16 @@ class GraphEditor extends Region {
         if (je >= 0) {   // 0 = the entry-ease band edge (D234)
             beginGesture();
             elDragSmooth = je;
+            // an interior band EDGE drags one-sided since v19.19 (D248
+            // — the strict-seam rule for parity): the grabbed side
+            // sizes the blend, crossing the boundary turns it off. The
+            // side is read in AUTHORED arc (scSAtT), the coordinate
+            // scDragTo compares against — a legacy REVERSED strip draws
+            // element 0 at the right, so a pixel side would be mirrored
+            // there (review fix, D248)
+            scDragSide = je >= 1
+                ? (scSAtT(sc, xToT(e.getX())) < scBoundsS(sc)[je] ? -1 : 1)
+                : 0;
             lastDragX = e.getX();
             lastDragY = e.getY();
             lastDragSnap = e.isControlDown();
@@ -7505,7 +9977,9 @@ class GraphEditor extends Region {
             len = Math.min(len, sc.elements.get(0).arcLen());
             sc.elements.get(0).smoothIn = len < 0.2 ? 0 : len;
         } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
-            double len = 2 * Math.abs(sAuth - b[elDragSmooth]);
+            // diamond: symmetric; band edge: one-sided (D248)
+            double len = Gestures.edgeWindowLen(sAuth, b[elDragSmooth],
+                scDragSide);
             if (snap) {
                 double step = app.settings.snapLen();
                 len = Math.round(len / step) * step;
@@ -7535,6 +10009,9 @@ class GraphEditor extends Region {
     private void showElementMenu(int i, double screenX, double screenY) {
         StraightCurveSection sc = activeSc();
         if (sc == null || i < 0 || i >= sc.elements.size()) return;
+        takePlotSelection();   // an element selection (the release's
+                               // secondary press skipped the choke,
+                               // D249 review fix)
         elSel = i;
         redraw();
         ContextMenu cm = new ContextMenu();
@@ -7707,28 +10184,51 @@ class GraphEditor extends Region {
         buttons.setAlignment(Pos.CENTER_RIGHT);
         grid.add(buttons, 0, row, 2, 1);
 
+        // Apply-only dialog: the element is RE-RESOLVED BY INDEX at
+        // Apply (v19.18, D247) — an undo/redo replaces the Section /
+        // Element objects, and writing the open-time capture was a
+        // silent orphan write. The seed fields deliberately stay as
+        // opened (a live overwrite would fight the user's typing).
+        final int elPiece = activePiece, elSec = activeSection;
         ok.setOnAction(ev -> {
+            StraightCurveSection.Element e2 = null;
+            if (elPiece < app.coaster.pieces.size()) {
+                List<Section> ss = app.coaster.pieces.get(elPiece).sections;
+                if (elSec < ss.size()
+                        && ss.get(elSec) instanceof StraightCurveSection s2
+                        && idx < s2.elements.size()) {
+                    e2 = s2.elements.get(idx);
+                }
+            }
+            if (e2 == null) {
+                dlg.close();
+                app.statsLabel.setText("Element not applied — that "
+                    + "element no longer exists (the section changed "
+                    + "while the dialog was open).");
+                return;
+            }
+            final StraightCurveSection.Element el2 = e2;
             pushUndoSnapshot();
             if (rbS.isSelected()) {
-                double keep = el.kind == StraightCurveSection.Kind.STRAIGHT
-                    ? el.length : el.arcLen();
-                el.kind = StraightCurveSection.Kind.STRAIGHT;
-                el.length = Math.max(MIN_ELEM_LEN, parseOr(lenF, keep));
+                double keep = el2.kind == StraightCurveSection.Kind.STRAIGHT
+                    ? el2.length : el2.arcLen();
+                el2.kind = StraightCurveSection.Kind.STRAIGHT;
+                el2.length = Math.max(MIN_ELEM_LEN, parseOr(lenF, keep));
             } else {
-                el.kind = StraightCurveSection.Kind.CURVE;
-                el.radius = Math.max(0.1, parseOr(radF, el.radius > 0 ? el.radius : 20));
-                double ang = parseOr(angF, el.angleDeg != 0 ? el.angleDeg : 90);
+                el2.kind = StraightCurveSection.Kind.CURVE;
+                el2.radius = Math.max(0.1, parseOr(radF, el2.radius > 0 ? el2.radius : 20));
+                double ang = parseOr(angF, el2.angleDeg != 0 ? el2.angleDeg : 90);
                 if (Math.abs(ang) < 0.5) ang = ang < 0 ? -0.5 : 0.5;
-                el.angleDeg = ang;
-                el.dirDeg = parseOr(dirF, el.dirDeg);
+                el2.angleDeg = ang;
+                el2.dirDeg = parseOr(dirF, el2.dirDeg);
             }
-            el.smoothIn = Math.max(0, parseOr(smF, el.smoothIn));   // elem 0
+            el2.smoothIn = Math.max(0, parseOr(smF, el2.smoothIn));   // elem 0
                 // = the entry roll ease since v19.3 (D232)
-            el.rollMode = rbGlob.isSelected()
+            el2.rollMode = rbGlob.isSelected()
                 ? StraightCurveSection.RollMode.GLOBAL
                 : StraightCurveSection.RollMode.RATE;
-            el.rollVal = parseOr(rollF, el.rollVal);
-            elSel = idx;
+            el2.rollVal = parseOr(rollF, el2.rollVal);
+            if (activePiece == elPiece && activeSection == elSec) elSel = idx;
             app.rebuildTrack();
             refreshOffset();
             redraw();
@@ -8062,15 +10562,22 @@ class GraphEditor extends Region {
             // SPEED CONTROL STRIP presses (v18.0; shared pipeline
             // v18.3): the strip owns everything inside it
             if (spPress(e)) return;
-            if (spFocus && e.getY() >= MARGIN_TOP
+            if (e.getButton() == MouseButton.PRIMARY
+                    && e.getY() >= MARGIN_TOP
                     && e.getY() <= MARGIN_TOP + plotHeight()) {
-                // focus returns to the plot — the shared node
-                // selection belongs to one surface at a time (v18.3)
-                spFocus = false;
-                selIdx = -1;
-                selSet.clear();
-                axisLock = 0;
-                handleViewExpand = false;
+                // a PLOT press takes the selection over — the shared
+                // node selection belongs to one surface at a time
+                // (v18.3); THE one choke since v19.20 (D249): the
+                // strip's control/mark unlights as well, not just
+                // spFocus (node and control selection are exclusive).
+                // PRIMARY only (D249 review fix): a right-drag pan, a
+                // middle press or a right-click menu open selects
+                // nothing on the plot — the plot's own node selection
+                // deliberately survives a pan (deselect on RELEASE ≤
+                // 3 px), so a lit control survives it too; the
+                // secondary presses that DO select (the node menu, an
+                // element menu) call the choke themselves.
+                takePlotSelection();
             }
             if (e.getButton() == MouseButton.PRIMARY) {
                 // the density preview owns the plot while its popup is
@@ -8284,7 +10791,11 @@ class GraphEditor extends Region {
                     // right-click a node = its OPTIONS menu (v16.18,
                     // user spec — v10.7's direct dialog lives inside
                     // it as "Edit node…"). The clicked node joins or
-                    // starts the selection the ops apply to.
+                    // starts the selection the ops apply to — a
+                    // SELECTING secondary press, so the choke runs
+                    // here (D249 review fix: the press-time choke is
+                    // primary-only)
+                    takePlotSelection();
                     selIdx = hit;
                     if (!selSet.contains(hit)) {
                         selSet.clear();
@@ -8624,6 +11135,7 @@ class GraphEditor extends Region {
             seamDragPiece = -1;
             elDragBoundary = -1;
             elDragSmooth = -1;
+            scDragSide = 0;
             bridgeDragGap = false;
             pcDragLine = false;
             if (e.getButton() == MouseButton.SECONDARY && rClickSeg >= 0
@@ -8961,7 +11473,8 @@ class GraphEditor extends Region {
         selSet.clear();
         axisLock = 0;
         handleViewExpand = false;
-        spClearSel();   // strip selection + its popup (v18.0)
+        spClearSel();        // strip selection (v18.0)
+        spHideCtlPopup();    // + its popup — Load/New/switch (explicit since D249)
     }
 
     // ---------- toolbar actions ----------
@@ -8979,6 +11492,25 @@ class GraphEditor extends Region {
         handleViewExpand = false;
         app.laneButtons[lane].setSelected(true);
         redraw();
+    }
+
+    /** CREATION DEFAULT (v19.19, D248, user spec): a new coaster, a new
+     *  track piece (wizard open + Done) and every '+' add / seam
+     *  Insert of a force/geo section open on LANE 0 — Vertical G /
+     *  Pitch (Elevation under absolute yaw/pitch) — whatever lane was
+     *  last edited (activeLane was session state nobody reset: a user
+     *  editing Roll got every new section with Roll active). Writes
+     *  the field + the toolbar button only; the caller's own refresh
+     *  redraws (setActiveLane would redraw mid-sequence, before the
+     *  new section's compile). Harmless under an s/c pick (lane
+     *  buttons in mode 2 — the next lane section still opens on 0). */
+    void defaultLane() {
+        activeLane = 0;
+        selIdx = -1;
+        selSet.clear();
+        axisLock = 0;
+        handleViewExpand = false;
+        if (app.laneButtons[0] != null) app.laneButtons[0].setSelected(true);
     }
 
     /** Append action: with a node selected, insert a 1 s flat hold right
@@ -9025,16 +11557,30 @@ class GraphEditor extends Region {
             }
             if (gaps != null) BezierBaker.rescaleDvToGaps(ln, gaps);
         }
-        // the selected node's outgoing transition moves to the new node;
-        // selected -> new is a flat hold
+        // the selected node's outgoing transition moves to the new node
+        // (its lock rides along — the insert-on-curve split rule, D248);
+        // selected -> new holds the value: a smooth sloped selection's
+        // out CONTINUES its in slope and the hold node's in is
+        // re-angled to its inherited out, so neither node kinks under a
+        // circle knob (v19.19, D248 — the historic flat-out/flat-in
+        // pair left both "smooth" nodes kinked)
+        BezierBaker.Node next = selIdx + 1 < lane.size()
+            ? lane.get(selIdx + 1) : null;
         BezierBaker.Node hold = new BezierBaker.Node(tc + stepX, sel.val);
         hold.outFrac = sel.outFrac;
         hold.outDv = sel.outDv;
-        hold.inFrac = SINE_FRAC;
-        hold.inDv = 0;
-        sel.outFrac = SINE_FRAC;
-        sel.outDv = 0;
+        hold.straightOut = sel.straightOut;
+        hold.levelOut = sel.levelOut;
+        Gestures.continueOut(selIdx > 0 ? lane.get(selIdx - 1) : null,
+            sel, hold, SINE_FRAC);
+        Gestures.matchInToOut(sel, hold, next, SINE_FRAC);
         lane.add(selIdx + 1, hold);
+        // only the ACTIVE lane stops following (D248): the shifted
+        // lanes' last nodes rode to the new end above — unless the
+        // selection was this lane's LAST node (they sat AT tc, not
+        // past it), which the sync closes
+        touchLane(lane);
+        syncFollowingEnds();
         selSet.clear();
         selSet.add(selIdx);
         redraw();
@@ -9061,10 +11607,16 @@ class GraphEditor extends Region {
         pushUndoSnapshot();
         BezierBaker.Node last = lane.get(lane.size() - 1);
         BezierBaker.Node np = new BezierBaker.Node(newEnd, last.val);
-        // appended transitions default to the sinusoidal ease
-        last.outFrac = SINE_FRAC; last.outDv = 0;
+        // appended transitions default to the sinusoidal ease; a
+        // SMOOTH last node's out handle CONTINUES its in slope (C1,
+        // v19.19 D248 — a B-matched end used to leave flat under a
+        // circle knob); the new node holds the value with a flat in
+        Gestures.continueOut(lane.size() >= 2 ? lane.get(lane.size() - 2)
+            : null, last, np, SINE_FRAC);
         np.inFrac = SINE_FRAC;    np.inDv = 0;
         lane.add(np);
+        touchLane(lane);
+        syncFollowingEnds();   // the untouched lanes follow the append (D248)
         redraw();
         app.rebuildTrack();
     }
@@ -9228,8 +11780,18 @@ class GraphEditor extends Region {
     // =================================================================
 
     private static final double SP_H_THIN = 26;
-    private static final Color SP_SPEED_COLOR = Color.rgb(100, 220, 110);
-    private static final Color SP_ACCEL_COLOR = Color.rgb(90, 160, 255);
+    // package-private since v19.19 (D248, item S1): Viewport3D's speed-
+    // control PLATES and DISKS wear the strip's own type colors
+    static final Color SP_SPEED_COLOR = Color.rgb(100, 220, 110);
+    static final Color SP_ACCEL_COLOR = Color.rgb(90, 160, 255);
+    // the resulting TRUE-speed line's OWN brighter green (v19.19,
+    // D248, item S2 — SP_SPEED_COLOR became the DESIGN line's color
+    // and still colors the +V box, control segments, diamonds and the
+    // drag preview; the styles live in SpeedStrip so StripGate pins
+    // them)
+    private static final Color SP_TRUE_COLOR = Color.rgb(
+        SpeedStrip.TRUE_RGB[0], SpeedStrip.TRUE_RGB[1],
+        SpeedStrip.TRUE_RGB[2]);
     private static final Color SP_LINE_COLOR = Color.rgb(115, 125, 140);
     // Ctrl-snap steps for complex-graph VALUES (x snaps by the axis
     // step like everything else)
@@ -9241,9 +11803,11 @@ class GraphEditor extends Region {
     // the last press landed in the strip → Delete and the selection
     // actions target IT, not the plot's node selection
     private boolean spFocus = false;
-    // diamond/mark drags: 1 = control start (move), 2 = control end
-    // (resize), 3 = mark
+    // diamond/mark drags: 1 = BODY (move), 2 = control end (resize),
+    // 3 = mark, SP_DRAG_START = the START diamond (v19.19, D248 —
+    // resize from the LEFT, end fixed; it was a move until then)
     private int spDragKind = 0;
+    private static final int SP_DRAG_START = 5;
     // native-x offset between the grab point and c.x0 for a MOVE —
     // 0 from the start diamond, the grabbed spot from a BODY drag
     // (v18.9, user spec)
@@ -9257,9 +11821,16 @@ class GraphEditor extends Region {
     private boolean spDragDivider = false;  // the strip-height divider
     // hover readout for the resulting TRUE-speed curve (lane hovers
     // ride the shared overlays)
-    private int spHoverKind = 0;   // 1 = true speed, 2 = longitudinal G
+    private int spHoverKind = 0;   // 1 = true speed, 2 = longitudinal G,
+                                   // 3 = a diamond's POSITION (v19.20,
+                                   // D249, item S2 — spHoverVal holds the
+                                   // native x, the strip below)
     private double spHoverX, spHoverY, spHoverVal;
-    private int spHoverIdx = 0;    // sample under a kind-2 hover
+    private int spHoverPiece = -1, spHoverSec = -1;
+    // the sample under a kind-1 OR kind-2 hover (kind 1 since v19.19,
+    // D248: the true-line readout appends the DESIGN speed at that
+    // sample)
+    private int spHoverIdx = 0;
     // click-DRAG on the empty control line creates a control from
     // press to release (v18.4, D173; spDragKind 4 while live):
     // the pressed section + the free interval around the press
@@ -9271,6 +11842,13 @@ class GraphEditor extends Region {
     private double spVHi = 40, spALo = -1, spAHi = 2;
     private javafx.stage.Popup spPopup;
     private Runnable spPopupSync;
+    /** The options popup's OWN control binding (v19.20, D249): set
+     *  from the selection when it shows, resolved by spPopSel /
+     *  spPopRunSec / spPopSection — the panel outlives the selection
+     *  (a node/marker/gizmo select clears spSel*, the panel stays,
+     *  live on its control) and FOLLOWS a newly selected control
+     *  (spAfterRebuild re-shows it bound to that one). */
+    private int spPopPiece = -1, spPopSec = -1, spPopCtl = -1;
 
     // ---------- the EDITING SURFACE core (v18.3, D172) ----------
     // The user's verdict on the v18.1/2 parallel mini-editor:
@@ -9474,16 +12052,7 @@ class GraphEditor extends Region {
      *  — the fraction-semantics rescale, shared by spClampControls,
      *  the end-diamond resize and the popup Length spinner). */
     private static void spRescaleCtlLanes(SpeedControl c, double f) {
-        if (!c.lane.isEmpty()) {
-            double[] gaps = BezierBaker.segGaps(c.lane);
-            for (BezierBaker.Node nd : c.lane) nd.t *= f;
-            BezierBaker.rescaleDvToGaps(c.lane, gaps);
-        }
-        if (!c.decelLane.isEmpty()) {
-            double[] gaps = BezierBaker.segGaps(c.decelLane);
-            for (BezierBaker.Node nd : c.decelLane) nd.t *= f;
-            BezierBaker.rescaleDvToGaps(c.decelLane, gaps);
-        }
+        c.rescaleLanes(f);   // the body lives on the model since D248
     }
 
     /** Max LENGTH the strip surface's control may take before its
@@ -9505,6 +12074,86 @@ class GraphEditor extends Region {
     private double spSnapStep(Section s) {
         return s.domain() == Section.Domain.DISTANCE
             ? app.settings.snapLen() : app.settings.snapT();
+    }
+
+    /** Is a strip's x DISPLAYED through a non-identity mapping —
+     *  the ACTIVE section viewed in the other domain (a live warp
+     *  map; a degenerate map falls back to native) or an INACTIVE
+     *  strip whose native domain differs from the plot axis (drawn
+     *  through Coaster.sectionMap) — v19.20, D249, item S1. Mirrors
+     *  spAxisOf's own branches exactly, so "false" means spAxisOf is
+     *  literally rs.t0() + nx. */
+    private boolean spSnapViaAxis(RunSec rs) {
+        boolean act = rs.piece() == activePiece && rs.section() == activeSection;
+        if (act) return rs.sec().viewOtherDomain() && warpMap != null;
+        boolean nd = rs.sec().domain() == Section.Domain.DISTANCE;
+        return nd != axisDistPlain()
+            && spanAt(rs.piece(), rs.section()) != null
+            && app.lastSamples != null;
+    }
+
+    /** The strip's Ctrl-snap of a NATIVE x (v19.20, D249, item S1 —
+     *  the node path's D103 rule applied to controls): where the strip
+     *  is displayed through a map, quantize on the DISPLAY axis (the
+     *  section-local absolute grid in the displayed units, step =
+     *  the axis's own snap step) and map back; otherwise the historic
+     *  native snap round(nx / step)·step, LITERALLY — the unwarped
+     *  path never goes through the map, so it stays bitwise (the D248
+     *  "disk write == strip write" gate rides on it). rs null =
+     *  native snap on s. */
+    private double spSnapNative(RunSec rs, Section s, double nx) {
+        if (rs != null && spSnapViaAxis(rs)) {
+            double a = spAxisOf(rs, nx), a0 = spAxisOf(rs, 0);
+            double step = axisDistPlain() ? app.settings.snapLen()
+                                          : app.settings.snapT();
+            return spNativeAtAxis(rs, SpeedStrip.snapDisplay(a, a0, step));
+        }
+        double st = spSnapStep(s);
+        return Math.round(nx / st) * st;
+    }
+
+    /** A strip's native x as its SECTION-LOCAL DISPLAY coordinate (the
+     *  axis units the plot shows: the cross-domain view / the plot
+     *  axis for inactive strips; identity to the native x when
+     *  nothing maps) — the readouts' and the popup twins' value
+     *  (v19.20, D249). */
+    private double spDispOf(RunSec rs, double nx) {
+        return spAxisOf(rs, nx) - spAxisOf(rs, 0);
+    }
+
+    /** The run strip of (piece, section), or null when it is not in
+     *  the current run. */
+    private RunSec spRunSec(int piece, int sec) {
+        for (RunSec rs : runLayout()) {
+            if (rs.piece() == piece && rs.section() == sec) return rs;
+        }
+        return null;
+    }
+
+    /** The native x of a spFindDiamond hit on its strip: start / end
+     *  diamond of a control, or a plain mark. */
+    private double spDiamondNative(RunSec rs, int[] dia) {
+        if (dia[2] == 3) return rs.sec().speedMarks().get(dia[1]);
+        SpeedControl c = rs.sec().speedControls().get(dia[1]);
+        return dia[2] == 1 ? c.x0 : c.x0 + c.len;
+    }
+
+    /** The DISPLAY-unit position readout "t = 3.20 s" / "s = 12.5 m"
+     *  of a native x on (piece, sec) — v19.20, D249, item S2, the 3D
+     *  disks' bottom-left label: a section IN the run reads through
+     *  the strip's own axis mapping (cross-domain view + plot axis),
+     *  one outside the run its NATIVE units. */
+    String spPosReadout(int piece, int sec, double nativeX) {
+        RunSec rs = spRunSec(piece, sec);
+        if (rs != null) {
+            return SpeedStrip.posReadout(spDispOf(rs, nativeX), axisDistPlain());
+        }
+        List<TrackPiece> pcs = app.coaster.pieces;
+        boolean m = piece >= 0 && piece < pcs.size() && sec >= 0
+            && sec < pcs.get(piece).sections.size()
+            && pcs.get(piece).sections.get(sec).domain()
+                == Section.Domain.DISTANCE;
+        return SpeedStrip.posReadout(nativeX, m);
     }
 
     private double minGapOf(Section s) {
@@ -9537,6 +12186,55 @@ class GraphEditor extends Region {
             }
         }
         return null;
+    }
+
+    // the options POPUP's binding twins (D249) — its control, not the
+    // selection's
+    private Section spPopSection() {
+        if (spPopPiece < 0 || spPopPiece >= app.coaster.pieces.size()) return null;
+        List<Section> secs = app.coaster.pieces.get(spPopPiece).sections;
+        return spPopSec >= 0 && spPopSec < secs.size()
+            ? secs.get(spPopSec) : null;
+    }
+
+    private SpeedControl spPopSel() {
+        Section s = spPopSection();
+        if (s == null || spPopCtl < 0
+                || spPopCtl >= s.speedControls().size()) return null;
+        return s.speedControls().get(spPopCtl);
+    }
+
+    private RunSec spPopRunSec() {
+        for (RunSec rs : runLayout()) {
+            if (rs.piece() == spPopPiece && rs.section() == spPopSec) {
+                return rs;
+            }
+        }
+        return null;
+    }
+
+    /** Is the popup bound to the SELECTED control? */
+    private boolean spPopBoundToSel() {
+        return spPopPiece == spSelPiece && spPopSec == spSelSec
+            && spPopCtl == spSelCtl;
+    }
+
+    /** The options popup's Edit Speed / Acceleration / Deceleration
+     *  SELECT the control the panel shows (D249 review fix): since
+     *  D249 the popup outlives the selection, and editing resolves the
+     *  SELECTED control only (withSurf), so the button opened the tall
+     *  strip over an inert, dimmed graph until a second click on the
+     *  control — a click that did nothing useful. Mirrors the strip's
+     *  select sites (spTakeStripSelection first: node and control
+     *  selection are exclusive); a bound popup keeps its selection. */
+    private void spSelectPopupControl() {
+        if (spPopSel() == null || spPopBoundToSel()) return;
+        spTakeStripSelection();
+        spSelPiece = spPopPiece;
+        spSelSec = spPopSec;
+        spSelCtl = spPopCtl;
+        spSelMark = -1;
+        spFocus = true;
     }
 
     /** Global-axis intervals covered by COMPLEX SPEED-type controls
@@ -9641,11 +12339,52 @@ class GraphEditor extends Region {
         gc.setGlobalAlpha(1);
     }
 
+    /** Clear the strip's control/mark selection. The options POPUP is
+     *  NOT hidden here since v19.20 (D249 — user spec: an open panel
+     *  is not a selection; it is bound to its own control via spPop*
+     *  and hides only through ✕, +V-off, a control delete, the
+     *  structural clears and spAfterRebuild when ITS control vanished
+     *  — those call spHideCtlPopup themselves). */
     private void spClearSel() {
         spSelPiece = spSelSec = spSelCtl = spSelMark = -1;
         spDropNodeSel();
         spFocus = false;
-        spHideCtlPopup();
+    }
+
+    /** THE PLOT-SIDE SELECTION CHOKE (v19.20, D249 — user spec: node
+     *  and speed-control selection are mutually exclusive): anything
+     *  selected on the plot/viewport side — a plot press, a marker
+     *  click, a gizmo/ball press, an s/c element — first drops the
+     *  strip's control/mark selection and hands spFocus back to the
+     *  plot (a strip-owned node selection goes with it). Before D249
+     *  only spFocus flipped (the plot press) or nothing at all (the
+     *  viewport paths): the control stayed lit (spDraw lights from
+     *  spSel* alone), and a marker click under spFocus set selIdx on
+     *  the STRIP surface — refreshMarkers passed −1, spSanitize
+     *  clamped it against the control's node count, H/F/B/Delete
+     *  routed to the strip. The options popup is untouched (see
+     *  spClearSel). Returns whether any strip state was cleared. */
+    private boolean takePlotSelection() {
+        boolean had = spSelPiece >= 0 || spSelCtl >= 0 || spSelMark >= 0
+            || spFocus;
+        if (!had) return false;
+        spSelPiece = spSelSec = spSelCtl = spSelMark = -1;
+        spDropNodeSel();   // the strip-owned node selection (gated on spFocus)
+        spFocus = false;
+        return true;
+    }
+
+    /** The MIRROR choke (D249): selecting a strip control / mark /
+     *  complex curve drops the PLOT's node selection UNCONDITIONALLY
+     *  — spDropNodeSel is gated on spFocus, still false while the
+     *  plot owned the selection, which left a plot node selected
+     *  beside a lit control (the old one-way asymmetry). Every
+     *  select site calls it right before `spFocus = true`. */
+    private void spTakeStripSelection() {
+        selIdx = -1;
+        selSet.clear();
+        axisLock = 0;
+        handleViewExpand = false;
     }
 
     /** Selecting a control/mark (or clearing) drops any strip NODE
@@ -9822,15 +12561,47 @@ class GraphEditor extends Region {
         // a near-flat curve hugging a gridline read as DIM, the
         // user's washed-out 5 m/s new-file graph) and at full alpha
         // like every other curve.
+        // The DESIGN speed draws BENEATH it as a second dotted line
+        // wherever it differs from the true speed by more than
+        // TRUE_SPLIT_PX on the strip scale (v19.19, D248, item S2 —
+        // user spec; the lanes' drawTrueStrokes rule, purely
+        // pixel-based: tilted pieces, followers, bridges and pinned
+        // sections all show it, an unconflicted chain never does):
+        // dimmer and thinner — the old true style, 1.5× finer dots —
+        // and the true line brighter still (SpeedStrip). Hidden with
+        // the true line inside complex SPEED controls; drawn through
+        // stalled stretches (the design profile keeps its energy).
         if (tall && app.trueV != null && app.lastSamples != null
                 && app.trueV.length == app.lastSamples.size()) {
             double rT0 = runT0(), rT1 = rT0 + runDur();
             List<double[]> hideIv = spSpeedCtlAxisRanges();
             gc.setStroke(SP_SPEED_COLOR);
-            gc.setLineWidth(1.2);
-            gc.setLineDashes(3, 4);
+            gc.setLineWidth(SpeedStrip.DESIGN_W);
+            gc.setLineDashes(SpeedStrip.DESIGN_DASH);
             gc.beginPath();
             boolean started = false;
+            for (int i = 0; i < app.trueV.length; i++) {
+                double a = gAxis(i);
+                if (a < rT0 || a > rT1 || spInRanges(hideIv, a)) {
+                    started = false;
+                    continue;
+                }
+                double py = spVToY(app.lastSamples.get(i).v());
+                if (!SpeedStrip.split(py, spVToY(app.trueV[i]),
+                        TRUE_SPLIT_PX)) {
+                    started = false;
+                    continue;
+                }
+                double px = tToX(a);
+                if (!started) { gc.moveTo(px, py); started = true; }
+                else gc.lineTo(px, py);
+            }
+            gc.stroke();
+            gc.setStroke(SP_TRUE_COLOR);
+            gc.setLineWidth(SpeedStrip.TRUE_W);
+            gc.setLineDashes(SpeedStrip.TRUE_DASH);
+            gc.beginPath();
+            started = false;
             for (int i = 0; i < app.trueV.length; i++) {
                 double a = gAxis(i);
                 if (a < rT0 || a > rT1 || spInRanges(hideIv, a)) {
@@ -9925,11 +12696,13 @@ class GraphEditor extends Region {
                 // COLLAPSED strip: lineY − 8 sits above the strip's
                 // clip rect and the glyphs were cut to slivers
                 // (v18.43, D215 — the user's covered hover message);
-                // drop the readout just under the line instead
-                gc.fillText(String.format("length %.2f %s",
-                    Math.abs(spNewX1 - spNewX0),
-                    nrs.sec().domain() == Section.Domain.DISTANCE
-                        ? "m" : "s"),
+                // drop the readout just under the line instead.
+                // DISPLAY units since v19.20 (D249, item S1): the
+                // length as the plot axis shows it (identity to the
+                // native delta where nothing maps)
+                gc.fillText("length " + SpeedStrip.posValue(
+                    Math.abs(spDispOf(nrs, spNewX1) - spDispOf(nrs, spNewX0)),
+                    axisDistPlain()),
                     nx0 + 4, tall ? lineY - 8 : bot - 2);
             }
         }
@@ -9944,13 +12717,73 @@ class GraphEditor extends Region {
             withSurf(() -> drawEditOverlays(gc, w));
         }
 
+        // POSITION readout (v19.20, D249, item S2): hovering a diamond
+        // (kind 3 — the hit is stored as (piece, sec, native x) and
+        // resolved HERE, so a view flip re-units it without a mouse
+        // move) or DRAGGING one (the live model's own diamond — hover
+        // state is zeroed at gesture start) prints "t = 3.20 s" /
+        // "s = 12.5 m" in DISPLAY units beside the diamond; under the
+        // line on a collapsed strip (the D215 clip lesson), above it
+        // when tall. The create drag keeps its "length …" text.
+        {
+            RunSec prs = null;
+            double pnx = 0;
+            boolean drag = spDragKind == 1 || spDragKind == 2
+                || spDragKind == 3 || spDragKind == SP_DRAG_START;
+            if (drag) {
+                RunSec srs = spSelRunSec();
+                if (srs != null) {
+                    if (spDragKind == 3) {
+                        List<Double> mk = srs.sec().speedMarks();
+                        if (spSelMark >= 0 && spSelMark < mk.size()) {
+                            prs = srs;
+                            pnx = mk.get(spSelMark);
+                        }
+                    } else {
+                        SpeedControl dc = spSel();
+                        if (dc != null) {
+                            prs = srs;
+                            pnx = spDragKind == 2 ? dc.x0 + dc.len : dc.x0;
+                        }
+                    }
+                }
+            } else if (spHoverKind == 3) {
+                prs = spRunSec(spHoverPiece, spHoverSec);
+                pnx = spHoverVal;
+                // the diamond must STILL be there (D249 review fix):
+                // an undo under a resting cursor removes or moves the
+                // hovered control without a mouse move, and the
+                // stored native x would print beside nothing
+                if (prs != null && !SpeedStrip.diamondAt(
+                        prs.sec().speedControls(), prs.sec().speedMarks(),
+                        pnx, 1e-9)) {
+                    prs = null;
+                }
+            }
+            if (prs != null) {
+                String txt = SpeedStrip.posReadout(spDispOf(prs, pnx),
+                    axisDistPlain());
+                double px = spXOf(prs, pnx);
+                gc.setGlobalAlpha(0.9);
+                gc.setFill(Color.WHITE);
+                gc.setFont(Font.font(10));
+                gc.setTextAlign(TextAlignment.LEFT);
+                gc.setTextBaseline(VPos.BOTTOM);
+                double tx = FvdDesigner.clamp(px + 8,
+                    MARGIN_LEFT + 2, plotRight - txt.length() * 6.0 - 4);
+                gc.fillText(txt, tx, tall ? lineY - 8 : bot - 2);
+                gc.setGlobalAlpha(1);
+            }
+        }
+
         // derived-curve hover readouts (each curve's own color — the
         // derived-curve rule; lane hovers ride the shared overlays):
         // kind 1 = resulting TRUE speed, kind 2 = longitudinal G
-        // inside a complex const-speed control (v18.4)
-        if (spHoverKind != 0) {
+        // inside a complex const-speed control (v18.4); kind 3 (a
+        // diamond's position) drew above
+        if (spHoverKind == 1 || spHoverKind == 2) {
             Color hc = spHoverKind == 2 ? SP_ACCEL_COLOR
-                                        : SP_SPEED_COLOR;
+                                        : SP_TRUE_COLOR;
             gc.setGlobalAlpha(0.55);
             gc.setFill(hc);
             gc.fillOval(spHoverX - 4, spHoverY - 4, 8, 8);
@@ -9977,6 +12810,21 @@ class GraphEditor extends Region {
                 }
             } else {
                 txt = String.format("v = %.2f m/s", spHoverVal);
+                // + the DESIGN speed at this sample, only where the
+                // design line is drawn (v19.19, D248 — the lanes'
+                // ' (true …)' rule; the index was captured at hit
+                // time, never re-derived after a rebuild)
+                if (app.trueV != null && app.lastSamples != null
+                        && spHoverIdx >= 0
+                        && spHoverIdx < Math.min(app.trueV.length,
+                            app.lastSamples.size())) {
+                    double dv = app.lastSamples.get(spHoverIdx).v();
+                    if (SpeedStrip.split(spVToY(dv),
+                            spVToY(app.trueV[spHoverIdx]),
+                            TRUE_SPLIT_PX)) {
+                        txt += SpeedStrip.designSuffix(dv);
+                    }
+                }
             }
             double tx = FvdDesigner.clamp(spHoverX + 8,
                 MARGIN_LEFT + 2, plotRight - txt.length() * 6.0 - 4);
@@ -10013,12 +12861,11 @@ class GraphEditor extends Region {
         }
         double vHi = 10, aLo = -0.5, aHi = 1;
         if (app.trueV != null && app.lastSamples != null) {
+            // TRUE and DESIGN speeds both (v19.19, D248 — the design
+            // line must stay in view like every derived curve, D174)
             double rT0 = runT0(), rT1 = rT0 + runDur();
-            for (int i = 0; i < app.trueV.length; i++) {
-                double a = gAxis(i);
-                if (a < rT0 || a > rT1) continue;
-                vHi = Math.max(vHi, app.trueV[i]);
-            }
+            vHi = SpeedStrip.fitHi(vHi, app.trueV, app.lastSamples,
+                this::gAxis, rT0, rT1);
         }
         for (RunSec rs : runLayout()) {
             for (SpeedControl c : rs.sec().speedControls()) {
@@ -10333,7 +13180,10 @@ class GraphEditor extends Region {
             if (opening && app.settings.speedStripTall()) {
                 app.settings.setSpeedStripTall(false);
             }
-            if (!spVisible()) spClearSel();
+            if (!spVisible()) {
+                spClearSel();
+                spHideCtlPopup();   // +V-off closes the panel (D249)
+            }
             redraw();
             return true;
         }
@@ -10404,10 +13254,13 @@ class GraphEditor extends Region {
                 spSelCtl = dia[1];
                 spSelMark = -1;
             }
-            spDropNodeSel();
+            spTakeStripSelection();   // exclusive both ways (D249)
             spFocus = true;
             beginGesture();
-            spDragKind = dia[2];
+            // the START diamond RESIZES from the left since v19.19
+            // (D248, user spec — both diamonds size their own end;
+            // the BODY is the move handle)
+            spDragKind = dia[2] == 1 ? SP_DRAG_START : dia[2];
             spGrabOff = 0;
             redraw();
             return true;
@@ -10419,7 +13272,7 @@ class GraphEditor extends Region {
             spSelSec = rs.section();
             spSelCtl = seg[1];
             spSelMark = -1;
-            spDropNodeSel();
+            spTakeStripSelection();   // exclusive both ways (D249)
             spFocus = true;
             // dragging the BODY MOVES the control like its start
             // diamond (v18.9, user spec), anchored where it was
@@ -10444,7 +13297,7 @@ class GraphEditor extends Region {
                     spSelSec = rs.section();
                     spSelCtl = hitC[1];
                     spSelMark = -1;
-                    spDropNodeSel();
+                    spTakeStripSelection();   // exclusive both ways (D249)
                     spFocus = true;
                     redraw();
                     return true;
@@ -10535,10 +13388,8 @@ class GraphEditor extends Region {
             RunSec rs = spNewRunSec();
             if (rs != null) {
                 double nx = spNativeAt(rs, e.getX());
-                if (e.isControlDown()) {
-                    double st = spSnapStep(rs.sec());
-                    nx = Math.round(nx / st) * st;
-                }
+                // Ctrl: the DISPLAY-axis snap (D249, item S1)
+                if (e.isControlDown()) nx = spSnapNative(rs, rs.sec(), nx);
                 spNewX1 = FvdDesigner.clamp(nx, spNewLo, spNewHi);
                 redraw();
             }
@@ -10574,10 +13425,23 @@ class GraphEditor extends Region {
         // under the cursor; the offset applies BEFORE the snap so
         // Ctrl still lands x0 on the grid
         if (spDragKind == 1) nx -= spGrabOff;
-        if (snap) {
-            double st = spSnapStep(s);
-            nx = Math.round(nx / st) * st;
-        }
+        spDragDiamondNative(nx, snap);
+    }
+
+    /** The diamond drag's NATIVE-x body (v19.19, D248, item S1 —
+     *  split out of spDragDiamondTo MECHANICALLY: the strip's pixel
+     *  wrapper above resolves the cursor and the body-grab offset,
+     *  this method snaps, clamps, writes and rebuilds exactly as
+     *  before). The 3D speed-control DISKS feed it a native x read
+     *  straight off the track (spViewportDragTo), so a disk drag and a
+     *  diamond drag are ONE write path — the disk can never move
+     *  further than the diamond can. */
+    private void spDragDiamondNative(double nx, boolean snap) {
+        Section s = spSelSection();
+        if (s == null) return;
+        // Ctrl: the DISPLAY-axis snap (D249, item S1 — native and
+        // bitwise where nothing is warped)
+        if (snap) nx = spSnapNative(spSelRunSec(), s, nx);
         double end = spSecEnd(s);
         List<SpeedControl> ctls = s.speedControls();
         if (spDragKind == 3 && spSelMark >= 0
@@ -10614,16 +13478,13 @@ class GraphEditor extends Region {
             c.x0 = x0new;
             if (app.rippleT && dx != 0) spRipple(s, c.x0 - dx + 1e-12, dx, end);
         } else if (spDragKind == 2) {
-            // RESIZE: the end diamond sets the length
-            double minLen = minGapOf(s) * 2;
-            double hi = end - c.x0;
-            for (SpeedControl o : ctls) {
-                if (o == c) continue;
-                if (o.x0 >= c.x0 + c.len - 1e-9 && !app.rippleT) {
-                    hi = Math.min(hi, o.x0 - c.x0);
-                }
-            }
-            double lenNew = FvdDesigner.clamp(nx - c.x0, minLen, hi);
+            // RESIZE: the end diamond sets the length — the clamp
+            // (section end / next control unless ripple / minLen)
+            // lives on Gestures since D248 so the viewport disk's
+            // write is gated as the strip's (bitwise the old inline
+            // arithmetic)
+            double lenNew = Gestures.resizeEndLen(c, nx, ctls,
+                minGapOf(s) * 2, end, app.rippleT);
             double dx = lenNew - c.len;
             if (app.rippleT && dx != 0) {
                 dx = spRippleLimit(s, c, dx, end);
@@ -10638,9 +13499,130 @@ class GraphEditor extends Region {
                 spRescaleCtlLanes(c, c.len / Math.max(1e-9, oldEnd - c.x0));
             }
             if (app.rippleT && dx != 0) spRipple(s, oldEnd, dx, end);
+        } else if (spDragKind == SP_DRAG_START) {
+            // RESIZE FROM THE LEFT (v19.19, D248): the end stays put,
+            // x0 follows the cursor between the previous control's end
+            // and end − minLen; complex graphs stretch with the extent
+            // (the shared fraction semantics); no ripple — nothing
+            // after the fixed end moves
+            Gestures.resizeStart(c, nx, ctls, minGapOf(s) * 2);
         }
         app.rebuildTrack();
         redraw();
+    }
+
+    // ---------- the 3D SPEED-CONTROL DISKS' entry points ----------
+    // (v19.19, D248, item S1 — Viewport3D draws every control's start
+    // and end as a disk on the heartline; a disk IS its diamond: the
+    // viewport picks the disk, reads a native x off the track and
+    // routes through the strip's own selection/gesture/write chokes
+    // below, so the strip's clamps, undo model and live redraw apply
+    // verbatim.)
+
+    /** A speed control by INDEX (piece, section, control) — the 3D
+     *  disks' selection-highlight key. */
+    record CtlRef(int piece, int sec, int ctl) {}
+
+    /** The strip's selected CONTROL as a CtlRef, or null. */
+    CtlRef spSelectedCtl() {
+        return spSel() != null
+            ? new CtlRef(spSelPiece, spSelSec, spSelCtl) : null;
+    }
+
+    /** A 3D DISK press on control (piece, sec, ctl): the strip's
+     *  diamond-press recipe — kind 1 = the START disk (SP_DRAG_START:
+     *  resize from the left, exactly the start diamond since item G),
+     *  2 = the END disk (resize). Refuses with a stats reason under
+     *  the convert preview (CONVERT_BUSY_MSG) and the start screen
+     *  (WIZARD_OPEN_WHY — the strip is unreachable under the panel, a
+     *  disk must not become a back door). A control on a piece
+     *  OUTSIDE the active run activates that piece + section FIRST (a
+     *  track click's semantics; the zoom resets here, never
+     *  mid-drag); inside the run nothing activates (strip parity). A
+     *  hidden strip opens COLLAPSED (the +V rule) so the mirrored
+     *  diamond is visible. One undo step per gesture (beginGesture
+     *  here, pushed on the first real move by spViewportDragTo; a
+     *  clean click pushes nothing). Returns whether a gesture
+     *  started. */
+    boolean spViewportPress(int piece, int sec, int ctl, int kind) {
+        if (app.convertBusy()) {
+            app.statsLabel.setText(FvdDesigner.CONVERT_BUSY_MSG);
+            return false;
+        }
+        if (startPanelActive()) {
+            app.statsLabel.setText(WIZARD_OPEN_WHY);
+            return false;
+        }
+        if (kind != 1 && kind != 2) return false;
+        if (piece < 0 || piece >= app.coaster.pieces.size()) return false;
+        List<Section> secs = app.coaster.pieces.get(piece).sections;
+        if (sec < 0 || sec >= secs.size()) return false;
+        Section s = secs.get(sec);
+        if (!s.speedControllable() || ctl < 0
+                || ctl >= s.speedControls().size()) return false;
+        if (piece < runStart() || piece > runEnd()) {
+            activatePieceSection(piece, sec);
+            if (piece < runStart() || piece > runEnd()) return false;
+        }
+        if (!spVisible()) {
+            app.settings.setShowSpeedStrip(true);
+            if (app.settings.speedStripTall()) {
+                app.settings.setSpeedStripTall(false);
+            }
+        }
+        // the shared node selection belongs to ONE surface at a time
+        // (v18.3): the unconditional clear (the D249 mirror choke)
+        spTakeStripSelection();
+        spSelPiece = piece;
+        spSelSec = sec;
+        spSelCtl = ctl;
+        spSelMark = -1;
+        spFocus = true;
+        spPendingAdd = false;
+        spRClick = 0;
+        spHoverKind = 0;     // no stale dot under a gesture (v18.2)
+        beginGesture();
+        spDragKind = kind == 1 ? SP_DRAG_START : 2;
+        spGrabOff = 0;
+        redraw();
+        return true;
+    }
+
+    /** A 3D disk drag event: the control's grabbed end follows the
+     *  NATIVE x the viewport read off the track (NaN = nothing
+     *  projected, the control stays put); snap = Ctrl (the strip's
+     *  own spSnapNative — the DISPLAY-axis grid under a cross-domain
+     *  view, D249). The first real move pushes the gesture's one undo
+     *  snapshot; the per-event rebuild runs hot (D200) until
+     *  spViewportRelease settles. */
+    void spViewportDragTo(double nativeX, boolean snap) {
+        if (spDragKind != SP_DRAG_START && spDragKind != 2) return;
+        if (Double.isNaN(nativeX)) return;
+        commitGestureSnapshot();
+        app.gestureHot = true;   // fast reconcile per event (D200)
+        app.pointerDown = true;
+        spDragDiamondNative(nativeX, snap);
+    }
+
+    /** A 3D disk release: ends the gesture (the strip's spRelease
+     *  tail — no snapshot on a clean click), settles the document
+     *  (D200) and, on an unmoved DOUBLE-click, opens the control's
+     *  options popup at the click (the diamond's double-click). */
+    void spViewportRelease(boolean moved, double sx, double sy,
+                           int clicks) {
+        boolean was = spDragKind != 0;
+        spDragKind = 0;
+        pendingSnapshot = null;
+        gestureMoved = false;
+        dragWinT0 = Double.NaN;   // unfreeze the time window (no canvas
+                                  // release follows a viewport gesture)
+        app.pointerDown = false;
+        app.gestureHot = false;
+        app.settleIfPending();
+        if (!moved && clicks == 2 && !app.convertBusy()) {
+            spShowCtlPopup(sx, sy);
+        }
+        if (was) redraw();
     }
 
     /** Ripple headroom: the largest |dx| every later control/mark can
@@ -10712,7 +13694,7 @@ class GraphEditor extends Region {
                     spSelSec = nrs.section();
                     spSelCtl = s.speedControls().indexOf(c);
                     spSelMark = -1;
-                    spDropNodeSel();
+                    spTakeStripSelection();   // exclusive both ways (D249)
                     spFocus = true;
                     app.rebuildTrack();
                 }
@@ -10721,6 +13703,9 @@ class GraphEditor extends Region {
             spPendingAdd = false;
             pendingSnapshot = null;
             gestureMoved = false;
+            dragWinT0 = Double.NaN;   // unfreeze the time window (the
+                                      // canvas release returns before
+                                      // its own unfreeze, D248 review)
             redraw();
             return true;
         }
@@ -10760,7 +13745,7 @@ class GraphEditor extends Region {
                         spSelSec = rs.section();
                         spSelMark = rs.sec().speedMarks().size() - 1;
                         spSelCtl = -1;
-                        spDropNodeSel();
+                        spTakeStripSelection();   // exclusive both ways (D249)
                         spFocus = true;
                         spMarkAddedAt = System.currentTimeMillis();
                         redraw();
@@ -10774,6 +13759,10 @@ class GraphEditor extends Region {
         if (was) {
             pendingSnapshot = null;
             gestureMoved = false;
+            dragWinT0 = Double.NaN;   // unfreeze (a diamond/mark drag
+                                      // froze it in beginGesture and the
+                                      // canvas release never reached its
+                                      // own unfreeze — D248 review fix)
             redraw();
             return true;
         }
@@ -10849,7 +13838,7 @@ class GraphEditor extends Region {
             spSelSec = rs.section();
             spSelCtl = ci;
             spSelMark = -1;
-            spDropNodeSel();
+            spTakeStripSelection();   // exclusive both ways (D249)
             spFocus = true;
             redraw();
             spShowCtlPopup(sx, sy);
@@ -10892,7 +13881,7 @@ class GraphEditor extends Region {
                 spSelSec = rs.section();
                 spSelCtl = s.speedControls().indexOf(c);
                 spSelMark = -1;
-                spDropNodeSel();
+                spTakeStripSelection();   // exclusive both ways (D249)
                 spFocus = true;
                 redraw();
                 spShowCtlPopup(sx, sy);
@@ -10929,7 +13918,7 @@ class GraphEditor extends Region {
         spSelSec = rs.section();
         spSelCtl = s.speedControls().size() - 1;
         spSelMark = -1;
-        spDropNodeSel();
+        spTakeStripSelection();   // exclusive both ways (D249)
         spFocus = true;
         app.rebuildTrack();
         redraw();
@@ -11003,12 +13992,27 @@ class GraphEditor extends Region {
         if (spVisible() && (spInStrip(e.getY())
                 || spBoxHit(e.getX(), e.getY())
                 || spArrowHit(e.getX(), e.getY()))) {
-            boolean overDia = spFindDiamond(e.getX(), e.getY()) != null;
+            int[] dia = spFindDiamond(e.getX(), e.getY());
+            boolean overDia = dia != null;
             canvas.setCursor(overDia ? Cursor.H_RESIZE
                 : spFindSegment(e.getX(), e.getY()) != null
                     || spBoxHit(e.getX(), e.getY())
                     || spArrowHit(e.getX(), e.getY())
                     ? Cursor.HAND : Cursor.DEFAULT);
+            if (overDia) {
+                // the diamond's POSITION readout (v19.20, D249, item
+                // S2) — the diamond owns the cursor, so it wins over
+                // the true-speed / long-G curves below; the display
+                // value is derived at draw time
+                RunSec drs = runLayout().get(dia[0]);
+                double dnx = spDiamondNative(drs, dia);
+                hk = 3;
+                hx = spXOf(drs, dnx);
+                hy = spLineY();
+                hv = dnx;
+                spHoverPiece = drs.piece();
+                spHoverSec = drs.section();
+            }
             if (app.settings.speedStripTall() && spInStrip(e.getY())) {
                 // the SHARED hover pipeline on the selected control's
                 // graph (v18.3): insert dot, Ctrl snap, node pre-light
@@ -11048,7 +14052,8 @@ class GraphEditor extends Region {
                     int gi = sampleIdxAtAxis(a);
                     // longitudinal-G hover inside complex const-
                     // speed controls (v18.4) — the blue dotted curve
-                    if (spLongGAt(a) != null) {
+                    // (a diamond hover, kind 3, already won)
+                    if (hk == 0 && spLongGAt(a) != null) {
                         double gL = spLongG(gi);
                         if (!Double.isNaN(gL)) {
                             double py = spAToY(gL);
@@ -11073,6 +14078,7 @@ class GraphEditor extends Region {
                             hx = e.getX();
                             hy = py;
                             hv = app.trueV[gi];
+                            spHoverIdx = gi;   // the design suffix (D248)
                         }
                     }
                 }
@@ -11112,6 +14118,7 @@ class GraphEditor extends Region {
             pushUndoSnapshot();
             s.speedControls().remove(spSelCtl);
             spClearSel();
+            spHideCtlPopup();   // a delete shifts control indices (D249)
             app.rebuildTrack();
             redraw();
             return true;
@@ -11121,6 +14128,7 @@ class GraphEditor extends Region {
             pushUndoSnapshot();
             s.speedMarks().remove(spSelMark);
             spClearSel();
+            spHideCtlPopup();   // (D249: delete = hide)
             redraw();
             return true;
         }
@@ -11171,19 +14179,50 @@ class GraphEditor extends Region {
 
     // ---------- the Speed Control options popup ----------
 
+    /** NULL-BEFORE-HIDE (v19.18, D247 — the seam pop-out's undo bug
+     *  had its twin here: spAfterRebuild tears this panel down after
+     *  an undo removed the selected control, and the hide-time
+     *  focus-loss commit of a drag-set x0/len box's "#.##" text ran
+     *  the listeners as a user edit — a stray snapshot that cleared
+     *  redo). The field is nulled first so every listener's
+     *  `pop != spPopup` guard rejects the stray event. */
     private void spHideCtlPopup() {
-        if (spPopup != null) {
-            spPopup.hide();
-            spPopup = null;
-            spPopupSync = null;
-        }
+        javafx.stage.Popup old = spPopup;
+        if (old == null) return;
+        spPopup = null;
+        spPopupSync = null;
+        spPopPiece = spPopSec = spPopCtl = -1;   // the binding goes with it (D249)
+        app.modelHooks.remove(spHook);   // live-window de-registration (D247)
+        old.hide();
     }
+
+    /** The speed-control panel's ONE stable model hook (D247):
+     *  registered by spShowCtlPopup, removed by spHideCtlPopup;
+     *  spAfterRebuild re-syncs the open panel or hides it when its
+     *  control is gone (an undo past its creation). */
+    private final Runnable spHook = this::spAfterRebuild;
 
     void spShowCtlPopup(double sx, double sy) {
         spHideCtlPopup();
-        SpeedControl c = spSel();
-        RunSec rs = spSelRunSec();
-        if (c == null || rs == null) return;
+        // INDEX-RESOLVED control (v19.18, D247): the open-time objects
+        // c0/rs0 seed the widgets only; every handler and the sync
+        // re-resolve through the panel's OWN binding spPopSel()/
+        // spPopRunSec() (v19.20, D249 — a copy of the SELECTION indices
+        // taken here; they survive applyDocState) — after an undo the
+        // panel writes the LIVE control, never the orphaned capture; a
+        // vanished control hides the panel; a selection moving to a
+        // node/marker/gizmo leaves it open on its control
+        spPopPiece = spSelPiece;
+        spPopSec = spSelSec;
+        spPopCtl = spSelCtl;
+        SpeedControl c0 = spPopSel();
+        RunSec rs0 = spPopRunSec();
+        if (c0 == null || rs0 == null) {
+            spPopPiece = spPopSec = spPopCtl = -1;
+            return;
+        }
+        java.util.function.Supplier<SpeedControl> cs = this::spPopSel;
+        java.util.function.Supplier<RunSec> rss = this::spPopRunSec;
         javafx.stage.Popup pop = new javafx.stage.Popup();
         pop.setAutoHide(false);   // Apply-free live panel; ✕ closes
         spPopup = pop;
@@ -11195,7 +14234,7 @@ class GraphEditor extends Region {
             + " -fx-border-radius: 6;");
 
         boolean[] syncing = { false };
-        String unit = rs.sec().domain() == Section.Domain.DISTANCE
+        String unit = rs0.sec().domain() == Section.Domain.DISTANCE
             ? "m" : "s";
 
         Label title = new Label("Speed Control");
@@ -11211,8 +14250,10 @@ class GraphEditor extends Region {
         titleRow.setAlignment(Pos.CENTER_LEFT);
 
         ToggleGroup tg = new ToggleGroup();
-        RadioButton rSpeed = new RadioButton("Constant Speed (lift, transport)");
-        RadioButton rAccel = new RadioButton("Constant Acceleration (launch, brake)");
+        // "Constant" dropped from both since v19.19 (D248, user spec);
+        // the parenthetical hints stay
+        RadioButton rSpeed = new RadioButton("Speed (lift, transport)");
+        RadioButton rAccel = new RadioButton("Acceleration (launch, brake)");
         for (RadioButton rb : new RadioButton[]{ rSpeed, rAccel }) {
             rb.setToggleGroup(tg);
             rb.setTextFill(Color.WHITE);
@@ -11227,7 +14268,7 @@ class GraphEditor extends Region {
         speedLbl.setStyle("-fx-font-size: 11px;");
         Spinner<Double> speedSp = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
-                0.5, 200, c.speed, 1));
+                0.5, 200, c0.speed, 1));
         speedSp.setEditable(true);
         speedSp.setPrefWidth(76);
         FvdDesigner.numericEditor(speedSp, false);   // v18.1: digits only
@@ -11250,7 +14291,7 @@ class GraphEditor extends Region {
         accelLbl.setStyle("-fx-font-size: 11px;");
         Spinner<Double> accelSp = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
-                0, 20, c.accel, 0.05));
+                0, 20, c0.accel, 0.05));
         accelSp.setEditable(true);
         accelSp.setPrefWidth(76);
         FvdDesigner.numericEditor(accelSp, false);
@@ -11269,7 +14310,7 @@ class GraphEditor extends Region {
         decelLbl.setStyle("-fx-font-size: 11px;");
         Spinner<Double> decelSp = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
-                0, 20, c.decel, 0.05));
+                0, 20, c0.decel, 0.05));
         decelSp.setEditable(true);
         decelSp.setPrefWidth(76);
         FvdDesigner.numericEditor(decelSp, false);
@@ -11287,7 +14328,12 @@ class GraphEditor extends Region {
         startLbl.setStyle("-fx-font-size: 11px;");
         Spinner<Double> startSp = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
-                0, 100000, c.x0, unit.equals("m") ? 1 : 0.1));
+                0, 100000, c0.x0, unit.equals("m") ? 1 : 0.1));
+        // the box MOVES the control (a position); the strip's start
+        // diamond RESIZES from the left since v19.19 (D248)
+        Tooltip.install(startSp, new Tooltip("Where the control starts "
+            + "— moves it, length kept. On the strip, the start diamond "
+            + "resizes the control from the left instead."));
         startSp.setEditable(true);
         startSp.setPrefWidth(76);
         FvdDesigner.numericEditor(startSp, false);
@@ -11297,12 +14343,32 @@ class GraphEditor extends Region {
         Spinner<Double> lenSp = new Spinner<>(
             new SpinnerValueFactory.DoubleSpinnerValueFactory(
                 // v18.1: minimum length = 2× the domain's min node gap
-                unit.equals("m") ? 0.2 : 0.02, 100000, c.len,
+                unit.equals("m") ? 0.2 : 0.02, 100000, c0.len,
                 unit.equals("m") ? 1 : 0.1));
         lenSp.setEditable(true);
         lenSp.setPrefWidth(76);
         FvdDesigner.numericEditor(lenSp, false);
-        HBox posRow = new HBox(8, startLbl, startSp, lenLbl, lenSp);
+        // DISPLAY-unit TWINS (v19.20, D249, item S1): the Start/Length
+        // boxes stay NATIVE (they write model coordinates — a
+        // display-unit box would need a live inverse warp per
+        // keystroke); while the control's section is VIEWED in the
+        // other domain a grey "= 12.5 m" / "= 3.20 s" beside each box
+        // shows the displayed value (the node editor's D241 twin
+        // pattern, read-only), hidden otherwise
+        Label startTwin = new Label();
+        Label lenTwin = new Label();
+        for (Label tw : new Label[]{ startTwin, lenTwin }) {
+            tw.setTextFill(Color.rgb(150, 156, 170));
+            tw.setStyle("-fx-font-size: 11px;");
+            tw.setVisible(false);
+            tw.setManaged(false);
+        }
+        Tooltip.install(startTwin, new Tooltip(
+            "The start as the graph's axis shows it."));
+        Tooltip.install(lenTwin, new Tooltip(
+            "The length as the graph's axis shows it."));
+        HBox posRow = new HBox(8, startLbl, startSp, startTwin,
+            lenLbl, lenSp, lenTwin);
         posRow.setAlignment(Pos.CENTER_LEFT);
 
         Label startSpdLbl = new Label();
@@ -11322,8 +14388,10 @@ class GraphEditor extends Region {
         Tooltip enterTip = new Tooltip(
             "Make control speed equal to enter speed");
         enterTip.setShowDelay(Duration.millis(300));
-        java.util.function.Supplier<Boolean> enterClickable = () ->
-            !(c.complex && c.type != SpeedControl.ACCEL);
+        java.util.function.Supplier<Boolean> enterClickable = () -> {
+            SpeedControl c = cs.get();
+            return c != null && !(c.complex && c.type != SpeedControl.ACCEL);
+        };
         startSpdLbl.setOnMouseEntered(ev -> {
             if (enterClickable.get()) startSpdLbl.setStyle(enterHot);
         });
@@ -11339,6 +14407,9 @@ class GraphEditor extends Region {
         refRow.setAlignment(Pos.CENTER_LEFT);
         startSpdLbl.setOnMouseClicked(ev -> {
             if (!enterClickable.get()) return;
+            SpeedControl c = cs.get();
+            RunSec rs = rss.get();
+            if (c == null || rs == null) return;
             double[] sv = spCtlSpeeds(rs, c, false);
             if (Double.isNaN(sv[0])) return;
             speedSp.getValueFactory().setValue(Math.max(0.5,
@@ -11352,6 +14423,8 @@ class GraphEditor extends Region {
         StackPane decelSpWrap = grayHint(decelSp,
             "Unlink 🔗 for a separate brake value.");
         Runnable relayout = () -> {
+            SpeedControl c = cs.get();
+            if (c == null) return;
             speedRow.getChildren().clear();
             accelRow.getChildren().clear();
             boolean acc = c.type == SpeedControl.ACCEL;
@@ -11389,13 +14462,18 @@ class GraphEditor extends Region {
         };
 
         Runnable sync = () -> {
+            SpeedControl c = cs.get();
+            RunSec rs = rss.get();
+            if (c == null || rs == null) { spHideCtlPopup(); return; }
             syncing[0] = true;
             (c.type == SpeedControl.ACCEL ? rAccel : rSpeed)
                 .setSelected(true);
             complex.setSelected(c.complex);
-            speedSp.getValueFactory().setValue(c.speed);
-            accelSp.getValueFactory().setValue(c.accel);
-            decelSp.getValueFactory().setValue(c.decel);
+            // FOCUS-GUARDED spinner writes (D247): a box being typed
+            // into is never overwritten by a live resync
+            app.setUnlessTyping(speedSp, c.speed);
+            app.setUnlessTyping(accelSp, c.accel);
+            app.setUnlessTyping(decelSp, c.decel);
             link.setSelected(c.tied);
             // small button, glyph-size chain, NEON-YELLOW highlight
             // while linked, no outline (v18.48, D220 — user spec;
@@ -11414,8 +14492,24 @@ class GraphEditor extends Region {
             editDecel.setDisable(c.tied);
             maxC.setSelected(c.maxLimit);
             minC.setSelected(c.minLimit);
-            startSp.getValueFactory().setValue(c.x0);
-            lenSp.getValueFactory().setValue(c.len);
+            app.setUnlessTyping(startSp, c.x0);
+            app.setUnlessTyping(lenSp, c.len);
+            // the display-unit twins follow the VIEW flag live (the
+            // sync runs per redraw through spHook — a view flip, a
+            // drag, an undo all re-read; only the active section can
+            // be viewed, so leaving it hides them)
+            boolean viewed = rs.sec().viewOtherDomain();
+            if (viewed) {
+                boolean m = axisDistPlain();
+                double d0 = spDispOf(rs, c.x0);
+                double d1 = spDispOf(rs, c.x0 + c.len);
+                startTwin.setText("= " + SpeedStrip.posValue(d0, m));
+                lenTwin.setText("= " + SpeedStrip.posValue(d1 - d0, m));
+            }
+            for (Label tw : new Label[]{ startTwin, lenTwin }) {
+                tw.setVisible(viewed);
+                tw.setManaged(viewed);
+            }
             // Enter + End reference readouts (v18.7, D176; renamed
             // v19.8, D237 — Enter is CLICKABLE: target := enter
             // speed, except complex SPEED controls)
@@ -11432,6 +14526,10 @@ class GraphEditor extends Region {
             syncing[0] = false;
         };
         spPopupSync = sync;
+        // LIVE (D247): the panel follows every compile through the
+        // shell's model hooks (spAfterRebuild hides it when its
+        // control is gone); de-registered in spHideCtlPopup
+        if (!app.modelHooks.contains(spHook)) app.modelHooks.add(spHook);
 
         // every discrete change: one undo step, live rebuild
         Runnable changed = () -> {
@@ -11442,6 +14540,9 @@ class GraphEditor extends Region {
         };
         rSpeed.setOnAction(ev -> {
             if (syncing[0]) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { sync.run(); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.type = SpeedControl.SPEED;
             if (c.complex) c.freshLane(c.speed);
@@ -11451,6 +14552,9 @@ class GraphEditor extends Region {
         });
         rAccel.setOnAction(ev -> {
             if (syncing[0]) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { sync.run(); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.type = SpeedControl.ACCEL;
             if (c.complex) {
@@ -11461,6 +14565,9 @@ class GraphEditor extends Region {
         });
         complex.setOnAction(ev -> {
             if (syncing[0]) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { sync.run(); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.complex = complex.isSelected();
             if (c.complex && c.lane.size() < 2) {
@@ -11475,6 +14582,9 @@ class GraphEditor extends Region {
         });
         link.setOnAction(ev -> {
             if (syncing[0]) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { sync.run(); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.tied = link.isSelected();
             // both directions leave the values EQUAL at the flip:
@@ -11494,6 +14604,9 @@ class GraphEditor extends Region {
             changed.run();
         });
         editGraph.setOnAction(ev -> {
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            spSelectPopupControl();   // the strip edits THIS control (D249 review)
             // untied complex: this button also SELECTS the accel
             // graph for display (v18.45, D217)
             if (c.showDecel) {
@@ -11509,7 +14622,9 @@ class GraphEditor extends Region {
             spMovePopupClear(pop);
         });
         editDecel.setOnAction(ev -> {
-            if (!c.complex) return;
+            SpeedControl c = cs.get();
+            if (c == null || !c.complex) return;
+            spSelectPopupControl();   // the strip edits THIS control (D249 review)
             // LINKED: one graph serves both directions — this button
             // just opens it, exactly like Edit Acceleration (v18.47)
             if (!c.tied && !c.showDecel) {
@@ -11524,53 +14639,76 @@ class GraphEditor extends Region {
             if (spPopupSync != null) spPopupSync.run();
             spMovePopupClear(pop);
         });
+        // every listener below carries the `pop != spPopup` IDENTITY
+        // GUARD (v19.18, D247): after spHideCtlPopup nulls the field
+        // a hide-time focus-loss commit can no longer write the stale
+        // control or push a stray snapshot
         decelSp.valueProperty().addListener((o, a, v) -> {
-            if (syncing[0] || v == null) return;
+            if (syncing[0] || v == null || pop != spPopup) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { app.revertSpinner(decelSp, a); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.decel = v;
             if (c.tied) c.accel = v;   // linked: mirror (v18.47, D219)
             changed.run();
         });
         speedSp.valueProperty().addListener((o, a, v) -> {
-            if (syncing[0] || v == null) return;
+            if (syncing[0] || v == null || pop != spPopup) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { app.revertSpinner(speedSp, a); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.speed = v;
             changed.run();
         });
         accelSp.valueProperty().addListener((o, a, v) -> {
-            if (syncing[0] || v == null) return;
+            if (syncing[0] || v == null || pop != spPopup) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { app.revertSpinner(accelSp, a); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.accel = v;
             if (c.tied) c.decel = v;   // linked: mirror (v18.47, D219)
             changed.run();
         });
         maxC.setOnAction(ev -> {
-            if (syncing[0]) return;
+            if (syncing[0] || pop != spPopup) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { sync.run(); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.maxLimit = maxC.isSelected();
             if (!c.maxLimit && !c.minLimit) c.minLimit = true;  // one stays
             changed.run();
         });
         minC.setOnAction(ev -> {
-            if (syncing[0]) return;
+            if (syncing[0] || pop != spPopup) return;
+            SpeedControl c = cs.get();
+            if (c == null) return;
+            if (app.convertBusy()) { sync.run(); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.minLimit = minC.isSelected();
             if (!c.maxLimit && !c.minLimit) c.maxLimit = true;
             changed.run();
         });
         startSp.valueProperty().addListener((o, a, v) -> {
-            if (syncing[0] || v == null) return;
-            Section s = spSelSection();
-            if (s == null) return;
+            if (syncing[0] || v == null || pop != spPopup) return;
+            Section s = spPopSection();   // the panel's own control (D249)
+            SpeedControl c = cs.get();
+            if (s == null || c == null) return;
+            if (app.convertBusy()) { app.revertSpinner(startSp, a); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             c.x0 = FvdDesigner.clamp(v, 0,
                 Math.max(0, spSecEnd(s) - c.len));
             changed.run();
         });
         lenSp.valueProperty().addListener((o, a, v) -> {
-            if (syncing[0] || v == null) return;
-            Section s = spSelSection();
-            if (s == null) return;
+            if (syncing[0] || v == null || pop != spPopup) return;
+            Section s = spPopSection();   // the panel's own control (D249)
+            SpeedControl c = cs.get();
+            if (s == null || c == null) return;
+            if (app.convertBusy()) { app.revertSpinner(lenSp, a); return; }   // F3 (D247 review fix)
             pushUndoSnapshot();
             double oldLen = c.len;
             c.len = FvdDesigner.clamp(v, minGapOf(s) * 2,
@@ -11623,7 +14761,7 @@ class GraphEditor extends Region {
                     spFocusHidden = true;
                 } else if (is && spFocusHidden) {
                     spFocusHidden = false;
-                    if (spPopup != null && spSel() != null) {
+                    if (spPopup != null && spPopSel() != null) {   // its own control (D249)
                         spPopup.show(canvas.getScene().getWindow(),
                             spHidX, spHidY);
                     }
@@ -11640,125 +14778,348 @@ class GraphEditor extends Region {
         }
     }
 
-    /** The popup follows compiles (end-speed label + stale checks). */
+    /** The popup follows compiles (end-speed label + stale checks) —
+     *  and, since v19.20 (D249), FOLLOWS a newly SELECTED control: when
+     *  the selection names a control other than the panel's own it is
+     *  re-shown at its current position bound to that control (the
+     *  pre-D249 follow came for free from resolving the selection; the
+     *  rebuild also refreshes the domain unit, which a cross-domain
+     *  follow used to leave stale). Never mid-gesture (spDragKind ==
+     *  0). Its own control vanished → hide. */
     private void spAfterRebuild() {
         if (spPopup != null && spPopup.isShowing()) {
-            if (spSel() == null) spHideCtlPopup();
+            if (spSelCtl >= 0 && spDragKind == 0 && !spPopBoundToSel()
+                    && spSel() != null && spSelRunSec() != null) {
+                double x = spPopup.getX(), y = spPopup.getY();
+                spShowCtlPopup(x - 12, y + 40);   // spShowCtlPopup offsets (+12, −40)
+                return;
+            }
+            if (spPopSel() == null) spHideCtlPopup();
             else if (spPopupSync != null) spPopupSync.run();
         }
     }
 
-    /** SET INITIAL DESIGN SPEED (v18.0, D162 — user spec): type the
+    /** The LIVE initial-speed window (v19.20, D249): one at a time,
+     *  null-before-hide; its hook de-registers with it. */
+    private Stage initSpeedWin;
+    private Runnable initSpeedHook;
+    /** Its docRestoreHooks twin (D249 review fix): an undo restore
+     *  re-bases the Cancel record, the placement windows' rule. */
+    private Runnable initSpeedRestoreHook;
+
+    void hideInitSpeedWindow() {
+        Stage old = initSpeedWin;
+        if (old == null) return;
+        initSpeedWin = null;
+        if (initSpeedHook != null) app.modelHooks.remove(initSpeedHook);
+        if (initSpeedRestoreHook != null) {
+            docRestoreHooks.remove(initSpeedRestoreHook);
+        }
+        initSpeedHook = initSpeedRestoreHook = null;
+        old.close();
+    }
+
+    /** INITIAL DESIGN SPEED (v18.0, D162 — user spec): type the
      *  section's starting design speed directly, any time after
-     *  creation. The ride entry (piece 0, section 0) writes through
-     *  the Start-speed spinner (v0 coupling + its own undo); any
-     *  other section pins (a deliberate conflict, exactly like the
-     *  Add dialog's unlocked padlock). "Set Design to Real" only
-     *  FILLS THE BOX with the true entry speed since v19.11 (D240,
-     *  user spec — Apply then commits it; the seam-sample read is
-     *  the reconcile's own D237 anchor). Applying that fill
-     *  UNMODIFIED runs the SPEED-ONLY resolve since v19.13 (D242,
-     *  user re-spec of D241's full-resolve: "purely adjust the
-     *  starting speed" — exact seam value, un-pinned so it follows
-     *  naturally, but an ORIENTATION conflict is left standing;
-     *  with none, this equals the badge menu's resolve op, which
-     *  alone bakes tilt/follow. A hand-typed value still pins as a
-     *  deliberate conflict). */
+     *  creation. LIVE since v19.20 (D249, user spec — the node
+     *  editor's model): every spinner change APPLIES AT ONCE — the
+     *  ride entry (piece 0, section 0) writes v0 + section 0's
+     *  vDesign through the muted Start-speed spinner (its [1,100]
+     *  factory clamp = the D198 entry rule, no history push of its
+     *  own); any other section writes vDesign + PINS (a deliberate
+     *  conflict the reconcile leaves alone — a value re-typed EQUAL
+     *  still pins, D242) — with the undo coalesced per 0.8 s typing
+     *  burst (the liveUndo recipe). "Set Design to Real" runs
+     *  Coaster.refreezeSpeedOnly AT ONCE (one undo step: the exact
+     *  seam speed, un-pinned so it follows the real flow; an
+     *  ORIENTATION conflict is left standing — the badge menu's
+     *  resolve op alone bakes tilt/follow; D241's fill-the-box +
+     *  D242's unmodified-Apply rule are superseded: with live
+     *  editing there is no Apply moment); the ride entry grays it
+     *  (its real entry speed IS v0). A LiveWindow: Confirm / Enter /
+     *  the X keep (the focused box commits first), Cancel / Esc
+     *  restore the open-time vDesign + vPinned (+ v0 for the ride
+     *  entry) as one more undo step — skipped with CANCEL_STALE_MSG
+     *  when the coaster switched or a generation the hooks did not
+     *  re-capture (D249 review fix: the record RE-BASES on every undo
+     *  restore through a docRestoreHooks twin and, in the model hook,
+     *  on any document generation it has not seen — the density
+     *  preview's Apply path; the three placement windows' rule. Cancel
+     *  then reverts to the state the last restore left, and edits
+     *  typed after an undo cancel normally). The hook re-seeds the box
+     *  from the model (undo outranks typing, and an undo ends the
+     *  coalescing burst) and tears the window down when its section
+     *  is gone. */
     private void showInitSpeedDialog(int k) {
         List<Section> secs = sections();
-        if (k >= secs.size()) return;
-        Section sec = secs.get(k);
+        if (k < 0 || k >= secs.size()) return;
+        hideInitSpeedWindow();
         final int piece = activePiece;             // modeless: capture
-        final String[] filledReal = {null};        // D241 equivalence
-        javafx.stage.Stage dlg = new javafx.stage.Stage();
-        dlg.initOwner(canvas.getScene().getWindow());
-        dlg.setTitle("Initial design speed");
+        final Coaster openC = app.coaster;
+        final int[] openGen = { app.docGen };      // re-based (D249 review)
+        // INDEX-RESOLVED section (v19.18, D247): every use re-reads
+        // the live document — an undo/redo replaces the Section
+        // objects; the capture below only seeds the box.
+        java.util.function.Supplier<Section> secAt = () -> {
+            if (app.coaster != openC) return null;
+            if (piece < 0 || piece >= app.coaster.pieces.size()) return null;
+            List<Section> ss = app.coaster.pieces.get(piece).sections;
+            return k < ss.size() ? ss.get(k) : null;
+        };
+        Section sec = secs.get(k);
+        final boolean entry = piece == 0 && k == 0;   // the ride entry
+        // the OPEN-TIME record — Cancel's field-level revert; MUTABLE:
+        // an undo restore / an unseen document generation re-bases it
+        // (D249 review fix — it was captured once, so every Cancel
+        // after an undo skipped with CANCEL_STALE_MSG)
+        final double[] openV = { sec.vDesign() };
+        final boolean[] openPin = { sec.vPinned() };
+        final double[] openV0 = { app.coaster.v0 };
+        Runnable rebase = () -> {
+            Section s0 = secAt.get();
+            if (s0 == null) return;
+            openV[0] = s0.vDesign();
+            openPin[0] = s0.vPinned();
+            openV0[0] = app.coaster.v0;
+            openGen[0] = app.docGen;
+        };
+        final boolean[] syncing = { false };
+        // UNDO COALESCING (the node editor's liveUndo recipe): edits
+        // within 0.8 s share one step; a fresh key / the button /
+        // Cancel / an undo restore end the burst
+        final String[] undoKey = { null };
+        final long[] undoNanos = { 0 };
+        Runnable endBurst = () -> undoKey[0] = null;
+        java.util.function.Consumer<String> liveUndo = key -> {
+            long now = System.nanoTime();
+            if (!key.equals(undoKey[0]) || now - undoNanos[0] > 800_000_000L) {
+                pushUndoSnapshot();
+            }
+            undoKey[0] = key;
+            undoNanos[0] = now;
+        };
+        final Stage[] winRef = { null };
+        Runnable teardown = () -> {
+            if (winRef[0] != null && winRef[0] == initSpeedWin) {
+                hideInitSpeedWindow();
+            }
+        };
         Label lbl = new Label("Initial design speed (m/s)");
-        TextField vf = new TextField(
-            String.format(Locale.US, "%.2f", sec.vDesign()));
-        vf.setPrefColumnCount(7);
-        vf.setTextFormatter(FvdDesigner.numFormatter());   // v18.1
+        // a TYPABLE SPINNER since v19.19 (D248 — the global spinner
+        // conventions: wheel/arrows step 1 m/s, Shift a tenth, Ctrl
+        // snaps to whole multiples, holding repeats; %.2f display,
+        // typed values apply at full precision; the factory range IS
+        // the D198 admit-what-the-app-writes clamp)
+        Spinner<Double> vSp = new Spinner<>(
+            new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                Gestures.INIT_SPEED_MIN, Gestures.INIT_SPEED_MAX,
+                Gestures.clampInitSpeed(sec.vDesign()), 1));
+        // the converter goes on BEFORE typable(): numericEditor wraps
+        // whatever converter it finds with the blank-safe one (D212)
+        vSp.getValueFactory().setConverter(
+            FvdDesigner.fixedDecimalConverter(2));
+        vSp.setPrefWidth(86);
+        FvdDesigner.typable(vSp, false);
+        // the LIVE apply — every value change, muted only by the
+        // window's own programmatic writes
+        java.util.function.Consumer<Double> apply = v -> {
+            Section live0 = secAt.get();
+            if (live0 == null) {
+                teardown.run();
+                app.statsLabel.setText("The initial design speed window "
+                    + "closed — its section no longer exists.");
+                return;
+            }
+            double cv = Gestures.clampInitSpeed(v);
+            if (entry) {
+                // the ride entry's value is what the Start-speed
+                // spinner will take ([1,100]) — compare THAT, so a
+                // typed 0.5 over a v0 of 1.0 is the no-op it is and
+                // pushes no empty undo step (D249 review fix)
+                cv = app.clampStartSpeed(cv);
+                if (Math.abs(cv - app.coaster.v0) < 1e-9
+                        && Math.abs(cv - live0.vDesign()) < 1e-9) {
+                    return;
+                }
+                liveUndo.accept("v");
+                app.writeStartSpeed(cv);   // v0 + section 0, muted
+            } else {
+                // equal AND already pinned = nothing to do; equal but
+                // unpinned still PINS (D242's re-typed-equal rule)
+                if (Math.abs(cv - live0.vDesign()) < 1e-9
+                        && live0.vPinned()) {
+                    return;
+                }
+                liveUndo.accept("v");
+                live0.vDesign(cv);
+                live0.vPinned(true);   // deliberate: reconcile leaves it
+            }
+            app.markDirty();
+            app.rebuildTrack();
+            refreshOffset();
+            redraw();
+        };
+        vSp.valueProperty().addListener((o, a, b) -> {
+            if (syncing[0] || b == null) return;
+            // the NULL-BEFORE-HIDE identity guard (D247): a torn-down
+            // window's editor loses focus on close, and that commit
+            // must never write through an orphaned listener
+            if (winRef[0] != null && winRef[0] != initSpeedWin) return;
+            if (app.convertBusy()) {   // the D247 transaction guard
+                syncing[0] = true;
+                try {
+                    app.revertSpinner(vSp, a);
+                } finally {
+                    syncing[0] = false;
+                }
+                return;
+            }
+            apply.accept(b);
+        });
+        // a box that loses focus re-seeds from the MODEL (after
+        // numericEditor's focus-loss commit, registered earlier, ran
+        // the apply): the ride entry's [1,100] clamp can leave the
+        // typed text above/below what the model took
+        vSp.getEditor().focusedProperty().addListener((o, a, f) -> {
+            if (f || syncing[0]) return;
+            if (winRef[0] != null && winRef[0] != initSpeedWin) return;
+            Section s0 = secAt.get();
+            if (s0 == null) return;
+            syncing[0] = true;
+            try {
+                app.setUnlessTyping(vSp, Gestures.clampInitSpeed(s0.vDesign()));
+            } finally {
+                syncing[0] = false;
+            }
+        });
         Button toReal = new Button("Set Design to Real");
         toReal.setFocusTraversable(false);
-        boolean haveTrue = app.trueV != null && app.sectionSpans != null
-            && pieceBase(activePiece) + k < app.sectionSpans.size();
-        toReal.setDisable(!haveTrue);
+        // enabled-state hover (the grayHint wrapper below owns the
+        // DISABLED-state reason)
+        Tooltip.install(toReal, new Tooltip(
+            "Sets this section's design speed to the real entry speed "
+            + "at once, resolving a speed conflict. Does not resolve an "
+            + "orientation conflict"));
+        // the gray reason is LIVE (D247): re-evaluated per compile
+        java.util.function.Supplier<String> toRealWhy = () -> {
+            if (entry) {
+                return "The ride entry's design speed is the real one — "
+                    + "nothing to set.";
+            }
+            boolean have = secAt.get() != null && app.trueV != null
+                && app.sectionSpans != null
+                && pieceBase(piece) + k < app.sectionSpans.size();
+            return have ? null : "Nothing compiled for this section yet.";
+        };
+        toReal.setDisable(toRealWhy.get() != null);
         toReal.setOnAction(ev -> {
-            int idx = pieceBase(activePiece) + k;
-            if (app.trueV == null || app.sectionSpans == null
-                    || idx >= app.sectionSpans.size()) return;
-            int ip = idx > 0 ? app.sectionSpans.get(idx - 1).i1()
-                             : app.sectionSpans.get(idx).i0();
-            if (ip >= app.trueV.length) return;
-            String txt = String.format(Locale.US, "%.2f",
-                Math.max(0.5, app.trueV[ip]));
-            vf.setText(txt);
-            filledReal[0] = txt;   // unmodified Apply = the resolve op
-        });
-        Button apply = new Button("Apply");
-        apply.setDefaultButton(true);
-        Button cancel = new Button("Cancel");
-        cancel.setCancelButton(true);
-        cancel.setOnAction(ev -> dlg.close());
-        apply.setOnAction(ev -> {
-            double v;
-            try {
-                v = Double.parseDouble(vf.getText().trim());
-            } catch (NumberFormatException ex) {
+            if (app.convertBusy()) return;   // the D247 transaction guard
+            if (toRealWhy.get() != null) return;
+            Section live0 = secAt.get();
+            if (live0 == null) {
+                teardown.run();
+                app.statsLabel.setText("The initial design speed window "
+                    + "closed — its section no longer exists.");
                 return;
             }
-            // admit what the app itself produces (the D198 rule —
-            // widened in v19.11 so the filled-in TRUE speed, which
-            // can sit below 1 near a stall, round-trips; the ride
-            // entry still clamps to its spinner's own range)
-            v = FvdDesigner.clamp(v, 0.1, 1e4);
-            dlg.close();
-            // D242: the box still holds EXACTLY what "Set Design to
-            // Real" filled in → the SPEED-ONLY resolve: exact seam
-            // value, un-pinned so the speed follows the real flow
-            // naturally; any orientation conflict stays untouched
-            // (the badge menu's resolve op alone bakes tilt/follow).
-            // The ride entry keeps the spinner write (no conflict
-            // exists there).
-            if (filledReal[0] != null
-                    && vf.getText().trim().equals(filledReal[0])
-                    && !(piece == 0 && k == 0)) {
-                pushUndoSnapshot();
-                if (app.coaster.refreezeSpeedOnly(piece, k,
-                        FvdDesigner.INTEGRATE_DT)) {
-                    app.markDirty();
-                    app.rebuildTrack();
-                    refreshOffset();
-                } else {
-                    app.statsLabel.setText("Set Design to Real refused "
-                        + "— nothing compiled for this section yet.");
-                }
-                redraw();
-                return;
-            }
-            if (Math.abs(v - sec.vDesign()) < 1e-9) return;
-            if (piece == 0 && k == 0) {
-                // the ride entry: the Start-speed spinner owns it
-                app.startSpeedSpinner.getValueFactory().setValue(v);
+            // the SPEED-ONLY resolve at once (D242's semantics, one
+            // undo step pushed only on success — the D247 rule)
+            endBurst.run();
+            FvdDesigner.DocState pre = snapshot();
+            if (app.coaster.refreezeSpeedOnly(piece, k,
+                    FvdDesigner.INTEGRATE_DT)) {
+                pushUndo(pre);
+                app.markDirty();
+                app.rebuildTrack();   // the hook mirrors the box
+                refreshOffset();
             } else {
-                pushUndoSnapshot();
-                sec.vDesign(v);
-                sec.vPinned(true);   // deliberate: reconcile leaves it
-                app.rebuildTrack();
+                app.statsLabel.setText("Set Design to Real refused "
+                    + "— nothing compiled for this section yet.");
             }
             redraw();
         });
-        HBox row = new HBox(8, lbl, vf);
+        HBox row = new HBox(8, lbl, vSp, grayHint(toReal, () -> {
+            String w = toRealWhy.get();
+            return w == null ? "" : w;
+        }));
         row.setAlignment(Pos.CENTER_LEFT);
-        HBox buttons = new HBox(8,
-            grayHint(toReal, "Nothing compiled for this section yet."),
-            apply, cancel);
-        buttons.setAlignment(Pos.CENTER_RIGHT);
-        VBox box = new VBox(10, row, buttons);
-        box.setPadding(new javafx.geometry.Insets(12));
-        dlg.setScene(new javafx.scene.Scene(box));
-        dlg.show();
-        app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
+        VBox box = new VBox(10, row);
+        Runnable onConfirm = teardown;   // the focused box committed first
+        Runnable onCancel = () -> {
+            // field-level revert to the open-time values, ONE more undo
+            // step — skipped when the document's objects were replaced
+            // meanwhile (the O-item cancelRestore rule)
+            if (app.coaster != openC || app.docGen != openGen[0]) {
+                app.statsLabel.setText(FvdDesigner.CANCEL_STALE_MSG);
+            } else {
+                Section s0 = secAt.get();
+                if (s0 != null) {
+                    boolean diff = entry
+                        ? Math.abs(app.coaster.v0 - openV0[0]) > 0
+                            || Math.abs(s0.vDesign() - openV[0]) > 0
+                        : Math.abs(s0.vDesign() - openV[0]) > 0
+                            || s0.vPinned() != openPin[0];
+                    if (diff) {
+                        endBurst.run();
+                        pushUndoSnapshot();
+                        if (entry) {
+                            app.writeStartSpeed(openV0[0]);
+                            s0.vDesign(openV[0]);   // exact (the spinner clamps)
+                        } else {
+                            s0.vDesign(openV[0]);
+                            s0.vPinned(openPin[0]);
+                        }
+                        app.markDirty();
+                        app.rebuildTrack();
+                        refreshOffset();
+                        redraw();
+                    }
+                }
+            }
+            teardown.run();
+        };
+        double[] cb = canvasScreenBox();
+        double ax = cb != null ? cb[0] + MARGIN_LEFT : Double.NaN;
+        Stage win = LiveWindow.show(app, "Initial design speed", box,
+            onConfirm, onCancel, ax);
+        winRef[0] = win;
+        initSpeedWin = win;
+        // LIVE (D247): the box follows the section's design speed
+        // (a reconcile after an upstream edit, an undo — docRestoring
+        // outranks the typing guard and ends the coalescing burst);
+        // the button's gray reason follows the compile; a vanished
+        // section tears the window down with a reason
+        initSpeedHook = () -> {
+            if (winRef[0] == null || winRef[0] != initSpeedWin) return;
+            Section s0 = secAt.get();
+            if (s0 == null) {
+                hideInitSpeedWindow();
+                app.statsLabel.setText("The initial design speed window "
+                    + "closed — its section no longer exists.");
+                return;
+            }
+            if (app.docRestoring()) endBurst.run();
+            // a document generation this window has not seen (the
+            // density preview's rerun / Apply — no restore hook runs
+            // there) re-bases the Cancel record (D249 review fix)
+            if (app.docGen != openGen[0]) rebase.run();
+            syncing[0] = true;
+            try {
+                app.setUnlessTyping(vSp, Gestures.clampInitSpeed(s0.vDesign()));
+            } finally {
+                syncing[0] = false;
+            }
+            toReal.setDisable(toRealWhy.get() != null);
+        };
+        app.modelHooks.add(initSpeedHook);
+        // the docRestoreHooks twin: an undo/redo restore re-bases the
+        // record on the restored objects (the seam / Track Piece /
+        // bridge windows' rule, D249 review fix)
+        initSpeedRestoreHook = () -> {
+            if (winRef[0] == null || winRef[0] != initSpeedWin) return;
+            rebase.run();
+        };
+        docRestoreHooks.add(initSpeedRestoreHook);
     }
 
 
@@ -11767,6 +15128,10 @@ class GraphEditor extends Region {
     private FvdDesigner.DocState snapshot() { return app.snapshotDoc(); }
 
     void pushUndoSnapshot() { pushUndo(snapshot()); }
+
+    /** Push a snapshot taken BEFORE an op, once the op succeeded (D247
+     *  review fix — a refused op must leave the redo branch alone). */
+    void pushUndoState(FvdDesigner.DocState pre) { pushUndo(pre); }
 
     private void beginGesture() {
         pendingSnapshot = snapshot();
@@ -11806,12 +15171,18 @@ class GraphEditor extends Region {
     }
 
     private void applySnapshot(FvdDesigner.DocState snap) {
+        // the strict seam window and the bridge window STAY OPEN
+        // across a restore since v19.19 (D248): their handlers and
+        // hooks resolve the piece BY INDEX (the D247 pop-out captured
+        // the object and had to be torn down + re-opened in place);
+        // both self-validate on the restore's hooks and close with a
+        // stats reason when their junction is gone
         app.applyDocState(snap);
         if (app.coaster.pieces.isEmpty()) {   // restored an EMPTY document
             selIdx = -1;
             selSet.clear();
             app.markDirty();
-            app.rebuildTrack();
+            app.rebuildTrackRestoring();   // hooks force-write (D247)
             redraw();
             app.syncWizardPanel();
             return;
@@ -11819,24 +15190,15 @@ class GraphEditor extends Region {
         if (selIdx >= active().size()) selIdx = -1;
         selSet.removeIf(i -> i >= active().size());
         app.markDirty();
-        app.rebuildTrack();   // spans first: s/c strip layout needs them
+        // spans first: s/c strip layout needs them; the live-window
+        // hooks fire from this rebuild with the restore flag held, so
+        // a restored value lands even in a focused box (D247)
+        app.rebuildTrackRestoring();
         redraw();
         // open LIVE panels re-read the restored model (D227): the node
-        // editor's boxes, the strict-seam pop-out (rebuilt in place —
-        // its closures captured the replaced piece object)
+        // editor's boxes, the seam / bridge / Track Piece windows'
+        // forced resyncs (D248)
         for (Runnable r : new ArrayList<>(docRestoreHooks)) r.run();
-        if (seamPopup != null && seamPopup.isShowing() && seamPopupIdx >= 0) {
-            double sx = seamPopup.getX(), sy = seamPopup.getY();
-            int idx = seamPopupIdx;
-            seamPopup.hide();
-            seamPopup = null;
-            if (idx < app.coaster.pieces.size()
-                    && app.coaster.pieces.get(idx).followPrev) {
-                seamPopupReopenAt = new double[]{ sx, sy };
-                showStrictSeamSettings(idx);
-                seamPopupReopenAt = null;
-            }
-        }
     }
 
     /** Refresh callbacks of live dialogs (D227) — run after every
@@ -11846,8 +15208,6 @@ class GraphEditor extends Region {
      *  editor's live resync — cheap no-ops at the steady state. */
     final List<Runnable> redrawHooks = new ArrayList<>();
     private boolean inRedrawHooks = false;   // re-entry guard
-    private int seamPopupIdx = -1;
-    private double[] seamPopupReopenAt;
 
     /** New document: history starts over. */
     void clearHistory() {
@@ -11887,6 +15247,7 @@ class GraphEditor extends Region {
         }
         if (selIdx < 0) return;
         pushUndoSnapshot();
+        touchActive();   // D248
         BezierBaker.Node n = active().get(selIdx);
         n.smooth = !n.smooth;
         if (n.smooth) {
@@ -12160,6 +15521,7 @@ class GraphEditor extends Region {
             }
             BezierBaker.Node n = startEdge ? ln.get(0)
                                            : ln.get(ln.size() - 1);
+            touchLane(ln);   // D248
             n.val += vs[0] - own[0];
             if (startEdge) {
                 n.outDv += (vs[1] - own[1])
@@ -12175,6 +15537,7 @@ class GraphEditor extends Region {
             double[] vs = boundaryState(activeSection - 1, false, laneIdx);
             if (vs == null) return false;
             BezierBaker.Node n = ln.get(0);
+            touchLane(ln);   // D248
             n.val = vs[0];
             n.outDv = vs[1] * BezierBaker.effOutDt(n, ln.get(1));
             return true;
@@ -12183,6 +15546,7 @@ class GraphEditor extends Region {
         double[] vs = boundaryState(activeSection + 1, true, laneIdx);
         if (vs == null) return false;
         BezierBaker.Node n = ln.get(ln.size() - 1);
+        touchLane(ln);   // D248
         n.val = vs[0];
         n.inDv = vs[1] * BezierBaker.effInDt(ln.get(ln.size() - 2), n);
         return true;
@@ -12682,11 +16046,14 @@ class GraphEditor extends Region {
                     real = Math.abs(vTru - vOurs) > DRIFT_EPS
                         || Math.abs(vTru - vTheirs) > DRIFT_EPS;
                     if (!real) {
-                        // WHOLE-SPAN split test (v19.8, D237 — the
-                        // badge's D106 measure): a sub-eps seam gap
-                        // can still split visibly INSIDE either
-                        // section (energy amplification at slow
-                        // spots); B aims at the REAL curves there too
+                        // WHOLE-SPAN split test (v19.8, D237;
+                        // sectionDriftedSpan since v19.18, D247 — the
+                        // badge's ≠v tests the ENTRY only now, B keeps
+                        // the span form): a sub-eps seam gap can still
+                        // split visibly INSIDE either section (energy
+                        // amplification at slow spots, a tilted
+                        // piece's heights); B aims at the REAL curves
+                        // there too
                         int tp, tk;
                         if (atStart) {
                             tp = followOut ? activePiece + 1 : activePiece;
@@ -12698,12 +16065,12 @@ class GraphEditor extends Region {
                                     .sections.size() - 1
                                 : activeSection - 1;
                         }
-                        real = sectionDrifted(activePiece, activeSection)
+                        real = sectionDriftedSpan(activePiece, activeSection)
                             || (tp >= 0 && tp < app.coaster.pieces.size()
                                 && tk >= 0
                                 && tk < app.coaster.pieces.get(tp)
                                     .sections.size()
-                                && sectionDrifted(tp, tk));
+                                && sectionDriftedSpan(tp, tk));
                     }
                     realScale = vTru / Math.max(0.1, vTheirs);
                     rReal = vOurs / vTru;
@@ -12863,10 +16230,16 @@ class GraphEditor extends Region {
                 // a PER-METER neighbor's lanes aren't °/s (v16.6) —
                 // sampled path (the compiled curves already are)
                 && !nbl.ratePerMeter
-                // a TILTED piece's authored force targets live in the
-                // design frame; the analytic inversion mixes them with
-                // the world seam frame — sampled path there (v15.2)
-                && !pieceTilted(activePiece)) {
+                // an orientation-CONFLICTED piece's authored force
+                // targets live in the DESIGN frame; the analytic
+                // inversion would mix them with the world seam frame
+                // — sampled path there (v15.2; every conflict KIND
+                // since v19.19 D248 — a design-tier / held-seam
+                // conflict took the analytic path through the stale
+                // true-tier test, and a lockstep-tilted UNconflicted
+                // piece, whose design frame IS the world frame, was
+                // needlessly forced to the sampled path)
+                && !pieceConflicted(activePiece)) {
             return crossModeFromLanes(nbl, k, atStart, laneIdx);
         }
         // sample CLEAR of the seam (v10.2): bodyRates' central
@@ -13541,45 +16914,56 @@ class GraphEditor extends Region {
         // handles facing a squished/stretched segment keep their
         // SLOPES — dv rides the run (v16.1, D105)
         BezierBaker.rescaleDvToGaps(lane, gaps);
+        touchLane(lane);
+        syncFollowingEnds();   // D248
         redraw();
         app.rebuildTrack();
     }
 
-    /** Arrow keys: step the selection by the snap intervals; with the
-     *  grid modifier the node LANDS on the grid instead. Auto-repeat
-     *  (holding the key) gives continuous movement for free. */
-    boolean nudgeSelected(int dtDir, int dvDir, boolean grid) {
+    /** Arrow keys: step the selection by the snap intervals — the
+     *  GLOBAL spinner conventions on nodes since v19.19 (D248, user
+     *  spec): SHIFT steps at ONE TENTH of the step, CTRL SNAPS to the
+     *  NEXT round multiple of the (possibly Shift-scaled) step from
+     *  the CURRENT position (Gestures.nudge — the modStep recipe;
+     *  the old Ctrl branch stepped THEN rounded, which could jump two
+     *  cells from an off-grid node, and re-rounded the idle axis),
+     *  both combine. The snap REFERENCES stay Ctrl-drag's per-axis
+     *  ones (time: the absolute grid or the previous node; value:
+     *  absolute or the previous node — Edit > Snapping). Only the
+     *  pressed axis moves. No end wall: arrows are the deliberate
+     *  extend path. Auto-repeat (holding the key) gives continuous
+     *  movement for free. */
+    boolean nudgeSelected(int dtDir, int dvDir, boolean slow, boolean snap) {
         if (!surfStrip && stripHasNodeSel()) {
             final boolean[] r = { false };
-            withSurf(() -> r[0] = nudgeSelected(dtDir, dvDir, grid));
+            withSurf(() -> r[0] = nudgeSelected(dtDir, dvDir, slow, snap));
             return r[0];
         }
         if (selIdx < 0) return false;
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(selIdx);
-        // steps live in the DISPLAY domain (v16.0): a warped view
-        // nudges by axis steps, mapped back to native
-        double step = snapXStep();
-        double newT = warpMap == null ? n.t + dtDir * step
-            : warpInv(warpFwd(n.t) + dtDir * step);
-        double newVal = n.val + dvDir * snapVal(activeLane);
-        if (grid) {   // land ON the grid — same axis references as Ctrl-drag
-            if (selIdx > 0) {
-                double aNew = warpFwd(newT);
-                double aPrev = warpFwd(lane.get(selIdx - 1).t);
-                double g = app.settings.snapTAbsolute()
-                    ? Math.round((tOff + aNew) / step) * step - tOff
-                    : aPrev + Math.round((aNew - aPrev) / step) * step;
-                newT = Math.max(lane.get(selIdx - 1).t + minGap(),
-                    warpInv(g));
-            }
-            double vStep = snapVal(activeLane);
-            if (app.settings.snapVRelative() && selIdx > 0) {
-                double pv = lane.get(selIdx - 1).val;
-                newVal = pv + Math.round((newVal - pv) / vStep) * vStep;
-            } else {
-                newVal = Math.round(newVal / vStep) * vStep;
-            }
+        BezierBaker.Node prev = selIdx > 0 ? lane.get(selIdx - 1) : null;
+        double newT = n.t, newVal = n.val;
+        if (dtDir != 0 && prev != null) {   // node 0's t is frozen
+            // steps live in the DISPLAY domain (v16.0): a warped view
+            // nudges by axis steps, mapped back to native
+            double a = warpMap == null ? n.t : warpFwd(n.t);
+            double ref = app.settings.snapTAbsolute() ? -tOff
+                : (warpMap == null ? prev.t : warpFwd(prev.t));
+            double aNew = Gestures.nudge(a, ref, snapXStep(), dtDir,
+                slow, snap);
+            newT = warpMap == null ? aNew : warpInv(aNew);
+            // no explicit floor here: moveNode clamps a single move to
+            // prev.t + minGap itself, and a GROUP move must keep the
+            // full delta (moveGroupBy clamps against NON-selected
+            // neighbors only — a floor against a selected prev would
+            // shorten the whole group's step)
+        }
+        if (dvDir != 0) {
+            double ref = app.settings.snapVRelative() && prev != null
+                ? prev.val : 0;
+            newVal = Gestures.nudge(n.val, ref, snapVal(activeLane), dvDir,
+                slow, snap);
         }
         // one undo step per burst of keypresses, not per press
         long now = System.nanoTime();
@@ -13595,6 +16979,7 @@ class GraphEditor extends Region {
     private void moveNode(int idx, double newT, double newVal) {
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node n = lane.get(idx);
+        touchLane(lane);   // an edited lane stops following (D248)
         if (idx == 0) {
             newT = 0;
         } else {
@@ -13669,6 +17054,8 @@ class GraphEditor extends Region {
                 lane.get(j).val = newVal;
             }
         }
+        syncFollowingEnds();   // a moved last node drags the untouched
+                               // lanes' ends along (D248)
         redraw();
         app.rebuildTrack();
     }
@@ -13718,6 +17105,7 @@ class GraphEditor extends Region {
                 yToVal(activeLane, y)) - n.val;
         }
 
+        touchLane(lane);   // D248
         if (dragHandleIsOut) { n.outFrac = newFrac; n.outDv = newDv; }
         else                 { n.inFrac = newFrac;  n.inDv = newDv; }
 
@@ -13864,10 +17252,15 @@ class GraphEditor extends Region {
             if (t - last.t < insertGap() || t > sectionEnd() + 1e-9) return -1;
             pushUndoSnapshot();
             n = new BezierBaker.Node(t, last.val);
-            last.outFrac = SINE_FRAC; last.outDv = 0;
+            // the Append recipe (D248): a smooth sloped last node's
+            // out continues its in slope, the new node holds flat
+            Gestures.continueOut(i >= 2 ? lane.get(i - 2) : null, last, n,
+                SINE_FRAC);
             n.inFrac = SINE_FRAC;
             n.outFrac = SINE_FRAC;
             lane.add(n);
+            touchLane(lane);
+            syncFollowingEnds();   // the new last node is the end (D248)
             selIdx = i;
             selSet.clear();
             selSet.add(i);
@@ -13891,6 +17284,7 @@ class GraphEditor extends Region {
         n.straightOut = a.straightOut;   // a locked segment stays locked
         n.levelOut = a.levelOut;         // through a split (both halves)
         lane.add(i, n);
+        touchLane(lane);   // D248
         selIdx = i;
         selSet.clear();
         selSet.add(i);
@@ -13909,6 +17303,8 @@ class GraphEditor extends Region {
         if (index == 0 || lane.size() <= 2) return;
         pushUndoSnapshot();
         BezierBaker.removeBridging(lane, index);
+        touchLane(lane);
+        syncFollowingEnds();   // a deleted last node shortens the end (D248)
         selIdx = -1;
         selSet.clear();
         axisLock = 0;
@@ -13943,6 +17339,8 @@ class GraphEditor extends Region {
             BezierBaker.removeBridging(lane, i);
         }
         if (!pushed) return;
+        touchLane(lane);
+        syncFollowingEnds();   // D248
         selIdx = -1;
         selSet.clear();
         axisLock = 0;
@@ -13957,6 +17355,7 @@ class GraphEditor extends Region {
         if (selIdx < 0) return;
         List<BezierBaker.Node> lane = active();
         pushUndoSnapshot();
+        touchLane(lane);   // D248
         if (selSet.size() > 1) {
             for (int i : selSet) {
                 BezierBaker.Node n = lane.get(i);
@@ -14002,6 +17401,7 @@ class GraphEditor extends Region {
                 if (flat && selIdx > 0 && dragHandleIdx < 0) {
                     if (lane0.get(selIdx - 1).val == n0.val) return;
                     pushUndoSnapshot();
+                    touchLane(lane0);   // D248
                     n0.val = lane0.get(selIdx - 1).val;
                     redraw();
                     app.rebuildTrack();
@@ -14014,6 +17414,7 @@ class GraphEditor extends Region {
         List<BezierBaker.Node> lane = active();
         double ref = lane.get(selIdx).val;
         pushUndoSnapshot();
+        touchLane(lane);   // D248
         for (int i : selSet) {
             BezierBaker.Node n = lane.get(i);
             n.val = ref;
@@ -14075,6 +17476,7 @@ class GraphEditor extends Region {
         segs.removeIf(i -> lane.get(i).lockedOut());
         if (segs.isEmpty()) return;
         pushUndoSnapshot();
+        touchLane(lane);   // D248
         Set<Integer> segSet = new HashSet<>(segs);
         for (int i : segs) {
             int k = i + 1;
@@ -14138,6 +17540,7 @@ class GraphEditor extends Region {
         boolean straight = mode == 1, level = mode == 2;
         if (a.straightOut == straight && a.levelOut == level) return;
         pushUndoSnapshot();
+        touchLane(lane);   // D248
         boolean unlocking = mode == 0;
         a.straightOut = straight;
         a.levelOut = level;
@@ -14197,6 +17600,7 @@ class GraphEditor extends Region {
             boolean allLocked = true;
             for (int i : pairs) allLocked &= lane.get(i).straightOut;
             pushUndoSnapshot();
+            touchLane(lane);   // D248
             if (allLocked) {
                 unlockSegments(lane, pairs, false);
             } else {
@@ -14222,6 +17626,7 @@ class GraphEditor extends Region {
             int only = sel.iterator().next();
             if (only <= 0 || only >= lane.size()) return;
             pushUndoSnapshot();
+            touchLane(lane);   // D248
             lane.get(only - 1).straightOut = true;
             lane.get(only - 1).levelOut = false;
             redraw();          // enforcement chords it right here
@@ -14229,6 +17634,7 @@ class GraphEditor extends Region {
             return;
         }
         pushUndoSnapshot();
+        touchLane(lane);   // D248
         unlockSegments(lane, locked, false);
         redraw();
         app.rebuildTrack();
@@ -14321,6 +17727,7 @@ class GraphEditor extends Region {
             boolean allLevel = true;
             for (int i : pairs) allLevel &= lane.get(i).levelOut;
             pushUndoSnapshot();
+            touchLane(lane);   // D248
             if (allLevel) {
                 unlockSegments(lane, pairs, true);
             } else {
@@ -14354,6 +17761,7 @@ class GraphEditor extends Region {
             int only = sel.iterator().next();
             if (only <= 0 || only >= lane.size()) return;
             pushUndoSnapshot();
+            touchLane(lane);   // D248
             BezierBaker.Node p = lane.get(only - 1), n = lane.get(only);
             p.val = n.val;      // enforcement pins RIGHT to LEFT — the
             p.outDv = p.inDv = 0;   // copy keeps the selected height
@@ -14365,6 +17773,7 @@ class GraphEditor extends Region {
             return;
         }
         pushUndoSnapshot();
+        touchLane(lane);   // D248
         unlockSegments(lane, locked, true);
         redraw();
         app.rebuildTrack();
@@ -14391,8 +17800,10 @@ class GraphEditor extends Region {
 
     /** CONNECT the active piece's sections leftIdx and leftIdx+1
      *  into one (v16.19, D131 — the node split's inverse): matched
-     *  seams merge losslessly, unmatched seam nodes take the average
-     *  value + averaged handle slopes (Coaster.mergeSections). One
+     *  seams merge losslessly; an unmatched seam KEEPS BOTH VALUES
+     *  since v19.18 (D247 — a steep step over the domain's minimum
+     *  transition, Coaster.mergeStepLen; equal values with differing
+     *  slopes = one broken node; see Coaster.mergeSections). One
      *  undo step; refusals post their reason. */
     void connectSections(int leftIdx) {
         if (!likeSections(leftIdx, leftIdx + 1)) {
@@ -14663,6 +18074,9 @@ class GraphEditor extends Region {
             }
             undoKey[0] = key;
             undoNanos[0] = now;
+            // every live sink is an edit (D248) — AFTER the snapshot,
+            // so Ctrl+Z restores the flag with the node
+            touchActive();
         };
         double vStep = snapVal(activeLane);
         double tStep = activeDistNative() ? 0.5 : 0.1;
@@ -15098,9 +18512,15 @@ class GraphEditor extends Region {
         Runnable live = () -> resync.accept(false);
         docRestoreHooks.add(refresh);
         redrawHooks.add(live);
+        // also a MODEL hook (D247): piece-gizmo drags and Track Piece
+        // / friction spinner edits rebuild WITHOUT a redraw — the
+        // boxes follow those live too (onSurf restores the surface,
+        // so running outside redraw is safe)
+        app.modelHooks.add(live);
         dlg.setOnHidden(ev -> {
             docRestoreHooks.remove(refresh);
             redrawHooks.remove(live);
+            app.modelHooks.remove(live);
         });
 
         dlg.setScene(new Scene(grid));
@@ -15114,6 +18534,16 @@ class GraphEditor extends Region {
                     dlg.close();
                 }
             });
+        // PLACED like the three placement windows since v19.19 (D248
+        // — "like the node windows" holds both ways): bottom edge just
+        // above the graph canvas, left at the node's on-screen x (a
+        // pending gizmo anchor wins), clamped into the screen
+        double ax = nodeScreenX(idx);
+        if (Double.isNaN(ax)) {
+            double[] cb = canvasScreenBox();
+            ax = cb != null ? cb[0] + MARGIN_LEFT : 0;
+        }
+        LiveWindow.place(app, dlg, grid, ax);
         dlg.show();
         app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
     }
@@ -15896,6 +19326,10 @@ class GraphEditor extends Region {
                 inRedrawHooks = false;
             }
         }
+        // LIVE TOOL WINDOWS (v19.18, D247): graph-only edits reach the
+        // shell's windows too (re-entry-guarded; equal-value no-ops
+        // at steady state)
+        app.fireModelHooks();
         // UNLOADED while the graph panel is collapsed (v18.36, D208):
         // a busy zoomed-out plot must cost nothing off screen. The
         // canvas is usually 0-high then anyway (the size check below);
@@ -15932,6 +19366,9 @@ class GraphEditor extends Region {
         }
         if (w <= 0 || h <= 0 || plotWidth() <= 0 || plotHeight() <= 0) return;
         enforceLocks();           // before updateScale sees the handles
+        clearStaleFollows();      // the END-FOLLOW belt (D248): clears a
+                                  // stale flag, never moves a node — a
+                                  // redraw can't rebuild (review fix)
         // an AXIS DOMAIN change re-scales the whole x-axis: a manual
         // zoom window's ENDS line up with their counterparts in the
         // new units (v16.1, user rule — flips used to reset to
@@ -15954,8 +19391,17 @@ class GraphEditor extends Region {
         refreshOffset();          // section offsets before any x mapping
         // the cross-domain warp map follows the compile — except while
         // a node/handle gesture is live (frozen so the mapping under
-        // the cursor stays stable through the per-event rebuilds)
-        if (dragNodeIdx < 0 && dragHandleIdx < 0) refreshWarp();
+        // the cursor stays stable through the per-event rebuilds) — or
+        // a STRIP gesture (v19.20, D249, item S1): a diamond / 3D disk
+        // drag rebuilds the track per event and a speed control changes
+        // the very t↔s profile the map is made of, so under a
+        // cross-domain view the map used to slide under the cursor
+        // mid-drag; the release redraw (spDragKind back to 0)
+        // re-derives it — the diamond may visibly re-land there
+        // (accepted, documented)
+        if (dragNodeIdx < 0 && dragHandleIdx < 0 && spDragKind == 0) {
+            refreshWarp();
+        }
         sanitizeView();           // stale manual windows follow the piece
         updateScale();
         refreshMarkers();         // 3D markers follow lane + selection

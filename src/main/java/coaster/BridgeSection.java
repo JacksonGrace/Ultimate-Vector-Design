@@ -88,17 +88,46 @@ public final class BridgeSection implements Section {
     public static final int OPT_NONE = 2;
     public int optMode = OPT_POS_YAW;
 
-    /** Per-axis orientation LOCKS of the NEXT piece (v13.13, D87):
-     *  locked = the value is frozen — no edits anywhere — and the
-     *  optimization MEETS it (yaw/pitch humps, roll twist); unlocked
-     *  = user-editable, and in optimize-orientation mode the march
-     *  ALIGNS it to its natural end state instead. Defaults (yaw
-     *  unlocked, pitch + roll locked) reproduce the old "optimize
-     *  position and yaw" exactly — how old files load (blen fields
-     *  6-8, missing = defaults). */
+    /** Per-axis orientation LOCKS of the NEXT piece (v13.13, D87;
+     *  the SEAM RULE since v19.20, D249 — user spec, superseding
+     *  D87's "frozen — no edits anywhere"): 🔒 locked = the axis is
+     *  HELD at the value the user types — its box / ↺ / ring are
+     *  editable in EVERY mode and the optimization MEETS it (yaw/
+     *  pitch humps, roll twist); 🔓 unlocked = free: under
+     *  optimize-orientation the march ALIGNS it to its natural end
+     *  (the box grays — "lock it to hold a value"), under the other
+     *  two modes nothing aligns it, so it stays typeable (the value
+     *  is de facto held). Locking captures the CURRENT angle (the
+     *  held value IS the target piece's own field — nothing jumps).
+     *  The same padlocks show on the target's Track Piece window and
+     *  gate the bridge-end rig's rings (held axes only, manual and
+     *  position modes). Defaults (yaw unlocked, pitch + roll locked)
+     *  reproduce the old "optimize position and yaw" exactly — how
+     *  old files load (blen fields 6-8, missing = defaults). */
     public boolean lockYaw = false;
     public boolean lockPitch = true;
     public boolean lockRoll = true;
+
+    /** The lock flag of axis 0 = yaw, 1 = pitch, 2 = roll (D249). */
+    public boolean axisLocked(int axis) {
+        return axis == 0 ? lockYaw : axis == 1 ? lockPitch : lockRoll;
+    }
+
+    /** THE ENABLE RULE (v19.20, D249): may the user type / revert /
+     *  ring-drag this axis of the next piece? A held (locked) axis
+     *  always; a free one only outside optimize-orientation, where
+     *  the march aligns it (== !axisAligned). Every surface — the
+     *  bridge window, the target's Track Piece window, the rigs'
+     *  write paths — reads this one predicate. */
+    public boolean axisEditable(int axis) {
+        return axisLocked(axis) || optMode != OPT_POS_YAW;
+    }
+
+    /** Does the march ALIGN this axis (Coaster.alignFlags' per-axis
+     *  twin)? Only a free axis under optimize-orientation. */
+    public boolean axisAligned(int axis) {
+        return !axisLocked(axis) && optMode == OPT_POS_YAW;
+    }
 
     /** "Optimize length" (v13.8, D82): while set (and an optimize
      *  mode is active) the LENGTH is chosen by

@@ -10725,3 +10725,2216 @@ mid-orbit pose is pixel-identical to D245, the low-graze pose
 contracts to a clean solid field.
 
 No model-layer changes; compile + gridshot ladder.
+
+
+## D247 (v19.18) — Batch 32: Copy + Anchor rows + run-head placement, the follower DESIGN tier (seam window with Lock Track Shape / Design ↔ Real, the Strict Seam ▾ button), the seam undo bug + live tool windows + the preview transaction, reveal balls on the whole run, entry-only ≠v + the ≠° glyph, range-scoped Resolve conflict, Connect sections keeps both values, seam-menu Insert section…
+
+Date: 2026-09-06, his batch-32 list (the follower / seam /
+tool-window round after D246; "undo works once, then Ctrl+Z is
+dead" was the headline bug). Thirteen items + a review round.
+
+1. **Renames + tooltips** (user spec): the Track Piece panel's
+   ops row reads "Reverse…" / "Mirror" (was "Reverse piece…" /
+   "Mirror piece"); its three placement labels read "Anchor
+   x/y/z (m)" / "Anchor yaw (°)" / "Anchor pitch/roll (°)" (the
+   bridge branch's "Next piece …" labels untouched) — a RUN is
+   what he calls "the track piece" and its head entry is "the
+   anchor". Lock Track Shape tooltip verbatim "Design
+   orientation does not change for adjustments to pitch/roll"
+   (panel + seam window). The dead Coaster-menu reverseItem
+   (never added to a menu since D232) is deleted. The
+   initial-speed dialog's enabled "Set Design to Real" wears a
+   tooltip: it fills the box and does not resolve an orientation
+   conflict — "Design → Real Orientation" (Track Piece ▾ /
+   Strict Seam ▾) does.
+
+2. **Copy** (user spec; Coaster.copyRun / copySection,
+   TrackPiece.copy(dz), COPY_DZ = 5): the panel's fourth ops
+   button (Reverse…, Mirror, Copy, Switch Coaster… — no
+   ellipsis, the op is immediate) duplicates the RUN
+   (head..runEnd: strict followers + bridged targets included —
+   a lone follower's stored placement is its frozen pre-attach
+   pose and a lone bridge-ending piece would orphan onto the
+   ORIGINAL target, so only the connected whole copies honestly)
+   5 m along world +Z, appends it at the list END, activates the
+   copy, reveals its entry rig and selects node 0. Deep copy
+   with the undo snapshot's field coverage; session flags
+   (viewOtherDomain/viewOtherRate/editInfluence) reset,
+   baseCurves null; the canonical pair untouched (a translation
+   is bitwise-rigid, D199); copied bridges get optSig = null
+   (first sight = record-only: the sig carries the world entry,
+   a kept array would re-place the copied target on the first
+   rebuild) and keep lastOptDist so the march renders; the
+   head's followPrev normalized false. Refusal (grayed + stats):
+   the LIST's last piece ends in an orphaned bridge
+   (Coaster.listEndsInOrphanBridge — the review moved the test
+   from the run end to the list end: appending would hand that
+   bridge the copy's head as its target and move the ORIGINAL
+   track). Tolerances = the D199 corners: bitwise except tilted
+   / held-angle / smoothed dust at 1e-9 and bridge spans at 1e-6
+   (CopyGate). Tooltip "Duplicate this piece with everything
+   joined to it 5 m to the side (+Z) and edit the copy."; stats
+   "Copied the piece / run (N pieces) 5 m along +Z — editing the
+   copy."
+
+3. **Strict-seam followers get a LIVE design tier** (user
+   re-spec; supersedes D222's "both delta tiers are dead on
+   followers"): TrackCompiler's follower branch generates from
+   designPose()/designCanon when designPitchDeg/designRollDeg ≠
+   0 (zero deltas ⇒ the historic path bitwise — SeamShapeGate
+   carries pre-D247 sample-bit checksums recorded from f84061a's
+   core to prove it), so a follower's DESIGN orientation =
+   designPose() and its REAL orientation = the follow contract;
+   the seam conflict (Coaster.seamConflictTilt /
+   isSeamOrientConflict) is elevation/bank only — a heading-only
+   re-aim commutes with gravity (D199) and is no conflict.
+   Attach preserves a design-tilted piece's conflict for free
+   (connectStrict keeps the deltas + canonical pair; NO fold —
+   the map's fold-at-attach plan superseded; generation bitwise,
+   SeamShapeGate 1b/2a). ONE seam write choke,
+   GraphEditor.seamEdit(fi, write): with Lock Track Shape OFF
+   the design tier moves by the real Euler delta
+   (Coaster.seamDesignLockstep — the elevation/bank gaps stay
+   constant; the quaternion tilt drifts at second order exactly
+   as a free piece's does under editPitch/editRoll, probed
+   9.5e-3, accepted with the Euler-additive model), ON (default)
+   = today's write bitwise; yaw never touches the design tier.
+   POLE GUARD (review): a write crossing straight up/down
+   (either side |elevation| > 89.9°, or heading AND bank both
+   flipping by > 90°) leaves the design tier alone and posts
+   "Seam edit crossed straight up/down — the design tier was
+   left alone; adjust it in the seam window." Seam Design → Real
+   = Coaster.bakeFollow (both tiers zero, follow + locks + held
+   angles kept, NOT detached; absolute lanes on the follower
+   route through the D240 Preserve/Convert dialog —
+   designToRealConvert bakes the follow with the SAME
+   compileForFit result the fit read). Seam Real → Design =
+   Coaster.seamRealToDesign (held pitch/roll := the design
+   elevation/bank, both locked, yaw untouched; refuses a
+   vertical design frame). detachStrictSeam is
+   CONFLICT-PRESERVING (review): the position bakes, the TRUE
+   tier decomposes onto the follow contract (decomposeNear),
+   baseOrient / canonical pair / design deltas stay —
+   attach→detach is an involution again (7e-14 m, SeamShapeGate
+   8), the seam's ≠° becomes the free piece's ≠°; a vertical
+   frame falls back to the bakeFollow bake. Shared
+   Coaster.followContract(idx, r). A run-head translate keeps
+   followers rigid to the D199 bound; a REAL-anchored
+   continuation honestly re-solves at its new true speed after
+   seamRealToDesign (the reconcile's job, not the op's).
+
+4. **The seam window rework** (user spec;
+   GraphEditor.showStrictSeamSettings): the Yaw row stays; pitch
+   + roll MERGE into one row mirroring the panel's
+   tiltPlacementRow ([Pitch/roll (°)] 🔒 pitch ↺ 🔒 roll ↺, 80 px
+   boxes; ±360 factories so a loaded held pitch past ±90 never
+   clips; the seam padlock SEMANTICS kept — 🔒 red outline =
+   holds the typed angle, the panel's padlocks are edit guards
+   with the opposite sense, the tooltip says so). Below the
+   rows: the "Design orientation:  pitch …°   roll …°" readout
+   (eulerOf(designPose()), NaN → "—"), a "Lock Track Shape"
+   check on the follower's own shapeLocked (reusing the flag
+   means unchecking also stops placementEdit's rigid carry of
+   ITS downstream — D222's unlocked = natural updates) and the
+   "Design → Real Orientation" / "Real → Design Orientation"
+   buttons — readout + buttons only while orientConflictAt(fi).
+   Cancel restores held angles, locks, shapeLocked and the
+   design tier (the tier only while baseOrient is still the
+   open-time object: after a Design → Real bake the bake stays,
+   Ctrl+Z is the path — the panel has no Cancel either). Toolbar
+   "Strict Seam ▾" (FvdDesigner, right after Track Piece ▾;
+   visible only while the active piece follows a strict seam —
+   the grayHint WRAPPER toggles so the HBox spacing collapses;
+   tooltip "Orientation of the strict seam this section
+   follows."; wizard-disabled like the Track Piece button) opens
+   it. SELF-VALIDATING since the review (seamLive: identity +
+   followPrev check on every handler — "The strict seam window
+   closed — its seam no longer exists."), every write gated by
+   convertBusy(), pre-hidden before every structural op.
+
+5. **Track Piece panel over a follower = the run head** (user
+   spec): the x/y/z rows show and edit the RUN HEAD
+   (FvdDesigner.placementTargetIdx/placementTargetRef —
+   followers follow by compile, the head's carry moves bridged
+   targets; posOwned = the target's own bridge rule); the anchor
+   label's hover reads "Moves the run's first piece (the anchor)
+   — every connected piece follows rigidly." — or, with the
+   head's Lock Track Shape OFF (review), "…; with Lock Track
+   Shape off, bridged pieces re-solve instead of following."
+   Yaw/pitch/roll rows AND their padlocks stay disabled with the
+   LIVE reason "This section follows a strict seam — its
+   orientation is edited in Strict Seam ▾. Anchor orientation is
+   editable while a section before the first strict seam is
+   selected."; the old shared bridge-or-seam gray text became a
+   bridge-only sentence; pitch/roll under an
+   optimize-orientation bridge show the march sentence (they
+   showed the padlock text before). The design readout +
+   lockShapeRows stay hidden for followers (seam-owned).
+   grayHint's Supplier overload re-resolves on every tooltip
+   show (rows can stay disabled across a bridged-in → follower
+   switch).
+
+6. **The seam undo bug** (his report): ROOT CAUSE —
+   applySnapshot's re-open hid the old pop-out while seamPopup
+   still pointed at it; Popup.hide() un-focused the auto-focused
+   spinner editor, whose focus-loss commit re-parsed the "#.##"
+   text into a value ≠ the stored full-precision angle, and the
+   value listener ran that as a user edit on the ORPHANED piece:
+   pushUndo of the just-restored state + redoStack.clear().
+   Fixes: (a) GraphEditor.hideSeamPopup() = NULL-BEFORE-HIDE
+   with seamSyncing held — every seam teardown routes through it
+   — plus `pop != seamPopup` identity guards on every handler
+   (STANDING rule for every popup: null the field before hiding;
+   the speed popup, the density preview and the Track Piece
+   teardowns were reordered too); (b) FvdDesigner.commitTyped:
+   an UNTOUCHED editor (text == the converter's rendering of the
+   current value, isUntouchedEditor) is a no-op — the same
+   phantom step / sub-0.005° nudge existed on every
+   numericEditor spinner (panel yaw click-away, Alt+Tab with a
+   window open); the D212 blank→0 branch stays; (c) Apply
+   commits a typed-but-unentered box explicitly
+   (commitFocusedNumericEditor) before the muted teardown, and
+   Cancel DISCARDS typed text — the old hide-first Cancel
+   silently APPLIED it after the revert, a latent bug closed for
+   free; Ctrl+Z with typed text discards it too. Known hazard,
+   deliberately not deferred: the undo re-open still runs in
+   place (D227 timing) — a hide-without-reshow inside the
+   popup's own key dispatch could log an FX EventRedirector
+   ConcurrentModificationException, never history corruption.
+
+7. **Live tool windows** (user spec — ONE mechanism):
+   FvdDesigner.modelHooks + fireModelHooks(), fired LAST in
+   rebuildTrack (and inside its early returns) and from
+   GraphEditor.redraw() after the redrawHooks loop (re-entry
+   guard, docApplying held, copy-iterated, per-hook try/catch
+   logged) — hooks are READ-ONLY resyncs, never
+   pushUndo/markDirty. Registrations (add on show, remove on
+   hide): the node editor, the seam pop-out (seamHook →
+   seamSync, off in hideSeamPopup), the speed popup (spHook;
+   every capture of the control converted to
+   spSel()/spSelRunSec() index resolution — a real edit in a
+   still-open panel wrote a stale object before), the
+   initial-speed dialog (index-resolved, a `typed` flag the
+   Set-Design-to-Real fill also sets), Coaster Options
+   (statistics + name), the Track Piece panel (opsState +
+   syncPlacementSpinners), StartPanel (wizardHook), Export
+   (re-reads the live compile at export time; piece labels
+   live). FOCUS PRECEDENCE: typing wins — setUnlessTyping skips
+   a focused editor — but an undo restore outranks it
+   (docRestoring spans applyDocState + rebuildTrackRestoring).
+   Apply-only dialogs (Element, Add-section, Design → Real,
+   Insert) re-resolve their targets by index at Apply and post a
+   stats reason when the target changed. THE DENSITY PREVIEW IS
+   A TRANSACTION: FvdDesigner.convertBusy() posts
+   CONVERT_BUSY_MSG "Finish or cancel the open convert preview
+   first." and refuses gizmo ball drags / arrow + ring presses,
+   every document spinner (placement, bridge,
+   heart/gauge/friction/v0 — snapped back muted via
+   revertSpinner), the Track Piece ops buttons, the seam + speed
+   popup writes, reveal-ball single AND double clicks (review —
+   the implementer's "clicks still activate" reading reversed)
+   and plain Ctrl+Z from tool windows or the preview popup (a
+   range chain's Ctrl+Z steps back, item 10). The bridge-end
+   track ball's drag routes through placementEdit now (rigid
+   carry + wizard sync apply there too); Mirror acts on the
+   piece active at click time.
+
+8. **Reveal balls on the whole run** (user spec; Viewport3D
+   record Reveal(piece, kind) replaces the int): one white ball
+   per JUNCTION of the active run — the head's entry (kind 1),
+   each follower's seam ball at seamWorldPos (kind 1), each
+   trailing bridge's end ball at the next piece's x/y/z (kind 2;
+   a piece bridged in from within the run gets NO separate entry
+   ball — two coincident balls would z-fight — and its
+   double-click opens the BRIDGE rows). Single click = reveal +
+   ACTIVATE (kind 1 → (piece, 0) and node 0; kind 2 → (piece+1,
+   0)); double-click activates first, then the owner's settings
+   (bridge-end → the bridge SECTION so Bridge properties syncs);
+   drags never activate (D188). The reveal clears only when its
+   piece leaves the run (was: any piece switch); gizmoSigNow
+   signs every run piece + `seamWorldPos != null` per follower
+   (the seam ball appears exactly when a compile places the
+   junction); the trailing-bridge gizmo paths are piece-indexed
+   overloads (no-arg forms delegate to the active piece bitwise;
+   the POV clamp only for the active piece).
+   revealEntryGizmo(idx) is Copy's handoff. Behavior change
+   flagged: clicking the head ball while another section was
+   active now activates section 0 and selects node 0.
+
+9. **Badge conflict indicators** (user spec): ≠v is ENTRY-ONLY —
+   sectionDrifted = |true − design| > DRIFT_EPS 0.2 at the
+   span's FIRST sample (the whole-span D106 predicate lives on
+   as sectionDriftedSpan for the true strokes and B's real-split
+   fallback) — and " ≠°" = an ORIENTATION conflict
+   (sectionOrientConflict → orientConflictAt: free piece
+   TrackPiece.orientConflict(), follower = the seam tilt with a
+   horizontal axis); both can show ("Force ≠v ≠°"). The info
+   line drops " · true splits inside" and gains a second
+   disabled line "orientation: design pitch …° roll …° · real
+   pitch …° roll …°" (followers: design elevation/bank · seam
+   elevation/bank; NaN "—"). The resolve submenu opens for a
+   pure orientation conflict too, with a disabled first line
+   stating the scope ("Resolves: speed only" / "…orientation for
+   this section through an end you choose (the rest of the piece
+   keeps its shape behind strict seams)" / "…speed + orientation
+   for …"); under an OPT_POS_YAW bridge both items gray with the
+   march sentence; the D141 smoothing hint only for a pure speed
+   conflict; smoothingCausedDrift measures the entry sample so
+   the red band agrees. DIVERGENCE flagged: the badge tests the
+   RAW entry gap while the reconcile keeps its D237 amplified
+   gate — a sub-0.2 m/s seam gap over a slow interior can split
+   the true strokes with NO ≠v (a one-line change inside
+   sectionDrifted if he objects). pieceTilted still reads the
+   true tier only (no visual difference while design == true).
+
+10. **Range-scoped Resolve conflict** (user spec — "resolve
+   conflict over multiple sections"; supersedes D102's
+   one-section-at-a-time on ORIENTATION-conflicted pieces; pure
+   speed conflicts keep the single-section ops bitwise): the
+   badge's two items resolve sections k..m behind INSERTED
+   strict seams — Coaster.isolateRange(p, k, m, dt) =
+   makeSeamStrict after m (unless m is the piece's last
+   non-bridge section; a trailing bridge is never in a range —
+   it re-solves as bridges do) THEN before k: the upstream keeps
+   its conflict as its own piece, the remainder becomes an
+   all-locked follower keeping the conflict (local shape
+   bitwise, world placement to Euler dust). k == last
+   (one-section pieces included) resolves alone; otherwise the
+   WINDOW_MODAL "Resolve orientation conflict" dialog picks the
+   end ("Section j — <badge label>", default last, note "A
+   strict seam after the chosen section keeps the rest of the
+   piece exactly as it is."). "Set Design to Real" =
+   Coaster.refreezeRange(rp, dt) (the refreezeSpeed prologue —
+   bakeTilt / bakeFollow — then refreezeSpeedOnly(rp, 0) and
+   unpin the rest; ONE undo step): equal to today's whole-piece
+   op restricted to the range only to the dust the whole-piece
+   bake introduces at the seam (1e-7 measured, RangeResolveGate
+   g2c bound 1e-6 — never claim bitwise; with a force section
+   before the range today's op reshaped it, which IS the
+   feature). "Convert Real to Design" = a CHAINED density
+   preview (RangeChain), one section at a time, every
+   intermediate document honest: step i isolates, makes [i+1..m]
+   a locked follower, makeGraphsReal, and absorbFollower
+   (followPrev off + attachPiece, no pin) re-joins the converted
+   sections into ONE piece; s/c members apply directly; one
+   Apply = one undo step; Cancel keeps earlier Applies; Ctrl+Z
+   inside a step (chainStepBack) re-opens the previous section's
+   preview, past step 0 = the pre-isolation document. Seams are
+   LEFT strict afterwards (un-stricting the UPSTREAM seam
+   re-chains the range onto the conflicted design chain and
+   visually undoes the resolution); the remainder is a
+   piece-first, never reconciled, so an honest ≠v can open on it
+   after Set Design to Real. Gray reasons (grayItem, full
+   sentences): a smoothed strict seam on the piece or the
+   follower right after it (conservative — even when m < last),
+   a reversed section in k..last, an uncompiled span, a lane
+   section under 4 samples. LEAK FIXES: makeGraphsReal tests `<
+   4` samples BEFORE baking; beginDensityPreview's refused first
+   run restores pvBefore; refused ops snapshot before and push
+   only on success (rollbackTo preserves the dirty flag —
+   review); the dialogs re-check orientConflictAt + run
+   membership at Resolve (review).
+
+11. **Connect sections keeps both values** (user spec;
+   supersedes D131's averaging and D132's held-side averaging —
+   Coaster.mergeSections, MERGE_EPS 1e-9, mergeStepLen(domain) =
+   0.01 s TIME / 0.1 m DISTANCE mirroring GraphEditor.MIN_GAP /
+   minGapOf, the three must stay in step): an UNMATCHED seam
+   becomes a STEP over δ — left node = A's end at seam−δ (in
+   handle kept with its dv rescaled by (gA−δ)/gA, the D105 slope
+   rule; out handle flat at DEFAULT_FRAC, straight/level locks
+   cleared — a levelOut there would level the right value onto
+   the left every redraw), right node = the seam node with B's
+   value (in flat, out handle + locks = B's verbatim), each
+   broken unless its outer slope is flat (a kinked "smooth" node
+   is a lie — the next drag would mirror the partner); equal
+   values with differing slopes → ONE broken node; A's last gap
+   < 2δ mirrors the step onto B's side, both short → δ' =
+   max(gap)/2, two one-node lanes → the old average as the last
+   resort. Held lanes: b0 keeps its value (in flat, out VERBATIM
+   — it was halved through the average before) plus a flat hold
+   node at seam−δ when the values differ. Matched seams, the
+   seam-node construction and the D160 controls/marks append are
+   bitwise (MergeGate part 1 recreated the LOST D131 fixture and
+   was shown green on the pre-change code FIRST). The physics
+   sees the step as a one-to-two-cell keyframe ramp on the 0.01
+   s / 0.05 m bake grid — a 0.8 g step over 0.01 s is an ~80 g/s
+   jerk BY DESIGN, that is what "very steep" means; the two step
+   nodes sit exactly one minimum transition apart, so they
+   cannot be dragged toward each other (drag clamps); a saved
+   file writes 0.01 s / 0.1 m node spacing there (reload
+   bitwise). No label change: "Connect sections (merge into
+   one)" / "Connect with previous/next section".
+
+12. **Seam menu "Insert section…"** (user spec;
+   Coaster.insertSectionAtSeam(piece, sec, added,
+   lockDownstream, dt)): on a plain section boundary right after
+   Connect and on a strict seam right after "Strict seam
+   orientation…"; grayed "This boundary isn't compiled yet." The
+   "Insert section" dialog = the Add dialog's rows in the D143
+   order plus a THIRD Type radio "Straight / Curve" (grays
+   Domain / Rate units / Roll axis / Roll behavior with one
+   reason; the s/c pick keeps the fork and the padlocked speed —
+   a custom speed on a straight pins it, mirroring the lane
+   path), the fork row when the seam is speed-conflicted
+   (seamDrifted(kLeft), the generalized pieceEndDrifted), the
+   padlocked design speed (custom clamp [0.1, 1e4] per D198), an
+   "Initial length (s)/(m)" spinner (0.1..10000, typable; label
+   follows Distance / s/c; DEFAULTS the wizard's NEW_START_LEN 5
+   s / CONT_HOLD_DIST 10 m per the brief — NOT the '+' hold's 1
+   s, trivial to flip; per-domain SESSION memory
+   GraphEditor.insLenTime/insLenDist like D236's wizard slots,
+   s/c shares meters, a type/domain flip folds the current value
+   into the outgoing slot) and, on NON-strict seams only, "Lock
+   Subsequent Track Shape" (default off; tooltip "Adds a strict
+   seam after the inserted section so the track after it keeps
+   its shape (it moves to the new exit)."): ON = makeSeamStrict
+   FIRST on the pre-insert compile — the downstream becomes an
+   all-locked D235 follower frozen at its present shape AND
+   orientation, then moves to the new exit; its design speed
+   stays independent, so an honest ≠v can open at the new seam.
+   OFF = a plain list insert: the downstream re-solves from the
+   new exit against gravity and the reconcile re-freezes its
+   speeds — the '+' continuation semantics. On a strict seam the
+   section appends to the UPSTREAM piece before the seam; the
+   follower's held angles stay, axes the user unlocked re-aim to
+   the new exit (D135 verbatim, no forced relock). The Type
+   default follows the upstream section. The '+' hold recipe was
+   split into buildLaneHold / buildScStraight (the '+' path
+   bitwise). Add commits a typed length first, re-validates by
+   index (piece, section count, strict-ness, drifted) with a
+   stats reason, refuses an uncompiled boundary BEFORE pushing
+   undo; one undo step; hideSeamPopup before a lock insert only
+   (piece indices shift).
+
+13. **Review round** (16 findings applied; the model ones folded
+   into items 2, 3, 5, 7, 10 above): designToRealDirect bakes
+   the follow for an active follower (after a followContract
+   pre-check); the export dialog's hook de-registers on
+   WINDOW_HIDDEN; the follower padlocks gray with the seam
+   reason; the Design → Real absolute-angle dialog takes
+   installDocUndoKeys; the strict-seam pop-out is pre-hidden
+   before every structural op (Un-strict, Split at seam, delete
+   piece, the attach flows, Switch Coaster, the range ops, lock
+   inserts) and self-validates otherwise — its teardown reason
+   also fires honestly when some OTHER structural op shifts its
+   index without pre-hiding; refused ops (runRefreezeRange, the
+   chain's s/c branch, Insert, Copy, seamDesignToReal) snapshot
+   before and push only on success. OPEN design question (his
+   call): whether placementEdit should carry a pure TRANSLATION
+   downstream even when the run head has Lock Track Shape off —
+   only the tooltip was made accurate. JavaFX-layer work was
+   verified by compile and reading only (no UI run this
+   session): TESTING #164 is the walkthrough.
+
+Verification: five NEW gates — coaster.SeamShapeGate 31 (attach
+keeps a design-tilted piece's shape; recorded pre-D247 checksums
+pin the designed=false follower paths, re-record them on any
+deliberate physics change; seamRealToDesign / bakeFollow; the
+lockstep invariant + pole guard; run-head translate;
+attach→detach in place), RangeResolveGate 23, CopyGate 73,
+MergeGate 23, InsertGate 40 — plus the full battery green on
+wiped classes: DetermGate197/198/199/200 (6/4/10/7), LoadGate196
+7, OrientGate 23, OrientGate2 18, Phase2Gate, Phase3Gate,
+DomainGate, MultiCoasterGate 15, SmoothRealGate 15,
+InflSplitGate 22, ReanchorGate 3, coaster.ConflictGate 8,
+MirrorGate 20, YpAbsGate 22, coaster.DecompProbe,
+InflMatchProbe, Nl2ElemProbe 22 (25 members).
+
+## D248 (v19.19) — Batch 33: section + junction NAMES (≠o, run-wide titles, the bold title row), RUN AS PIECE (selector, attach/bridge, export, wizard placement), the THREE LIVE WINDOWS (Track Piece ▴ / Strict Seam n ▴ / Strict Seam n (bridge) ▴ — Lock Track Shape unlocked by default + Only Affect Orientation Until Next Strict Seam), gesture round (Shift/Ctrl arrows, C1 append, start-diamond resize, one-sided band edges, the init-speed spinner, lane 0 on create), pristine-lane END FOLLOW, the viewport round (marker double-click, the screen-space gizmo picker), the SEE-THROUGH FLOOR; 33b: VIEWPORT DISKS (draggable speed-control starts/ends + light-gray boundary disks on the track, gizmo select deselects nodes), the strip's DESIGN-SPEED line + the Speed/Acceleration, "Initial design speed…" and "Resolve section conflict: …" renames, the INVISIBLE LATERAL-G STROKE under an orientation conflict (root-caused)
+
+Date: 2026-09-23, his batch-33 list (the naming / windows / runs
+round after D247, with a gesture list and the "underground track
+should read as behind the floor" report). Ten items — the seven of his list plus three late "33b"
+additions the same day (viewport disks, the strip's design-speed
+line, the lateral-G stroke bug — items 9-11) — each with its own
+review-and-fix round; the docs round folds the review fixes into
+the items below. The program rename is answer-only — item 12.
+
+1. **Names: ≠o, run-wide section titles, the bold title row,
+   the resolve submenu title** (user spec; coaster.SectionNames —
+   a NEW pure class so LabelGate pins every string headlessly;
+   GraphEditor.sectionTitle / junctionOrdinal / junctionTitle /
+   ownerButtonLabel are thin wrappers on the active coaster). The
+   orientation-conflict glyph is "≠o" (lowercase o — was "≠°";
+   swept through code, comments, Help, CLAUDE.md, TESTING and the
+   SeamShapeGate labels; this log keeps its history verbatim).
+   Section TITLES are numbered PER TYPE across the WHOLE RUN in
+   run order — "Force Section 1", "Geometric Section 2", "S/C
+   Section 1" (judgment: he wrote "S/C Curve 2", but an s/c
+   section can be all straights — "Section" like the other
+   three), "Bridge Section 1"; flags, domain, influence and
+   controls never change the type word, they stay badge TAGS in
+   the fixed order " !" (dirty bridge) " ·m" " ◀" " fx" with the
+   glyphs " ≠v" " ≠o" after them, space-separated ("Force
+   Section 2 ·m ◀ fx" — the old glued "Geo·m" no longer reads
+   with a number between); numbering restarts per run (a
+   detached piece is its own run) and structural ops renumber on
+   the next redraw (an open Apply-only dialog keeps its open-time
+   title — accepted). The drawn BADGE takes a WIDTH LADDER
+   measured with a real Text (Font 10; the old length×6+10
+   estimate under-measured): the full title + tags + glyphs when
+   the strip is wide enough, else the SHORT form "Geo 2 ≠v" (the
+   number never drops before the type word), else no badge
+   (today's rule). The badge menu's FIRST row is the PURE title
+   (no tags — the badge above wears them), BOLD, never
+   highlighted or focused-looking and never closing the menu
+   (labelItem — the CustomMenuItem + Label pattern factored out
+   of grayItem, inert = an inline transparent background on the
+   skin's container + an inline text fill, which outrank modena's
+   :focused rules; hideOnClick false; the D239 self-measuring pad
+   kept); the D247 speed and orientation INFO LINES are GONE and
+   their numbers moved into the title row's TOOLTIP
+   (sectionInfoText: "Design speed %.1f m/s" + " (authored %.1f)"
+   for influenced sections + " · entered %.1f m/s" when drifted;
+   a second line joining "distance domain (m)" / "global axes" |
+   "global roll" | "global yaw/pitch" / "rates °/m" / "absolute
+   roll" / "absolute yaw/pitch"; an s/c section's "%.0f m, %d
+   elements"; the D247 orientation line while conflicted).
+   Flagged: the tooltip is now the only textual home of an s/c
+   section's length + element count and of the design/authored
+   speed. The resolve submenu is TITLED "Resolve conflict: speed"
+   / "…: orientation" / "…: speed + orientation" and the D247
+   disabled "Resolves: …" first line is REMOVED (the range scope
+   is stated by the end-section dialog and Help; when k == last
+   no dialog appears, so no in-menu scope statement exists there
+   — flagged; item 10 re-titled it "Resolve SECTION conflict: …"
+   the same day and moved it below "Initial design speed…"); the
+   leftIsBridge branch's lone disabled explainer
+   became the two ops grayed with "The bridge before this section
+   re-blends to follow any resolution — convert the bridge
+   first." The range dialog reads "Resolve from <title> through:"
+   with "<title> + tags" items, rangeResolveWhy names the section
+   ("<title> is reversed — …" / "<title> is too short to measure
+   — lengthen it first."), the chain stats line reads "Range
+   resolve — <title> (%d of %d): …", the Orientation dialog
+   "Orientation settings — <title>" / "Influence orientation
+   settings — <title>", Convert "Convert — <title>", Insert
+   "Insert section after <title>". JUNCTIONS = every piece
+   boundary INSIDE a run — plain strict seams AND bridge exits
+   counted together in run order: "Strict Seam n" / "Strict Seam
+   n (bridge)" (the bridge test runs FIRST, so a bridged-in
+   piece's stale followPrev is inert; a chain head → bridge → P2
+   → strict → P3 reads "Strict Seam 1 (bridge)" / "Strict Seam
+   2"); the seam menu item is "Strict Seam n…" (was "Strict seam
+   orientation…") and the seam window's head follows it live. The
+   init-speed dialog's enabled "Set Design to Real" tooltip is his
+   VERBATIM text incl. the missing trailing period: "Fills box
+   with the real entry speed, resolving a speed conflict. Does not
+   resolve an orientation conflict". OWNER BUTTON: the Orientation
+   settings dialog ends with a button labeled EXACTLY the toolbar
+   text that owns the section's placement — ownerButtonLabel:
+   "Track Piece ▴" while no junction lies left of the section,
+   else "Strict Seam n ▴" / "Strict Seam n (bridge) ▴" (a bridge
+   section is owned by its own exit junction — for an orphan the
+   would-be ordinal, which item 3 grays); tooltip "Opens the
+   window that owns this section's placement."; it CLOSES the
+   dialog first (its k is active-piece-relative and the bridge
+   route activates the previous piece's bridge) and opens the
+   window FRESH (review: it routed through the toolbar TOGGLE and
+   CLOSED an already-open panel — a click doing the opposite of
+   its label; and the run-head route opened the ACTIVE piece's
+   panel, not the dialog's — openOwnerWindow(p, k) activates p
+   first when the modeless dialog outlived an activation change,
+   behind the same convertBusy guard); grayed "Placement is
+   edited in the start screen while it is open." under the
+   wizard, "The piece is gone." if the piece vanished. RUN
+   TOPOLOGY moved onto Coaster as the ONE definition
+   (endsWithBridge / followsPrev / bridgedInto / runStartOf /
+   runEndOf — GraphEditor's runStart/runEnd/followsPrev/
+   endsWithBridge delegate; LabelGate section 8 pins the
+   equivalence on every fixture). Rejected: naming text on
+   GraphEditor (not gate-able headlessly); title + tags on the
+   menu row (the badge already shows them).
+
+2. **Run as piece** (user vocabulary — a connected RUN is "the
+   track piece"; Coaster.runHeads / runCount / runOrdinal /
+   canMoveRun / moveRun / connectStrictRun + the static helpers
+   runLengthM / runSampleRange / runTailEnd): the toolbar "Piece
+   k/n ▾" selector lists RUNS — one entry per run head, "✓ Piece
+   %d — %s at (%.0f, %.0f, %.0f)" with the run ordinal, the WHOLE
+   run's length and the HEAD's anchor, ✓ and k/n keyed off
+   runStartOf(activePiece) (a member-active state after a 3D
+   click on a follower still shows the right run); hidden with
+   one run (a strictly-split or bridged single run hides it —
+   accepted); picking the active run is a no-op (no zoom jump),
+   another run activates its head's section 0 with auto-fit; the
+   OPEN wizard's piece grays "Finish or cancel the open start
+   screen first." (review: the gray keyed off isPendingPiece,
+   which requires !picked(), but the wizard has opened picked
+   since D232 — it NEVER fired; FvdDesigner.isWizardPiece is the
+   test now, and addBridgeTo/attachFloating refuse that piece at
+   apply time too); every entry grays with CONVERT_BUSY_MSG while
+   a convert preview owns the graph (setActivePiece would cancel
+   it). '+' "Bridge to piece ▸" / "Attach floating piece ▸" list
+   only OTHER runs' heads ("Piece %d — %s (next)" / "Piece %d —
+   %s"): a non-adjacent pick MOVES THE WHOLE BLOCK (moveRun —
+   head..runEndOf contiguous, order kept, no field touched except
+   the head's inert followPrev := false; returns the new head
+   index, activePiece := that − 1 and app.lanes re-pointed via
+   lanesFor); canMoveRun is the DRY RUN checked BEFORE
+   pushUndoSnapshot (refusals never clear redo): a non-head, a
+   destination inside the block, a bridge-ending destination
+   ("this piece ends with a bridge; extend the next piece
+   instead."), and a block ending in an ORPHAN bridge unless it
+   is already the list's last run ("This track piece ends in an
+   orphaned bridge — delete or convert it first." — a bridge-
+   ending block moved anywhere else would seize the next run as
+   its target and, under an optimize mode, MOVE it on the next
+   rebuild; an orphan-bridge run is necessarily last, so "lands
+   at the list end" collapsed to "already last"); "Bridge refused
+   — <reason>" / "Attach refused — <reason>" on the stats bar at
+   apply time; both flows pre-hide the seam AND speed popups
+   (spAfterRebuild resolves by INDEX only — a reorder would resync
+   it onto another section's control) and DROP the pane's
+   gizmo reveal before the reorder (review: Reveal(piece, kind)
+   holds a piece INDEX which the D247 run-membership reset kept
+   — the revealed rig silently re-rigged another piece). Inside a
+   moved block nothing reads the list index, so per-piece
+   compiles are bitwise across the move and save→load bitwise
+   (RunGate). The EXPORT dialog's "Track piece" picker lists runs
+   too ("Piece %d/%d  (%s)", hidden for one run; a run exports
+   its contiguous sample range head-first-span..tail-last-span
+   incl. bridges — the D84 seam-sample prepend is DEAD for run
+   heads (a head is never a continuation) and was dropped, which
+   also closes the old per-piece export's quirk of prepending one
+   FOREIGN sample from the previous piece; a live refresh whose
+   head list changed resets the pick to "Whole track"; the pick
+   is read AFTER settleIfPending — review). The floating wizard
+   places 5 m past the RUN TAIL's end (Coaster.runTailEnd — was
+   the active MEMBER's end) and "Add floating piece…" grays /
+   openFloatingWizard refuses when the list ends in an orphan
+   bridge ("The coaster's last track piece ends in an orphaned
+   bridge — delete or convert it first." — the copyRun hazard: a
+   piece appended there is seized as its target). deleteSection
+   normalizes an inert successor followPrev. The dead per-piece
+   length helpers (pieceLengthM / pieceLengthLabel) are removed
+   (runLengthLabel). Switch Coaster / Reverse / Mirror stay
+   PIECE-scoped (accepted-and-documented; a follower can still be
+   reversed / mirrored / switched alone — Switch Coaster as a
+   block move is the natural follow-up, and switchPieceCoaster's
+   destination-list append has no orphan-bridge guard yet —
+   deferred, flagged). Cosmetic: the apply-time fallback yields
+   "Bridge refused — This track piece ends…" (capital T
+   mid-sentence, the standalone tooltip sentence reused); the
+   gray WIZARD_OPEN_WHY ends with a period while the pre-existing
+   focusOpenWizard stats text has none — his wording call.
+
+3. **The three windows** (user spec — the Track Piece panel, the
+   Bridge properties panel and the strict seam pop-out become ONE
+   kind of window "like the node editor": coaster.LiveWindow, a
+   NEW JavaFX class; FvdDesigner.openTrackPieceWindow /
+   openBridgeWindow / GraphEditor.showStrictSeamSettings rebuilt
+   on it). OWNED Stages in the light default Modena (black text —
+   the dark-popup -fx-text-fill: white styles dropped; D232's
+   dark seam verdict reversed by this request), PLACED explicitly
+   just above the graph canvas (bottom edge at the canvas top,
+   left at the toolbar button / the seam strip / a node / the
+   pending gizmo double-click anchor; clamped into
+   Screen.getVisualBounds, never a hardcoded size — an opacity-0
+   show + setOnShown placement, because a pre-show prefWidth()
+   measurement made JavaFX cache a clipped "No optimizati…" radio
+   it never re-clipped, found by the winshot render); the node
+   editor takes the SAME placement (anchored at its node's screen
+   x). Values apply LIVE through the existing chokes
+   (wireDocSpinner / seamEdit / bridgeTargetWrite), handlers are
+   INDEX-resolved (Supplier), modelHooks + docRestoreHooks
+   resync, installDocUndoKeys, null-before-hide teardown,
+   convertBusy() gating, seamLive-style self-validation ("The
+   strict seam window closed — its seam no longer exists." / "The
+   bridge window closed — its bridge no longer exists."). Footer
+   [Confirm][Cancel]: Confirm = Enter = the X = keep (the focused
+   box commits first; Esc / Enter arrive through a scene KEY_PRESSED
+   FILTER limited to those two codes — a Spinner editor consumes a
+   bubbling Enter and Esc, so a handler and the default / cancel
+   buttons never saw them while a box had focus, review round 2);
+   Cancel = Esc = a FIELD-LEVEL revert to the
+   open-time record (the seam pattern — a DocState snapshot would
+   also undo unrelated graph edits made meanwhile; the bridge
+   record includes lastOptDist / optLen / noneStash so D97's
+   OPT_NONE round trip survives, and Cancel re-marches at
+   lastOptDist in optimize modes stamping the signature so the
+   next rebuild settles in one pass). The toolbar button TOGGLES
+   (open = close WITHOUT revert — Confirm semantics, matching the
+   old second-click hide); gizmo double-clicks and the owner
+   button open FRESH (openPlacementPopup(boolean)). ONE LAYOUT
+   unified on the bridge look: title; [bridge only: mode radios +
+   Length / Optimize length]; the orientation rows VERTICAL, one
+   label each — Yaw = [label][spinner][↺] (+ the bridge's yaw
+   lock); a thin separator; Pitch = [label][spinner][🔒][↺]
+   [design readout]; Roll the same — the padlocks styled like the
+   bridge locks (right side, LOCK_OPEN/LOCK_SHUT red/green), the
+   ↺ smaller and matched (revert to the open-time value — NEW on
+   the Track Piece and bridge rows), the grey "design 12.34°"
+   readout right of the ↺ shown only while orientation-conflicted
+   (followers: design elevation/bank via the D247 seam
+   predicate; replaces the single "Design orientation: …" line);
+   then the x/y/z row ("Anchor x/y/z (m)"; bridge: "Next piece
+   x/y/z (m)" in manual mode); then the FLAG ROW "Lock Track
+   Shape" + gray "(creates orientation conflict)" with "Only
+   Affect Orientation Until Next Strict Seam" to its right; then
+   "Design → Real Orientation" / "Real → Design Orientation"
+   while conflicted; [Track Piece only] the ops row Reverse… /
+   Mirror / Copy / Switch Coaster…; Confirm / Cancel. Track
+   Piece rows read "Anchor yaw (°)" / "Anchor pitch (°)" / "Anchor
+   roll (°)" (the one pitch/roll row split), the seam window "Yaw
+   (heading °)" / "Pitch (°)" / "Roll (°)" (the seam padlock
+   SEMANTICS kept: 🔒 holds the typed angle, the tooltip says the
+   Track Piece window's padlocks are edit guards — the opposite
+   sense). No lock on the Track Piece yaw row (a free piece has no
+   yaw guard flag, D153 — adding one for symmetry rejected).
+   TOOLBAR: "Track Piece ▴" ALWAYS (its x/y/z rows = the RUN
+   HEAD unconditionally — placementTargetIdx generalized from
+   D247's follower-only rule; a bridged-in active piece's own
+   position lives in the bridge window's "Next piece x/y/z" row)
+   plus exactly ONE junction button through ownerButtonLabel:
+   "Strict Seam n ▴" while the nearest junction left of the
+   active section is a plain strict seam, "Strict Seam n (bridge)
+   ▴" while the active section IS a bridge (its own exit) or the
+   piece is bridged-in (opening the PREVIOUS piece's bridge
+   window); none before the first junction; an ORPHAN bridge
+   shows the (bridge) button GRAYED "This bridge has no following
+   piece." (never a silent nothing); window titles = the same
+   text without the ▴; the bridge badge's top item reads "Strict
+   Seam n (bridge)…" (was "Bridge properties…"). The bridge
+   window addresses its bridge BY PIECE (GraphEditor.withBridge /
+   bridgePieceCtx scope the active-section bridge API — the old
+   auto-hide popup could never outlive an activation change, an
+   owned Stage can; the strip end-line drag and gizmo paths keep
+   the active-section scoping bitwise); the Track Piece window
+   FOLLOWS the active piece (today's panel rule) and RE-CAPTURES
+   its ↺/Cancel record when the active piece or run head changes
+   under it (Cancel reverts the current piece to the state it had
+   when it became the window's — a per-piece record map is the
+   follow-up if he expects the original piece reverted); the seam
+   window is index-resolved (the D247 undo in-place re-open and
+   applySnapshot's pre-hide are gone); structural ops that shift
+   piece indices pre-hide BOTH junction windows
+   (hideJunctionWindows). SEMANTICS: Lock Track Shape DEFAULT
+   UNCHECKED everywhere (TrackPiece.shapeLocked = false; a
+   MISSING porient line loads unlocked — supersedes D222's
+   missing = locked; the compile reads neither flag, so every old
+   file's TRACK is bitwise and only its edit routing changed:
+   pre-v19 files load unlocked, v19.0-v19.18 files keep their
+   saved state; wizardFinish no longer re-locks). Behavior change
+   flagged: hand-made strict seams (Make seam strict / attach)
+   now RE-SOLVE the follower's shape under seam edits unless Lock
+   Track Shape is checked, and seamDesignLockstep's pole guard
+   message shows on ordinary seams. NEW per-piece flag
+   TrackPiece.orientOnlyToSeam "Only Affect Orientation Until
+   Next Strict Seam" (default true; the porient line's 4th field,
+   missing = true; PieceState / restorePieces / TrackPiece.copy;
+   tooltip "The pieces after this piece's next strict seam or
+   bridge keep their own placement settings."; grayed "Applies
+   while Lock Track Shape is checked." while unlocked):
+   Coaster.carriesDownstream(p) = p.shapeLocked &&
+   !p.orientOnlyToSeam is the ONE predicate and carryAfterEdit
+   the choke placementEdit calls — checked = NO carryDownstream
+   at all, the edit stops at the piece's own exit junction of
+   EITHER kind (judgment: the flag's NAME says "strict seam" but a
+   bridge junction IS "Strict Seam n (bridge)" now; an OPT_NONE
+   target keeps its stored placement, optimize bridges re-march
+   from the moved head, a follower's LOCKED axes keep their
+   absolute held angles while its position and unlocked axes
+   follow by compile — a re-aim with a horizontal component can
+   open a seam ≠o, accepted; "followers stay put in the world" is
+   impossible for POSITION, the compiler glues their entry to the
+   upstream exit); unchecked = the D221 rigid carry bitwise. The
+   BRIDGE window's Lock Track Shape / Only-Affect are the TARGET
+   piece's; routed target writes (setBridgeTargetOrient /
+   gizmoSetBridgeOrient → setDispPitch/Roll(…, true), the rings'
+   gizmoSetBridgeOrientAll → editPitch/editRoll) go through the
+   target's lock: unlocked = design + real lockstep (re-solve,
+   one re-march — verified no feedback loop: the march writes
+   the TRUE tier only and the routed write happens once per user
+   event), locked = real only (conflict); "Design → Real" on the
+   target = designToRealDirect (the D240 absolute-lane dialog
+   kept, with a new `after` hook so SIG_STALE is stamped only at
+   the dialog's Apply — a cancelled dialog leaves the bridge
+   signature alone) then the re-march re-lands position; "Real →
+   Design" = true := design + re-march; ONLY Real → Design grays
+   under OPT_POS_YAW ("The optimize-orientation bridge owns this
+   piece's pitch/roll — switch the mode or lock the axes.") in
+   ALL three windows — the Lock check and Design → Real stay
+   enabled (supersedes lockShapeRows' wholesale gray); a
+   shape-LOCKED target under OPT_POS_YAW re-opens its conflict on
+   every re-march (accepted; its D→R tooltip appends "While the
+   bridge optimizes orientation the next re-optimization may
+   reopen it."). Copy/Mirror/Reverse/Switch keep their D247 gray
+   reasons; the Track Piece window's follower gray names the
+   junction live ("… its orientation is edited in Strict Seam n
+   ▴. …"); anchor hover gains a third sentence for Only-Affect
+   ("…; the pieces after its next strict seam or bridge keep their
+   own placement settings."). Verified by the new -Dfvd.winshot
+   dev hook (renders all three windows to PNG; it caught two real
+   bugs — the bridge resolve row showing while unconflicted, and
+   the Labeled clip). Not exercised interactively: Confirm /
+   Cancel / ↺ / undo flows and the bridge Cancel re-march were
+   verified by reading, the model gates and the render — TESTING
+   #165 walks them.
+
+4. **Gestures** (user list; coaster.Gestures — a NEW pure class
+   holding the arithmetic so GestureGate pins it): (1) ARROW
+   NUDGES take the D241 spinner conventions — Shift = one tenth
+   of the step, Ctrl = the NEXT round multiple of the (possibly
+   Shift-scaled) step FROM THE CURRENT VALUE (Gestures.nudge, the
+   modStep recipe: floor/ceil with a 1e-9 guard so an on-grid
+   node lands one cell over and an off-grid one never skips a
+   cell; the old branch stepped THEN rounded, which could jump two
+   cells and re-rounded the IDLE axis — an Up press could move
+   t), both combine; the per-axis snap REFERENCES stay Ctrl-drag's
+   (time: absolute grid or the previous node; value: absolute or
+   the previous node — D241: drags keep their references, the
+   spinner's absolute-only multiples rejected); modifiers forward
+   through withSurf (strip parity — forgetting one makes the
+   strip ignore the modifier); no end wall on arrows (the deliberate extend
+   path). Behavior change flagged: on an off-grid node the first
+   Ctrl press moves LESS than before. (2) APPEND (A /
+   appendSecond / the dotted-hold click) after a SMOOTH SLOPED
+   last node continues its slope: the previous node's OUT handle
+   takes its IN handle's slope (Gestures.continueOut — toggleSmooth's
+   C1 rule) and the new node keeps a flat sine in handle at the
+   hold value (the segment overshoots the hold slightly —
+   accepted; sloping the new node's in handle too would turn the
+   hold into a ramp, rejected); broken / straight- or
+   level-locked / 1-node / flat-in last nodes keep the historic
+   flat out bitwise. insertHoldAfterSelected (A with a selection)
+   continues the selected node's slope the same way AND re-angles
+   the hold node's in handle to the inherited slope
+   (Gestures.matchInToOut) so it is truly smooth — the sel→hold
+   run slopes instead of a flat hold, a visible change; the hold
+   node inherits a lock for the hold→next half (the
+   insert-on-curve split rule; the far half silently unlocked
+   before). Cases listed: the complex control graph (A never
+   routes to the strip), s/c / bridge / legacy reversed
+   (unchanged), the end wall (unchanged). (4) The speed-control
+   START DIAMOND drag = a RESIZE FROM THE LEFT (SP_DRAG_START:
+   x0 moves between the previous control's end and end − 2×the
+   domain gap, the END fixed, complex graphs — both lanes —
+   rescale by len/oldLen through the shared
+   SpeedControl.rescaleLanes, no ripple since nothing after the
+   fixed end moves); the body drag still MOVES, the popup's Start
+   spinner keeps MOVE semantics (a position; Length is the
+   resize surface), an abutting pair's shared spot still picks
+   the END diamond first (existing, documented). (5) A smoothing
+   band EDGE drag is ONE-SIDED (Gestures.edgeWindowLen): the
+   window is twice the arc from the seam to the cursor on the
+   grabbed side and 0 once the cursor crosses the seam, staying
+   off while it continues past (the historic |·| re-grew it on
+   the far side); the diamond's relative drag is unchanged; the
+   same rule on the s/c INTERIOR blend edges (parity; the entry
+   ease edge was already one-sided). (6) The init-speed dialog's
+   box is a TYPABLE SPINNER (step 1 m/s, Shift 0.1, Ctrl whole
+   multiples, hold-repeat, %.2f display, typed values at full
+   precision; the factory range IS the D198 [0.1, 1e4] clamp,
+   Gestures.clampInitSpeed re-applied at Apply as a belt;
+   commitTyped before Apply; the D247 typed/fill flag semantics
+   kept — the EDITOR holds the focus, so the typing test reads
+   the editor, review). LiveNum rejected: it is for live-apply
+   boxes. (7) DEFAULT ACTIVE LANE 0 (Vertical G / Pitch —
+   Elevation under absolute yaw/pitch) when a coaster or track
+   piece is created (wizard open AND Done), after every '+' add
+   and seam Insert of a force/geo section (GraphEditor.defaultLane
+   — activeLane was session state nobody reset: a user editing
+   Roll got every new section with Roll active); load / Copy /
+   piece switches deliberately untouched (an "every activation
+   shows lane 0" option if he wants it).
+
+5. **Pristine-lane END FOLLOW** (user spec — "lanes not edited
+   since creation follow the section end"; LaneSection.endFollows
+   [3] + pristineHold / touchLane / syncFollowingEnds, pure model
+   so EndFollowGate drives the real thing): a hold lane is created
+   with the flag SET (continuation / holdSection / the '+' and
+   Insert holds / the start wizard incl. its Initial-size rebuild;
+   split halves — section, piece, re-anchor, partial-convert kept
+   half, make-smoothing-real — INHERIT; merges, converts, fits
+   and delta lanes never; TrackPiece.copy deep-copies). The
+   EDITOR owns the write (the enforceLocks precedent — never
+   TrackCompiler/bake, which would break rebuild idempotence):
+   touchLane clears the flag of the ONE lane being written,
+   resolved by IDENTITY against the section's own lanes (a delta
+   lane, a speed-control graph or a foreign list is a no-op), at
+   every lane-writing sink — node/handle drags, nudges, the node
+   editor, group moves, inserts, append, deletes, B (per written
+   lane), smooth/broken, H/F/level/straighten, the lock toggles
+   and menus; syncFollowingEnds then moves every still-following
+   lane's last node to E = the latest last-node x over the
+   DEFINING lanes (flag off, ≥ 2 nodes), floored at node 0 +
+   the domain's minimum gap (seconds or meters) — values,
+   handles and locks untouched (a pristine lane's dv are zero),
+   growing AND shrinking the section (the old end wall stayed at
+   the untouched lanes; a shrink can pull speed controls back in
+   through the existing spClampControls); a wholly untouched
+   section moves nothing (no defining lane); 1-node lanes neither
+   define nor follow. The REDRAW-TIME BELT: a flagged lane that is
+   no longer hold-shaped (pristineHold: exactly two nodes at the
+   same value, DEFAULT_FRAC facing handles within 1e-9 — a de
+   Casteljau cut leaves 1/3 ± ulps, a typed 0.333 is an edit —
+   zero dv, no lock) is CLEARED and never moved, so a missed sink
+   can never snap an edited lane back. Explicit syncs at the
+   sinks run BEFORE their redraw + rebuild (the compile never
+   sees a stale end; redraw can be a no-op while collapsed);
+   guarded by docApplying / docRestoring; only the ACTIVE
+   section syncs. Influence DELTA lanes never follow (their wall
+   is the compiled duration); a hand-reverted edit stays
+   "edited" (Ctrl+Z restores the flag). IO: the `lane k f` line's
+   3rd field (1/0; old readers ignore it); a file WITHOUT it
+   derives the flag in finishCoaster from the loaded shape —
+   pristine AND at the section end AND only while the DEFINING
+   end (the lanes that will not follow) is the section end too,
+   so the derived state is a FIXED POINT of syncFollowingEnds (a
+   hold short of the end stays off; so does a pristine hold that
+   is the SOLE longest lane — it defines the end, and a derived
+   true would have let the first follow write shrink it onto the
+   shorter lanes: review round 2's '+' hold whose Gl node had
+   been time-dragged short derived 101 and shrank the section on
+   open; a draft before that derived it for any pristine hold —
+   either way an undirtied, non-bitwise load); an explicit 0 on a
+   hold-shaped lane is a deliberate non-follow that survives;
+   SecState carries it; save→load→save byte-identical. Flags feed
+   no geometry (compiles bitwise across flipped flags); the
+   follow WRITE is an editor action, so compile/rebuild stay
+   idempotent (DetermGate197/198 re-run — IO + SecState changed).
+   Rejected: a derived predicate only (a lane edited and
+   hand-returned to a flat hold would follow again — the flag is
+   faithful to "not edited since creation"; the derivation
+   survives only for old files, where that corner is accepted).
+
+6. **Viewport** (user list; UI-only — the -Dfvd.pickprobe=1 dev
+   hook drives the picker on the default document and exits 0
+   when green): (1) NODE-MARKER DOUBLE-CLICK opens that node's
+   LIVE editor (openNodeEditorFromViewport — the marker pick now
+   runs BEFORE the double-click branch, so within 14 px of a
+   marker the track insert no longer fires: no more 0.02 s-off
+   inserts beside a node, flagged; refused with CONVERT_BUSY_MSG
+   under the preview and "Finish or cancel the open start screen
+   first." under the wizard; the entry ball's double-click keeps
+   opening the Track Piece window — node 0's editor from the
+   graph, accepted); the SELECTED marker is radius 0.26 vs 0.22
+   (MARKER_R_SEL) tinted laneColor.interpolate(WHITE, 0.4)
+   (MARKER_SEL_MIX) instead of the big white sphere (pale lanes
+   may read near-white — single constants to tune). (2) A
+   central SCREEN-SPACE GIZMO PICKER (option B — the house's
+   pickMarkerIndex / pickTrackSample / ringHit precedent; option
+   A's invisible proxies rested on an unprobed opacity-0 render
+   skip): every rig part registers a GPart (handlers + the
+   analytic shape it was built from) and a capturing pane filter
+   picks in PIXELS — BALLS FIRST (zone = projected radius ×
+   PICK_BALL_MUL 1.5 + PICK_BALL_PAD 6 px, so an edge-on ring
+   crossing the center can never steal it), then the NEAREST
+   arrow (segment distance ≤ PICK_ARROW_PX 9) or ring (48-point
+   projected polyline ≤ PICK_RING_PX 6 — adjacent rings' bands
+   overlap and nearest-by-px resolves it); every rig enumerated
+   (piece, seam, bridge OPT_NONE, bridge optimize incl. the
+   LENGTH arrow); the gesture rides gPress in the filter, never
+   the pressed node; hover glow central too; gizmoSub is
+   PERMANENTLY mouse-transparent (D189's fly/POV rule subsumed —
+   the warped cursor can never hover it); the filter consumes
+   ONLY primary presses whose target is the 3D content (targetIs3D
+   — click-off hide, marker clicks, track activation, the
+   collapse button and tangBtnRow keep working); fly / POV take
+   nothing, but a gesture LIVE when fly/POV began still ENDS on
+   its release (review: the early return left gPress set for
+   good); a refused press under convertBusy posts the sentence
+   ONCE (it used to refuse silently); a rig double-click still
+   opens its window; visuals unchanged. (3) A DRAG-REVEAL hides
+   the pressed track ball the moment the rig builds mid-gesture
+   (revealDuringDrag — under the picker the capture no longer
+   depends on the node, so hiding cannot lose the drag) and the
+   release rebuild re-derives it; MID-DRAG MODIFIER COMBOS
+   (Ctrl+Z, Ctrl+S…) are suppressed while a gizmo gesture is live
+   — isGizmoDragging = past the deadband OR a part still pressed
+   (review: a ball's first 3 px never set gizmoDragging, and a
+   Ctrl+Z there replaced the piece under the pressed closures);
+   bare keys unaffected. Also (review) dropGizmoReveal before a
+   run move (item 2). A tool window's own Ctrl+Z mid-drag stays a
+   pre-existing corner (documented).
+
+7. **The see-through floor** (his "underground track should read
+   as behind the floor"; coaster.FloorDepth — a NEW pure class
+   holding the arithmetic so FloorGate pins it): the floor (sheet
+   + line decades + main axes) draws AFTER the track,
+   DEPTH-ENABLED — world order [trackGroup, povHolder,
+   trackBallGroup] → [gridGroup, axisGroup] → [ghostGroup] — so
+   above-ground track occludes it and underground track shows
+   through the translucent sheet (alpha 0.10 unchanged — the
+   lines carry the cue; a per-user opacity slider only if he
+   asks) with the LINES AND AXES DRAWN OVER IT (the map's (b′);
+   (a) sheet-only was the fallback and was NOT needed — one
+   tuning round on the gate bounds, zero on the renders). The
+   floor's own coplanar layers would z-fight (D242 fact (b):
+   translucent 3D writes depth); the map's per-ring flat LIFTS
+   were proved unworkable by the first two FloorGate drafts (the
+   decade ladders don't align at ×10 and each decade is
+   decentered ≤ 0.5q — far-corner-sized lifts either need ~3×
+   growth per layer or land tens of px near the eye), so the fix
+   is RANKED TILTED PLANES: lifting a ground point by h toward
+   the eye moves its hit nearer by exactly h·z/|eyeY| in view
+   depth, so layer rank r lives on the plane y = sgn · r ·
+   FLOOR_LSB_MARGIN (2) · k · |eyeY| · z_view, k =
+   1/(near · 2^DEPTH_BITS) — ONE Affine SHEAR per line group per
+   frame (FloorDepth.shear, liftFloorLayers), exact at every
+   pixel, ranks handed out DYNAMICALLY to the layers that draw
+   anything this frame (sheet 0, each alive decade's x-lines then
+   z-lines — the rings split into TWO MeshViews per decade so
+   crossings are pixel-exact — then the axes), the sign flipping
+   toward a below-ground eye (the sheet is CullFace.NONE — its
+   underside draws), k off the ACTIVE camera's near clip (near
+   clips unchanged — raising them would change fly/POV
+   close-range clipping). The decades DRAW THEIR ZERO LINES again
+   (D1 stands — a static mesh translated by round(eye/q)·q per
+   frame cannot skip the WORLD zero; the implementer's skipZero
+   punched a hole at the line nearest the eye in every alive
+   decade — review fix); the axes sit on the highest plane, so
+   the coincidence is fight-free and covered by the axes' width
+   wherever the decade shows (D243's status quo, incl. its
+   accepted 100 m-decade peek near the eye); the axis anchor
+   quantum stays 30 m (the brief's 100 m was for the abandoned
+   lift scheme). The on-screen float of rank r is r · m · k ·
+   |eyeY| · subH / (2 tan(fov/2)) px — ∝ eye height, ≈ 0.0073 ·
+   |eyeY| px per LSB-rank at 700 px / 60° / near 0.1 (twice for
+   the 0.05 fly/POV clips): ≤ 1 px at a 100 m eye, coincident
+   decades 0.58 px orbit / 1.16 px fly at an 800 m eye where the
+   10 m decade is at 22 % and dead by 1.3 km, axes 5.2 px at the
+   2.4 km very-high pose against a featureless sheet — accepted;
+   a lifted far line could cross a 5 m-high track at 3 km
+   (sub-decimeter width there). The lines lose ≤ 10 % brightness
+   under the sheet blend — not visible on the nine original poses
+   (A/B identical). The stalled GHOST track goes LAST with
+   DepthTest.DISABLE — composited over floor and track alike (an
+   above-ground ghost in front of the floor would otherwise cut
+   a dark silhouette through the lines; an underground ghost stays
+   visible; a ghost is faintly visible through nearer opaque
+   track — accepted; back faces blend, denser ghost; still
+   PICKABLE). Rails straddling y = 0: the sheet slices the tube —
+   real depth separation. ORTHO: Top keeps the 2D orthoGridCanvas
+   stroking lines over ALL track at any height (D242 made the
+   canvas THE ortho grid; re-enabling the 3D rings there means
+   D242's rejected hard-square-edge problem) with the sheet
+   depth-tested and the axes at a fixed +1 cm (ORTHO_AXIS_LIFT,
+   ≈ 20 linear LSB); Side hides the sheet as before — an accepted,
+   documented difference from the 3D behavior. The strength law
+   moved verbatim onto FloorDepth.ringStrength (bitwise) so the
+   gate's alive/peak figures track it; 7 Affine writes per frame,
+   skipped when unchanged; empty coasters get a floor. Risk: if
+   prism's depth format were not 24-bit or the compare not
+   LESS(EQUAL), FLOOR_LSB_MARGIN is the one lever. Verified by
+   the -Dfvd.gridshot ladder EXTENDED to 15 poses with an
+   UNDERGROUND fixture (the demo lowered so statMinY = −15,
+   fricRoll 0.15 forcing a ghost; under-above / under-graze /
+   under-below / under-far / under-ortho-top / under-ghost):
+   dimmed underground track under crisp lines, crisp above-ground
+   track, no patchwork or flicker. SUPERSEDES D242's "the track
+   drawn later overdraws it; a below-ground camera never sees
+   grid over track — accepted" and D243's "the axes draw AFTER
+   the grid, submission order" (they draw after it on a higher
+   rank plane now).
+
+8. **Review rounds** (per item, folded above): L — the glyph
+   sweep had corrupted its own comment, the owner button's
+   toggle/active-piece routes; R — the wizard gray that never
+   fired + its apply-time twin, the stale reveal index across a
+   run move, the export pick read before the settle; W — the
+   bridge resolve row showing unconflicted, the Labeled clip;
+   V — the fly/POV early return that stranded a live gesture, the
+   pre-deadband Ctrl+Z; F — the skipped world zero line; E — the derivation's
+   at-the-end test; G — the s/c blend-edge side read in AUTHORED
+   arc (a legacy reversed strip mirrored the pixel side); S1 — the
+   strided drag polyline that skipped the section's END sample (an
+   end disk could never reach the wall on long sections) and the
+   auto-fit time window a strip diamond / mark drag froze and the
+   strip's own release never unfroze; S3 — the force local roll
+   lane's authored reference restored per the brief (the
+   implementer had switched it to derived). Cross-item: the toolbar wording
+   item 1 left to item 3 landed (ownerButtonLabel drives both);
+   the D247 "Strict Seam ▾" / "Bridge properties ▾" / "Track
+   Piece ▾" labels are gone from every surface.
+
+9. **Viewport disks + node deselect** (his "33b" list;
+   coaster.ViewDisks — a NEW pure class holding the arithmetic so
+   GestureGate's section 7 pins it): every speed control's START and
+   END sit on the 3D track as stylized DISKS centered on the
+   HEARTLINE (core radius CTL_DISK_R 0.26 m — bigger than a node
+   marker so a coincident marker never hides the handle —
+   half-thickness 0.035 m plus a lighter outer ring at 0.30 m; a
+   darker shade of the control's type color, CTL_DISK_SHADE 0.72 of
+   the strip's speed green / accel blue, faint self-illumination
+   CTL_DISK_GLOW 0.45; the SELECTED control's two disks wear the
+   full color with a white rim CTL_SEL_RING; feel-tunable
+   constants). The disk IS the diamond: a press
+   (Viewport3D.pickCtlDisk → GraphEditor.spViewportPress — within
+   PICK_PX 12 px it wins over the node markers' 14 px RELEASE pick)
+   selects the control, gives the strip focus and begins the strip's
+   own diamond gesture — kind 1 = the START disk = item 4's resize
+   from the left, kind 2 = the END resize (the END diamond's clamp
+   factored to Gestures.resizeEndLen, bitwise the inline arithmetic
+   over 500 random clamps); the drag maps the cursor onto the
+   NEAREST projected point of the section's sample polyline
+   (ViewDisks.nearestOnPolyline — no radius cap, the cursor may
+   leave the track; NaN = nothing projected, the control stays put;
+   strideIndices always ends on the section's last sample — review:
+   a strided walk skipped it and an end disk could never reach the
+   wall on long sections), reads it back as the section's NATIVE x
+   (ViewDisks.nativeAtArc — the inverse of the plates' historic
+   arcAtTime lerp, moved here as arcAtNative and extended by spanLo
+   so a continuation's x = 0 lands ON the seam sample; interior x
+   bitwise) and hands THAT to spDragDiamondNative — the strip's
+   write path with the strip's own clamps (min length 2× the domain
+   gap, neighbor controls, section walls, Ctrl = the strip's native
+   snap, complex graphs rescale BOTH lanes) — so the disk can never
+   move further than the diamond can and the two coincide by
+   construction (GestureGate 7d: disk write == strip write under
+   every clamp, clamped writes bitwise on the wall). Every event
+   rebuilds the track and redraws the strip live (gestureHot), one
+   undo step per gesture (beginGesture / commitGestureSnapshot on
+   the first real move — a clean click pushes nothing),
+   settleIfPending at release, an unmoved DOUBLE-click opens the
+   control's options popup at the click; a press on a piece OUTSIDE
+   the active run activates that piece + section FIRST (track-click
+   semantics; inside the run nothing activates — strip parity); a
+   hidden strip opens COLLAPSED (the +V rule) so the mirrored
+   diamond is visible; refused with CONVERT_BUSY_MSG under the
+   preview and WIZARD_OPEN_WHY under the start screen (the strip is
+   unreachable there — a disk must not become a back door); hover =
+   hand cursor + the bottom-left combLabel "speed control start — x
+   = 3.20 s" (end / m per kind and domain, read live by index);
+   hidden in POV like the combs; Ctrl+Z mid-drag suppressed
+   (isGizmoDragging includes diskDrag); disks build for EVERY piece
+   of the active coaster (not the wizard's pending piece, not
+   inactive coasters, not bridge / legacy-reversed sections — not
+   speedControllable); the rebuild signature carries the selected
+   control. Accepted: abutting controls' coincident disks pick the
+   EARLIER control's END (spFindDiamond's order — B's start is
+   reachable via its end disk or the strip); a disk under a white
+   ball is the ball's (the screen-space picker consumes the press
+   first); a track crossing itself in screen space may jump branches
+   (the strip is the exact surface); plain speed MARKS get no disk
+   this batch; Delete after a disk click removes the SELECTED
+   CONTROL (strip focus rules); the node-marker toggle never hides
+   disks. SECTION-BOUNDARY DISKS: small light-gray disks (BOUNDARY_R
+   0.16 m, rgb(190,194,202), glow 0.40) on the heartline at every
+   section boundary of every piece — ViewDisks.boundarySamples: each
+   section's EXIT sample plus the piece's ENTRY sample, deduped by
+   index and by DEDUPE_M 1e-6 m (a follower's entry coincides with
+   the upstream exit; the next section's dropped continuation entry
+   is NEVER placed — two disks one dt apart read as a bug; a
+   smoothed seam's disk sits at the blended sample),
+   mouse-transparent, never hovered, hidden in POV, rebuilt with the
+   markers. NODE DESELECT ON GIZMO SELECT: any primary press on a
+   registered rig part (track ball, center ball, arrow, ring) runs
+   deselectFromViewport BEFORE the convertBusy gate (view state, not
+   a document write) — selIdx/selSet clear, a strip node too, the
+   control selection stays; the D247 entry-ball node-0 select is
+   REMOVED (a ball click selects nothing; node 0 stays reachable in
+   the graph; Copy's explicit node-0 handoff is untouched); safe
+   mid-press only because refreshGizmo(false) never signs the node
+   selection (comment at the call).
+
+10. **The strip's design-speed line + renames** (his 33b list;
+   coaster.SpeedStrip — a NEW pure class so StripGate pins it): the
+   tall strip draws the DESIGN speed (Sample.v) as a SECOND dotted
+   line wherever it differs from the TRUE speed by more than the
+   lanes' threshold — SpeedStrip.split: |spVToY(design) −
+   spVToY(true)| > TRUE_SPLIT_PX, purely PIXEL-based, no ≠v / ≠o
+   flag read (so a tilted piece's line appears mid-section exactly
+   like the lanes' true strokes, a pinned section splits everywhere,
+   an unconflicted section never; a gap exactly at the threshold
+   stays hidden). Design = DIMMER and THINNER — SP_SPEED_COLOR
+   rgb(100,220,110) at DESIGN_W 0.8 with DESIGN_DASH (2, 2.67) = the
+   old true style shrunk 1.5× (dots 1.5× smaller and 1.5× denser);
+   true = the NEW SP_TRUE_COLOR rgb(160,250,170) at TRUE_W 1.6 with
+   the historic (3, 4) dashes — the current true brightness IS the
+   new design brightness and the true line brighter still (never
+   alpha: "dimmer" is the thinner line, finer dots and the darker
+   green; feel-tunable, all named). Hidden inside COMPLEX speed
+   controls like the true line (the D173/D174 intervals; inside a
+   constant-SPEED control design == true after the snap, so the line
+   ends at the snap by itself), draws THROUGH stalled stretches (the
+   design profile keeps its energy value), joins the strip's scale
+   fit (SpeedStrip.fitHi — a derived curve must never leave the
+   strip, D174; the same 1.12 factor; both lines clamp to the run
+   window); hovering the TRUE line appends " (design 12.34)"
+   (SpeedStrip.designSuffix — two decimals, no unit) only where the
+   design line is drawn (always-on = a one-line flag); the hover dot
+   wears the brighter color; the hover index is captured at hit time
+   for the true line too (it was for the accel line only — a rebuild
+   could shift it). The control popup's radios read "Speed (lift,
+   transport)" / "Acceleration (launch, brake)" (the "Constant"
+   prefix dropped, the hints kept). The badge menu SWAPS the resolve
+   submenu and the initial-speed item: "Initial design speed…" (was
+   "Set initial design speed…") sits directly under "Orientation
+   settings…", the submenu below it titled "Resolve section
+   conflict: speed" / "…: orientation" / "…: speed + orientation"
+   (supersedes item 1's "Resolve conflict: …"), the D141
+   smoothing-only line reads "Resolve section conflict by decreasing
+   seam smoothing size", then the separator and Delete section;
+   Influence / Convert keep their places; bridges and legacy
+   reversed sections keep their existing guards (no resolve block,
+   the swap is invisible there). Nothing model-side changed.
+
+11. **The invisible lateral-G stroke under an orientation conflict —
+   BUG** (his report: the thin true stroke of the lateral G vanished
+   under a roll conflict. ROOT CAUSE per the lateral map:
+   GraphEditor's split-reference selector keyed off pieceTilted(p) =
+   pitchDeg != 0 || rollDeg != 0 — the pre-v19.0 TRUE-tier test —
+   while the compile tilts rigidly by conflictTilt (a free piece's
+   design→true gap, D222) or the seam tilt (a follower's held
+   angles, D247): a DESIGN-tier conflict (design roll 30 / true 0)
+   or a held-seam follower read "not tilted", the reference stayed
+   the DERIVED (tilt-re-projected) felt == the true felt wherever
+   the speeds matched, and the stroke was culled except in the
+   speed-split band — 117/301 and 154/300 samples drawn on the map's
+   fixtures). FIX: pieceConflicted(p) = orientConflictAt(p), the
+   D247 conflict predicate (TrackPiece.orientConflict for a free
+   piece, Coaster.isSeamOrientConflict for a follower), applied PER
+   LANE through LaneSection.tiltDeviates(ls, L): every FORCE lane
+   (Gv/Gl re-project under the tilt; the local roll RATE lane is
+   rotation-invariant, but the whole force section keeps D100's
+   authored reference — the brief's decision, restored by the review
+   after the implementer had switched it to derived; harmless,
+   authored == derived to differencing dust, ConflictGate e6) and
+   the geo WORLD-axis and ABSOLUTE lanes (bank-vs-horizon rate incl.
+   a yaw-pitch-global geo section's "local" roll lane, D177; heading
+   / elevation rates; absolute bank / elevation / heading angles)
+   take the AUTHORED reference under ANY conflict kind; geo LOCAL
+   body rates keep the derived reference (an authored one would only
+   risk one-sample differencing dots at rate kinks). ONE shared
+   helper splitRef feeds the stroke (drawTrueStrokes) AND the "
+   (true …)" hover (trueSuffix) — priority: a smoothed-seam window
+   row → the reference section's authored lane inside its span (time
+   membership ±1e-9, so the seam sample reads x = 0 — the historic
+   influence-view rule kept) → derived — so the hover now shows its
+   suffix at the entry of a true-tier-tilted piece too; it also
+   closes the cross-rate VIEW's latent native-vs-warped mismatch
+   (authDisp scales every authored reference like derivedDisp, the
+   smoothed-window rows included). Consequences: a LOCKSTEP-tilted
+   piece (design == true ≠ 0, Lock Track Shape off) is NOT
+   conflicted — the derived reference (visually identical, authored
+   == compiled to < 1e-6 g), its inactive strips draw AUTHORED and B
+   takes the exact ANALYTIC path (its design frame IS the world
+   frame); conversely the B-match analytic guard reads
+   !pieceConflicted, so a design-tier / seam-conflicted piece takes
+   the SAMPLED path (the analytic cross-mode inversion mixed the
+   design frame's authored targets with the world seam frame — wrong
+   targets before); inactive force strips and world / absolute geo
+   strips of a conflicted piece draw DERIVED (the truth — they drew
+   authored curves the ride doesn't follow; local-rate geo strips
+   keep authored, bitwise); a smoothed window's neighbor-half row
+   still wins inside the window; a legacy reversed-flag section
+   keeps the band (its authored lanes read back-to-front —
+   accepted). The Resulting ▾ overlays are UNCONDITIONAL and
+   unaffected (they draw the tilted truth at design speed), the
+   strip's speed line was never gated (item 10 owns its design
+   twin), no control changed — no Help edit. Pinned in ConflictGate
+   (9 new checks, 8 → 17): true roll 30 (e1), design roll 30 (e2)
+   and a held seam roll −30 (e3) draw ≥ 98 % under the new rule
+   while the old rule drew < 60 % on the last two; a heading-only
+   re-aim (e4) and a lockstep tilt (e5) draw nothing; the force roll
+   lane (e6); a pitch conflict via Gv (e7); the tiltDeviates truth
+   table (f1); a geo absolute-bank section ~30° off its tilted
+   samples on lane 2 only (g1).
+
+12. **Deferred** (reported, not shipped): renaming the program
+   "Ultimate Vector Design" — answer-only, his call; plus the
+   follow-ups items 2 and 3 flag (Switch Coaster as a block move, a
+   per-piece Cancel record for the Track Piece window).
+
+Verification: seven NEW gates — LabelGate 89 (titles, tags, the
+short form, junctions, owner labels, Coaster's one run-topology
+definition == the historic loops), RunGate 51 (runHeads /
+runOrdinal, moveRun bitwise per piece + save→load, refusals,
+connectStrictRun, runTailEnd / runSampleRange / runLengthM),
+PlacementGate 28 (the unlocked default + orientOnlyToSeam carry
+scoping, the 4-field porient round trip + missing-line defaults,
+TrackPiece.copy, bridge-target routing through editPitch, the
+target's Design → Real re-march via SIG_STALE), GestureGate 90
+(nudge arithmetic incl. 2000 random snaps, the C1 append and
+insert-hold recipes, the start-diamond resize, the one-sided edge
+length, the init-speed clamp; + item 9's section 7: resizeEndLen ==
+the historic inline arithmetic over 500 random clamps, the native↔arc
+round trip on real TIME + DISTANCE compiles incl. the seam rule,
+disk write == strip write under every clamp, nearestOnPolyline, the
+boundary-disk sample set), StripGate 30 (item 10: no split on an
+unconflicted section at any scale, a pinned section splits at every
+sample and its neighbor at none, a tilted piece's line appears
+mid-section, the strict > TRUE_SPLIT_PX / NaN rules, design == true
+inside a constant-speed control, fitHi, the " (design 12.34)"
+suffix, the line styles), EndFollowGate 73 (creation flags,
+the follow write up and down, the belt, touchLane identity, the
+`lane` field IO + derivation, flags feed no geometry), FloorGate 15
+(the ray-cast rank separation over 20 000 random poses above and
+below ground with both near clips, shear ≡ liftAt, the sign flip,
+dynamic ranks, the pixel-float closed form under the real strength
+law, lsbK guards, ORTHO_AXIS_LIFT) and coaster.ConflictGate EXTENDED
+by item 11 (8 → 17: the stroke selector on real compiles under the
+three fixtures, the no-conflict cases, the truth table, the abs-bank
+case) — plus the fixture updates the
+default flip forced (OrientGate / OrientGate2 / RangeResolveGate /
+SeamShapeGate set shapeLocked = true explicitly in their "locked:
+pure conflict" fixtures, OrientGate a / h2 expectations flipped,
+CopyGate / RunGate compare the new flags) and the full battery
+green on wiped classes at the batch's end (the run recorded in
+TESTING #165): DetermGate197/198/199/200, LoadGate196, OrientGate,
+OrientGate2, Phase2Gate, Phase3Gate, DomainGate, MultiCoasterGate,
+SmoothRealGate, coaster.SeamShapeGate, RangeResolveGate, CopyGate,
+MergeGate, InsertGate, InflSplitGate, ReanchorGate,
+coaster.ConflictGate, MirrorGate, YpAbsGate, coaster.DecompProbe,
+InflMatchProbe, Nl2ElemProbe, and the seven above (32 members).
+JavaFX-side verification: the winshot render (three windows,
+junction button per activation, the Labeled clip check), the
+pickprobe hook (part registration, bands, the ball-first rule, a
+drag-reveal with the drag alive, a ring drag) and the 15-pose
+gridshot ladder; the disks' drawing / picking / hover, the strip's
+line drawing, the badge-menu order and the stroke wiring are
+JavaFX-side — the interactive flows are TESTING #165.
+
+REVIEW ROUND 2 (the batch's second review-and-fix pass; every fix
+cites "D248 review fix" in code):
+1. END-FOLLOW derivation FIXED POINT (DesignIO.finishCoaster; the
+   derivation paragraph above updated): a candidate (pristine hold
+   AT the end) follows only while the defining end — the latest
+   last node over the lanes that will NOT follow — is the section
+   end; the sole longest pristine hold therefore defines and never
+   follows. EndFollowGate c10 flipped to 000 (+ c10b-c13b: the
+   time-dragged Gl twin, the triage 5/6/5 s probe, the
+   holds-follow-an-authored-definer case, c4 — each asserts one
+   syncFollowingEnds pass moves nothing, rideEnd unchanged and the
+   save text equal).
+2. The redraw BELT is CLEAR-ONLY (LaneSection.clearStaleFollows —
+   also syncFollowingEnds' first pass; GraphEditor.redraw calls it
+   instead of the moving sync): a redraw cannot rebuild, so a move
+   there left the graph ahead of the compiled track until the next
+   rebuild, which was then not a no-op (contract b); the moving sync
+   stays at the gesture sinks (insertHoldAfterSelected /
+   appendSecond / moveGroupBy / moveNode / the delete paths), before
+   their own rebuild. EndFollowGate b13.
+3. Esc / Enter reach the live windows through a scene KEY_PRESSED
+   filter (LiveWindow.show — see the footer paragraph): with the
+   caret in any spinner editor a bubbling Enter committed the
+   spinner and stopped (Spinner's onAction consumes it; Esc via its
+   cancelEdit), so "type 45 into Anchor yaw, Enter" left the window
+   open. Filter on two codes only; the undo / ride filters act on
+   their own keys.
+4. Cancel DISCARDS a typed-but-unentered box FIRST
+   (FvdDesigner.discardFocusedNumericEditor in LiveWindow.doCancel —
+   the editor text reset to the converter's rendering of the current
+   value): the caller's revert reads the MODEL, and the hide-time
+   focus-loss commit then applied the typed text AFTER the revert
+   (the piece moved on Cancel). After the close the Track Piece /
+   bridge windows resync their shell spinners from the model
+   (closeTrackPieceWindow → syncPlacementSpinners, closeBridgeWindow
+   → updateBridgeControls) so a box the Cancel BUTTON's press-commit
+   had already applied (edit + revert = two undo steps, accepted)
+   shows the reverted value; a toolbar toggle-close keeps Confirm
+   semantics (a typed box commits).
+5. The bridge window's Design → Real stamps SIG_STALE AFTER the undo
+   push (designToRealDirect(idx, afterPush) — the hook runs right
+   after pushUndoSnapshot, before the tier write; the dialog's
+   all-Preserve route passes its `after` the same way): the pre-push
+   stamp rode into the snapshot's bridge copy (BridgeSection.copy
+   carries optSig) and Ctrl+Z restored a stale-signed bridge that
+   the next rebuild's auto pass re-marched — an undo that moved the
+   target. A refused follower branch stamps nothing. PlacementGate
+   g4/g4b/g4c pin why (copy carries optSig; a restored null-signed
+   bridge is recorded, a restored SIG_STALE one re-marches).
+6. Live windows RE-FIT after managed rows appear (LiveWindow.refit at
+   the end of trackPieceRowsSync / bridgeRowsSync / the seam
+   tailSync): a Stage never grows when its root's pref size changes
+   after show, so a resolve row appearing (a Lock-Track-Shape pitch
+   edit, the window following the active piece onto a conflicted
+   one) pushed the ops row and [Confirm][Cancel] off the bottom of
+   the non-resizable frame; sizeToScene + the show-time placement
+   rule (bottom edge above the canvas top, x kept, screen-clamped)
+   when the pref size differs by > 0.5 px — a steady state is free.
+7. Coaster.canMoveRun refuses a destination that is not the END of
+   its own run (runEndOf(afterIdx) != afterIdx): moveRun touches no
+   follower flag, so landing after A0 with A1 following it spliced
+   the block into the middle of that run (A1 re-chained onto the
+   block's tail). The UI's callers always pass the active run's
+   tail — a model-side guard; GraphEditor.moveRefuseWhy mirrors it
+   ("that piece is not the end of its track piece."). RunGate
+   e3c/e3d/e4b-d.
+8. GraphEditor.toggleSeamWindow compares the open window's FOLLOWER
+   (seamWinPiece, the bridgeWinPiece pattern): a bare null test
+   closed piece 2's window when piece 4's "Strict Seam n ▴" was
+   clicked and opened nothing.
+9. Every REFUSING early return of a window open drops the pending
+   gizmo double-click anchor (LiveWindow.dropAnchor —
+   showStrictSeamSettings' two returns, openTrackPieceWindow's and
+   openBridgeWindow's no-coaster returns): the stale anchor placed
+   the next toolbar-opened window at the old 3D-click x.
+10. The range chain's s/c refusal names the section by its run-wide
+   title (brief L.6): "Range resolve stopped — <title> isn't compiled
+   yet." (was the raw piece-local index).
+11. The axis anchor quantum stays 30 m — the deviation from the
+   brief's 100 m is now WRITTEN (FloorDepth.AXIS_ANCHOR_Q's javadoc,
+   the F-floor edge table): the 100 m belonged to the abandoned
+   per-ring flat-lift scheme (axis pieces had to align with the q =
+   100 decade's rings); the ranked tilted-plane design does not
+   depend on it, and raising it without re-basing AXIS_SEG (first
+   boundaries 0/30/60/90 m) would park the eye up to 50 m off the
+   anchor and mis-size the near-field width max(0.09, 0.0016·d).
+Gates after the round: EndFollowGate 61 → 73, RunGate 46 → 51,
+PlacementGate 25 → 28; the full battery re-run (TESTING #165).
+
+## D249 (v19.20) — Batch 34: the 3-STATE ORIENTATION MODE (Edit Real and Design Orientation Independently → real / design radios, Affect Subsequent Strict Seams, the ONE TIER RULE for bridge targets) + the bridge padlocks on the SEAM RULE (🔒 = held at the typed value, editable in every mode), Cancel = a FULL placement snapshot; resolve ops UNDER seam smoothing, the LIVE "Initial design speed" window, smoothing cap 100 m, the Track Piece window's Delete…; the UI-bug round (wizard radios root-caused, ONE selection choke, windows placed BEFORE show, ball-edge gizmo picking, node-0 markers under junction balls, boundary disks on single-line seams only, the ◇ dodges carets); speed-control CROSS-DOMAIN parity + "t = 3.20 s" readouts + thicker whole-disk-pickable disks; the badge reverted to its type word, "Resolve conflict: …", "Bridge settings…", the program name ULTIMATE VECTOR DESIGN; the FLOOR FLICKER root-caused — the D248 depth-tested floor (b′) RETIRED, the floor back to D246 bitwise with a GROUND-SPLIT track layer
+
+Date: 2026-09-24, his batch-34 list on top of the uncommitted
+batches 32 + 33 (the D247/D248 tree; the "flipped padlock colors",
+"the grid is flashing like crazy", "wizard radios do nothing" and
+the orientation-model re-spec — real vs design editing as a first-
+class choice). Eight items (M B O C U S L F), each with its own
+edge table (scratchpad b34_edges_<item>.md) and review-and-fix
+round; the docs round folds the review fixes into the items below.
+Four ROOT CAUSES with evidence — bridge locks RC1/RC2 (item 2), the
+wizard re-parenting (item 5.1), the selection choke (item 5.2) and
+the floor's (b′) postmortem (item 8).
+
+1. **The orientation MODEL: three states, one tier rule** (item M —
+   user re-spec of D248's boolean; TrackPiece.OrientMode { LOCKSTEP,
+   REAL_ONLY, DESIGN_ONLY }, field orientMode, default LOCKSTEP =
+   D248's unlocked default; shapeLocked() survives as the DERIVED
+   accessor == REAL_ONLY for readers that only ask "does an edit
+   keep the shape?"). editPitch/editRoll route per mode: LOCKSTEP =
+   both tiers by the same delta (the historic unlocked path
+   bitwise), REAL_ONLY = the true tier only (the historic locked
+   path bitwise — shape kept, the conflict grows), DESIGN_ONLY =
+   the DESIGN tier only — the real entry never moves, the shape
+   re-solves, the conflict changes by the design delta (judgment:
+   design := v ABSOLUTELY, the wrappers deriving v from the design
+   raw, rather than the map's "design += v − pitch"). The
+   setDispPitch/Roll + setRawAbsPitch/Roll wrappers derive the new
+   delta from the tier the mode edits — under DESIGN_ONLY from the
+   DESIGN raw incl. its own pole branch (the map's spec gap 1), so a
+   design box/ring value round-trips on the design tier
+   (rawAbsDesignPitch/Roll = the rig baseVals there). THE CARRY
+   FLAG is RENAMED AND INVERTED: orientOnlyToSeam →
+   affectSubsequentSeams (true = the D221 rigid carry; default false
+   = D248's default behavior bitwise); Coaster.carriesDownstream =
+   orientMode == REAL_ONLY && affectSubsequentSeams (DESIGN_ONLY
+   inert — the real entry never moves). IO: `porient locked pd rd
+   affect mode` — field 1 keeps its D222 meaning (1 = REAL_ONLY) for
+   old readers, field 4 stores the NEW carry meaning, field 5 = the
+   mode ordinal and the AUTHORITY when it parses to 0..2 (fail-soft
+   to field 1 otherwise, D216); the loader decides field 4's meaning
+   BY FIELD COUNT: exactly 4 fields = a D248 'only' line → INVERT, 3
+   fields = no carry, a missing line = LOCKSTEP + (0,0) + no carry
+   (the compile never reads the mode — every old file's TRACK is
+   bitwise, only its edit routing changed), the D221 interim 2-field
+   form unchanged. PieceState / DocState / restorePieces, TpRecord /
+   BrRecord, the seam window's open record and TrackPiece.copy carry
+   mode + carry. FOLLOWERS: seamDesignLockstep is mode-keyed
+   (LOCKSTEP only; its math factored into the public
+   Coaster.applyDesignEulerDelta with the D247 pole guard);
+   GraphEditor.seamEdit gained the DESIGN_ONLY divert (a value-only
+   write of a held pitch/roll has its real Euler delta applied to
+   the design tier and the held values restored — the real entry
+   never moves; padlock toggles and yaw stay real-side, since the
+   locks are the real contract and heading is shared) plus the
+   explicit design write path Coaster.seamDesignSet /
+   GraphEditor.seamEditDesign (design elevation / bank := deg
+   through eulerOf(designPose()); refuses axis 0 "Heading is shared
+   by both tiers — edit it as the real yaw." and a vertical design
+   frame "The design frame points straight up/down — its elevation/
+   bank cannot be set; adjust the real orientation first.") for the
+   UI's design boxes and rings (item 3). THE ONE TIER RULE for EVERY
+   writer of a bridge TARGET's orientation — the user's boxes / ↺ /
+   rings AND Coaster.alignPieceForBridge (optimizeBridge /
+   autoReoptimizeBridges): pitch/roll route through editPitch/
+   editRoll, so LOCKSTEP = both tiers (the march can NEVER open a
+   conflict), REAL_ONLY = bitwise the historic true-only write,
+   DESIGN_ONLY = optimize-orientation unavailable (item 3's mutual
+   exclusion; a loaded DESIGN_ONLY + PY file marches defensively
+   true-only, record-only on load). SUPERSEDES D222's "the march
+   writes the true tier by convention" and fixes bridge-locks RC1
+   (item 2). Quiescence under LOCKSTEP was PROBED, not assumed: the
+   aligned target re-solves, its head dynamics shift the bridge's
+   signature, and the outer rebuild loop needed 13 (explicit
+   optimize) to 23 (upstream 3° tilt) whole-document passes to rest
+   — inside the 12 + 40 cap, but a live gesture's 12-pass tube
+   would have shown a mid-cascade target. Rather than the map's
+   fallback (REAL_ONLY writes + a stats reason) the fix is
+   Coaster.settleLockstepAlign inside optimizeBridge: re-capture the
+   target head exactly as the next compile will
+   (TrackCompiler.captureTargetHead — the bridge's target-side
+   solve-input capture factored VERBATIM out of compile(), at the
+   new model-side Coaster.INTEGRATE_DT that FvdDesigner's constant
+   now reads) and re-align until the deltas fall below 1e-9° (≤ 24
+   rounds, ~10 observed) — the SAME fixed point (pitch −30.631847°
+   both ways) in 0-1 outer passes. REVIEW ROUND 2 — the REST
+   GUARANTEE: the settle's exit used to stamp the PENULTIMATE
+   capture, and the claim that an un-settled exit "finishes, docSettled
+   honest" was FALSE — a slow pitched target (vDesign 2-8 m/s at
+   ±25-30°, pitch/roll unlocked; probed on the SettleProbe layout)
+   has a REPELLING fixed point (the pitch↔head-curvature gain
+   exceeds 1: no step size converges, damping is no fix), its stamp
+   never matched the next capture, and every rebuild re-marched
+   through the whole 12 + 40 cap (52 passes, restless — the D197
+   class). Now settleLockstepAlign re-captures the head ONCE MORE
+   after its last alignment whatever the convergence (stamp == the
+   next compile's capture; converged loops repeat their last
+   capture to < 1e-9), an unconverged exit STOPS HONESTLY (each
+   round snapshots the placement before its alignment, the
+   smallest-delta round is restored, a round whose pitch lands on
+   the ±85° clamp ends the loop) and the placement then fails
+   marchSpine's landing test → the honest septic, never a cascade;
+   OrientModeGate g7 pins five slow targets (rest in ≤ 2 passes, a
+   second rebuild bitwise). And the RE-KNEE: under "Optimize length"
+   the applied length was the knee of the seams as the COMPILE
+   captured them, never re-kneed once the settle moved the head
+   dynamics (optSignature stores 0 in the length slot; probed 9.00 →
+   8.00 m on the gate fixture, 9.00 → 6.50 m at vDesign 24 optLen)
+   — optimizeBridge now re-computes the knee off the settled seams
+   and aligns + settles ONE more pass when it differs (contracting
+   knees converge in one; a still-moving knee keeps the second
+   answer, bounded by design; g7b). Tunables by name: the 1e-9°
+   settle tolerance and the 24-round cap. Nine gates migrated to the mode by
+   script (assignments → orientMode / affectSubsequentSeams, reads →
+   shapeLocked() / !affect; PlacementGate expects the 5-field line,
+   CopyGate / RunGate compare mode + carry, OrientGate (i)
+   re-specified as the REAL_ONLY contract — its "even unlocked: the
+   machine bypasses" claim is superseded and gated the other way as
+   OrientModeGate g1). OrientModeGate g2b pins the recorded pre-D249
+   REAL_ONLY alignment (−27.507015°) to 1e-6 as a probe-recorded
+   number — re-record on any deliberate physics change. REVIEW
+   FIXES (M): the seam rig's pitch/roll rings under DESIGN_ONLY
+   compounded (the ring's baseVal was the HELD real angle, which
+   never moves in that mode, and writes are absolute-from-press —
+   each event re-applied the whole drag: +1, +2, … +10 → +55°) —
+   superseded by item 3's absolute design-angle rings; the Track
+   Piece and bridge ↺ passed the open-time REAL delta to
+   editPitch, which under DESIGN_ONLY set design := real (now
+   r.dPitch / r.dRoll in that mode); the piece and bridge-end rigs'
+   global ring baseVals read the real raw while the write derived
+   the design delta (now rawAbsDesignPitch/Roll under DESIGN_ONLY);
+   the local-ring sinks decomposed against the REAL entry pose
+   (pieceLocal / bridgeLocal now decompose on the tier the mode
+   edits). Rejected: an extra editDesign* API (the wrappers suffice);
+   REAL_ONLY-with-a-reason as the LOCKSTEP march fallback (the
+   user's model is "no conflict from the machine").
+
+2. **Bridge padlocks on the SEAM RULE** (item B; his "flipped
+   padlock colors"). ROOT CAUSES with evidence: RC1 (the "odd
+   behavior", real, batch 33) — the next piece's orientation had TWO
+   writers with OPPOSITE tier rules: D248 routed the user's
+   setBridgeTargetOrient / gizmoSetBridgeOrient(All) / bridgeRevert
+   through editPitch/editRoll (unlocked = both tiers) while
+   Coaster.alignPieceForBridge still wrote the TRUE tier only for
+   the axes it aligns — the probe's D2 case: HEAD TRUE 9 / DESIGN 0
+   (a conflict, rigid deviation 9.87 m) vs the tree TRUE 9 / DESIGN
+   9 (no conflict, 21.27 m) against bitwise-identical marches in A/
+   B/C; visible as a ≠o opening when an axis was unlocked under
+   Optimize position and orientation with Lock Track Shape off,
+   "Design → Real" re-opening on every re-march (converging ~10×
+   per pass, never one-shot). Closed by item 1's one tier rule
+   (bitwise the historic march under REAL_ONLY, gated). RC2 (the
+   "flipped" reading, pre-existing, exposed by D248's side-by-side
+   unification) — the ICONS agree on both windows (🔒 red = flag
+   true); what differed was the ENABLE RULE: the bridge grayed a
+   LOCKED axis's spinner in every mode ("Click the padlock to
+   unlock." — under OPT_POS_YAW simply false: the click handed the
+   axis to the march and the spinner stayed gray with the other
+   hint) and grayed an UNLOCKED axis under OPT_POS_YAW, while the
+   seam window enables exactly the LOCKED axis; so the typeable
+   axis wore 🔓 in the bridge and 🔒 in the seam. D87's "locked =
+   frozen, no edits anywhere" was the definition that had to
+   change, not the icon; the user's model "🔒 = held at what I
+   typed" had NO path under OPT_POS_YAW in either build (RC4 of the
+   map). THE RULE NOW (BridgeSection.axisLocked / axisEditable /
+   axisAligned — ONE model predicate every surface reads:
+   axisEditable = locked || optMode != OPT_POS_YAW): 🔒 = the axis is
+   HELD at the typed value and its box / ↺ / ring are editable in
+   EVERY mode (the bridge bends to it); 🔓 = free — under Optimize
+   position and orientation the march aligns it and the box grays
+   "The bridge aligns this axis — lock it to hold a value.", under
+   Optimize position / No optimization nothing aligns it, so it
+   stays typeable (de facto held). A typed HELD value under
+   OPT_POS_YAW RE-MARCHES at once (bridgeTargetWrite's tail now
+   covers both optimize modes, alignYaw = the mode) so the hump /
+   twist meets the typed value (gated: lands, LOCKSTEP keeps design
+   == true, the next rebuild a no-op; Optimize length ON re-knees
+   via applyOptimalLength, whose zero-distance prompt can pop from a
+   spinner commit — today's OPT_POS rule, accepted). LOCKING
+   CAPTURES the current angle with NO write (judgment vs the brief's
+   "captures explicitly": the held value IS the target piece's own
+   field — an explicit write would be a no-op at best and a disp →
+   raw → delta round trip at worst, breaking the bitwise-HEAD flip;
+   gated h1c / h7); the OPT_POS_YAW flip's re-march is HEAD's tail
+   verbatim; one pushUndoSnapshot in setBridgeLock from either
+   window. The Track Piece window over a bridged-in piece: its
+   padlocks RE-ENABLED in every mode (the D247 review gray
+   reverted) and routed through GraphEditor.withBridge(a−1,
+   setBridgeLock) — one behavior from either window (undo, capture,
+   re-march; setBridgeLock resyncs the Track Piece padlocks); its
+   yaw / pitch / roll boxes + ↺ take the bridge's one write tail
+   (FvdDesigner.pieceOrientWrite → editor.bridgeTargetWrite) under
+   the same enable rule — the YAW row too (the brief named pitch/
+   roll; yaw was grayed by the OLD sense and wrote with no re-place;
+   its own hint "The bridge aligns this axis — lock it in the bridge
+   window to hold a value.", since this window has no yaw padlock).
+   Accepted: the spinner compiles twice per commit (the re-place +
+   wireDocSpinner's rebuild — the fixed point's no-op). BRIDGE-END
+   RIG: rings build for the HELD axes in OPT_NONE AND OPT_POS (the
+   seam rig's rule; was: unlocked axes, manual only); OPT_POS_YAW
+   keeps the tangent arrow only; the local ring's combined write
+   writes the held axes' deltas, per-axis ring writes refuse free
+   axes defensively; the piece rig's bridged-in branch mirrors it.
+   USER FLAG: a DEFAULT manual / position-mode bridge (yaw free)
+   therefore shows NO yaw ring any more — lock yaw to get one (a
+   one-line change in Viewport3D.buildBridgeGizmo — build on
+   axisEditable(0) — if he wants rings to follow the enable rule
+   instead). Free-piece padlocks (uiLockPitch/Roll, 🔒 = the box is
+   frozen) KEEP their edit-guard sense — tooltip "Guards the box
+   against accidental edits." (a live Tooltip object swapping text
+   per piece kind; the bridge padlocks + a bridged-in piece's Track
+   Piece padlocks wear "Locked = hold this axis at the typed angle
+   (the bridge bends to it).\nUnlocked = free: under Optimize
+   position and orientation the bridge\naligns it; in the other
+   modes it stays editable.") — USER FLAG: the residual opposite
+   sense. Strings gone: "Click the padlock to unlock.", "The
+   optimize mode owns this axis.", the Track Piece optimize-
+   orientation pitch/roll gray, the yaw-row "owns this value" gray
+   (the x/y/z rows keep theirs), both old padlock tooltips; the
+   free-piece gray reads "Locked — open the padlock to edit.", the
+   seam padlock tooltip "Locked = hold the typed angle; unlocked =
+   follow the seam"; the bridge mode radio's gray "Unlock at least
+   one axis to optimize orientation." and LiveWindow.MARCH_OWNS_R2D
+   are now literally true. SUPERSEDES D87's "locked = frozen — no
+   edits anywhere" and D248 item 3's D247-review Track Piece padlock
+   gray. Not applied: the map's STEP 1 (revert bridge-target writers
+   to true-only) — item 1's tier rule replaced it.
+
+3. **The orientation UI** (item O; all three windows — Track Piece
+   ▴, Strict Seam n, the bridge window; LiveWindow.flagRow's ONLY
+   signature now). The D248 "[Lock Track Shape (creates orientation
+   conflict)] [Only Affect…]" row is REPLACED by a CheckBox "Edit
+   Real and Design Orientation Independently" (off = LOCKSTEP;
+   tooltip "Unchecked: pitch/roll edits move the real and design
+   orientation together (the shape re-solves).\nChecked: choose
+   which one the boxes and gizmo rings edit."; checking pre-selects
+   REAL_ONLY) with two condensed RadioButtons directly below it —
+   "Edit real orientation (locks track shape)" (tooltip = the D247
+   Lock Track Shape sentence verbatim "Design orientation does not
+   change for adjustments to pitch/roll") / "Edit design
+   orientation" (tooltip "Edits move the design orientation only —
+   the real entry stays put and the shape re-solves.") — then "Affect
+   Subsequent Strict Seams" (tooltip "Also move the pieces after
+   this piece's next strict seam or bridge by the same rigid change
+   (real-orientation edits only)."; HIDDEN while the check is off,
+   not grayed; grayed "Applies while editing the real orientation."
+   under DESIGN_ONLY). ONE mode writer; a mode flip (check, radio or
+   readout click) first COMMITS a typed-but-unentered box to the
+   tier it was editing and drops focus (LiveWindow.settleTyping —
+   otherwise setUnlessTyping kept the old tier's number under the
+   new label and Enter would have committed it onto the wrong
+   tier). The grey readout became LiveWindow.Readout: "design
+   12.34°" under LOCKSTEP / REAL_ONLY, "real 12.34°" under
+   DESIGN_ONLY ("design —" / "real —" when undefined), shown while
+   the check is on OR the piece is conflicted (judgment: visible
+   whenever the check is on, even unconflicted, so the swap target
+   always exists; LOCKSTEP keeps hidden-unless-conflicted), and
+   CLICK-SWAPPABLE (the node editor's twin recipe — constant
+   transparent border, hover outline, hand cursor, 300 ms tooltip
+   "Click to edit this orientation instead") only while the check
+   is on and the target choice is not grayed (a REAL_ONLY bridge
+   target under Optimize position and orientation shows a plain
+   label — the design radio's gray sentence is the explanation;
+   swapping onto DESIGN_ONLY is always allowed). PITCH/ROLL ROWS:
+   under DESIGN_ONLY the BOX shows/edits the design elevation/bank
+   (dispDesignPitch/Roll — judgment beyond the spec, which fixed
+   only the readout: box + readout are the two tiers in every
+   mode); Track Piece window: readouts + the design radio's
+   designWhy (bridgeInto(active) under OPT_POS_YAW), the anchor
+   tooltip FOUR-way (lockstep head: "Moves the run's first piece
+   (the anchor); with the orientation edited in lockstep, bridged
+   pieces re-solve instead of following."; REAL_ONLY carry off:
+   "…; with Affect Subsequent Strict Seams off, the pieces after its
+   next strict seam or bridge keep their own placement settings.";
+   DESIGN_ONLY: "…; while editing the design orientation the pieces
+   after its next strict seam or bridge keep their own placement
+   settings."; carry on = the run-head hint alone). SEAM WINDOW:
+   under DESIGN_ONLY the pitch/roll boxes show eulerOf(designPose)
+   and are ENABLED regardless of the padlocks (Coaster.seamDesignSet;
+   a vertical design frame grays / refuses "The design orientation
+   points straight up/down — set the real orientation first."), ↺
+   returns to the OPEN-TIME design euler as absolute world angles
+   (valid whatever happened to baseOrient; refuses before the undo
+   push when either frame is vertical), the readouts read "real …"
+   (followerEuler), the yaw row ALWAYS edits the held/real heading
+   (tooltip "Heading is shared by the real and design orientation —
+   this row always edits the held/real heading."). BRIDGE WINDOW:
+   bridgeTargetOrient reads the mode's tier; "Edit design
+   orientation" and "Optimize position and orientation" are MUTUALLY
+   EXCLUSIVE — the target's design radio grays "Optimize position
+   and orientation must not be selected." under PY, the PY radio
+   grays with pyWhy(): all-locked ("Unlock at least one axis to
+   optimize orientation."), target DESIGN_ONLY ("Edit design
+   orientation must not be selected.") or both joined with " · " —
+   NEVER while selected (the historic m != PY guard: the user can
+   always leave the mode; a loaded DESIGN_ONLY + PY file shows the
+   design radio selected + grayed with the real radio / the check as
+   the escape); setBridgeOptMode refuses PY on a DESIGN_ONLY target
+   with a stats belt "Optimize position and orientation refused —
+   the next piece edits its design orientation; choose its real
+   orientation first."; Real → Design under PY keeps MARCH_OWNS_R2D.
+   GIZMOS: gizmoSigNow / appendPose sign orientMode + the design
+   tier per run piece and bridge target (a mode flip / design edit
+   rebuilds the rig); the piece + bridge-end rigs aim at rigFrame
+   (designPose under DESIGN_ONLY, else entryPose); the seam rig
+   under DESIGN_ONLY builds pitch/roll rings regardless of the
+   padlocks with axes off the DESIGN frame (local: design right / T
+   / U; global: the design heading's horizontal right), baseVal =
+   the design elevation/bank, ABSOLUTE writes (gizmoSetSeamOrient →
+   seamEditDesign — the M review's held-delta trick retired);
+   seamLocal rotates the design pose and routes through
+   gizmoSetSeamDesignAll (heading delta → the held yaw when locked,
+   absolute design elevation then bank); deselecting the mode / the
+   check snaps the rig back. CANCEL / ESC (all three windows) = a
+   FULL-SCOPE placement snapshot (coaster.PlacementSnapshot — a NEW
+   pure class: every piece's x/y/z/yaw/both tiers/baseOrient/the
+   canonical pair/mode/carry/uiLocks/followPrev/seam locks + held
+   angles/sSmoothLen and every trailing bridge's optMode/optLen/
+   lastOptDist/lenA/lenB/locks/noneStash/optSig with SIG_STALE /
+   null identities kept) captured at open and RE-CAPTURED after
+   undo restores (TP/BW records, seamForceSync — the seam ↺'s
+   open-time held values keep D248's not-re-captured behavior),
+   restored BY OBJECT IDENTITY with DIRECT writes through
+   FvdDesigner.cancelRestore (never placementEdit — the D221 carry
+   is not an exact inverse and the routing flags may have changed
+   mid-window; refuses "Cancel skipped — the document changed
+   underneath this window; use Ctrl+Z to go back." on a coaster /
+   docGen mismatch; no undo step when nothing differs); pieces that
+   vanished are skipped, pieces that appeared untouched, a bridge
+   whose object was replaced (a convert) skips its bridge half;
+   graph edits made meanwhile survive; a mid-window Design → Real
+   bake REVERTS too (baseOrient + the canonical pair recorded —
+   supersedes D247's sameBase guard); then the bridge window
+   re-applies its gap and stamps its signature
+   (reapplyBridgeAfterRestore), the Track Piece and seam windows
+   run a plain rebuildTrack (the restored optSigs match the
+   open-time seams — gated passes 0 — so only meanwhile graph edits
+   re-march, accepted). REVIEW ROUND 2 — record RE-BASING: the Track
+   Piece record re-captures on ANY document generation the restore
+   hooks did not see (trackPieceRowsSync — the density preview's
+   pvRerun replaces the piece objects through applyDocState without
+   the docRestoreHooks, and its Apply pushes undo without a
+   rebuild, so Cancel found gen != docGen and skipped with
+   CANCEL_STALE_MSG for the rest of the window's life; while the
+   preview is LIVE the record re-bases per hook, ending on the
+   committed post-conversion placement — the pre-preview values
+   are unrecoverable by design, the preview's own Cancel restores
+   them; the bridge window's BrRecord takes the defensive twin) and
+   the ops row's MIRROR runs the restore hooks itself after
+   mirroring (mirrorPiece rebuilds baseOrient / the canonical pair
+   and negates the roll tiers + a follower's held bank beside the
+   lane negation; a record taken before it reverted the placement
+   alone — a half-mirrored piece; Cancel never un-mirrors, the
+   mirror is its own undo step, Ctrl+Z is the path). And the seam
+   rig under DESIGN_ONLY writes the held yaw only when it actually
+   changed (> 1e-9°): the roll ring — and the pitch ring on an
+   unbanked design frame or under Global axes — hands back the
+   press-time heading plus eulerOf's ~1e-14° dust, and the write
+   ran through seamEdit → placementEdit per drag event, re-aiming
+   the REAL entry the design mode promises never moves (with a
+   carry under Affect Subsequent Strict Seams); the Local-mode
+   banked pitch ring's heading delta still lands (heading is
+   placement); OrientModeGate h6. Track Piece padlocks under DESIGN_ONLY keep
+   their meaning (no new padlock rule invented). REMOVED strings:
+   "Lock Track Shape", "(creates orientation conflict)", "Only
+   Affect Orientation Until Next Strict Seam", "The pieces after
+   this piece's next strict seam or bridge keep their own placement
+   settings.", "Applies while Lock Track Shape is checked.", the
+   static "Unlock at least one axis to optimize orientation."
+   grayHint (now pyWhy's first half). OrientModeGate emulates a
+   Design → Real bake (bakeFollow is package-private) — the identity
+   restore is what h2 pins.
+
+4. **Resolve under seam smoothing, the LIVE init-speed window, cap
+   100 m, Delete…** (item C). (a) RESOLVE OPS UNDER SMOOTHING:
+   Coaster.withSeamsSuspended(pieceIdx, op) zeroes the smoothing of
+   the piece's OWN seam and the seam right AFTER it, runs op,
+   restores the exact doubles in a finally BY PIECE OBJECT (not
+   index — isolateRange's splits move the successor down the list;
+   pieces born inside the op own fresh sharp 0 seams and never
+   inherit a stash; a piece removed by absorbFollower keeps its
+   restored value harmlessly; nested calls stash 0 / restore 0 = a
+   no-op by construction; a throw restores). makeGraphsReal /
+   refreezeSpeed / refreezeRange / isolateRange (its makeSeamStrict
+   cut and the follow bakes read the suspended compile — the ops
+   used to MIX compiles: bakeFollow WITH smoothing, the anchor
+   without) run inside it; SCOPED, not compileForFit's all-off: an
+   unrelated smoothed seam keeps its blend during the op (gated:
+   the H → P0 seam never zeroed). rangeResolveWhy's two smoothed
+   reasons are REMOVED — the badge submenu no longer grays smoothed
+   cases; the D141 line shows ONLY when smoothingCausedDrift and
+   reads "Speed conflict caused by seam smoothing — shrink the ◇
+   window instead" (the ops hidden for a pure smoothing-caused ≠v —
+   the window is the fix; with a ≠o they stay reachable). Accepted:
+   the restored smoothing blends around the NEW seam frames (Set
+   Design to Real reshapes the range by design; Convert Real to
+   Design stays within the fit residual, gated 6 mm) and the ≠v may
+   reopen after the restore (the red band says so). (b) "Initial
+   design speed…" applies LIVE — the node editor's model: every
+   spinner change writes at once (the ride entry: v0 + section 0's
+   vDesign through the muted Start-speed spinner, its [1,100]
+   factory clamp = the D198 entry rule; any other section: vDesign
+   + PIN — a value re-typed EQUAL still pins, D242; equal AND
+   already pinned = no-op), undo coalesced per 0.8 s typing burst
+   (the liveUndo recipe; an undo ends the burst); "Set Design to
+   Real" runs Coaster.refreezeSpeedOnly AT ONCE (one undo step:
+   exact seam value, un-pinned; an orientation conflict left
+   standing — the badge op alone bakes tilt/follow; a later typed
+   edit pins again), grayed on the ride entry "The ride entry's
+   design speed is the real one — nothing to set." and with nothing
+   compiled "Nothing compiled for this section yet."; a LiveWindow
+   (Confirm / Enter / X keep after the focused box commits; Cancel /
+   Esc discard typed text and restore the open-time vDesign +
+   vPinned (+ v0 + the spinner for the ride entry) as one more undo
+   step when anything differs — skipped with CANCEL_STALE_MSG when
+   the coaster switched or a generation the hooks did not
+   re-capture: the record RE-BASES on every undo restore through a
+   docRestoreHooks twin and, in the model hook, on any document
+   generation it has not seen, review round 2 — it was captured
+   once, so every Cancel after an undo skipped for the window's
+   life); the hook re-seeds the box (undo
+   outranks typing), tears the window down "The initial design
+   speed window closed — its section no longer exists." when its
+   section is gone or the coaster switched; convertBusy refuses
+   (the change reverts muted). SUPERSEDES D241's fill-the-box and
+   D242's unmodified-Apply rule — with live editing there is no
+   Apply moment. (c) SMOOTHING CAP 80 → 100 m (GraphEditor.
+   SEAM_SMOOTH_MAX — the drag cap; the loader already admits 0..200;
+   no spinner exists, the brief's mention notwithstanding; a loaded
+   150 m stays until the next drag). (d) "Delete…" on the Track
+   Piece window's ops row after Switch Coaster…: a WINDOW_MODAL dark
+   confirmation "Delete the whole track piece (N pieces)?" ("(1
+   piece)") [Delete][Cancel] with global undo keys →
+   pushUndoSnapshot → Coaster.deleteRun(head) removes the whole RUN
+   (head..runEndOf — trailing bridge + bridged-in targets; a run
+   ending in an orphan bridge removes it too) → activates the run
+   after, else the previous run's head; deleting the FIRST run sets
+   v0 := the new first piece's section-0 vDesign (the Switch-Coaster
+   precedent); the coaster's ONLY run may go (an empty coaster is
+   legal, D239 — the placeholder shows; v0 untouched); the
+   successor's followPrev normalized as a belt; every window
+   addressing the block pre-hidden null-before-hide, every pane's
+   reveal dropped; stats "Deleted the track piece (N pieces)."
+   Refusals: the wizard's pending piece "Finish or cancel the open
+   start screen first.", convertBusy, "No piece to delete.", a
+   document changed under the confirm dialog "Delete refused — the
+   track piece changed while the dialog was open.", a non-head
+   index (−2, list untouched). The brief's "The bridge before it
+   will connect to the next piece." sentence is NOT shown — it is
+   UNREACHABLE: a run head is never preceded by a bridge-ending
+   piece (endsWithBridge would have absorbed it into that run) and
+   an orphan bridge is necessarily the list's last piece; pinned as
+   a topology invariant (RunGate j6) so no dead text ships.
+
+5. **UI bugs + viewport rules** (item U). (1) WIZARD RADIOS DEAD —
+   ROOT CAUSE: StartPanel.syncFromModel was not idempotent — every
+   call cleared typeOptions and re-created the GridPane / HBox
+   parents of the fourteen RadioButtons, and since D247 that sync
+   runs from wizardHook on every fireModelHooks, which
+   GraphEditor.redraw fires from every layoutChildren. A radio
+   press → the panel's MOUSE_PRESSED filter requestFocus() → the
+   previously focused wizard Spinner's skin requests layout on
+   focus loss → editor layout → redraw → hooks → the grid rebuilt
+   BETWEEN press and release; JavaFX's enter/exit bookkeeping hands
+   the re-parented RadioButton a synthetic MOUSE_EXITED,
+   ButtonBehavior disarms it, the release fires nothing, the next
+   sync re-selects the model's radio (evidence: the probe's
+   MOUSE_EXITED-while-armed with a changed parent hash, armed=false
+   before the release, the rebuild stack ending in layoutChildren;
+   `muted`, docApplying, targets() and the listener chain all
+   verified NOT the cause). Fix: the lane grid is built ONCE
+   (laneGrid, buildLaneOptions); syncFromModel only sets
+   selections / disables in place and re-attaches the same grid
+   (the s/c pick clears typeOptions, a later lane pick re-adds the
+   SAME grid); syncGray's corrective setSelected saves/restores
+   `muted` (it wrote false unconditionally — latent). STANDING RULE
+   (the class comment): a live sync must never re-parent a node.
+   (2) THE SELECTION CHOKE — ROOT CAUSE: two independent selection
+   models (spSelPiece/Sec/Ctl/Mark for the strip, selIdx/selSet for
+   nodes) with spFocus arbitrating only KEY routing; the plot press
+   cleared spFocus but no path cleared spSel* when a node / marker /
+   gizmo / element was selected (the strip draws its highlight from
+   spSel* alone), and the viewport's single-click select/deselect
+   bypassed the plot's focus-return step — with spFocus left true
+   the shared selIdx was read as the STRIP surface's node index
+   (refreshMarkers passed −1, spSanitize clamped it against the
+   control's node count, H/F/B/Delete routed to the strip: "markers
+   unselectable while a control is selected"). Fix: ONE choke
+   GraphEditor.takePlotSelection() — a plot press, a marker click
+   (single and double), a gizmo / ball press or an empty-track click
+   (deselectFromViewport runs it BEFORE its early return), an s/c
+   element — clears spSel* / spMark, hands spFocus back and drops a
+   strip-owned node selection; the reverse spTakeStripSelection()
+   at the four strip select sites + the disk press drops the plot
+   node selection (mutual exclusivity both ways; spClearSel from
+   spSanitize stays GATED on spFocus so a vanished control never
+   drops an unrelated plot selection). REVIEW ROUND 2: the plot
+   press runs the choke on the PRIMARY button only — a right-drag
+   pan, a middle press or a right-click menu open selects nothing,
+   and the plot's own node selection survives a pan (deselect on
+   RELEASE ≤ 3 px), so a lit control survives it too; the secondary
+   presses that DO select — the node menu, the element menu — call
+   the choke themselves. And the popup's Edit Speed / Acceleration /
+   Deceleration SELECT the control the panel shows
+   (spSelectPopupControl: since the popup outlives the selection
+   and editing resolves the SELECTED control only, the button
+   opened the tall strip over an inert dimmed graph — a click that
+   did nothing useful; a plot node selection drops with it, mutual
+   exclusivity). The options POPUP
+   STAYS OPEN (user spec — an open panel is not a selection; it is
+   bound to its own indices spPopPiece/Sec/Ctl and hides only via
+   ✕ / +V-off / a control delete / the structural clears /
+   spAfterRebuild when ITS control vanished; another control
+   selected re-shows it bound to that control with the unit label
+   rebuilt — a cross-domain follow used to keep a stale "s"/"m";
+   never during a strip gesture); an open '+' / badge / seam MENU
+   is not a selection. (3) WINDOW FLASH ("moved from another
+   location"): LiveWindow.place places BEFORE show — the D248 build
+   showed the Stage at JavaFX's default owner-centered spot and
+   moved it in setOnShown, but the native frame (and Windows' open
+   animation) is created at the creation rect and opacity 0 does
+   not cover it. Now the content's CSS is applied and it is
+   measured + LAID OUT at its pref size pre-show — THE LAYOUT IS
+   LOAD-BEARING (winshot A/B): applyCss + prefWidth/prefHeight
+   ALONE reproduce the D248 "No optimizati…" clip, resize(pw, ph) +
+   layout() right after gives every label its width; frame = pref +
+   the cached decoration insets (TITLE_BAR_EST / 0 for the session's
+   first window), setX/setY before show; setOnShown stays the
+   RESIDUAL corrector (learns the real insets, moves only when
+   > 0.5 px off — the first window's small hop, later windows
+   exact); refit() remains the belt. (4) GIZMO PICK: the two-pass
+   "balls first within radius × 1.5 + 6 px" (D248) is ONE
+   nearest-by-px pass with the ball measured from its silhouette
+   EDGE — Gestures.ballEdgeDist = max(0, d − rPx) (a press inside
+   the visible ball reads 0 px and wins; a ring just outside beats
+   the ball's edge distance; the edge band rPx·0.5 + 6 keeps the
+   D248 zone's outer reach); review fix: an exact TIE goes to a
+   BALL (every arrow shaft and an edge-on ring pass through the rig
+   center at 0 px and the center ball registers LAST, so strict `<`
+   alone handed a press on the visible ball to an arrow — the
+   pickprobe center case); hover glow shares pickPart. (5) NODE-0
+   MARKER hidden under a JUNCTION BALL (Viewport3D.
+   junctionBallCoversNode0): run heads (the historic v18.13 rule),
+   bridged-in pieces (never strict followers — the bridge-end ball
+   at their x/y/z covers it) and strict-seam FOLLOWERS whose seam
+   ball exists (seamWorldPos != null; before that compile the
+   sphere shows); node 0 stays editable from the graph, POV shows
+   it (balls hide there). (6) BOUNDARY DISKS only where the graph
+   draws a SINGLE seam line (ViewDisks.boundarySamples: every
+   section's exit except the last — plain boundaries inside a piece
+   incl. the boundary INTO a bridge section; never strict seams,
+   bridge exits, run heads / ends / a detached piece's entry+exit);
+   constants named for retune: BOUNDARY_R 0.34 (was 0.16 — > the
+   control ring's 0.30, so a control starting on a boundary reads
+   as a ring around the control disk, accepted), BOUNDARY_HT 0.02,
+   Viewport3D.BOUNDARY_COLOR rgb(105,110,122), glow 0.30. (7) The
+   smoothing ◇ DODGES THE CARETS too (seamDiaYAt three-pass: the
+   first rung ≥ 22 px from every node AND ≥ SEAM_DIA_CARET_CLEAR 12
+   px from every caret → the node-clear rung with the largest caret
+   clearance → the historic best-node-distance fallback; no carets
+   = the D142 walk bitwise; draw and hit share it; the diamond may
+   hop once when the compile's carets appear, accepted). Item 8 of
+   the map (the all-piece Cancel) landed in item 3.
+
+6. **Speed-control parity under the cross-domain view, position
+   readouts, disks** (item S). (1) 'View in time/distance domain'
+   PARITY: strip drags (move / resize / mark) and the create drag
+   Ctrl-snap on the DISPLAY axis — SpeedStrip.snapDisplay: warpFwd
+   → quantize on the section-local ABSOLUTE display grid (judgment:
+   controls have no "previous node", the strip always snapped
+   absolute) → map back (the forward map of the result lands on the
+   display grid to lerp dust, gated ≤ 1e-9); the OLD native snap
+   runs LITERALLY when the view is off and the strip's native domain
+   is the axis domain (explicit guard, bitwise historic — not a
+   float round trip); an inactive strip of another domain snaps on
+   the AXIS grid through Coaster.sectionMap; a degenerate map falls
+   back native; the warp map FREEZES per strip gesture
+   (refreshWarp's gate extended to spDragKind != 0 — a control
+   altering the profile mid-drag no longer slides the diamond; the
+   release redraw re-derives it and the diamond may visibly re-land,
+   accepted); readouts in display units (the create drag's "length
+   …" in axis units); the popup's Start / Length STAY native
+   spinners (judgment, flagged: a display-unit box would need a live
+   inverse warp per keystroke) with grey display-unit TWINS "= 12.5
+   m" / "= 3.20 s" shown only while the section is viewed in the
+   other domain (synced per redraw via spHook; a reversed section's
+   twin routes through the same map the strip draws with); the
+   viewport disks' drag and readout go through the same mapping.
+   (2) POSITION READOUTS: strip hover on a diamond (start / end /
+   mark) and during its drag shows "t = 3.20 s" / "s = 12.5 m"
+   (SpeedStrip.posReadout — seconds %.2f, meters %.1f, Locale.US,
+   z3 dust → 0, larger dust keeps its sign; drawn below the line on
+   a collapsed strip (the D215 clip lesson), above it when tall; the
+   diamond check runs first and wins over the curve hovers;
+   coincident diamonds read the earlier control's END, the viewport
+   pick's order); the hover stores (piece, sec, native x) and
+   RESOLVES AT DRAW TIME — units follow a view flip without a mouse
+   move, and (review fix) a diamond must STILL sit at the stored
+   native x (SpeedStrip.diamondAt) or nothing draws (an undo of the
+   control had left the readout floating beside nothing); the
+   create drag keeps its "length …" only. Viewport: the combLabel
+   drops the "Speed control start — " prefix, reads "t = 3.20 s" /
+   "s = 12.5 m" (a section IN the run reads the display domain, an
+   unconnected piece its native units) and updates LIVE during the
+   disk drag (the drag handler calls the hover text — MOUSE_MOVED
+   never fires while a button is down; setText only, no per-event
+   visibility toggle; the release re-reads; NaN from a
+   behind-camera track leaves the control unmoved and the text
+   last-valid); accepted: with the graph panel collapsed the
+   readout reads the last warp map. (3) DISKS: thickness ×2 along
+   the track (CTL_DISK_HT 0.035 → 0.07, CTL_RING_HT 0.015 → 0.03;
+   a control end ON a section boundary now hides the thinner
+   boundary disk inside it, cosmetic); the pick region = the
+   PROJECTED RIM's bounding radius with a 12 px floor
+   (ViewDisks.rimPoints — 8 points at 45° at CTL_RING_R in the
+   disk's U/R plane, stored at build; pickRadiusPx skips
+   behind-camera NaN rim points, all null → the floor = today's
+   point pick; nearest by the NORMALIZED score d²/pickR²
+   (ViewDisks.pickScore) so a big near disk cannot steal a small far
+   one, strict < keeps build order on ties — END before START);
+   accepted: a big near disk shadows node markers within its radius
+   (the D248 disk-wins-at-press precedence extended to the whole
+   disk); the selected ring LIGHTENS by CTL_SEL_RING_LIGHTEN 1.18
+   (deriveColor brightness only, saturation kept; green / blue clamp
+   at brightness 1) — not white. (4) deselect rules = item 5.2.
+
+7. **Label reverts + the display name** (item L). The DRAWN badge
+   is back to the pre-batch-33 form: the type word (Force / Geo /
+   S/C / Bridge) + tags + glyphs, NO number / title
+   (SectionNames.badgeLabel = shortWord + tags — the one source, so
+   the tags are SPACED "Geo ·m", "Force ·m ◀ fx", "Bridge !"; HEAD
+   glued "Geo·m" — USER FLAG); " ≠v" then " ≠o" after them; the
+   measured width kept (the D248 real-Text measurement, a
+   correctness fix); the D248 short form "Geo 2" and its ladder are
+   GONE — a strip narrower than the measured width + 8 px shows no
+   badge (the HEAD rule). The badge MENU's bold title row STAYS
+   ("Force Section 2"); its TOOLTIP is REMOVED (sectionInfoText /
+   orientInfoLine / deg2 deleted — sole callers; entrySpeeds kept).
+   Accepted: the design / authored / entered speeds, the flag line,
+   an s/c section's length + element count and the orientation
+   angles have NO textual home in the badge menu any more — the
+   glyphs, the init-speed window and the orientation windows carry
+   them. "Resolve section conflict: …" → "Resolve conflict: speed"
+   / "…: orientation" / "…: speed + orientation" (the op labels
+   unchanged). The bridge section's badge menu owner item →
+   "Bridge settings…" (grayed "This bridge has no following piece."
+   on orphans, unchanged reason); the bridge WINDOW title → "Bridge
+   settings (Strict Seam n)" — n = the junction ordinal, the same
+   number as the toolbar button; judgment, FLAGGED: no "(bridge)"
+   inside the parentheses (the brief's text had it) — the toolbar
+   button keeps "Strict Seam n (bridge) ▴" and the Orientation
+   dialog's owner button keeps the toolbar text; the title re-titles
+   live from one source (SectionNames.bridgeWindowTitle). DISPLAY
+   NAME: FvdDesigner.APP_NAME = "Ultimate Vector Design" — the window
+   title "Untitled — Ultimate Vector Design" / "x.fvd* — Ultimate
+   Vector Design" / "x.fvd* [name] — Ultimate Vector Design" (order
+   kept), the Help window "Help — Ultimate Vector Design" (judgment:
+   the main title's " — APP_NAME" form; the menu-bar "Help" label
+   stays), the .nl2elem <description> "Ultimate Vector Design
+   Export" — a LITERAL in the pure-Java exporter (every future
+   .nl2elem byte stream changes; Nl2ElemProbe compares geometry
+   only), the ~/.fvd-designer.properties header comment "Ultimate
+   Vector Design settings" — a literal in the pure-Java AppSettings;
+   the settings FILE NAME is UNCHANGED (USER FLAG — a rename needs a
+   read-old-write-new migration); pom.xml (artifactId coaster /
+   mainClass coaster.Main) and the dev hooks untouched (they name
+   the class, not the display name). The PACKAGE rename coaster →
+   uvd is NOT in this batch: docs/PACKAGE-RENAME-PLAN.md holds the
+   step-by-step for its own commit next session.
+
+8. **The floor flicker — (b′) RETIRED, the floor back to D246
+   bitwise, the GROUND-SPLIT track layer** (item F; his "the floor
+   grid is flashing like crazy when moving the camera; there are
+   even points where I can stop moving and almost the entire grid
+   is invisible" on the D248 build). POSTMORTEM with evidence
+   (FloorDepth's header carries the six-line version): RC1
+   (PRIMARY — blanks the whole grid at rest) — under (b′) the
+   visibility of EVERY floor line pixel was a depth-test outcome
+   against the SHEET (and the lower-ranked line layers) with a
+   nominal margin of FLOOR_LSB_MARGIN = 2 depth LSB; the platform's
+   real disagreement between two independently rasterized
+   near-coplanar kilometre-scale translucent triangles was never
+   measured above one LSB — TESTING #159's D242 probe recorded
+   21-79% mis-ordered overlap pixels at 300-1500 m for 4 mm / 3 cm
+   offsets, which are 0.02-0.56 nominal LSB (LSB(300 m, near 0.1) =
+   5.4 cm, LSB(1500 m) = 1.34 m): fights BELOW an LSB with an
+   ASYMMETRIC, per-triangle-biased outcome (79% wrong is not ±1 LSB
+   noise), never the clean threshold; D248 itself listed "depth
+   format not 24-bit / compare not LESS(EQUAL) → FLOOR_LSB_MARGIN is
+   the one lever" as the open risk, and it materialized: when the
+   GPU's coplanar bias exceeds 2 LSB the losing layer is DROPPED
+   wholesale (not re-blended), and because the bias is per triangle
+   (plane-equation setup from that triangle's clipped vertices — the
+   sheet spans 7 km and its z/w extrapolates far outside [0,1] at
+   grazing looks) whole line layers vanish coherently. RC2 (the
+   temporal amplifier — why it FLASHES while moving) — the sheet is
+   the depth reference for everything and the ONLY floor layer whose
+   vertices move continuously with the eye (unquantized since D242),
+   so its ±3500 m quad was near-plane-clipped and its depth plane
+   re-derived on every frame of camera motion while the line groups
+   hop by q and the axes by 30 m: per frame the sheet's per-triangle
+   rounding re-rolled against fixed line planes and the pass/fail
+   pattern of the whole grid flipped; second amplifier: the DYNAMIC
+   ranks re-numbered every later layer whenever the faintest ring
+   crossed its 1/256 bucket. RC3 (near-field, derivable) — the
+   required separation 2·z²/(near·2^24) ≈ 1.2e-6·z² m sits below
+   float32 vertex rounding under ~2 m, and every z/w depth value
+   lies in [0.9, 1) where float32's own ulp IS one 24-bit LSB — a
+   2-LSB margin is at the precision floor of the GPU's interpolation
+   arithmetic, no lift constant fixes that regime. Ruled OUT: the
+   D246 strength law (bitwise unchanged), sheet-after-lines (the
+   sheet was first), the lift/translate accounting (FloorGate f1/f2
+   were green — the algebra was exact, the failure was not in the
+   math), the axis anchor quantum, a stale-shear frame. Why the
+   ladder passed: 15 STATIC poses with no motion sequence and no
+   per-frame metric cannot see a per-frame re-roll or a
+   pose-specific rest loss. DECISION TREE: (i) keep (b′) and correct
+   the margin — REJECTED: a bias-robust margin on this GPU is
+   unknown (expect ≥ 8-32) and the screen float of rank r is
+   r·m·0.0073·|eyeY| px — at m = 16 a 20 m eye floats the axes ~8 px
+   and coincident decades ~1.2 px apart (visible double lines);
+   q-quantizing the sheet would stop only the per-frame re-roll;
+   RC3 has no lever at all. (iii) lines re-drawn after the track
+   only over underground regions — REJECTED as impossible in
+   JavaFX 3D: no stencil / mask / depthWrite / colorWrite control;
+   "only over underground track" is a per-pixel condition only a
+   depth test against the sheet can express — (b′)'s failing test
+   again. (ii)/(a) sheet-only after the track — flicker-free by
+   construction but NOT a "dimming" veil: the sheet's material is
+   not premultiplied and prism blends src·1 + dst·(1−α), so it ADDS
+   its full lit colour S ≈ (0.62, 0.69, 0.84) over everything under
+   it — lines at o ≳ 0.3 clip to white (the graded fade flattens;
+   pre-compensable to ±5%·o) and the gizmo-coloured axes turn pale
+   white / pink / cyan (unrecoverable) — kept as a written, never
+   shipped stopgap. CHOSEN (iv) THE GROUND-SPLIT TRACK LAYER: the
+   ENTIRE floor (sheet + line decades + axes) returns to the
+   D242-D246 build BITWISE — DepthTest.DISABLE, drawn FIRST, pure
+   submission order, no shears, ONE mesh per ring again (the D248
+   x/z two-mesh split reverted — pixel-equivalent under DISABLE,
+   60 MeshViews), axis quads back at y = 0.005 (HEAD), the sheet
+   translate unquantized (harmless without depth tests), Ortho as
+   D246 (Top: sheet visible, the 2D canvas IS the grid; Side: sheet
+   hidden) — and the see-through look comes from ORDER alone: every
+   track-layer mesh builder routes its faces by the y = 0 plane
+   (FloorDepth.underMask: a face goes UNDER iff its centroid's world
+   y < −GROUND_DEADBAND 0.07 m = the rail radius; straddlers by
+   centroid, ties toward ABOVE — a rail resting ON the ground
+   renders as one clean tube, an 8-sided r = 0.07 tube's lowest
+   centroid sits 0.0632 below its centre so a tube centred down to
+   ≈ −7 mm is wholly above, at −5 cm it sheds its bottom faces, at
+   −8 cm half/half; a mesh with no under face is left UNTOUCHED —
+   bitwise the D246 object graph, the point-scan fast path); world
+   order [trackUnder (ENABLE), ghostUnder (DISABLE)] → [gridGroup =
+   sheet + decades, axisGroup (DISABLE)] → [trackGroup, povHolder,
+   trackBallGroup] → [ghostGroup (DISABLE)] — underground halves
+   drawn BEFORE the floor so the sheet + lines + axes composite
+   over them (the D248 under-* look), above-ground halves after it
+   as always, ZERO coplanar depth tests anywhere (the two halves are
+   separated by real metres along any ray); while the eye is BELOW
+   ground the two track blocks SWAP around the floor
+   (setFloorOrder, a scene-graph reorder only on the sign flip,
+   ±0 = above; ortho forced above); the stalled GHOST splits the
+   same way (its under half in ghostUnder drawn after trackUnder,
+   its above half LAST with DISABLE = D248's composite rule kept; a
+   ghost straddling y = 0 is cut by centroid); every builder routes
+   through the one recursive split — rails, ties (TiePiece carries
+   TWO groups, the re-tint re-splits), plates, heartline strand,
+   comb teeth (the under half's visibility BOUND to its source
+   group), inactive coasters (buildOtherCoasters), extra panes; node
+   markers / boundary + control disks / reveal balls STAY in the
+   after-floor group (USER FLAG — an underground marker / disk /
+   ball draws over the floor: they are pick anchors whose groups
+   are index-walked, re-parenting halves would break the picks);
+   trackUnder is NOT mouse-transparent (underground rails stay
+   clickable like any rail; track picks are screen-space anyway);
+   accepted: a straddling tube segment is cut per FACE (≤ one
+   segment ≈ 0.14 m of jaggedness vs D248's real-depth slice); a
+   ground-level eye sees the D242 1 px sheet sliver. FloorDepth's
+   lift API (FLOOR_LSB_MARGIN / DEPTH_BITS / ORTHO_AXIS_LIFT / lsbK
+   / liftAt / shear / ranks) and FloorGate f1-f7 are RETIRED (no
+   live-sounding dead code); the strength law + ladders stay;
+   FloorGate re-baselined 18 (the strength law's sanity, the
+   ladders + GROUND_DEADBAND, eyeBelowGround's signs, faceWorldY,
+   the split routing on a 500-ring tube dipping +5 → −15 m incl.
+   the deadband family, purity + a −30 m translation). STANDING
+   RULE (the FloorDepth postmortem): no depth-tested coplanar floor
+   layer ever again without a MEASURED platform envelope (a
+   coplanar-quad probe at k = 1..64 LSB on the user's GPU) and a
+   screen-float budget. VERIFICATION: the -Dfvd.gridshot ladder
+   (15 poses; its first 9 pixel-diffed against a HEAD-f84061a
+   worktree build: identical outside re-run PNG dust — the
+   bitwise-D246 claim holds for every no-track pixel and above-
+   ground track pixel; underground-track pixels change by design;
+   the six under-* poses show the sheet + lines + axes over the
+   buried valley, the swapped order from below, the split ghost)
+   and the NEW `-Dfvd.gridshot.sweep=<dir>` dev hook (the ladder's
+   TEMPORAL twin, kept: s1 a low ≈ 2.6 m eye panning 0.25 m per
+   frame along x, s2 a grazing ≈ 30 m eye over the 10 m decade
+   yawing 1° per frame + nine REST stills pitch −5/−8/−12 × yaw
+   10/20/35 — the "stopped and the grid is gone" family, s3 the
+   pov-height and low-graze poses as 0.1 m micro-pans; per frame a
+   LINE-PIXEL COUNT — lower-half pixels whose luminance exceeds
+   that half's median by > 0.08 — and each sequence's max
+   consecutive-frame ratio: a dropped layer reads as a large swing,
+   the D246 sub-pixel phase only drifts). SUPERSEDES D248 item 7
+   (the ordering paragraph and its "no patchwork or flicker" claim)
+   and restores D242 fact (b)'s answer (DepthTest.DISABLE at the
+   FRONT of `world`) with the split as the new sentence; D242 1(b)'s
+   accepted corner "a below-ground camera never sees grid over
+   track" is now closed by ORDER, not depth; D243's "the axes draw
+   AFTER the grid, submission order" stands again. If he reports
+   the D246-style sparkle at low height after this, that is the
+   height-gated D246 mechanism, pre-existing and accepted — the
+   sweep metric distinguishes the two.
+
+9. **Review rounds** (per item, folded above): M — the four
+   DESIGN_ONLY sink fixes (seam rings compounding, ↺ tiers, global
+   ring baseVals, local-ring decompose tier); B — the edge table's
+   phantom gate ids (h3/h5/h6 relabeled to the checks that exist;
+   no source change); O — the reviewed edge rows stand; C — the
+   wrapper's own contract gated (nested no-op, throwing op
+   restored, out-of-range inert; a run-after-run delete down to the
+   empty coaster); U — the gizmo tie-to-ball rule; S — the
+   draw-time diamondAt re-resolution; L / F by reading. Deferred
+   from the M review (item 3 closed them): the rigs' axes riding the
+   real frame, gizmoSigNow blind to the mode, the DESIGN_ONLY box
+   showing the real value.
+
+10. **Flagged for the user** (decisions folded above, listed once):
+   the default manual / position bridge shows no yaw ring (item 2);
+   free-piece padlocks keep the opposite (edit-guard) sense (2);
+   "Geo ·m" spaced tags (7); "Bridge settings (Strict Seam n)"
+   without "(bridge)" (7); the settings file name stays
+   ~/.fvd-designer.properties (7); markers / disks / balls draw over
+   the floor underground (8); the popup's Start / Length stay native
+   spinners with twins (6); the pitch/roll BOX edits the design tier
+   under Edit design orientation (3).
+
+Verification: OrientModeGate 51 (NEW — item 1's model + item 3's
+seam design-box contract and the full-scope PlacementSnapshot; 48
++ review round 2's g7 / g7b / h6),
+PlacementGate 28 → 41 (item 2's section h), RangeResolveGate 23 →
+43 (item 4's section s), RunGate 51 → 66 (item 4's section j:
+deleteRun), GestureGate 90 → 108 (items 5.4, 5.6, 6.3), StripGate
+30 → 49 (item 6's display-domain snap + readout formats), LabelGate
+89 → 103 (item 7), FloorGate 15 → 18 (RE-BASELINED, item 8) —
+plus the migrated fixtures (OrientGate 23, OrientGate2 18,
+coaster.SeamShapeGate 31, coaster.ConflictGate 17, CopyGate 73,
+RangeResolveGate, RunGate, StripGate, PlacementGate) and the
+determinism core re-run per item (DetermGate197/198/199/200 6/4/10/7,
+LoadGate196 7); the docs round re-ran, on the finished tree, the
+eight item gates above + DetermGate197/198/199/200, LoadGate196,
+OrientGate, OrientGate2, SeamShapeGate, ConflictGate, CopyGate 73,
+MergeGate 23, InsertGate 40, EndFollowGate 73 — all green (the run
+recorded in TESTING #166); the full 33-member battery is the
+batch's closing run. JavaFX-side verification: the winshot A/B
+(item 5.3's pre-show layout), the pickprobe hook (item 5.4's ball
+tie), the gridshot ladder + the HEAD pixel-diff + the sweep hook
+(item 8); the flag row, readouts, seam design boxes, rigs, the
+Cancel flows, the live init-speed window, Delete…, the selection
+choke, the strip readouts / twins and the disks are interactive —
+TESTING #166 walks them.

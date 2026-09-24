@@ -168,6 +168,7 @@ public class OrientGate2 {
         // ---------- (c) LOCKED-conflict split -------------------------
         Coaster cc = twoSec();
         TrackPiece pc = cc.pieces.get(0);
+        pc.orientMode = TrackPiece.OrientMode.REAL_ONLY;     // D248: locked is explicit now
         pc.editPitch(12);
         pc.editRoll(-8);
         TrackCompiler.Result rc0 = rebuild(cc);
@@ -208,7 +209,7 @@ public class OrientGate2 {
         // ---------- (d) unlocked design-tilted split: bitwise ----------
         Coaster cd = twoSec();
         TrackPiece pd = cd.pieces.get(0);
-        pd.shapeLocked = false;
+        pd.orientMode = TrackPiece.OrientMode.LOCKSTEP;
         pd.editPitch(9);
         pd.editRoll(-5);
         TrackCompiler.Result rd0 = rebuild(cd);
@@ -275,6 +276,7 @@ public class OrientGate2 {
 
         // ---------- (g) raw drive through the pole ---------------------
         TrackPiece g = new TrackPiece(0, 0, 0, 0);
+        g.orientMode = TrackPiece.OrientMode.REAL_ONLY;      // D248: locked is explicit now
         g.setRawAbsPitch(80, true);
         Quat q80 = g.entryPose().orient();
         g.setRawAbsPitch(100, true);
@@ -317,7 +319,7 @@ public class OrientGate2 {
                 g.dispPitch(), g.dispYaw()));
         // unlocked lockstep through the pole: design rides raw
         TrackPiece u = new TrackPiece(0, 0, 0, 0);
-        u.shapeLocked = false;
+        u.orientMode = TrackPiece.OrientMode.LOCKSTEP;
         u.setRawAbsPitch(85, true);
         u.setRawAbsPitch(95, true);
         check(u.designPitchDeg == 95 && !u.orientConflict()

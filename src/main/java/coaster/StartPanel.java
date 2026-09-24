@@ -40,7 +40,21 @@ import java.util.function.DoubleConsumer;
  *  the piece/coaster. The panel is a VIEW of the document:
  *  syncFromModel() re-reads the target after undo/redo (muted — no
  *  re-apply). Selecting another piece/coaster hides it (the normal
- *  graphs show); returning shows it as it was. */
+ *  graphs show); returning shows it as it was.
+ *
+ *  syncFromModel is IDEMPOTENT and NEVER RE-PARENTS a node (v19.20,
+ *  D249 — the "dead radios" root cause): since D247 it runs from the
+ *  shell's model hooks on EVERY graph redraw, and a radio press moves
+ *  focus off a wizard Spinner → its TextFieldSkin requests layout →
+ *  GraphEditor.layoutChildren → redraw → hooks → this sync — BETWEEN
+ *  the press and the release. The D232-D247 sync rebuilt the option
+ *  GridPane per call; the armed RadioButton, re-parented mid-click,
+ *  received a synthetic MOUSE_EXITED (ButtonBehavior disarms on it),
+ *  the release fired nothing and the model never changed. The grid
+ *  (laneGrid) is built ONCE in buildLaneOptions; a sync only sets
+ *  selections/disable in place and re-attaches the SAME grid.
+ *  STANDING RULE for every live sync: update in place, never
+ *  rebuild children. */
 final class StartPanel extends StackPane {
 
     enum Mode { NEW_COASTER, FLOATING }
@@ -75,6 +89,9 @@ final class StartPanel extends StackPane {
     // ---- controls (kept for syncFromModel) ----
     private VBox tileSc, tileLane;
     private VBox typeOptions;
+    /** The lane family's option grid — built ONCE (D249, see the
+     *  class comment); syncFromModel attaches/detaches this object. */
+    private javafx.scene.layout.GridPane laneGrid;
     private RadioButton mForce, mGeo, dTime, dDist, uSec, uMet,
         yLocal, yGlobal, rLocal, rGlobal, aRate, aAbs, pRate, pAbs;
     private Spinner<Double> sx, sy, sz, sYaw, sPitch, sRoll, sV, sMu, sK;
@@ -250,9 +267,36 @@ final class StartPanel extends StackPane {
                 if (b != null && !muted) applyLaneOptions();
             });
         }
+        // TWO-COLUMN grid (D232; label|radios as SEPARATE grid cells
+        // since D233 — the first radio dot of every row lines up per
+        // column, like the dialogs) — built ONCE (D249): the radios
+        // keep this parent for the panel's whole life
+        laneGrid = new javafx.scene.layout.GridPane();
+        laneGrid.setHgap(10);
+        laneGrid.setVgap(5);
+        // the RIGHT column runs the canonical order — Yaw/pitch axis,
+        // Yaw/pitch behavior, Roll axis, Roll behavior (v19.9, D238:
+        // the D237 build parked "Yaw/pitch behavior" in the LEFT
+        // columns, which stretched the label column and left its
+        // "Rate" radio out of line — the user's report)
+        laneGrid.addRow(0, optLbl("Type", 0), optPair(mForce, mGeo),
+            optLbl("Yaw/pitch axis", 14), optPair(yLocal, yGlobal));
+        laneGrid.addRow(1, optLbl("Domain", 0), optPair(dTime, dDist),
+            optLbl("Yaw/pitch behavior", 14), optPair(pRate, pAbs));
+        laneGrid.addRow(2, optLbl("Rate units", 0), optPair(uSec, uMet),
+            optLbl("Roll axis", 14), optPair(rLocal, rGlobal));
+        laneGrid.add(optLbl("Roll behavior", 14), 2, 3);
+        laneGrid.add(optPair(aRate, aAbs), 3, 3);
     }
 
+    /** Gray/ungray the dependent radios; a grayed-out SELECTED radio
+     *  flips back to its plain twin. Those corrective selects run
+     *  muted and RESTORE the caller's mute (D249 — the unconditional
+     *  `muted = false` un-muted the remainder of a syncFromModel that
+     *  called this; latent while nothing after it selected a radio,
+     *  fixed with the idempotent sync). */
     private void syncGray() {
+        boolean was = muted;
         boolean g = mGeo.isSelected();
         yLocal.setDisable(!g);
         yGlobal.setDisable(!g);
@@ -261,7 +305,7 @@ final class StartPanel extends StackPane {
         if (!rgl && aAbs.isSelected()) {
             muted = true;
             aRate.setSelected(true);
-            muted = false;
+            muted = was;
         }
         // absolute yaw/pitch needs Geometric + global (v19.8, D237);
         // the WHOLE behavior row grays under Force like the axis row
@@ -272,7 +316,7 @@ final class StartPanel extends StackPane {
         if (!ypa && pAbs.isSelected()) {
             muted = true;
             pRate.setSelected(true);
-            muted = false;
+            muted = was;
         }
     }
 
@@ -344,6 +388,7 @@ final class StartPanel extends StackPane {
         s.rollAbsolute = rollG && aAbs.isSelected();
         s.ypAbsolute = geo && yGlobal.isSelected()
             && pAbs.isSelected();   // v19.8, D237
+        s.endFollows(true);   // a fresh hold follows the end (D248)
         return s;
     }
 
@@ -384,21 +429,25 @@ final class StartPanel extends StackPane {
         if (p == null || c == null || ws == null) return;
         muted = true;
         try {
-            sx.getValueFactory().setValue(p.x);
-            sy.getValueFactory().setValue(p.y);
-            sz.getValueFactory().setValue(p.z);
-            sYaw.getValueFactory().setValue(-p.yawDeg + 0.0);   // reported (D186; no "-0")
-            sPitch.getValueFactory().setValue(p.designPitchDeg);
-            sRoll.getValueFactory().setValue(p.designRollDeg);
+            // FOCUS-GUARDED spinner writes (v19.18, D247): this runs
+            // per gizmo drag event and per model hook — a box being
+            // typed into is left alone (its focus-loss commit applies
+            // the typed value), like the name field below
+            app.setUnlessTyping(sx, p.x);
+            app.setUnlessTyping(sy, p.y);
+            app.setUnlessTyping(sz, p.z);
+            app.setUnlessTyping(sYaw, -p.yawDeg + 0.0);   // reported (D186; no "-0")
+            app.setUnlessTyping(sPitch, p.designPitchDeg);
+            app.setUnlessTyping(sRoll, p.designRollDeg);
             if (!p.sections.isEmpty()) {
-                sV.getValueFactory().setValue(p.sections.get(0).vDesign());
+                app.setUnlessTyping(sV, p.sections.get(0).vDesign());
             }
             if (nameField != null && !nameField.isFocused()) {
                 nameField.setText(c.name);
             }
             if (sMu != null) {
-                sMu.getValueFactory().setValue(c.fricRoll);
-                sK.getValueFactory().setValue(c.fricAir);
+                app.setUnlessTyping(sMu, c.fricRoll);
+                app.setUnlessTyping(sK, c.fricAir);
             }
             // tiles + options (a type is always picked since D232)
             tileSc.setStyle(ws.sc() ? TILE_ON : TILE);
@@ -409,13 +458,14 @@ final class StartPanel extends StackPane {
                     && p.sections.get(0) instanceof LaneSection lsd
                     && lsd.domain() == Section.Domain.DISTANCE);
             sizeLbl.setText(distNow ? "Initial size (m)" : "Initial size (s)");
-            sLen.getValueFactory().setValue(
+            app.setUnlessTyping(sLen,
                 distNow ? ws.lenDist() : ws.lenTime());
-            typeOptions.getChildren().clear();
             if (ws.sc()) {
                 // (the "A 10 m straight to begin with" note is GONE —
                 // v19.13, D242, user spec: no options for s/c, just
-                // the size spinner below)
+                // the size spinner below); the grid keeps its state
+                // off-screen and comes back by identity
+                typeOptions.getChildren().clear();
             } else {
                 Section s = p.sections.isEmpty() ? null : p.sections.get(0);
                 if (s instanceof LaneSection ls) {
@@ -428,27 +478,12 @@ final class StartPanel extends StackPane {
                     (ls.ypAbsolute ? pAbs : pRate).setSelected(true);
                 }
                 syncGray();
-                // TWO-COLUMN grid (D232; label|radios as SEPARATE grid
-                // cells since D233 — the first radio dot of every row
-                // lines up per column, like the dialogs)
-                javafx.scene.layout.GridPane og = new javafx.scene.layout.GridPane();
-                og.setHgap(10);
-                og.setVgap(5);
-                // the RIGHT column runs the canonical order —
-                // Yaw/pitch axis, Yaw/pitch behavior, Roll axis,
-                // Roll behavior (v19.9, D238: the D237 build parked
-                // "Yaw/pitch behavior" in the LEFT columns, which
-                // stretched the label column and left its "Rate"
-                // radio out of line — the user's report)
-                og.addRow(0, optLbl("Type", 0), optPair(mForce, mGeo),
-                    optLbl("Yaw/pitch axis", 14), optPair(yLocal, yGlobal));
-                og.addRow(1, optLbl("Domain", 0), optPair(dTime, dDist),
-                    optLbl("Yaw/pitch behavior", 14), optPair(pRate, pAbs));
-                og.addRow(2, optLbl("Rate units", 0), optPair(uSec, uMet),
-                    optLbl("Roll axis", 14), optPair(rLocal, rGlobal));
-                og.add(optLbl("Roll behavior", 14), 2, 3);
-                og.add(optPair(aRate, aAbs), 3, 3);
-                typeOptions.getChildren().add(og);
+                // IN PLACE (D249): the ONE grid is attached only when
+                // it is not already — a sync landing between a radio's
+                // press and release must never re-parent it
+                if (!typeOptions.getChildren().contains(laneGrid)) {
+                    typeOptions.getChildren().setAll(laneGrid);
+                }
             }
         } finally {
             muted = false;

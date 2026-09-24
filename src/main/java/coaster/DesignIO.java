@@ -232,13 +232,24 @@ public final class DesignIO {
             // TWO-TIER ORIENTATION (v19.0, D221/D222) — its own line
             // (the piece line's fields 19-23 are conditional, so
             // trailing positions are unsafe): `porient locked
-            // designPitch designRoll`. locked routes EDITS only; the
-            // design deltas feed generation (bit-exact, they shape
-            // the track). Missing = locked + (0,0) = every pre-v19
-            // file bitwise. Old readers ignore unknown lines (D50).
-            out.printf(Locale.US, "porient %d %s %s%n",
-                piece.shapeLocked ? 1 : 0,
-                d(piece.designPitchDeg), d(piece.designRollDeg));
+            // designPitch designRoll affect mode`. Field 1 keeps its
+            // D222 meaning (1 = REAL_ONLY, "locks track shape") for
+            // old readers; the design deltas feed generation
+            // (bit-exact, they shape the track); field 4 = the
+            // "Affect Subsequent Strict Seams" carry flag with its
+            // D249 meaning (1 = carry — D248 wrote the INVERTED
+            // 'only' bit in this slot, the loader tells them apart by
+            // field count); field 5 (v19.20, D249) = the OrientMode
+            // ordinal (0 LOCKSTEP / 1 REAL_ONLY / 2 DESIGN_ONLY), the
+            // authority when present. Missing line = LOCKSTEP + (0,0)
+            // + no carry (the compile reads none of them, so the
+            // track stays bitwise). Old readers ignore unknown lines
+            // and extra fields (D50).
+            out.printf(Locale.US, "porient %d %s %s %d %d%n",
+                piece.shapeLocked() ? 1 : 0,
+                d(piece.designPitchDeg), d(piece.designRollDeg),
+                piece.affectSubsequentSeams ? 1 : 0,
+                piece.orientMode.ordinal());
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // bridge (v13.0): the FROZEN solve inputs — poses
@@ -348,7 +359,11 @@ public final class DesignIO {
                     fs.rollAbsolute ? 1 : 0,
                     fs.ypAbsolute ? 1 : 0);
                 for (int lane = 0; lane < 3; lane++) {
-                    out.println("lane " + lane);
+                    // 3rd field (v19.19, D248): the END-FOLLOW flag —
+                    // old readers ignore it (they read parts[1] only);
+                    // missing = derived from the pristine-hold shape
+                    out.println("lane " + lane + " "
+                        + (fs.endFollows[lane] ? 1 : 0));
                     for (BezierBaker.Node n : fs.lanes.get(lane)) {
                         // 8th field straight-lock, 9th level-lock — both
                         // ride the ignore-extra-fields rule for old readers
@@ -422,6 +437,11 @@ public final class DesignIO {
         double[] start = { 0, 21, 0 };   // legacy `start` line (FVDD2/1)
         double[] camera = null;          // v18.38: missing = view stays
         int warnings = 0;                // fail-soft skips/heals (D216)
+        // lanes whose `lane` line carried the END-FOLLOW field (D248):
+        // identity-keyed, so the flag of every OTHER lane is derived
+        // from its loaded shape in finishCoaster
+        java.util.Set<List<BezierBaker.Node>> explicitFollow =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
         TrackPiece curPiece = null;
         Section curSection = null;
@@ -468,7 +488,7 @@ public final class DesignIO {
                         }
                         c.v0 = v0;
                         int[] w = { 0 };
-                        finishCoaster(c, legacy1, w);
+                        finishCoaster(c, legacy1, w, explicitFollow);
                         warnings += w[0];
                         if (!c.pieces.isEmpty()) {
                             coasters.add(c);
@@ -612,22 +632,54 @@ public final class DesignIO {
                     curLane = -1;
                 }
                 case "porient" -> {
-                    // two-tier orientation (v19.0, D221/D222):
-                    // `porient locked designPitch designRoll`;
-                    // missing line = locked + (0,0) = historic. A
+                    // two-tier orientation (v19.0, D221/D222; the
+                    // 3-state mode v19.20, D249): `porient locked
+                    // designPitch designRoll [affect [mode]]`;
+                    // missing line = the TrackPiece constructor
+                    // defaults (LOCKSTEP + (0,0) + no carry). A
                     // 2-field line is the short-lived D221 interim
                     // build (`porient mode dirty`): its mode 1
                     // (LINKED) meant design == true — migrate by
                     // copying the true deltas into the design tier.
+                    // FIELD COUNT decides field 4's meaning (D249):
+                    //   3 fields (v19.0-v19.18): no carry;
+                    //   exactly 4 (D248): the 'Only Affect … Until
+                    //     Next Strict Seam' bit — INVERT (1 = no carry);
+                    //   5+ (D249): 'Affect Subsequent Strict Seams'
+                    //     verbatim (1 = carry) + field 5 = the mode
+                    //     ordinal, the authority over field 1 when it
+                    //     parses to 0..2 (fail-soft otherwise: field
+                    //     1's REAL_ONLY / LOCKSTEP — D216).
                     if (curPiece != null && parts.length > 3) {
-                        curPiece.shapeLocked = !parts[1].equals("0");
+                        curPiece.orientMode = parts[1].equals("0")
+                            ? TrackPiece.OrientMode.LOCKSTEP
+                            : TrackPiece.OrientMode.REAL_ONLY;
                         curPiece.designPitchDeg =
                             Double.parseDouble(parts[2]);
                         curPiece.designRollDeg =
                             Double.parseDouble(parts[3]);
+                        if (parts.length > 5) {
+                            curPiece.affectSubsequentSeams =
+                                !parts[4].equals("0");
+                            try {
+                                int m = Integer.parseInt(parts[5]);
+                                if (m >= 0 && m < TrackPiece.OrientMode
+                                        .values().length) {
+                                    curPiece.orientMode =
+                                        TrackPiece.OrientMode.values()[m];
+                                }
+                            } catch (NumberFormatException ignored) {
+                                // field 1 stands (fail-soft)
+                            }
+                        } else if (parts.length > 4) {
+                            curPiece.affectSubsequentSeams =
+                                parts[4].equals("0");   // D248 'only' inverts
+                        } else {
+                            curPiece.affectSubsequentSeams = false;
+                        }
                     } else if (curPiece != null && parts.length > 2
                             && parts[1].equals("1")) {
-                        curPiece.shapeLocked = false;
+                        curPiece.orientMode = TrackPiece.OrientMode.LOCKSTEP;
                         curPiece.designPitchDeg = curPiece.pitchDeg;
                         curPiece.designRollDeg = curPiece.rollDeg;
                     }
@@ -691,10 +743,19 @@ public final class DesignIO {
                     curCtl = null;
                 }
                 case "lane" -> {
-                    if (!(curSection instanceof LaneSection))
+                    if (!(curSection instanceof LaneSection ls))
                         throw new IOException("lane outside lane section");
                     curLane = Integer.parseInt(parts[1]);
                     if (curLane < 0 || curLane > 2) throw new IOException("bad lane index");
+                    // 3rd field (v19.19, D248): the END-FOLLOW flag.
+                    // Present = taken verbatim (an explicit 0 on a
+                    // hold-shaped lane is a deliberate non-follow);
+                    // missing (every pre-D248 file) = derived from the
+                    // loaded nodes in finishCoaster
+                    if (parts.length > 2) {
+                        ls.endFollows[curLane] = parts[2].equals("1");
+                        explicitFollow.add(ls.lanes.get(curLane));
+                    }
                 }
                 case "n" -> {
                     if (!(curSection instanceof LaneSection ls) || curLane < 0)
@@ -894,7 +955,7 @@ public final class DesignIO {
         c.v0 = v0;
         {
             int[] w = { 0 };
-            finishCoaster(c, legacy1, w);
+            finishCoaster(c, legacy1, w, explicitFollow);
             warnings += w[0];
         }
         // the last block joins (an empty trailing block of a v4 file —
@@ -919,8 +980,23 @@ public final class DesignIO {
      *  latter (a 1-node lane is legal, D196; an empty one heals to a
      *  held constant — 1 g on a force Gv lane so a damaged file still
      *  loads as track, 0 elsewhere), count every repair, and drop
-     *  sectionless pieces. */
-    private static void finishCoaster(Coaster c, boolean legacy1, int[] warnings) {
+     *  sectionless pieces. Also DERIVES the END-FOLLOW flag (v19.19,
+     *  D248) of every lane whose `lane` line had no 3rd field
+     *  (explicitFollow = the lanes that carried one): a pristine hold
+     *  (LaneSection.pristineHold — the shape every hold is created
+     *  with) sitting AT the section end follows it like a freshly made
+     *  one — but only while the DEFINING end (the lanes that will not
+     *  follow) is the section end too, so the derived state is a
+     *  FIXED POINT of LaneSection.syncFollowingEnds and the first
+     *  follow write after opening moves nothing (D248 review fix: a
+     *  pristine hold that is the sole longest lane must not follow —
+     *  the sync would shrink it onto the shorter lanes; a hold short
+     *  of the end never follows either — both would be a non-bitwise,
+     *  undirtied load). Evaluated HERE, after the nodes loaded and
+     *  after the FVDD1 handle conversion. A healed (1-node) lane can
+     *  neither define nor follow. */
+    private static void finishCoaster(Coaster c, boolean legacy1, int[] warnings,
+                                      java.util.Set<List<BezierBaker.Node>> explicitFollow) {
         for (TrackPiece piece : c.pieces) {
             // FAIL-SOFT validation (v18.44, D216 — was a whole-file
             // refusal): a truncated tail leaves an element-less s/c
@@ -957,6 +1033,52 @@ public final class DesignIO {
                     }
                 }
                 if (legacy1) convertLegacyHandles(fs);
+                // END-FOLLOW derivation (D248) — AFTER the legacy handle
+                // conversion (FVDD1 fractions are raw seconds before it).
+                // The derived state must be a FIXED POINT of
+                // LaneSection.syncFollowingEnds, or the first follow
+                // write after opening would move a node — an undirtied,
+                // non-bitwise load (the D197-D200 contract): a lane is a
+                // CANDIDATE when it is a pristine hold sitting AT the
+                // section end (a follower is never short of the end —
+                // the sync keeps it there), and the candidates follow
+                // only when the DEFINING end — the latest last node over
+                // the lanes that will NOT follow (explicit-0 lanes,
+                // edited lanes, holds short of the end) — IS the section
+                // end. A candidate that is the sole longest lane defines
+                // the end itself and must not follow, or the sync would
+                // pull it back onto the shorter lanes (D248 review fix:
+                // a '+' hold whose Gl node had been time-dragged short
+                // derived 101 and SHRANK the section on the first redraw)
+                double secEnd = BezierBaker.rideEnd(fs.lanes);
+                int nl = fs.lanes.size();
+                boolean[] cand = new boolean[nl];
+                double defEnd = Double.NaN;
+                for (int li = 0; li < nl; li++) {
+                    List<BezierBaker.Node> lane = fs.lanes.get(li);
+                    boolean follows;
+                    if (explicitFollow.contains(lane)) {
+                        // verbatim flags: a flagged lane that is no
+                        // longer hold-shaped is what the sync's belt
+                        // clears, so it DEFINES
+                        follows = fs.endFollows[li]
+                            && LaneSection.pristineHold(lane);
+                    } else {
+                        cand[li] = LaneSection.pristineHold(lane)
+                            && Math.abs(lane.get(lane.size() - 1).t - secEnd)
+                                <= 1e-9;
+                        follows = cand[li];
+                    }
+                    if (follows || lane.size() < 2) continue;
+                    double t = lane.get(lane.size() - 1).t;
+                    defEnd = Double.isNaN(defEnd) ? t : Math.max(defEnd, t);
+                }
+                boolean defAtEnd = Double.isNaN(defEnd)
+                    || Math.abs(defEnd - secEnd) <= 1e-9;
+                for (int li = 0; li < nl; li++) {
+                    if (explicitFollow.contains(fs.lanes.get(li))) continue;
+                    fs.endFollows[li] = cand[li] && defAtEnd;
+                }
             }
             // complex speed controls heal to a flat two-node graph
             // when their cn block is missing/degenerate (v18.0);

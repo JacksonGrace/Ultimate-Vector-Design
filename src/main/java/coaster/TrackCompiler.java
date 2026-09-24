@@ -122,7 +122,7 @@ public final class TrackCompiler {
      *  decomposing baseOrient — and the yaw DELTA adds to psi
      *  ADDITIVELY either way, so the yaw spinner never changes the
      *  generation arithmetic. */
-    private static CanonPose pieceCanon(TrackPiece piece, Vec3 pos) {
+    static CanonPose pieceCanon(TrackPiece piece, Vec3 pos) {   // package-private since D247 (Coaster reads it)
         if (piece.canonOrient != null) {
             return new CanonPose(pos, piece.canonPsiDeg + piece.yawDeg,
                 piece.canonOrient);
@@ -141,8 +141,9 @@ public final class TrackCompiler {
      *  bitwise-rigid (D199) while design pitch/roll edits re-solve
      *  the generation — which is what the unlocked shape MEANS.
      *  Zero design deltas return pieceCanon's exact object state
-     *  (bitwise-historic). */
-    private static CanonPose designCanon(TrackPiece piece, Vec3 pos) {
+     *  (bitwise-historic). Package-private since D247 (the follower
+     *  branch and Coaster's seam ops share it). */
+    static CanonPose designCanon(TrackPiece piece, Vec3 pos) {
         CanonPose cp = pieceCanon(piece, pos);
         if (piece.designPitchDeg == 0 && piece.designRollDeg == 0) {
             return cp;
@@ -255,8 +256,8 @@ public final class TrackCompiler {
             // applies as the rigid conflict tilt about the entry.
             // Zero design deltas keep the historic tilt() arithmetic
             // bitwise; design == true is the pure link (IDENTITY
-            // object). shapeLocked routes EDITS only — the compile
-            // reads nothing but the two stored tiers.
+            // object). orientMode routes EDITS only (D249) — the
+            // compile reads nothing but the two stored tiers.
             Quat tilt = conflictTilt(piece);
             boolean designed = piece.designPitchDeg != 0
                 || piece.designRollDeg != 0;
@@ -289,21 +290,39 @@ public final class TrackCompiler {
             if (followed) {
                 // (D222 walked back D221's linked-follower branch on
                 // user spec — "there might be some weird edge cases":
-                // followers ALWAYS take the D135 freeze; both delta
-                // tiers are dead here, like true deltas always were.)
+                // followers ALWAYS take the D135 freeze — the REAL
+                // entry is the follow contract, never the true tier.)
+                // FOLLOWER DESIGN TIER (v19.18, D247): a follower's
+                // DESIGN orientation is designPose() — baseOrient ⊕
+                // yaw ⊕ the design pitch/roll deltas — composed in
+                // canonical space (designCanon) exactly like a free
+                // piece's, so an attached design-tilted piece keeps
+                // generating the shape it had (D5: connectStrict
+                // leaves the deltas alone) and the seam window's
+                // Lock-Track-Shape-off edits re-solve through the
+                // design tier (Euler-additive, the D222 invariance).
+                // Zero design deltas take genPose/pieceCanon BITWISE
+                // (the historic object state). The true tier stays
+                // dead here: the follow contract IS the real frame.
                 TrackPose eff = Coaster.strictEntry(
                     spans.get(spans.size() - 1).exit(), piece);
-                Quat gen = piece.genPose().orient();
+                Quat gen = designed ? piece.designPose().orient()
+                                    : piece.genPose().orient();
+                // the seam's CONFLICT TILT: real (follow contract) vs
+                // design — Coaster.seamConflictTilt reads the same
+                // product for the ≠o predicate (a pure heading
+                // difference inside it is rigid, not a conflict)
                 Quat tq = eff.orient().mul(gen.conjugate());
                 tilt = Math.abs(tq.w()) > 1 - 1e-14
                     ? Quat.IDENTITY : tq;
                 pose = new TrackPose(eff.pos(), gen);
                 anchor = eff.pos();
-                // follower generation stays at the STORED orientation
-                // (shape frozen); only the position comes from the
-                // upstream exit — placement-side, so upstream moves
-                // keep the follower's generation bits (D199)
-                cp = pieceCanon(piece, eff.pos());
+                // follower generation stays at the STORED design
+                // orientation (shape frozen); only the position comes
+                // from the upstream exit — placement-side, so upstream
+                // moves keep the follower's generation bits (D199)
+                cp = designed ? designCanon(piece, eff.pos())
+                              : pieceCanon(piece, eff.pos());
             }
             if (!piece.sections.isEmpty() && !bridgedIn && !followed) {
                 runs.add(new double[]{ pieceStart,
@@ -375,44 +394,7 @@ public final class TrackCompiler {
                     }
                     if (p + 1 < c.pieces.size()) {
                         TrackPiece next = c.pieces.get(p + 1);
-                        TrackPose tgt = next.entryPose();
-                        bs.solvedTarget = new TrackPose(tgt.pos(), tgt.orient());
-                        bs.accB = Vec3.ZERO;
-                        bs.jerkB = Vec3.ZERO;
-                        bs.rollB = 0;
-                        bs.rollAccB = 0;
-                        bs.vB = 0;
-                        if (!next.sections.isEmpty()) {
-                            // pre-integrate the target's FIRST section
-                            // once: measured head derivatives are mode-
-                            // agnostic (reversed sections included; a
-                            // TILTED target's head arrives rigidly
-                            // rotated, v15.2 — pieceHead applies it)
-                            List<FVDIntegrator.Sample> head =
-                                pieceHead(next, dt, fric);
-                            if (!head.isEmpty()) {
-                                bs.vB = head.get(0).v();
-                                // aim at the ACTUAL first-sample frame,
-                                // not the piece's nominal entry pose
-                                // (v13.4): a REVERSED first section
-                                // yaw-places itself — pitch/bank of the
-                                // entry pose are NOT honored — and the
-                                // bridge aiming at the nominal pose put
-                                // a hard kink at the reversed entrance.
-                                // Same position either way; for normal
-                                // sections the frame IS the entry pose.
-                                FVDIntegrator.Sample h0 = head.get(0);
-                                bs.solvedTarget = new TrackPose(tgt.pos(),
-                                    Quat.fromFrame(h0.T(), h0.U()));
-                            }
-                            if (head.size() >= 9) {
-                                Vec3[] kj = seamDerivs(head, 0, 1);
-                                bs.accB = kj[0];
-                                bs.jerkB = kj[1];
-                                bs.rollB = seamRollRate(head, 0, 1);
-                                bs.rollAccB = seamRollAcc(head, 0, 1);
-                            }
-                        }
+                        captureTargetHead(bs, next, dt, fric);
                         // MANUAL-mode tangent rescale (v17.14, D155):
                         // in "No optimization" the Length spinner is
                         // disabled and the septic's lenA/lenB have no
@@ -764,6 +746,55 @@ public final class TrackCompiler {
             tilt.mul(p.orient()), p.s0(), p.t0());
     }
 
+    /** The bridge's TARGET-side solve inputs off the next piece's head
+     *  (factored VERBATIM out of compile() in v19.20, D249, so
+     *  Coaster.optimizeBridge's LOCKSTEP inner settle re-captures
+     *  exactly what the next compile will capture): solvedTarget =
+     *  the piece's entry position + its ACTUAL first-sample frame, vB
+     *  + the head curvature/jerk/roll-rate/roll-acceleration (zeros
+     *  for a section-less or too-short head). */
+    static void captureTargetHead(BridgeSection bs, TrackPiece next,
+                                  double dt, FVDIntegrator.Friction fric) {
+        TrackPose tgt = next.entryPose();
+        bs.solvedTarget = new TrackPose(tgt.pos(), tgt.orient());
+        bs.accB = Vec3.ZERO;
+        bs.jerkB = Vec3.ZERO;
+        bs.rollB = 0;
+        bs.rollAccB = 0;
+        bs.vB = 0;
+        if (!next.sections.isEmpty()) {
+            // pre-integrate the target's FIRST section
+            // once: measured head derivatives are mode-
+            // agnostic (reversed sections included; a
+            // TILTED target's head arrives rigidly
+            // rotated, v15.2 — pieceHead applies it)
+            List<FVDIntegrator.Sample> head =
+                pieceHead(next, dt, fric);
+            if (!head.isEmpty()) {
+                bs.vB = head.get(0).v();
+                // aim at the ACTUAL first-sample frame,
+                // not the piece's nominal entry pose
+                // (v13.4): a REVERSED first section
+                // yaw-places itself — pitch/bank of the
+                // entry pose are NOT honored — and the
+                // bridge aiming at the nominal pose put
+                // a hard kink at the reversed entrance.
+                // Same position either way; for normal
+                // sections the frame IS the entry pose.
+                FVDIntegrator.Sample h0 = head.get(0);
+                bs.solvedTarget = new TrackPose(tgt.pos(),
+                    Quat.fromFrame(h0.T(), h0.U()));
+            }
+            if (head.size() >= 9) {
+                Vec3[] kj = seamDerivs(head, 0, 1);
+                bs.accB = kj[0];
+                bs.jerkB = kj[1];
+                bs.rollB = seamRollRate(head, 0, 1);
+                bs.rollAccB = seamRollAcc(head, 0, 1);
+            }
+        }
+    }
+
     /** A piece's FIRST section as it really starts — generation at the
      *  design orientation with the rigid tilt applied (the bridge
      *  target-head capture reads this; identity tilt = the historic
@@ -775,7 +806,11 @@ public final class TrackCompiler {
     static List<FVDIntegrator.Sample> pieceHead(TrackPiece piece, double dt,
                                                 FVDIntegrator.Friction fric) {
         // TWO-TIER TILT (D221/D222): mirror the compile chain's
-        // branch exactly so the captured head matches bit-for-bit
+        // branch exactly so the captured head matches bit-for-bit.
+        // (D247: the compile's FOLLOWER branch generates through the
+        // same designed ? designCanon : pieceCanon fork — a bridge
+        // target is bridged-in and therefore never a follower, so
+        // this free-piece mirror already covers every capture.)
         Quat tilt = conflictTilt(piece);
         boolean designed = piece.designPitchDeg != 0
             || piece.designRollDeg != 0;

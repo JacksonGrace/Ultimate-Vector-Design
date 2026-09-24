@@ -24,6 +24,27 @@ public sealed abstract class LaneSection implements Section
      *  are long-lived: the editor holds references. */
     public final List<List<BezierBaker.Node>> lanes;
 
+    /** PRISTINE-LANE END FOLLOW (v19.19, D248 — user spec): per-lane
+     *  "not edited since creation" flags. A hold lane is created with
+     *  the flag SET (continuation / holdSection / the '+' and Insert
+     *  holds / the start wizard / split halves inherit); the editor
+     *  clears a lane's flag at its first edit ({@link #touchLane}) and,
+     *  after any gesture that moves a lane's last node, moves every
+     *  still-following lane's last node onto the new section end
+     *  ({@link #syncFollowingEnds}) — so dragging one lane's end drags
+     *  the untouched lanes with it, growing AND shrinking the section;
+     *  the redraw-time belt ({@link #clearStaleFollows}) only CLEARS a
+     *  follower that stopped being hold-shaped, never moves one.
+     *  Persisted as the `lane` line's 3rd field (missing = derived by
+     *  {@link #pristineHold} AT the section end at load,
+     *  DesignIO.finishCoaster — and only while the defining lanes end
+     *  there too, the sync's fixed point: a hold short of the end or a
+     *  sole longest hold stays off, so an old file opens bitwise); rides
+     *  DocState.SecState and Coaster.copySection. Delta lanes carry no
+     *  flag. Feeds no geometry — the follow WRITE is an editor action,
+     *  so compile/rebuild stay idempotent (D197-D200). */
+    public final boolean[] endFollows = new boolean[3];
+
     public double vDesign;
     public boolean reversed = false;
     public boolean vPinned = false;   // v14.5 D97: reconcile-exempt
@@ -66,6 +87,41 @@ public sealed abstract class LaneSection implements Section
      *  editor's analytic matching and authored-strip drawing fall
      *  back to the compiled curves. */
     public boolean globalAxes() { return rollGlobal || yawPitchGlobal; }
+
+    /** Does lane `lane`'s AUTHORED value deviate from the compiled
+     *  quantity under a RIGID orientation tilt of its piece (v19.19,
+     *  D248 — the true-stroke split reference, per lane)? A tilt
+     *  (TrackCompiler.tiltLine: a free piece's design→true conflict
+     *  or a follower's held-seam tilt) re-projects the recorded FORCE
+     *  felt (Gv/Gl — gravity's components move) and changes every
+     *  WORLD-axis quantity (bank-vs-horizon rate — including a
+     *  yaw-pitch-global geo section's "local" roll lane, which IS a
+     *  bank rate, D177 —, heading/elevation rates, absolute bank /
+     *  elevation / heading angles); GEO LOCAL body rates (pitch/yaw/
+     *  roll rates) are rotation-invariant and stay equal to the
+     *  authored lane. A FORCE section deviates on ALL THREE lanes
+     *  (D248 brief decision: its local roll RATE lane is rotation-
+     *  invariant too, but the whole force section keeps the historic
+     *  D100 authored reference — zero behavior change on the
+     *  true-tier path). The editor takes the AUTHORED lane as the
+     *  true stroke's reference exactly on the deviating lanes of an
+     *  orientation-conflicted piece; the others keep the compiled
+     *  (derived) reference. */
+    public static boolean tiltDeviates(LaneSection ls, int lane) {
+        boolean geo = ls instanceof GeoSection;
+        if (!geo) return true;
+        if (lane == 2) return ls.rollGlobal || ls.yawPitchGlobal;
+        return ls.yawPitchGlobal;
+    }
+
+    /** Any lane of `ls` deviates under a rigid tilt (D248 — the
+     *  inactive-strip rule: such a strip on a conflicted piece draws
+     *  DERIVED, the truth, instead of authored lanes the ride doesn't
+     *  follow; a local-rate geo strip keeps its authored lanes). */
+    public static boolean tiltDeviatesAny(LaneSection ls) {
+        return tiltDeviates(ls, 0) || tiltDeviates(ls, 1)
+            || tiltDeviates(ls, 2);
+    }
 
     /** PER-METER rate units (v16.6, D115 — user spec): the RATE
      *  lanes' values are °/m instead of °/s — geo pitch/yaw/roll, and
@@ -276,6 +332,116 @@ public sealed abstract class LaneSection implements Section
             lanes.add(lane);
         }
         return lanes;
+    }
+
+    /** Set every lane's END-FOLLOW flag (D248) — the hold creation
+     *  sites call it with true; returns this for chaining. */
+    public LaneSection endFollows(boolean on) {
+        for (int i = 0; i < 3; i++) endFollows[i] = on;
+        return this;
+    }
+
+    /** The PRISTINE-HOLD predicate (D248): exactly two nodes at the
+     *  same value with flat DEFAULT_FRAC facing handles and no lock —
+     *  the shape LaneSection.holdLanes creates. Used to DERIVE the
+     *  flag for files saved before the field existed and as the
+     *  redraw-time belt {@link #clearStaleFollows} (a following lane
+     *  that is no longer hold-shaped was edited through a sink that
+     *  missed the flag — it is cleared, never moved). The two
+     *  DEAD outer handles are ignored (they shape nothing). Values and
+     *  dv compare EXACTLY (a de Casteljau cut of a flat hold keeps
+     *  them exact); the fractions within 1e-9 — the cut's bisected
+     *  root leaves them 1/3 ± ulps, and a split half must stay
+     *  pristine (a typed 0.333 is 3e-4 off: an edit). */
+    public static boolean pristineHold(List<BezierBaker.Node> lane) {
+        if (lane == null || lane.size() != 2) return false;
+        BezierBaker.Node a = lane.get(0), b = lane.get(1);
+        return a.val == b.val
+            && Math.abs(a.outFrac - BezierBaker.DEFAULT_FRAC) <= FRAC_EPS
+            && a.outDv == 0
+            && Math.abs(b.inFrac - BezierBaker.DEFAULT_FRAC) <= FRAC_EPS
+            && b.inDv == 0
+            && !a.lockedOut();
+    }
+
+    /** pristineHold's fraction tolerance (see there). */
+    private static final double FRAC_EPS = 1e-9;
+
+    /** The editor's ONE clearing choke (D248): the lane about to be
+     *  written stops following. Resolved by IDENTITY against the
+     *  section's own lanes, so a delta lane, a speed-control graph or
+     *  any foreign list is a no-op. Returns whether a flag cleared. */
+    public static boolean touchLane(LaneSection ls, List<BezierBaker.Node> lane) {
+        if (ls == null || lane == null) return false;
+        for (int i = 0; i < 3; i++) {
+            if (ls.lanes.get(i) == lane) {
+                boolean was = ls.endFollows[i];
+                ls.endFollows[i] = false;
+                return was;
+            }
+        }
+        return false;
+    }
+
+    /** The redraw-time BELT (D248 review fix — CLEAR only, never
+     *  move): every flagged lane that is no longer {@link #pristineHold}
+     *  loses its flag (it was edited through a sink that missed
+     *  touchLane); also {@link #syncFollowingEnds}' first pass. A
+     *  redraw runs this alone — a node move there would leave the
+     *  graph ahead of the compiled track until the next rebuild, which
+     *  would then not be a no-op (contract b); the sinks that can move
+     *  a last node run the full sync BEFORE their own rebuild. Returns
+     *  the number of flags cleared. */
+    public static int clearStaleFollows(LaneSection ls) {
+        if (ls == null) return 0;
+        int cleared = 0;
+        for (int i = 0; i < 3; i++) {
+            if (ls.endFollows[i] && !pristineHold(ls.lanes.get(i))) {
+                ls.endFollows[i] = false;
+                cleared++;
+            }
+        }
+        return cleared;
+    }
+
+    /** The FOLLOW WRITE (D248): belt first ({@link #clearStaleFollows}
+     *  — a flagged lane that is not {@link #pristineHold} is cleared
+     *  and left alone) — then
+     *  E = the latest last-node x over the DEFINING lanes (flag off,
+     *  ≥ 2 nodes) and every still-following lane's last node moves to
+     *  max(E, node0 + minGap) (its own axis units: seconds or meters;
+     *  minGap = the domain's minimum transition). Values, handles and
+     *  locks are untouched (a pristine lane's dv are zero, so no slope
+     *  rescale is needed). No defining lane — a fresh, wholly untouched
+     *  section — moves nothing; 1-node lanes neither define nor
+     *  follow. Returns the number of lanes moved. Pure model so the
+     *  gate drives the real thing; the editor decides WHEN (after the
+     *  gesture sinks, BEFORE their redraw + rebuild — never during an
+     *  undo restore; the top of every redraw runs only the belt, D248
+     *  review fix). The loader's derivation (DesignIO.finishCoaster)
+     *  produces a fixed point of this write. */
+    public static int syncFollowingEnds(LaneSection ls, double minGap) {
+        if (ls == null) return 0;
+        clearStaleFollows(ls);
+        double end = Double.NaN;
+        for (int i = 0; i < 3; i++) {
+            List<BezierBaker.Node> lane = ls.lanes.get(i);
+            if (ls.endFollows[i] || lane.size() < 2) continue;
+            double t = lane.get(lane.size() - 1).t;
+            end = Double.isNaN(end) ? t : Math.max(end, t);
+        }
+        if (Double.isNaN(end)) return 0;
+        int moved = 0;
+        for (int i = 0; i < 3; i++) {
+            if (!ls.endFollows[i]) continue;
+            List<BezierBaker.Node> lane = ls.lanes.get(i);
+            BezierBaker.Node last = lane.get(lane.size() - 1);
+            double target = Math.max(end, lane.get(0).t + minGap);
+            if (Math.abs(last.t - target) <= 1e-12) continue;
+            last.t = target;
+            moved++;
+        }
+        return moved;
     }
 
     @Override public double vDesign() { return vDesign; }

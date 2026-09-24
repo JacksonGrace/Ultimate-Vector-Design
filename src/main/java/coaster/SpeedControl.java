@@ -91,6 +91,26 @@ public class SpeedControl {
 
     public SpeedControl() {}
 
+    /** Stretch BOTH complex graphs by f about x0 (v18.45, D217 — the
+     *  fraction-semantics rescale; node x is control-local so a pure
+     *  scale IS the stretch, handles keep their slopes via the D105
+     *  dv rescale). Shared by the editor's clamp, the end-diamond
+     *  resize, the popup Length spinner and — since v19.19, D248 — the
+     *  START diamond's resize-from-the-left (Gestures.resizeStart);
+     *  lives here so the headless gates reach it. */
+    public void rescaleLanes(double f) {
+        if (!lane.isEmpty()) {
+            double[] gaps = BezierBaker.segGaps(lane);
+            for (BezierBaker.Node nd : lane) nd.t *= f;
+            BezierBaker.rescaleDvToGaps(lane, gaps);
+        }
+        if (!decelLane.isEmpty()) {
+            double[] gaps = BezierBaker.segGaps(decelLane);
+            for (BezierBaker.Node nd : decelLane) nd.t *= f;
+            BezierBaker.rescaleDvToGaps(decelLane, gaps);
+        }
+    }
+
     public SpeedControl(double x0, double len) {
         this.x0 = x0;
         this.len = len;

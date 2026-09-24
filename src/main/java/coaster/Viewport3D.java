@@ -113,6 +113,19 @@ class Viewport3D {
 
     // ---------- 3D scene state ----------
     final Group trackGroup = new Group();
+    // STALLED (ghost) track — LAST child of world, DepthTest.DISABLE
+    // (v19.19, D248): see the constructor's floor-layer comment; below
+    // ground the whole track block swaps before the floor (D249)
+    final Group ghostGroup = new Group();
+    // GROUND-SPLIT track layer (v19.20, D249): the UNDERGROUND halves
+    // of every rail/tie/plate/heartline/comb mesh (trackUnder, depth-
+    // enabled among themselves) and of the ghost meshes (ghostUnder,
+    // DISABLE) — drawn BEFORE the floor so the sheet + lines + axes
+    // composite over them; the two track blocks swap around the floor
+    // while the eye is below ground (setFloorOrder)
+    final Group trackUnder = new Group();
+    final Group ghostUnder = new Group();
+    private boolean floorEyeBelow = false;
     final Group world = new Group();
     final Translate camPivot = new Translate();  // orbit centre (moves after flying)
     final Rotate camYaw = new Rotate(-30, Rotate.Y_AXIS);
@@ -176,6 +189,45 @@ class Viewport3D {
     AnimationTimer povTimer;
     final Group markerGroup = new Group();   // on-track node markers
     String markerSig = "";                   // skip no-op rebuilds
+    // SPEED-CONTROL DISKS (v19.19, D248, item S1 — user spec: every
+    // control's start and end as a disk ON THE HEARTLINE, in a darker
+    // shade of the strip's type color, click+draggable along the
+    // track). A disk IS its strip diamond: the press/drag/release run
+    // through GraphEditor.spViewportPress/DragTo/Release — the
+    // strip's own selection, gesture, clamps and undo — with a native
+    // x read off the track (trackNativeAt), so the disk can never move
+    // further than the diamond can and the two always coincide.
+    // Persistent group re-added per rebuild like markerGroup;
+    // signature-guarded (refreshCtlDisks runs on every graph redraw).
+    // Hidden in POV (the comb/heartline rule — the camera rides
+    // through them).
+    final Group ctlDiskGroup = new Group();
+    String ctlDiskSig = "";
+    /** One pickable disk: the control by INDEX, kind 1 = START disk,
+     *  2 = END disk, its heartline center (world) and the ring's rim
+     *  points (ViewDisks.rimPoints — the WHOLE-disk pick's projected
+     *  bound, v19.20, D249, item S3). */
+    record CtlDisk(int piece, int sec, int ctl, int kind, Vec3 pos,
+                   Vec3[] rim) { }
+    /** Pick order = the strip's spFindDiamond: sections in flat order,
+     *  controls in list order, END before START — coincident abutting
+     *  disks resolve to the EARLIER control's END (strict nearest). */
+    private final List<CtlDisk> ctlDisks = new ArrayList<>();
+    // the live disk gesture (per pane): the pressed disk, the press
+    // point, the 3 px deadband flag; diskHovering = the HAND cursor
+    // is ours to restore
+    private CtlDisk diskDrag;
+    private double diskPressX, diskPressY;
+    private boolean diskMoved, diskHovering;
+    // SECTION-BOUNDARY DISKS (D248, item S1; the SINGLE-LINE set since
+    // v19.20, D249): gray disks on the heartline at the plain interior
+    // section boundaries of a piece — the exit of every section but
+    // the last, incl. the entry into a trailing bridge; never the
+    // piece entry/exit, so no run head/end, strict seam or bridge
+    // exit (the graph's double lines) — deduped
+    // (ViewDisks.boundarySamples); mouse-transparent, never hovered,
+    // rebuilt with the meshes, hidden in POV like the combs
+    Group boundaryGroup;
     Group povHolder;    // the POV camera's world-riding holder
     Group root3D;       // subscene root (identity transform — the
                         // scene-coordinate projection anchor, v18.9)
@@ -231,21 +283,41 @@ class Viewport3D {
         // to the POV camera exactly as it does to the track mesh; the
         // fixed-size reveal balls are part of the TRACK layer (v18.17,
         // D188 — normal depth, occludable like any track geometry).
-        // The FLOOR GRID + MAIN AXES lead the child list since v19.13
-        // (D242): created HERE — not in the first non-empty rebuild,
-        // which left empty coasters and fresh panes with NO grid at
-        // all — and DEPTH-DISABLED (see updateFloorGrid: pure
-        // submission-order blending, no depth writes — the fix for
-        // the depth-noise flashing between the grid's own layers).
+        // The FLOOR GRID + MAIN AXES are created HERE since v19.13
+        // (D242 — not in the first non-empty rebuild, which left empty
+        // coasters and fresh panes with NO grid at all). WORLD ORDER
+        // since v19.20 (D249 — the floor back to the D242-D246 build
+        // BITWISE, the see-through look by ORDER alone; see the
+        // FloorDepth postmortem for the retired D248 depth-tested
+        // floor): [underground track: trackUnder, ghostUnder] →
+        // [FLOOR: gridGroup = sheet + line decades, axisGroup — both
+        // DepthTest.DISABLE, so no read, no write: pure submission
+        // order, no coplanar layer can ever fight another] → [track:
+        // trackGroup, povHolder, trackBallGroup] → [ghostGroup]. Every
+        // track-layer mesh is cut at y = 0 (addSplit): its underground
+        // half draws FIRST, so the sheet + lines + axes composite over
+        // it — underground track reads as behind the floor — while
+        // above-ground track overdraws the floor exactly as D246 did.
+        // The depth tests between the two halves are honest without
+        // any coplanar case: for an eye above ground every above-
+        // ground point on a ray precedes the ground crossing and every
+        // underground one follows it; below ground the two blocks swap
+        // (setFloorOrder). The stalled GHOST track stays LAST with
+        // DepthTest.DISABLE (D248: composited over floor and track
+        // alike); its underground half (ghostUnder, DISABLE, after
+        // trackUnder) is composited over the underground layer the
+        // same way. Ghost tubes stay PICKABLE like any rail.
         gridGroup = new Group();
         gridGroup.setMouseTransparent(true);
         gridGroup.setDepthTest(javafx.scene.DepthTest.DISABLE);
         axisGroup = new Group();
         axisGroup.setMouseTransparent(true);
         axisGroup.setDepthTest(javafx.scene.DepthTest.DISABLE);
-        world.getChildren().addAll(gridGroup, axisGroup,
-            trackGroup, povHolder, trackBallGroup);
+        trackUnder.setDepthTest(javafx.scene.DepthTest.ENABLE);
+        ghostUnder.setDepthTest(javafx.scene.DepthTest.DISABLE);
+        ghostGroup.setDepthTest(javafx.scene.DepthTest.DISABLE);
         this.povHolder = povHolder;
+        setFloorOrder(false);
         root3D = new Group(world, cameraRig, flyHolder, ambient, sun);
 
         sub = new SubScene(root3D, 800, 400, true, SceneAntialiasing.BALANCED);
@@ -259,9 +331,12 @@ class Viewport3D {
         // buffer — proper self-occlusion within the gizmo, still
         // drawn over the whole world. gizmoWorld mirrors `world`'s
         // centering translate; the cameras mirror the active one per
-        // frame (syncGizmoCam off the axes timer). pickOnBounds(false)
-        // lets events pass through to the main scene wherever no
-        // gizmo geometry is hit.
+        // frame (syncGizmoCam off the axes timer). The overlay takes
+        // NO mouse events at all since v19.19 (D248): every rig part
+        // and track ball is picked in SCREEN SPACE by the pane-level
+        // gizmoMouseFilter (pickPart), so pickOnBounds(false) only
+        // documents the old pass-through — the SubScene is
+        // mouseTransparent for good (syncGizmoSubMouse).
         gizmoWorld.getChildren().add(gizmoGroup);
         AmbientLight gAmbient = new AmbientLight(Color.rgb(120, 120, 130));
         PointLight gSun = new PointLight(Color.WHITE);
@@ -278,6 +353,7 @@ class Viewport3D {
         gizmoSub.setFill(null);
         gizmoSub.setCamera(gizmoPCam);
         gizmoSub.setPickOnBounds(false);
+        gizmoSub.setMouseTransparent(true);   // screen-space picking (D248)
 
         sub.setOnMousePressed(e -> {
             // pull focus off toolbar editors (the gap spinner): scene
@@ -329,9 +405,32 @@ class Viewport3D {
                 // CLICK-OFF hides a revealed gizmo (v18.16, D187 —
                 // gizmo parts consume their presses, so any primary
                 // press landing here is off the rig)
-                if (gizmoReveal != 0) {
-                    gizmoReveal = 0;
+                if (gizmoReveal != null) {
+                    gizmoReveal = null;
                     refreshGizmo(false);
+                }
+                // a SPEED-CONTROL DISK under the press (v19.19, D248,
+                // item S1) starts the strip's diamond gesture on it —
+                // anywhere on the disk (its projected rim, 12 px floor
+                // — D249) it wins over the node markers' 14 px RELEASE
+                // pick; clickX stays NaN so the release
+                // never activates the track or deselects under the
+                // fresh control selection (a refused press — convert
+                // preview / start screen — posts its reason and
+                // starts nothing)
+                CtlDisk disk = pickCtlDisk(e.getScreenX(), e.getScreenY());
+                if (disk != null) {
+                    clickX = Double.NaN;
+                    if (app.editor != null && app.editor.spViewportPress(
+                            disk.piece(), disk.sec(), disk.ctl(),
+                            disk.kind())) {
+                        diskDrag = disk;
+                        diskPressX = e.getScreenX();
+                        diskPressY = e.getScreenY();
+                        diskMoved = false;
+                    }
+                    lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
+                    return;
                 }
                 // plain press: remember it — a CLEAN release on the
                 // track activates that piece + section (v13.1), a
@@ -349,6 +448,28 @@ class Viewport3D {
             lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY();
         });
         sub.setOnMouseReleased(e -> {
+            // a live DISK gesture ends FIRST (D248, item S1) — before
+            // the clean-click bail, and even if fly/POV began mid-drag
+            // (a right-click mid-gesture): the editor's release tail
+            // settles the document (D200); an unmoved double-click
+            // opens the control's options popup
+            if (diskDrag != null) {
+                if (e.getButton() != MouseButton.PRIMARY) return;
+                boolean moved = diskMoved;
+                CtlDisk released = diskDrag;
+                diskDrag = null;
+                diskMoved = false;
+                clickX = Double.NaN;
+                if (app.editor != null) {
+                    app.editor.spViewportRelease(moved, e.getScreenX(),
+                        e.getScreenY(), e.getClickCount());
+                    if (moved) app.editor.redrawFromViewport();
+                    // the settled position (D249, item S2 — the last
+                    // drag event may precede the settle)
+                    diskReadout(released);
+                }
+                return;
+            }
             if (e.getButton() != MouseButton.PRIMARY || flyActive
                     || (povActive && povCaptured)
                     || Double.isNaN(clickX)
@@ -358,7 +479,22 @@ class Viewport3D {
                 return;
             }
             clickX = Double.NaN;
+            // node MARKERS take the click before the track does
+            // (v16.11, user spec): a clean click on one selects that
+            // node in the graph and brings it into view — and since
+            // v19.19 (D248) the marker pick runs BEFORE the double-
+            // click branch: a DOUBLE-click on a marker opens that
+            // node's editor (the graph's node double-click), so within
+            // 14 px of a marker the track insert no longer fires
+            int mi = pickMarkerIndex(e.getScreenX(), e.getScreenY());
             if (e.getClickCount() == 2) {
+                if (mi >= 0) {
+                    // the first click of the pair already selected
+                    // the node; the wrapper refuses under the convert
+                    // preview / start wizard with a stats reason
+                    app.editor.openNodeEditorFromViewport(mi);
+                    return;
+                }
                 // DOUBLE-click = insert a node at that track point
                 // (v16.12 — moved off Ctrl+click; the first click
                 // already activated the piece + section, so the
@@ -367,10 +503,6 @@ class Viewport3D {
                 insertNodeAtTrack(e.getScreenX(), e.getScreenY());
                 return;
             }
-            // node MARKERS take the click before the track does
-            // (v16.11, user spec): a clean click on one selects that
-            // node in the graph and brings it into view
-            int mi = pickMarkerIndex(e.getScreenX(), e.getScreenY());
             if (mi >= 0) {
                 app.editor.selectNodeFromViewport(mi);
                 return;
@@ -398,6 +530,28 @@ class Viewport3D {
         });
         sub.setOnMouseDragged(e -> {
             if (povActive || flyActive) return;
+            // DISK drag (D248, item S1): past a 3 px deadband the
+            // grabbed end follows the nearest projected track point,
+            // read back as the section's native coordinate and handed
+            // to the strip's own write path (Ctrl = the strip's snap —
+            // the DISPLAY-axis grid under a cross-domain view, D249);
+            // every event rebuilds the track and redraws the strip
+            // live, and the disk lands wherever the CLAMPED diamond
+            // does
+            if (diskDrag != null) {
+                if (!e.isPrimaryButtonDown()) return;
+                if (!diskMoved && Math.hypot(e.getScreenX() - diskPressX,
+                        e.getScreenY() - diskPressY) <= 3) return;
+                diskMoved = true;
+                if (app.editor != null) {
+                    app.editor.spViewportDragTo(
+                        trackNativeAt(diskDrag, e.getScreenX(), e.getScreenY()),
+                        e.isControlDown());
+                    // the readout follows the drag LIVE (D249, item S2)
+                    diskReadout(diskDrag);
+                }
+                return;
+            }
             if (orthoView && e.isSecondaryButtonDown()) {
                 // right-drag in a snapped view = grab-pan in the view plane
                 // (the world follows the mouse); the ortho view survives
@@ -495,7 +649,13 @@ class Viewport3D {
         });
         sub.addEventHandler(MouseEvent.MOUSE_MOVED, this::flyLook);
         sub.addEventHandler(MouseEvent.MOUSE_DRAGGED, this::flyLook);
-        sub.addEventHandler(MouseEvent.MOUSE_MOVED, this::combHover);
+        // a DISK under the cursor takes the hover (hand cursor + the
+        // bottom-left readout, D248 item S1 — no silent affordance);
+        // else the comb teeth
+        sub.addEventHandler(MouseEvent.MOUSE_MOVED, e -> {
+            if (!diskHover(e)) combHover(e);
+        });
+        sub.addEventHandler(MouseEvent.MOUSE_EXITED, e -> clearDiskHover());
 
         // POV: W rides forward at the simulated speed, S backward;
         // SHIFT x4, CTRL x0.25; no key = hold position (follows live edits)
@@ -593,6 +753,29 @@ class Viewport3D {
      *  time, sitting on the spine like the ties; selected nodes are
      *  white. Signature-guarded: the graph calls this on every redraw,
      *  but the scene graph only churns when something relevant changed. */
+    /** Node-marker radii (m) + the selected marker's white mix (D248). */
+    static final double MARKER_R = 0.22, MARKER_R_SEL = 0.26,
+        MARKER_SEL_MIX = 0.4;
+
+    /** Does a white JUNCTION BALL sit on piece p's node 0 (v19.20,
+     *  D249 — the node-0 sphere is skipped then, the ball is its
+     *  anchor)? Only while section 0 is active and not in POV (balls
+     *  hide there, markers ride the spine). A run head — and a
+     *  bridged-in piece, which is never a strict follower — takes the
+     *  historic v18.13 entry-ball rule (the bridge-end ball built at
+     *  its x/y/z covers it the same way); a strict-seam FOLLOWER's
+     *  node 0 is its seam ball, which exists iff a compile placed the
+     *  junction (seamWorldPos != null — the ball builder's own test);
+     *  before that compile the sphere shows. Node 0 stays editable
+     *  from the graph; a ball click reveals the gizmo / opens the
+     *  seam window (the D248 rule: a ball click selects nothing). */
+    boolean junctionBallCoversNode0(int p) {
+        if (app.editor == null || app.editor.activeSection() != 0
+                || povActive) return false;
+        if (!app.editor.followsPrev(p)) return true;
+        return app.editor.seamWorldPos(p) != null;
+    }
+
     void refreshTrackMarkers(int lane, Set<Integer> sel, int selIdx,
                              double[] nodeTimes) {
         // activation changes arrive here on every graph redraw — the
@@ -600,15 +783,15 @@ class Viewport3D {
         // signature guard, v16.11)
         refreshTieHighlight(false);
         refreshGizmo(false);
+        refreshCtlDisks();   // speed-control disks (D248, item S1)
         List<BezierBaker.Node> laneNodes = app.lanes.get(lane);
         int count = Math.min(laneNodes.size(), nodeTimes.length);
         Color laneCol = app.editor.laneColor(lane);   // mode palette (geo: teal/yellow)
-        // the ENTRY BALL is node 0's representation when it covers it
-        // (v18.13, user spec — the two spheres z-fought before)
+        // a JUNCTION BALL is node 0's representation when it covers it
+        // (v18.13, user spec — the two spheres z-fought before; every
+        // junction of the run since v19.20, D249)
         boolean entryBall = app.editor != null
-            && app.editor.activeSection() == 0
-            && !app.editor.followsPrev(app.editor.activePiece())
-            && !povActive;
+            && junctionBallCoversNode0(app.editor.activePiece());
         StringBuilder sb = new StringBuilder();
         sb.append(lane).append('|').append(selIdx).append('|').append(sel)
           .append('|').append(laneCol)
@@ -641,9 +824,15 @@ class Viewport3D {
                 ? sm.pos().sub(sm.U().scale(app.heartOffset))
                 : sm.pos();
             boolean isSel = i == selIdx || sel.contains(i);
-            // selection reads from any distance: white AND bigger
-            Sphere ball = new Sphere(isSel ? 0.32 : 0.22, 12);
-            ball.setMaterial(new PhongMaterial(isSel ? Color.WHITE : laneCol));
+            // selection: SLIGHTLY bigger + the lane color lifted
+            // toward white (v19.19, D248 — the big white sphere read
+            // as a second entry ball; interpolate 0.4 sits a notch
+            // under the rigs' 0.5 hover glow so a hovered rig and a
+            // selected node never look alike)
+            Sphere ball = new Sphere(isSel ? MARKER_R_SEL : MARKER_R, 12);
+            Color mc = isSel ? laneCol.interpolate(Color.WHITE, MARKER_SEL_MIX)
+                             : laneCol;
+            ball.setMaterial(new PhongMaterial(mc));
             ball.setTranslateX(p.x());
             ball.setTranslateY(-p.y());   // Y-flip discipline
             ball.setTranslateZ(p.z());
@@ -1131,6 +1320,9 @@ class Viewport3D {
             }
             if (heartMesh != null) heartMesh.setVisible(false);
             if (combGroup != null) combGroup.setVisible(false);
+            if (boundaryGroup != null) boundaryGroup.setVisible(false);
+            ctlDiskGroup.setVisible(false);   // disks hide in POV (D248)
+            clearDiskHover();
             combLabel.setVisible(false);   // combs hidden in POV (v16.14)
             sub.setCamera(povCam);
             povTimer.start();
@@ -1144,6 +1336,8 @@ class Viewport3D {
             sub.setCursor(Cursor.DEFAULT);
             if (heartMesh != null) heartMesh.setVisible(true);
             if (combGroup != null) combGroup.setVisible(true);
+            if (boundaryGroup != null) boundaryGroup.setVisible(true);
+            ctlDiskGroup.setVisible(true);
             sub.setCamera(orbitCam);
             app.editor.refresh();
             toggleFly();
@@ -1153,6 +1347,8 @@ class Viewport3D {
             moveKeys.clear();
             if (heartMesh != null) heartMesh.setVisible(true);
             if (combGroup != null) combGroup.setVisible(true);
+            if (boundaryGroup != null) boundaryGroup.setVisible(true);
+            ctlDiskGroup.setVisible(true);
             sub.setCamera(orbitCam);
             app.editor.refresh();   // hide the POV marker line
         }
@@ -1339,10 +1535,21 @@ class Viewport3D {
             heartMesh = null;
             combGroup = null;
             List<javafx.scene.Node> rest = new ArrayList<>();
+            List<javafx.scene.Node> restUnder = new ArrayList<>();
             rest.add(markerGroup);
-            rest.addAll(buildOtherCoasters());
+            rest.add(ctlDiskGroup);   // disks (D248, item S1)
+            boundaryGroup = null;
+            for (javafx.scene.Node o : buildOtherCoasters()) {
+                addSplit(rest, restUnder, o);   // ground split (D249)
+            }
             trackGroup.getChildren().setAll(rest);
+            trackUnder.getChildren().setAll(restUnder);
+            ghostGroup.getChildren().clear();
+            ghostUnder.getChildren().clear();
             markerGroup.getChildren().clear();
+            ctlDiskGroup.getChildren().clear();
+            ctlDisks.clear();
+            ctlDiskSig = "";
             return;
         }
         computeStallRanges(samples);      // v18.0, D163: unreachable track
@@ -1353,6 +1560,15 @@ class Viewport3D {
         // clean bridge/attach seam abuts flush and reads as one track)
         // and inactive pieces render DESATURATED so the edited one pops
         List<javafx.scene.Node> parts = new ArrayList<>();
+        // the stalled GHOST meshes render in ghostGroup — after the
+        // floor, depth-disabled (v19.19, D248; see the constructor)
+        List<javafx.scene.Node> ghostParts = new ArrayList<>();
+        // the UNDERGROUND halves (v19.20, D249 — addSplit cuts every
+        // track-layer mesh at y = 0; a mesh with nothing underground
+        // lands in `parts` untouched, so above-ground files build
+        // bitwise the D246 scene graph and these two stay empty)
+        List<javafx.scene.Node> underParts = new ArrayList<>();
+        List<javafx.scene.Node> ghostUnderParts = new ArrayList<>();
         List<TrackCompiler.Span> spans = app.sectionSpans;
         // the ACTIVE run renders full-color (v13.4: bridged pieces are
         // one track); detached pieces stay desaturated
@@ -1364,12 +1580,17 @@ class Viewport3D {
         Group heart = app.settings.showHeartline() ? new Group() : null;
         Group combs = app.settings.combMode() != AppSettings.COMB_NONE
             ? new Group() : null;
+        // SECTION-BOUNDARY DISKS (D248, item S1): one batched mesh per
+        // piece, in a fresh mouse-transparent group (the comb rule)
+        Group bounds = new Group();
+        bounds.setMouseTransparent(true);
         for (int p = 0; p < app.coaster.pieces.size(); p++) {
             int nSec = app.coaster.pieces.get(p).sections.size();
             if (nSec == 0 || base + nSec > spans.size()) {
                 base += nSec;
                 continue;
             }
+            int b0 = base;   // the piece's first FLAT span index
             int i0 = spans.get(base).i0();
             int i1 = Math.min(spans.get(base + nSec - 1).i1(), samples.size() - 1);
             base += nSec;
@@ -1388,37 +1609,59 @@ class Viewport3D {
             // the run's end (the piece splits at the stall sample)
             int stall = stallIdxIn(i0, i1);
             if (stall < 0 || stall >= i1) {          // fully alive
-                parts.add(buildRailMesh(sub, i0, -app.railGauge / 2, act, false));
-                parts.add(buildRailMesh(sub, i0, app.railGauge / 2, act, false));
-                TiePiece tp = new TiePiece(sub, i0, act, false, new Group());
+                addSplit(parts, underParts,
+                    buildRailMesh(sub, i0, -app.railGauge / 2, act, false));
+                addSplit(parts, underParts,
+                    buildRailMesh(sub, i0, app.railGauge / 2, act, false));
+                TiePiece tp = new TiePiece(sub, i0, act, false,
+                    new Group(), new Group());
                 tiePieces.add(tp);
                 parts.add(tp.group());
+                underParts.add(tp.under());
             } else if (stall <= i0) {                // fully unreachable
-                parts.add(buildRailMesh(sub, i0, -app.railGauge / 2, act, true));
-                parts.add(buildRailMesh(sub, i0, app.railGauge / 2, act, true));
-                TiePiece tp = new TiePiece(sub, i0, act, true, new Group());
+                addSplit(ghostParts, ghostUnderParts,
+                    buildRailMesh(sub, i0, -app.railGauge / 2, act, true));
+                addSplit(ghostParts, ghostUnderParts,
+                    buildRailMesh(sub, i0, app.railGauge / 2, act, true));
+                TiePiece tp = new TiePiece(sub, i0, act, true,
+                    new Group(), new Group());
                 tiePieces.add(tp);
-                parts.add(tp.group());
+                ghostParts.add(tp.group());
+                ghostUnderParts.add(tp.under());
             } else {                                 // split at the stall
                 List<FVDIntegrator.Sample> alive =
                     samples.subList(i0, stall + 1);
                 List<FVDIntegrator.Sample> dead =
                     samples.subList(stall, i1 + 1);
-                parts.add(buildRailMesh(alive, i0, -app.railGauge / 2, act, false));
-                parts.add(buildRailMesh(alive, i0, app.railGauge / 2, act, false));
-                parts.add(buildRailMesh(dead, stall, -app.railGauge / 2, act, true));
-                parts.add(buildRailMesh(dead, stall, app.railGauge / 2, act, true));
-                TiePiece tpa = new TiePiece(alive, i0, act, false, new Group());
-                TiePiece tpd = new TiePiece(dead, stall, act, true, new Group());
+                addSplit(parts, underParts,
+                    buildRailMesh(alive, i0, -app.railGauge / 2, act, false));
+                addSplit(parts, underParts,
+                    buildRailMesh(alive, i0, app.railGauge / 2, act, false));
+                addSplit(ghostParts, ghostUnderParts,
+                    buildRailMesh(dead, stall, -app.railGauge / 2, act, true));
+                addSplit(ghostParts, ghostUnderParts,
+                    buildRailMesh(dead, stall, app.railGauge / 2, act, true));
+                TiePiece tpa = new TiePiece(alive, i0, act, false,
+                    new Group(), new Group());
+                TiePiece tpd = new TiePiece(dead, stall, act, true,
+                    new Group(), new Group());
                 tiePieces.add(tpa);
                 tiePieces.add(tpd);
                 parts.add(tpa.group());
-                parts.add(tpd.group());
+                underParts.add(tpa.under());
+                ghostParts.add(tpd.group());
+                ghostUnderParts.add(tpd.under());
             }
             // SPEED-CONTROL PLATES (v18.0, D160): a flat plate down
             // the tie centers over every controlled stretch, colored
             // by the control type (green = speed, blue = accel)
-            parts.addAll(buildPlateMeshes(sub));
+            for (MeshView pm : buildPlateMeshes(sub)) {
+                addSplit(parts, underParts, pm);
+            }
+            // the piece's boundary disks (the plain interior section
+            // boundaries only since D249 — ViewDisks.boundarySamples)
+            MeshView bd = buildBoundaryDisks(samples, spans, b0, nSec);
+            if (bd != null) bounds.getChildren().add(bd);
             // heartline strand PER PIECE (v16.13): detached pieces
             // never read as one strand however close they park
             if (heart != null) heart.getChildren().add(buildHeartlineMesh(sub));
@@ -1455,19 +1698,33 @@ class Viewport3D {
         heartMesh = heart;
         if (heartMesh != null) {
             heartMesh.setVisible(!povActive);   // the camera rides ON it
-            parts.add(heartMesh);
+            addSplit(parts, underParts, heartMesh);
         }
         combGroup = combs;
         if (combGroup != null) {
             combGroup.setVisible(!povActive);   // teeth block the view
-            parts.add(combGroup);
+            addSplit(parts, underParts, combGroup);
         }
         parts.add(markerGroup);
+        // the disks (D248, item S1): boundary disks rebuilt here per
+        // piece, the speed-control disks re-derived by the marker
+        // refresh below (their sig is forced like the markers')
+        boundaryGroup = bounds;
+        boundaryGroup.setVisible(!povActive);
+        parts.add(boundaryGroup);
+        ctlDiskGroup.setVisible(!povActive);
+        parts.add(ctlDiskGroup);
         // the OTHER coasters of the document (v19.2, D230): each in its
         // own SOLID rail color, never desaturated, never picked
-        parts.addAll(buildOtherCoasters());
+        for (javafx.scene.Node o : buildOtherCoasters()) {
+            addSplit(parts, underParts, o);
+        }
         trackGroup.getChildren().setAll(parts);
+        trackUnder.getChildren().setAll(underParts);
+        ghostGroup.getChildren().setAll(ghostParts);
+        ghostUnder.getChildren().setAll(ghostUnderParts);
         markerSig = null;                          // geometry moved: force
+        ctlDiskSig = null;
         if (app.editor != null) app.editor.refreshMarkers();
 
         if (!worldCentered) {
@@ -1479,10 +1736,11 @@ class Viewport3D {
                 new Translate(-mid.pos().x(), 0, -mid.pos().z()));
             gridCamX0 = mid.pos().x();   // scene coords + this = world coords
             gridCamZ0 = mid.pos().z();
-            // (the ADAPTIVE grid + main axes are constructor-built at
-            // world indices 0/1 since v19.13, D242 — empty coasters
-            // and fresh panes get their floor too; this block keeps
-            // only the one-shot centering capture)
+            // (the ADAPTIVE grid + main axes are constructor-built
+            // since v19.13, D242 — empty coasters and fresh panes get
+            // their floor too; they sit right behind the underground
+            // track halves in `world` since D249, setFloorOrder; this
+            // block keeps only the one-shot centering capture)
             worldCentered = true;
         }
 
@@ -1703,8 +1961,128 @@ class Viewport3D {
      *  activation changes without recompiling the track. ghost = the
      *  stalled-unreachable stretch (v18.0, D163 — renders see-through). */
     private record TiePiece(List<FVDIntegrator.Sample> samples, int base,
-                            boolean active, boolean ghost, Group group) { }
+                            boolean active, boolean ghost, Group group,
+                            // the UNDERGROUND half's group (v19.20,
+                            // D249 — lives in trackUnder/ghostUnder;
+                            // refreshTieHighlight refills both)
+                            Group under) { }
     private final List<TiePiece> tiePieces = new ArrayList<>();
+
+    // ---------- GROUND SPLIT (v19.20, D249) ----------
+
+    /** Route a finished track-layer node: its underground half (the
+     *  faces whose centroid lies below −FloorDepth.GROUND_DEADBAND,
+     *  FloorDepth.underMask — straddlers by centroid, ties toward
+     *  ABOVE) goes to `under`, the node itself — with those faces
+     *  REMOVED — to `above`. A node with nothing underground is added
+     *  to `above` UNTOUCHED (bitwise the D246 object graph for every
+     *  above-ground file). Groups split recursively into a twin Group
+     *  whose visibility BINDS to the source's (the POV toggles of
+     *  heartMesh/combGroup reach both halves) and whose mouse
+     *  transparency is copied. Node markers, boundary/ctl disks and
+     *  the reveal balls are NOT routed here (they are pick anchors
+     *  whose groups are index-walked); they stay after the floor —
+     *  the D242 corner for those elements only, accepted (D249). */
+    static void addSplit(List<javafx.scene.Node> above,
+                         List<javafx.scene.Node> under,
+                         javafx.scene.Node node) {
+        javafx.scene.Node u = underHalf(node);
+        above.add(node);
+        if (u != null) under.add(u);
+    }
+
+    /** The underground half of a node, or null when nothing of it
+     *  lies below the deadband — the node is then untouched. A
+     *  MeshView's half is a new MeshView over a new TriangleMesh
+     *  (points/texCoords/normals copied, the under faces moved,
+     *  material/cull/draw mode/mouse flags/userData shared; the
+     *  source keeps the rest). NOTE: a TriangleMesh shared by several
+     *  MeshViews (none today — every builder news its own) would be
+     *  cut once per view. */
+    static javafx.scene.Node underHalf(javafx.scene.Node node) {
+        if (node instanceof MeshView mv
+                && mv.getMesh() instanceof TriangleMesh tm
+                // the split reads 6 ints per face (POINT_TEXCOORD —
+                // every builder's format); any other layout is left
+                // whole rather than mis-indexed (D249 review belt)
+                && tm.getVertexFormat()
+                    == javafx.scene.shape.VertexFormat.POINT_TEXCOORD) {
+            float[] pts = tm.getPoints().toArray(null);
+            int[] faces = tm.getFaces().toArray(null);
+            boolean[] mask = FloorDepth.underMask(pts, faces,
+                FloorDepth.GROUND_DEADBAND);
+            if (mask == null) return null;
+            int n = faces.length / 6;
+            int[] sg = tm.getFaceSmoothingGroups().toArray(null);
+            boolean withSg = sg.length == n;
+            int[] fa = new int[faces.length], fu = new int[faces.length];
+            int[] sa = withSg ? new int[n] : null;
+            int[] su = withSg ? new int[n] : null;
+            int na = 0, nu = 0;
+            for (int f = 0; f < n; f++) {
+                if (mask[f]) {
+                    System.arraycopy(faces, f * 6, fu, nu * 6, 6);
+                    if (withSg) su[nu] = sg[f];
+                    nu++;
+                } else {
+                    System.arraycopy(faces, f * 6, fa, na * 6, 6);
+                    if (withSg) sa[na] = sg[f];
+                    na++;
+                }
+            }
+            TriangleMesh um = new TriangleMesh(tm.getVertexFormat());
+            um.getPoints().setAll(pts);
+            um.getTexCoords().setAll(tm.getTexCoords().toArray(null));
+            if (tm.getNormals().size() > 0) {
+                um.getNormals().setAll(tm.getNormals().toArray(null));
+            }
+            um.getFaces().setAll(java.util.Arrays.copyOf(fu, nu * 6));
+            tm.getFaces().setAll(java.util.Arrays.copyOf(fa, na * 6));
+            if (withSg) {
+                um.getFaceSmoothingGroups().setAll(
+                    java.util.Arrays.copyOf(su, nu));
+                tm.getFaceSmoothingGroups().setAll(
+                    java.util.Arrays.copyOf(sa, na));
+            }
+            MeshView uv = new MeshView(um);
+            uv.setMaterial(mv.getMaterial());
+            uv.setCullFace(mv.getCullFace());
+            uv.setDrawMode(mv.getDrawMode());
+            uv.setMouseTransparent(mv.isMouseTransparent());
+            uv.setUserData(mv.getUserData());
+            uv.visibleProperty().bind(mv.visibleProperty());
+            return uv;
+        }
+        if (node instanceof Group g) {
+            Group ug = null;
+            for (javafx.scene.Node c : g.getChildren()) {
+                javafx.scene.Node u = underHalf(c);
+                if (u == null) continue;
+                if (ug == null) ug = new Group();
+                ug.getChildren().add(u);
+            }
+            if (ug == null) return null;
+            ug.setMouseTransparent(g.isMouseTransparent());
+            ug.visibleProperty().bind(g.visibleProperty());
+            return ug;
+        }
+        return null;
+    }
+
+    /** The world's child order around the floor (D249): the track
+     *  block whose points lie on the FAR side of the ground from the
+     *  eye is drawn before the floor, the other after it; a
+     *  scene-graph reorder only, applied on sign flips. */
+    private void setFloorOrder(boolean eyeBelow) {
+        floorEyeBelow = eyeBelow;
+        if (eyeBelow) {
+            world.getChildren().setAll(trackGroup, povHolder, trackBallGroup,
+                ghostGroup, gridGroup, axisGroup, trackUnder, ghostUnder);
+        } else {
+            world.getChildren().setAll(trackUnder, ghostUnder, gridGroup,
+                axisGroup, trackGroup, povHolder, trackBallGroup, ghostGroup);
+        }
+    }
     private String tieSig;
 
     // ---------- STALL RANGES (v18.0, D163) ----------
@@ -1815,14 +2193,11 @@ class Viewport3D {
                 TrackCompiler.Span sp = spans.get(idx);
                 boolean nd = sec.domain() == Section.Domain.DISTANCE;
                 for (SpeedControl c : sec.speedControls()) {
-                    double a, b;
-                    if (nd) {
-                        a = sp.s0() + c.x0;
-                        b = sp.s0() + c.x0 + c.len;
-                    } else {
-                        a = arcAtTime(samples, sp, c.x0);
-                        b = arcAtTime(samples, sp, c.x0 + c.len);
-                    }
+                    // the native→arc map lives on ViewDisks since
+                    // D248 (item S1 — the disks share it, gated)
+                    double a = ViewDisks.arcAtNative(samples, sp, nd, c.x0);
+                    double b = ViewDisks.arcAtNative(samples, sp, nd,
+                        c.x0 + c.len);
                     if (b - a > 0.05) {
                         plateRanges.add(new double[]{ a, b, c.type });
                     }
@@ -1831,22 +2206,9 @@ class Viewport3D {
         }
     }
 
-    /** Global arc at section-local TIME lt (linear between samples). */
-    private static double arcAtTime(List<FVDIntegrator.Sample> samples,
-                                    TrackCompiler.Span sp, double lt) {
-        double t = sp.t0() + lt;
-        int lo = sp.i0(), hi = Math.min(sp.i1(), samples.size() - 1);
-        if (t <= samples.get(lo).t()) return samples.get(lo).s();
-        if (t >= samples.get(hi).t()) return samples.get(hi).s();
-        while (hi - lo > 1) {
-            int mid = (lo + hi) >>> 1;
-            if (samples.get(mid).t() <= t) lo = mid; else hi = mid;
-        }
-        double u = (t - samples.get(lo).t())
-            / Math.max(1e-12, samples.get(hi).t() - samples.get(lo).t());
-        return samples.get(lo).s()
-            + u * (samples.get(hi).s() - samples.get(lo).s());
-    }
+    // (arcAtTime — the TIME-domain native→arc lerp — moved to
+    // ViewDisks.arcAtNative in D248, item S1, bitwise: the plates and
+    // the speed-control disks share one gated mapping.)
 
     /** Flat plates down the middle of the ties over each controlled
      *  stretch inside this sublist (v18.0, D160): a thin ribbon at
@@ -1890,18 +2252,352 @@ class Viewport3D {
                 v += 2;
             }
             MeshView mv = new MeshView(mesh);
+            // the strip's own type colors (shared since D248, item S1)
             Color col = pr[2] == SpeedControl.ACCEL
-                ? Color.rgb(90, 160, 255) : Color.rgb(100, 220, 110);
-            PhongMaterial mat = new PhongMaterial(col);
-            WritableImage glow = new WritableImage(1, 1);
-            glow.getPixelWriter().setColor(0, 0,
-                col.deriveColor(0, 1, 0.55, 1));
-            mat.setSelfIlluminationMap(glow);   // readable in shadow
-            mv.setMaterial(mat);
+                ? GraphEditor.SP_ACCEL_COLOR : GraphEditor.SP_SPEED_COLOR;
+            mv.setMaterial(glowMaterial(col, 0.55));   // readable in shadow
             mv.setCullFace(CullFace.NONE);
             out.add(mv);
         }
         return out;
+    }
+
+    /** A PhongMaterial with a 1×1 self-illumination map at the color
+     *  dimmed to `glow` brightness — the plates' "readable in shadow"
+     *  pattern, shared by the disks (D248, item S1). */
+    private static PhongMaterial glowMaterial(Color col, double glow) {
+        PhongMaterial mat = new PhongMaterial(col);
+        WritableImage img = new WritableImage(1, 1);
+        img.getPixelWriter().setColor(0, 0, col.deriveColor(0, 1, glow, 1));
+        mat.setSelfIlluminationMap(img);
+        return mat;
+    }
+
+    // ---------------------------------------------------------------
+    // SPEED-CONTROL DISKS + SECTION-BOUNDARY DISKS (v19.19, D248,
+    // item S1 — see the field comments). Geometry: a solid disk =
+    // two triangle-fan caps + a rim strip about the heartline center
+    // in the plane ⊥ T (rim = U·cos θ + R·sin θ), the tie-box vertex
+    // discipline (Y-flipped points, CullFace.NONE). A control disk is
+    // a darker CORE plus a thin lighter outer RING ("slightly
+    // stylized"); the SELECTED control's two disks wear the full type
+    // color with the ring LIGHTENED by ViewDisks.CTL_SEL_RING_LIGHTEN
+    // (v19.20, D249, item S3 — user spec: slightly brighter, not the
+    // D248 white).
+    // ---------------------------------------------------------------
+
+    /** Shade of the type color for an unselected control's core. */
+    private static final double CTL_DISK_SHADE = 0.72;
+    /** Self-illumination brightness for the control disks. */
+    private static final double CTL_DISK_GLOW = 0.45;
+    /** Boundary disk color + its faint glow — DARKER than the
+     *  light-gray D248 rgb(190,194,202)/0.40 since v19.20 (D249, user
+     *  spec: darker and larger than the speed-control disks); named
+     *  for a one-line retune with ViewDisks.BOUNDARY_R/HT. */
+    private static final Color BOUNDARY_COLOR = Color.rgb(105, 110, 122);
+    private static final double BOUNDARY_GLOW = 0.30;
+
+    private static void addPt(TriangleMesh m, Vec3 p) {
+        m.getPoints().addAll((float) p.x(), (float) -p.y(), (float) p.z());
+    }
+
+    /** Append one solid disk (radius r, half-thickness ht along T,
+     *  n rim points) to `mesh`. */
+    private static void addDisk(TriangleMesh mesh, Vec3 c, Vec3 T,
+                                Vec3 U, Vec3 R, double r, double ht, int n) {
+        int base = mesh.getPoints().size() / 3;
+        Vec3 ca = c.add(T.scale(ht)), cb = c.sub(T.scale(ht));
+        addPt(mesh, ca);            // base     = cap-A center
+        addPt(mesh, cb);            // base + 1 = cap-B center
+        for (int i = 0; i < n; i++) {   // base + 2 + i     = rim A
+            double th = 2 * Math.PI * i / n;
+            Vec3 off = U.scale(r * Math.cos(th)).add(R.scale(r * Math.sin(th)));
+            addPt(mesh, ca.add(off));
+        }
+        for (int i = 0; i < n; i++) {   // base + 2 + n + i = rim B
+            double th = 2 * Math.PI * i / n;
+            Vec3 off = U.scale(r * Math.cos(th)).add(R.scale(r * Math.sin(th)));
+            addPt(mesh, cb.add(off));
+        }
+        for (int i = 0; i < n; i++) {
+            int ia = base + 2 + i, ia1 = base + 2 + (i + 1) % n;
+            int ib = base + 2 + n + i, ib1 = base + 2 + n + (i + 1) % n;
+            mesh.getFaces().addAll(base, 0, ia, 0, ia1, 0);        // cap A
+            mesh.getFaces().addAll(base + 1, 0, ib1, 0, ib, 0);    // cap B
+            mesh.getFaces().addAll(ia, 0, ib, 0, ia1, 0);          // rim
+            mesh.getFaces().addAll(ia1, 0, ib, 0, ib1, 0);
+        }
+    }
+
+    private static MeshView diskView(Vec3 c, Vec3 T, Vec3 U, Vec3 R,
+                                     double r, double ht, Color col,
+                                     double glow) {
+        TriangleMesh mesh = new TriangleMesh();
+        mesh.getTexCoords().addAll(0, 0);
+        addDisk(mesh, c, T, U, R, r, ht, ViewDisks.DISK_N);
+        MeshView mv = new MeshView(mesh);
+        mv.setMaterial(glowMaterial(col, glow));
+        mv.setCullFace(CullFace.NONE);
+        return mv;
+    }
+
+    /** The FLAT span index of (piece, section), or −1. */
+    private int flatSpanIndex(int piece, int sec) {
+        int flat = 0;
+        for (int p = 0; p < app.coaster.pieces.size(); p++) {
+            int n = app.coaster.pieces.get(p).sections.size();
+            if (p == piece) return sec >= 0 && sec < n ? flat + sec : -1;
+            flat += n;
+        }
+        return -1;
+    }
+
+    /** Frame at an exact GLOBAL arc inside a span (arcHit over the
+     *  span's own samples plus its seam sample — ViewDisks.spanLo —
+     *  so a continuation's x = 0 disk sits ON the seam). */
+    private static ArcHit spanHit(List<FVDIntegrator.Sample> samples,
+                                  TrackCompiler.Span sp, double arc) {
+        int lo = ViewDisks.spanLo(samples, sp);
+        int hi = Math.min(sp.i1(), samples.size() - 1);
+        return arcHit(samples.subList(lo, hi + 1), 0, arc);
+    }
+
+    /** Rebuild the speed-control disks when anything they show
+     *  changed (called on EVERY graph redraw via refreshTrackMarkers
+     *  — the signature keeps hover-rate redraws free): the document
+     *  generation, the sample list identity, POV, the strip's selected
+     *  control, the pending-piece flags and every control's
+     *  (type, x0, len). Nothing builds in POV. */
+    void refreshCtlDisks() {
+        List<FVDIntegrator.Sample> samples = app.lastSamples;
+        List<TrackCompiler.Span> spans = app.sectionSpans;
+        GraphEditor.CtlRef sel = app.editor != null
+            ? app.editor.spSelectedCtl() : null;
+        StringBuilder sb = new StringBuilder();
+        sb.append(app.docGen).append('|')
+          .append(System.identityHashCode(samples)).append('|')
+          .append(povActive).append('|').append(sel);
+        int flat = 0;
+        for (int p = 0; p < app.coaster.pieces.size(); p++) {
+            TrackPiece piece = app.coaster.pieces.get(p);
+            boolean pending = app.isPendingPiece(app.activeCoaster, p);
+            for (int k = 0; k < piece.sections.size(); k++) {
+                Section sec = piece.sections.get(k);
+                int idx = flat++;
+                if (!sec.speedControllable() || sec.speedControls().isEmpty()
+                        || pending) continue;
+                sb.append(';').append(p).append(':').append(k).append(':')
+                  .append(idx);
+                for (SpeedControl c : sec.speedControls()) {
+                    sb.append(',').append(c.type).append(':').append(c.x0)
+                      .append(':').append(c.len);
+                }
+            }
+        }
+        String sig = sb.toString();
+        if (sig.equals(ctlDiskSig)) return;
+        ctlDiskSig = sig;
+        ctlDiskGroup.getChildren().clear();
+        ctlDisks.clear();
+        if (povActive || samples == null || samples.size() < 2
+                || spans == null) return;
+        flat = 0;
+        for (int p = 0; p < app.coaster.pieces.size(); p++) {
+            TrackPiece piece = app.coaster.pieces.get(p);
+            boolean pending = app.isPendingPiece(app.activeCoaster, p);
+            for (int k = 0; k < piece.sections.size(); k++) {
+                Section sec = piece.sections.get(k);
+                int idx = flat++;
+                if (!sec.speedControllable() || sec.speedControls().isEmpty()
+                        || pending || idx >= spans.size()) continue;
+                TrackCompiler.Span sp = spans.get(idx);
+                if (sp.i0() >= samples.size()) continue;
+                boolean nd = sec.domain() == Section.Domain.DISTANCE;
+                List<SpeedControl> ctls = sec.speedControls();
+                for (int ci = 0; ci < ctls.size(); ci++) {
+                    SpeedControl c = ctls.get(ci);
+                    boolean isSel = sel != null && sel.piece() == p
+                        && sel.sec() == k && sel.ctl() == ci;
+                    Color base = c.type == SpeedControl.ACCEL
+                        ? GraphEditor.SP_ACCEL_COLOR : GraphEditor.SP_SPEED_COLOR;
+                    Color core = isSel ? base
+                        : base.deriveColor(0, 1, CTL_DISK_SHADE, 1);
+                    // selected ring = the type color lightened
+                    // (brightness only, saturation kept — D249)
+                    Color ring = isSel
+                        ? base.deriveColor(0, 1, ViewDisks.CTL_SEL_RING_LIGHTEN, 1)
+                        : base;
+                    // END disk first, then START — spFindDiamond's
+                    // pick order (the pick list IS this build order)
+                    for (int kind = 2; kind >= 1; kind--) {
+                        double x = kind == 1 ? c.x0 : c.x0 + c.len;
+                        ArcHit h = spanHit(samples, sp,
+                            ViewDisks.arcAtNative(samples, sp, nd, x));
+                        // HEARTLINE center (the D176 marker rule)
+                        ctlDiskGroup.getChildren().add(diskView(h.pos(),
+                            h.T(), h.U(), h.R(), ViewDisks.CTL_DISK_R,
+                            ViewDisks.CTL_DISK_HT, core, CTL_DISK_GLOW));
+                        ctlDiskGroup.getChildren().add(diskView(h.pos(),
+                            h.T(), h.U(), h.R(), ViewDisks.CTL_RING_R,
+                            ViewDisks.CTL_RING_HT, ring, CTL_DISK_GLOW));
+                        ctlDisks.add(new CtlDisk(p, k, ci, kind, h.pos(),
+                            ViewDisks.rimPoints(h.pos(), h.U(), h.R(),
+                                ViewDisks.CTL_RING_R, ViewDisks.RIM_N)));
+                    }
+                }
+            }
+        }
+    }
+
+    /** The disk under a screen point, or null — the WHOLE disk since
+     *  v19.20 (D249, item S3): the pick region is the projected ring's
+     *  bounding radius (ViewDisks.pickRadiusPx over the rim points,
+     *  behind-camera rim points skipped) with the 12 px PICK_PX floor
+     *  (a far disk stays a point pick); disks rank by their NORMALIZED
+     *  distance d²/pickR² (ViewDisks.pickScore), strict nearest in
+     *  build order (= the strip's pick order) on ties, so exactly
+     *  coincident abutting disks resolve to the earlier control's END
+     *  and a big near disk cannot steal a far one; a behind-camera
+     *  CENTER skips the disk. */
+    private CtlDisk pickCtlDisk(double sx, double sy) {
+        if (ctlDisks.isEmpty() || povActive || flyActive) return null;
+        double best = 1.0;   // normalized: inside the region < 1
+        CtlDisk hit = null;
+        for (CtlDisk d : ctlDisks) {
+            Point2D s = projectWorld(d.pos());
+            if (s == null) continue;
+            Vec3[] rim = d.rim();
+            double[] rx = new double[rim.length], ry = new double[rim.length];
+            for (int k = 0; k < rim.length; k++) {
+                Point2D q = projectWorld(rim[k]);
+                rx[k] = q == null ? Double.NaN : q.getX();
+                ry[k] = q == null ? Double.NaN : q.getY();
+            }
+            double pickR = ViewDisks.pickRadiusPx(s.getX(), s.getY(),
+                rx, ry, ViewDisks.PICK_PX);
+            double dx = s.getX() - sx, dy = s.getY() - sy;
+            double score = ViewDisks.pickScore(dx * dx + dy * dy, pickR);
+            if (score < best) {
+                best = score;
+                hit = d;
+            }
+        }
+        return hit;
+    }
+
+    /** The disk's section-native coordinate under a screen point: the
+     *  nearest point on the section's PROJECTED sample polyline (no
+     *  radius cap — the cursor may leave the track), read back as an
+     *  exact arc and converted through ViewDisks.nativeAtArc. NaN when
+     *  nothing projects (every sample behind the camera) — the
+     *  control then stays put. */
+    private double trackNativeAt(CtlDisk d, double sx, double sy) {
+        List<FVDIntegrator.Sample> samples = app.lastSamples;
+        List<TrackCompiler.Span> spans = app.sectionSpans;
+        int idx = flatSpanIndex(d.piece(), d.sec());
+        if (samples == null || spans == null || idx < 0
+                || idx >= spans.size()) return Double.NaN;
+        TrackCompiler.Span sp = spans.get(idx);
+        int lo = ViewDisks.spanLo(samples, sp);   // seam sample included
+        int hi = Math.min(sp.i1(), samples.size() - 1);
+        if (hi < lo) return Double.NaN;
+        // strided above 3000 samples, the END sample always the last
+        // vertex (ViewDisks.strideIndices — the wall stays reachable)
+        int[] vi = ViewDisks.strideIndices(lo, hi, hi - lo > 3000 ? 2 : 1);
+        int n = vi.length;
+        double[] xs = new double[n], ys = new double[n];
+        for (int k = 0; k < n; k++) {
+            Point2D s = projectWorld(samples.get(vi[k]).pos());
+            xs[k] = s == null ? Double.NaN : s.getX();
+            ys[k] = s == null ? Double.NaN : s.getY();
+        }
+        double[] near = ViewDisks.nearestOnPolyline(xs, ys, sx, sy);
+        if (near == null) return Double.NaN;
+        int k0 = (int) near[0];
+        int i = vi[k0];
+        int j = vi[Math.min(k0 + 1, n - 1)];
+        double arc = samples.get(i).s()
+            + near[1] * (samples.get(j).s() - samples.get(i).s());
+        Section sec = app.coaster.pieces.get(d.piece()).sections.get(d.sec());
+        return ViewDisks.nativeAtArc(samples, sp,
+            sec.domain() == Section.Domain.DISTANCE, arc);
+    }
+
+    /** Hover a disk: HAND cursor + the bottom-left readout
+     *  "t = 3.20 s" / "s = 12.5 m" (v19.20, D249, item S2 — the
+     *  strip's own position readout in DISPLAY units, the D248
+     *  "speed control start — " prefix dropped; the value read LIVE
+     *  off the model by index). Returns whether a disk took the
+     *  hover. */
+    private boolean diskHover(MouseEvent e) {
+        CtlDisk d = diskDrag != null ? diskDrag
+            : pickCtlDisk(e.getScreenX(), e.getScreenY());
+        if (d == null || !diskReadout(d)) {
+            clearDiskHover();
+            return false;
+        }
+        if (!diskHovering) {
+            diskHovering = true;
+            sub.setCursor(Cursor.HAND);
+        }
+        return true;
+    }
+
+    /** Write the disk's position readout into combLabel from the LIVE
+     *  model (GraphEditor.spPosReadout — display units through the
+     *  strip's axis mapping); false when the control is gone. Called
+     *  from the hover, from EVERY drag event (MOUSE_MOVED never fires
+     *  while a button is down — the D248 label froze at the press
+     *  value) and from the release (the last drag event can precede
+     *  the settle); setText only, so a live drag never toggles the
+     *  label's visibility per event (D249, item S2). */
+    private boolean diskReadout(CtlDisk d) {
+        List<TrackPiece> pcs = app.coaster.pieces;
+        if (d == null || app.editor == null || d.piece() >= pcs.size()
+                || d.sec() >= pcs.get(d.piece()).sections.size()) {
+            return false;
+        }
+        Section sec = pcs.get(d.piece()).sections.get(d.sec());
+        if (d.ctl() >= sec.speedControls().size()) return false;
+        SpeedControl c = sec.speedControls().get(d.ctl());
+        double x = d.kind() == 1 ? c.x0 : c.x0 + c.len;
+        combLabel.setText(app.editor.spPosReadout(d.piece(), d.sec(), x));
+        if (!combLabel.isVisible()) combLabel.setVisible(true);
+        return true;
+    }
+
+    /** Drop the disk hover's HAND cursor (only when it was ours). */
+    private void clearDiskHover() {
+        if (!diskHovering) return;
+        diskHovering = false;
+        if (!flyActive && !(povActive && povCaptured)) {
+            sub.setCursor(Cursor.DEFAULT);
+        }
+    }
+
+    /** One batched mesh of the piece's boundary disks (dark gray,
+     *  faint glow, heartline centers in each sample's own frame), or
+     *  null when the piece has none — one per PLAIN section boundary
+     *  inside the piece (ViewDisks.boundarySamples, D249: exactly
+     *  where the graph draws a single seam line; never the piece's
+     *  entry/exit). */
+    private MeshView buildBoundaryDisks(List<FVDIntegrator.Sample> samples,
+                                        List<TrackCompiler.Span> spans,
+                                        int b0, int nSec) {
+        List<Integer> idxs = ViewDisks.boundarySamples(samples, spans, b0, nSec);
+        if (idxs.isEmpty()) return null;
+        TriangleMesh mesh = new TriangleMesh();
+        mesh.getTexCoords().addAll(0, 0);
+        for (int i : idxs) {
+            FVDIntegrator.Sample sm = samples.get(i);
+            addDisk(mesh, sm.pos(), sm.T(), sm.U(), sm.R(),
+                ViewDisks.BOUNDARY_R, ViewDisks.BOUNDARY_HT, ViewDisks.DISK_N);
+        }
+        MeshView mv = new MeshView(mesh);
+        mv.setMaterial(glowMaterial(BOUNDARY_COLOR, BOUNDARY_GLOW));
+        mv.setCullFace(CullFace.NONE);
+        mv.setMouseTransparent(true);
+        return mv;
     }
 
     /** Frame interpolated at an EXACT arc position between bracketing
@@ -1982,9 +2678,14 @@ class Viewport3D {
         if (!force && sig.equals(tieSig)) return;
         tieSig = sig;
         for (TiePiece tp : tiePieces) {
-            tp.group().getChildren().setAll(
-                buildTieMeshes(tp.samples(), tp.active(), tp.base(), hi,
-                    tp.ghost()));
+            List<javafx.scene.Node> above = new ArrayList<>();
+            List<javafx.scene.Node> under = new ArrayList<>();
+            for (MeshView mv : buildTieMeshes(tp.samples(), tp.active(),
+                    tp.base(), hi, tp.ghost())) {
+                addSplit(above, under, mv);   // ground split (D249)
+            }
+            tp.group().getChildren().setAll(above);
+            tp.under().getChildren().setAll(under);
         }
     }
 
@@ -2298,11 +2999,19 @@ class Viewport3D {
         sub.widthProperty().bind(pane.widthProperty());
         sub.heightProperty().bind(pane.heightProperty());
         // the gizmo overlay renders right above the main SubScene
-        // (v18.17, D188); empty regions pass mouse events through
+        // (v18.17, D188); it is mouse-transparent — the pane FILTER
+        // below picks rig parts in screen space (v19.19, D248)
         gizmoSub.widthProperty().bind(pane.widthProperty());
         gizmoSub.heightProperty().bind(pane.heightProperty());
         pane.getChildren().add(gizmoSub);
         pane.setMinSize(0, 0);
+        // SCREEN-SPACE GIZMO PICKER (D248): a capturing filter on the
+        // pane — it runs before every child's handlers, consumes ONLY
+        // primary presses that land in a rig part's pick band (and
+        // the drag/release of that gesture), so click-off hide,
+        // marker clicks, track activation and the 2D overlay
+        // controls all keep their events
+        pane.addEventFilter(MouseEvent.ANY, this::gizmoMouseFilter);
         // the compass STAYS PUT (v18.11, user spec — the v18.8 dodge
         // is gone): bottom-left readouts simply draw OVER it (added
         // after = higher in the StackPane z-order)
@@ -3030,14 +3739,17 @@ class Viewport3D {
         // ring — coarse inner rings banded into visible squares.
         // Extent 384q since D245 (the reach tripled again); rings
         // whose inner edge sits past the far clip are never built.
-        { 0, 1, 1.35, 1.8, 2.4, 3.2, 4.2, 5.6, 7.5, 10,
-          13.5, 18, 24, 32, 44, 64, 88, 128, 180, 256, 384 };
+        // The ladder LIVES on FloorDepth since v19.19 (D248) so the
+        // gate sweeps the real ring bounds.
+        FloorDepth.RING_EDGE;
     private static final int GRID_RINGS = GRID_EDGE.length - 1;
     // THREE decades, coarsest capped at 100 m (v19.14, D243 — user
     // spec: "only have 1 m, 10 m and 100 m grids")
     private static final int GRID_DECADES = 3;
     private static final double GRID_Q_MAX = 100;
     private final Group[] gridDecades = new Group[GRID_DECADES];
+    // ONE MeshView per ring again since v19.20 (D249 — the D248 x/z
+    // two-mesh split existed only for the retired depth test)
     private final MeshView[][] gridRings =
         new MeshView[GRID_DECADES][GRID_RINGS];
     private Group gridSheetGroup;
@@ -3048,9 +3760,12 @@ class Viewport3D {
     // (0.70,0.75,0.85) washed out against the lit blue sheet
     private static final Color GRID_LINE = Color.color(0.93, 0.95, 1.0);
 
+    // gridSmooth / gridAlpha / gridHw + the per-ring strength LIVE ON
+    // FloorDepth since v19.19 (D248 — moved verbatim, bitwise; the
+    // gate evaluates the real law); these wrappers keep the call
+    // sites readable
     private static double gridSmooth(double t) {
-        t = FvdDesigner.clamp(t, 0, 1);
-        return t * t * (3 - 2 * t);
+        return FloorDepth.smooth(t);
     }
 
     /** The one strength law: a line family whose cells cover pxEff
@@ -3073,24 +3788,24 @@ class Viewport3D {
         // (a flat ×3 threshold drop let the FINEST decade survive
         // as a mid-range speckle carpet, and near the ground the
         // deep tail flickered whole lines — both probed visually)
-        double start = 0.09 + 0.71 * f;
-        return (0.55 * gridSmooth((px - start) / (5 * start))
-              + 0.30 * gridSmooth(px / 60))
-             * (1 - gridSmooth((px - 150) / 350));
+        return FloorDepth.gridAlpha(px, f);
     }
 
     /** Line HALF-width per decade spacing (q^0.6 since D243; HALVED
      *  in D244, user spec): 1 m: 1.5 cm; 10 m: 6 cm; 100 m: 24 cm. */
     private static double gridHw(double q) {
-        return 0.015 * Math.pow(q, 0.6);
+        return FloorDepth.gridHw(q);
     }
 
     /** Per-frame driver (the axes timer): eye + zoom → base decade,
-     *  per-decade anchors, per-ring alphas. */
+     *  per-decade anchors, per-ring alphas — and, since v19.20
+     *  (D249), the eye-side of the ground that orders the two track
+     *  blocks around the floor. */
     private void updateFloorGrid() {
         if (gridGroup == null || sub == null) return;
         double subH = Math.max(1, sub.getHeight());
         double upp, dRef, ex, ez;
+        double eyeY = 0;                 // SIGNED eye height (world)
         boolean persp = !orthoView;
         if (orthoView) {
             upp = orthoUpp();
@@ -3105,7 +3820,8 @@ class Viewport3D {
                 sub.getCamera().getLocalToSceneTransform();
             ex = tr.getTx() + gridCamX0;
             ez = tr.getTz() + gridCamZ0;
-            dRef = Math.max(2, Math.abs(-tr.getTy()));
+            eyeY = -tr.getTy();
+            dRef = Math.max(2, Math.abs(eyeY));
             upp = 2 * dRef
                 * Math.tan(Math.toRadians(app.settings.flyFov() / 2))
                 / subH;
@@ -3141,47 +3857,36 @@ class Viewport3D {
             gridDecades[d].setTranslateZ(Math.round(ez / q) * q);
             for (int k = 0; k < GRID_RINGS; k++) {
                 if (gridRings[d][k] == null) continue;   // past far clip
-                double r = q * (GRID_EDGE[k] + GRID_EDGE[k + 1]) / 2;
                 double a;
                 if (persp) {
                     // projected cell size × grazing: q/upp(dist) ·
-                    // dRef/dist = q·subH·dRef/(2·dist²·tan)
-                    double d2 = dRef * dRef + r * r;
-                    double dist = Math.sqrt(d2);
-                    double pxCell = q * subH * dRef / (2 * d2 * tanH);
-                    // WIDTH-COVERAGE attenuation (D242, RELAXED in
-                    // D243 — "make the grid go out way further; a
+                    // dRef/dist = q·subH·dRef/(2·dist²·tan), then
+                    // the WIDTH-COVERAGE attenuation (D242, RELAXED
+                    // in D243 — "make the grid go out way further; a
                     // little horizon artifact is OK"): a quad much
                     // thinner than a pixel rasterizes as dash
                     // chains, so each decade fades where its own
                     // line width goes sub-pixel (sqrt-grazing,
-                    // dead below ~0.2 px, full by ~0.7)
-                    double wPx = 2 * gridHw(q)
-                        * subH / (2 * dist * tanH)
-                        * Math.sqrt(dRef / dist);
+                    // dead below ~0.2 px, full by ~0.7); the
                     // DENSITY gate (D243): a decade whose spacing
                     // dwarfs the eye height draws huge close-up
                     // stripes — the 100 m grid now appears only
-                    // once the camera is well away
-                    double dens = gridSmooth(3 * dRef / q - 0.3);
-                    // GRAZING-AWARE thresholds (D245): the width
-                    // floor slides 0.04 px (steep, = D244) down to
-                    // 0.008 px edge-on — the horizon-ward reach
-                    // roughly triples while steep views keep their
-                    // clean speckle-free tuning. HEIGHT-GATED since
-                    // D246 (his flicker report): near the ground
-                    // the deep-sub-pixel tail rasterizes as whole
-                    // lines popping in/out of the MSAA lattice
+                    // once the camera is well away; GRAZING-AWARE
+                    // thresholds (D245): the width floor slides
+                    // 0.04 px (steep, = D244) down to 0.008 px
+                    // edge-on — the horizon-ward reach roughly
+                    // triples while steep views keep their clean
+                    // speckle-free tuning. HEIGHT-GATED since D246
+                    // (his flicker report): near the ground the
+                    // deep-sub-pixel tail rasterizes as whole lines
+                    // popping in/out of the MSAA lattice
                     // (stationary = entire lines missing), so the
                     // long reach only unlocks as the eye rises —
                     // smooth in height, seamless expand/contract
-                    // (his own suggested trade).
-                    double f = gridSmooth(dRef / dist / 0.45);
-                    double hf = gridSmooth(dRef / 70);
-                    double c = 1 - hf * (1 - f);
-                    double thr = 0.008 + 0.032 * c;
-                    a = gridAlpha(pxCell, c)
-                        * gridSmooth((wPx - thr) / (3 * thr)) * dens;
+                    // (his own suggested trade). The arithmetic
+                    // lives on FloorDepth.ringStrength since D248
+                    // (verbatim — bitwise).
+                    a = FloorDepth.ringStrength(q, k, dRef, subH, tanH);
                 } else {
                     // ORTHO lens (D242): the 2D canvas overlay IS
                     // the grid there — the 3D line field is uniform
@@ -3218,7 +3923,8 @@ class Viewport3D {
             // the sheet FOLLOWS THE EYE CONTINUOUSLY (D242): it has
             // no lines, so nothing needs world alignment — and its
             // fade rings are static relative to its center, so the
-            // whole far-field vanishes smoothly with zero churn.
+            // whole far-field vanishes smoothly with zero churn
+            // (harmless again since D249: nothing depth-tests it).
             // Hidden in SIDE ortho (edge-on it's a shimmering 1 px
             // line; the groundLine overlay owns that view).
             gridSheetGroup.setVisible(!orthoView || orthoTop);
@@ -3227,6 +3933,10 @@ class Viewport3D {
         }
         // the D232 main axes ride the same eye anchor now
         updateGroundAxesLOD(ex, ez);
+        // GROUND-SPLIT order (D249): the ortho lenses count as an eye
+        // above ground (the top lens looks down, side hides the sheet)
+        boolean below = persp && FloorDepth.eyeBelowGround(eyeY);
+        if (below != floorEyeBelow) setFloorOrder(below);
     }
 
     /** Rebuild the four decade meshes for base level n (decade
@@ -3270,7 +3980,9 @@ class Viewport3D {
                 }
                 // flat y = 0 for every decade (D242): the grid is
                 // DEPTH-DISABLED — blending is pure submission
-                // order, no coplanar z-fighting exists to dodge.
+                // order, no coplanar z-fighting exists to dodge
+                // (D248's depth-tested floor and its lifts are
+                // retired, D249 — see FloorDepth).
                 // skipTenth = FALSE everywhere (review find D1: the
                 // skip slots live in MESH coordinates, so they only
                 // land on the coarser decade's lines under 10q
@@ -3297,8 +4009,10 @@ class Viewport3D {
      *  10 m like the grid; rebuilt only when the anchor moves. */
     private void updateGroundAxesLOD(double worldX, double worldZ) {
         if (axisGroup == null) return;
-        double ax = Math.round(worldX / 30) * 30;
-        double az = Math.round(worldZ / 30) * 30;
+        double ax = Math.round(worldX / FloorDepth.AXIS_ANCHOR_Q)
+            * FloorDepth.AXIS_ANCHOR_Q;
+        double az = Math.round(worldZ / FloorDepth.AXIS_ANCHOR_Q)
+            * FloorDepth.AXIS_ANCHOR_Q;
         if (ax == axisAnchorX && az == axisAnchorZ
                 && !axisGroup.getChildren().isEmpty()) {
             return;
@@ -3313,9 +4027,9 @@ class Viewport3D {
     private double axisAnchorX = Double.NaN, axisAnchorZ = Double.NaN;
 
     // segment boundaries out from the camera anchor (m) — geometric
-    // past the near field, ±6.4 km total (D243)
-    private static final double[] AXIS_SEG = { 0, 30, 60, 90, 120, 180,
-        240, 360, 480, 720, 960, 1440, 1920, 2880, 3840, 5120, 6400 };
+    // past the near field, ±6.4 km total (D243); on FloorDepth since
+    // v19.19 (D248) so FloorGate sweeps the real axis pieces
+    private static final double[] AXIS_SEG = FloorDepth.AXIS_SEG;
 
     /** One main axis (D229/D232; REBUILT v19.14, D243 — user spec:
      *  the colored zero lines are the ONLY lines on the world axes
@@ -3326,7 +4040,10 @@ class Viewport3D {
      *  (≥ the 100 m decade's line width, so the white zero lines
      *  underneath never peek out, and ~1-2 px on screen far away
      *  instead of vanishing at the old fixed 0.09 m), its strength
-     *  fading smoothly to the far end. Premultiplied (D242). */
+     *  fading smoothly to the far end. Premultiplied (D242). Quads
+     *  at y = 0.005 — the D243-D246 5 mm lift over the depth-
+     *  disabled grid, back since v19.20 (D249: cosmetic under pure
+     *  submission order, kept for a bitwise-D246 axes render). */
     private javafx.scene.Node buildAxisMesh(boolean xAxis,
                                             double camX, double camZ) {
         Group g = new Group();
@@ -3374,7 +4091,8 @@ class Viewport3D {
     /** Lines of one weight clipped to the square ring [inner, outer). A line
      *  whose own coordinate lies inside the ring runs full length; a line
      *  closer to the centre contributes only its two flanks past `inner`.
-     *  skipTenth leaves out every 10th line so the major mesh can draw it. */
+     *  skipTenth leaves out every 10th line so the major mesh can draw it
+     *  (unused since D242 — the callers pass false). */
     private MeshView buildGridBand(double y, double inner, double outer, boolean includeEdge,
                                    double spacing, double halfWidth, Color color, boolean skipTenth) {
         TriangleMesh mesh = new TriangleMesh();
@@ -3481,17 +4199,496 @@ class Viewport3D {
     private PerspectiveCamera gizmoPCam;
     private ParallelCamera gizmoOCam;
 
-    /** The overlay eats mouse events only when it should (v18.18,
-     *  D189): during FLY and captured POV it goes fully transparent —
-     *  the warped hidden cursor crossing gizmo geometry used to hover
-     *  the overlay instead of `sub`, un-hiding the mouse and starving
-     *  the fly-look handler of move events (his "mouse reappears on
-     *  the gizmo, view a bit shaky"). Empty overlay = transparent too
-     *  (the D188 pass-through belt-and-suspenders). */
+    /** The overlay NEVER takes mouse events since v19.19 (D248 — the
+     *  screen-space picker owns every rig part; D189's fly/POV rule
+     *  is subsumed: the warped hidden cursor always hovers `sub`, so
+     *  the "mouse reappears on the gizmo" symptom cannot return). Kept
+     *  for its callers; pins the invariant. */
     void syncGizmoSubMouse() {
         if (gizmoSub == null) return;
-        gizmoSub.setMouseTransparent(flyActive || povActive
-            || gizmoGroup.getChildren().isEmpty());
+        gizmoSub.setMouseTransparent(true);
+    }
+
+    // ---------------------------------------------------------------
+    // SCREEN-SPACE GIZMO PICKING (v19.19, D248 — user spec: bigger,
+    // predictable grab regions). The rigs' 3D geometry stays purely
+    // visual; every interactive part registers a GPart (its handlers
+    // + the analytic shape it was built from), and gizmoMouseFilter
+    // picks in SCREEN PIXELS on the pane: ONE pass, the NEAREST part
+    // by px among those inside their band (v19.20, D249 — user spec,
+    // superseding D248's balls-first two-pass): a ball measures from
+    // its projected SILHOUETTE EDGE, max(0, d − rPx) (Gestures.
+    // ballEdgeDist — a press on the visible ball is 0 px and still
+    // wins; an edge-on ring crossing the center wins only OUTSIDE the
+    // silhouette), band rPx·(1.5 − 1) + 6 px from the edge = the D248
+    // zone's outer reach; an arrow = segment distance ≤ 9 px; a ring =
+    // 48-point projected polyline distance ≤ 6 px; an exact tie goes
+    // to a ball (the arrow roots cross the center at 0 px), else to
+    // the first-registered part. The gesture then rides gPress in the
+    // filter, never the pressed node — hiding or even replacing the
+    // pressed 3D node mid-drag cannot lose the drag (the D124/D188
+    // capture lesson is moot). Hover glow is central too
+    // (setGizmoHover), on the same rule — what lights is what a press
+    // grabs.
+    // ---------------------------------------------------------------
+    /** One pickable part: kind 0 = ball (radius in WORLD m when rig ==
+     *  null — the fixed track ball — else in rig units), 1 = arrow
+     *  (dir = its live world direction, radius = its length in rig
+     *  units, twoSided = the mirrored half), 2 = ring (dir = the
+     *  rotation axis, radius = the torus major radius in rig units). */
+    private record GPart(int kind, Rig rig, javafx.scene.Node node,
+        PhongMaterial mat, Color idle, Color hot,
+        java.util.function.Supplier<Vec3> anchor,
+        java.util.function.Supplier<Vec3> dir,
+        double radius, boolean twoSided,
+        javafx.event.EventHandler<MouseEvent> onPress,
+        javafx.event.EventHandler<MouseEvent> onDrag,
+        javafx.event.EventHandler<MouseEvent> onRelease) { }
+    private final List<GPart> gizmoParts = new ArrayList<>();
+    private GPart gPress, gHover;   // the gesture's part / the lit part
+    /** Pick bands (px): arrow segment half-width, ring polyline
+     *  half-width, and the ball band measured from the SILHOUETTE
+     *  EDGE = projected radius × (PICK_BALL_MUL − 1) + PICK_BALL_PAD
+     *  (D249 — the same outer reach as D248's center-measured zone
+     *  radius × MUL + PAD; Gestures.ballEdgeBand). Visual half-widths
+     *  are ~2.5 px (shaft 0.05 units) and ~1.5 px (ring tube 0.06) at
+     *  a 500 px pane — the bands roughly triple them; adjacent rings
+     *  (radii 1.0/0.85/0.7) overlap bands and the nearest-by-px rule
+     *  resolves it. */
+    static final double PICK_ARROW_PX = 9, PICK_RING_PX = 6,
+        PICK_BALL_MUL = 1.5, PICK_BALL_PAD = 6;
+    /** Arrow length in rig units (shaft 1.0 + cone tip to 1.32). */
+    static final double ARROW_LEN = 1.32;
+    /** Ring polyline resolution — the torus's own nu (torus()). */
+    private static final int RING_PICK_N = 48;
+
+    /** Registration site for gizmoArrow's build data, read back by
+     *  wireAxisDrag (the arrow Group's userData). */
+    private record ArrowMeta(PhongMaterial mat, Color col,
+        java.util.function.Supplier<Vec3> dir, boolean twoSided) { }
+
+    /** True when a mouse event's target is the 3D content — `sub`,
+     *  the overlay, or any node under root3D — so the picker never
+     *  touches the 2D overlay controls (view label, tangent buttons,
+     *  the Gizmos button, the graph-collapse button). */
+    private boolean targetIs3D(javafx.event.EventTarget tg) {
+        if (tg == sub || tg == gizmoSub || tg == pane) return true;
+        if (!(tg instanceof javafx.scene.Node n)) return false;
+        javafx.scene.Node top = n;
+        while (top.getParent() != null) top = top.getParent();
+        return top == root3D;
+    }
+
+    /** The pane-level capturing filter: hover on MOVED, gesture on
+     *  PRESSED/DRAGGED/RELEASED. Fly and POV take nothing (fly: the
+     *  D189 rule — gizmos render but are not interactive; POV: the
+     *  sig is "off" anyway). */
+    private void gizmoMouseFilter(MouseEvent e) {
+        javafx.event.EventType<? extends MouseEvent> t = e.getEventType();
+        if (flyActive || povActive) {
+            if (gHover != null) setGizmoHover(null);
+            // a gesture that was LIVE when fly/POV began (a right-
+            // click or Space mid-drag — sub's handlers still see
+            // non-primary presses and bare keys) must still END on
+            // its release (D248 review fix: the early return left
+            // gPress + gizmoDragging set for good — every later press
+            // was ignored and the shell's modifier-key guard stayed
+            // armed); its remaining drag events are swallowed, the
+            // warped fly cursor is no pointer
+            if (gPress != null && t == MouseEvent.MOUSE_RELEASED) {
+                GPart p = gPress;
+                gPress = null;
+                p.onRelease().handle(e);
+                e.consume();
+            } else if (gPress != null && t == MouseEvent.MOUSE_DRAGGED) {
+                e.consume();
+            }
+            return;
+        }
+        if (t == MouseEvent.MOUSE_MOVED) {
+            setGizmoHover(gPress == null && targetIs3D(e.getTarget())
+                ? pickPart(e.getScreenX(), e.getScreenY()) : null);
+            return;
+        }
+        if (t == MouseEvent.MOUSE_EXITED) {
+            // the PANE itself was left (at the target the _TARGET
+            // variant arrives as plain MOUSE_EXITED; leaving `sub`
+            // for a 2D overlay child is a MOUSE_EXITED_TARGET on the
+            // child's behalf, and the next MOVED over it clears the
+            // glow anyway)
+            setGizmoHover(null);
+            return;
+        }
+        if (t == MouseEvent.MOUSE_PRESSED) {
+            if (e.getButton() != MouseButton.PRIMARY || gPress != null
+                    || !targetIs3D(e.getTarget())) return;
+            GPart hit = pickPart(e.getScreenX(), e.getScreenY());
+            if (hit == null) return;
+            // pull focus off toolbar editors like sub's own press
+            // handler does (v13.4) — this press never reaches it
+            sub.requestFocus();
+            // GIZMO SELECT DESELECTS THE GRAPH NODE (v19.19, D248,
+            // item S1, user rule): every white ball and every rig
+            // part press clears selIdx/selSet — view state, so it
+            // runs BEFORE the convert gate (the entry ball's D247
+            // node-0 select is gone: a ball click selects nothing).
+            // SAFE mid-press only because deselectFromViewport →
+            // redraw → refreshGizmo(false) never rebuilds the rigs:
+            // gizmoSigNow does not sign the node selection — if it
+            // ever does, this call replaces the pressed part under
+            // the gesture (the D188 hazard) and must move to the
+            // release
+            if (app.editor != null) app.editor.deselectFromViewport();
+            // a DENSITY PREVIEW owns the document (D247): the part
+            // handlers refuse silently; the picker posts the reason
+            // once per refused press (D235 — never a silent click)
+            if (app.convertBusy()) {
+                app.statsLabel.setText(FvdDesigner.CONVERT_BUSY_MSG);
+                e.consume();
+                return;
+            }
+            gPress = hit;
+            hit.onPress().handle(e);
+            e.consume();
+            return;
+        }
+        if (gPress == null) return;
+        if (t == MouseEvent.MOUSE_DRAGGED) {
+            gPress.onDrag().handle(e);
+            e.consume();
+        } else if (t == MouseEvent.MOUSE_RELEASED) {
+            GPart p = gPress;
+            gPress = null;
+            p.onRelease().handle(e);
+            e.consume();
+        }
+    }
+
+    /** Light one part (rings/arrows: color toward white 0.5; balls:
+     *  the warm rgb(255,240,170)), restoring the previous one. */
+    private void setGizmoHover(GPart h) {
+        if (h == gHover) return;
+        if (gHover != null) gHover.mat().setDiffuseColor(gHover.idle());
+        gHover = h;
+        if (h != null) h.mat().setDiffuseColor(h.hot());
+    }
+
+    /** Forget every registered part (a rebuild discards their nodes
+     *  and materials); `rigOnly` keeps the fixed track balls — the
+     *  drag-reveal's rig-only build. The lit part goes with them; the
+     *  PRESSED part is kept: the live gesture rides its closures. */
+    private void clearGizmoParts(boolean rigOnly) {
+        if (rigOnly) {
+            gizmoParts.removeIf(p -> p.rig() != null);
+            if (gHover != null && gHover.rig() != null) gHover = null;
+        } else {
+            gizmoParts.clear();
+            gHover = null;
+        }
+    }
+
+    /** World m per screen px at a world point: the ortho zoom's, or
+     *  the perspective lens at that point's view DEPTH (wireBall's
+     *  press formula). */
+    private double uppAt(Vec3 a) {
+        javafx.scene.Camera cam = sub.getCamera();
+        if (cam == orthoCam) return orthoUpp();
+        Point3D eye0 = cam.localToScene(0, 0, 0);
+        Point3D fwd = cam.localToScene(0, 0, 1).subtract(eye0).normalize();
+        Point3D as = world.localToScene(a.x(), -a.y(), a.z());
+        double depth = Math.max(1, as.subtract(
+            effEye(cam, eye0, fwd)).dotProduct(fwd));
+        return 2 * depth * Math.tan(Math.toRadians(camFov() / 2))
+            / Math.max(1, sub.getHeight());
+    }
+
+    /** The part under a screen point, or null: ONE pass over the
+     *  visible parts, the NEAREST by px among those inside their band
+     *  (v19.20, D249 — user spec; D248 picked balls first). A ball's
+     *  distance is to its projected silhouette EDGE (max(0, d − rPx):
+     *  a press on the visible ball is 0 px and wins; a ring crossing
+     *  the ball wins only outside the silhouette); arrows/rings keep
+     *  their line distances. An exact tie goes to a ball (the arrow
+     *  roots / an edge-on ring cross the center at 0 px), else to the
+     *  first-registered part. */
+    private GPart pickPart(double sx, double sy) {
+        GPart best = null;
+        double bd = Double.MAX_VALUE;
+        for (GPart p : gizmoParts) {
+            if (!p.node().isVisible()) continue;
+            double d, lim;
+            if (p.kind() == 0) {
+                Vec3 a = p.anchor().get();
+                Point2D s = projectWorld(a);
+                if (s == null) continue;
+                double rW = p.rig() == null ? p.radius()
+                                            : p.radius() * p.rig().scale;
+                double rPx = rW / uppAt(a);
+                d = Gestures.ballEdgeDist(
+                    Math.hypot(s.getX() - sx, s.getY() - sy), rPx);
+                lim = Gestures.ballEdgeBand(rPx, PICK_BALL_MUL, PICK_BALL_PAD);
+            } else {
+                d = p.kind() == 1 ? arrowDistPx(p, sx, sy)
+                                  : ringDistPx(p, sx, sy);
+                lim = p.kind() == 1 ? PICK_ARROW_PX : PICK_RING_PX;
+            }
+            // TIES go to a BALL (D249 review fix): every arrow's shaft
+            // and an edge-on ring's line pass through the rig center,
+            // so inside the silhouette the ball (0 px) ties them at
+            // 0 px too — a press on the visible ball must win, and
+            // the center ball registers LAST (addRigCenterBall after
+            // the arrows/rings); other ties keep the first-registered
+            if (d <= lim && (d < bd
+                    || (d == bd && p.kind() == 0 && best != null
+                        && best.kind() != 0))) {
+                bd = d;
+                best = p;
+            }
+        }
+        return best;
+    }
+
+    /** Point-to-segment distance in screen px. */
+    private static double segDistPx(Point2D a, Point2D b,
+                                    double sx, double sy) {
+        double vx = b.getX() - a.getX(), vy = b.getY() - a.getY();
+        double wx = sx - a.getX(), wy = sy - a.getY();
+        double vv = vx * vx + vy * vy;
+        double u = vv < 1e-12 ? 0
+            : FvdDesigner.clamp((wx * vx + wy * vy) / vv, 0, 1);
+        return Math.hypot(wx - u * vx, wy - u * vy);
+    }
+
+    /** Screen distance to an arrow's projected shaft (both halves when
+     *  two-sided); behind-camera ends skip their segment. */
+    private double arrowDistPx(GPart p, double sx, double sy) {
+        Vec3 a = p.anchor().get();
+        Vec3 d = p.dir().get().normalize();
+        if (d.length() < 0.5) return Double.MAX_VALUE;
+        double len = p.radius() * p.rig().scale;
+        Point2D s0 = projectWorld(a);
+        if (s0 == null) return Double.MAX_VALUE;
+        double best = Double.MAX_VALUE;
+        Point2D s1 = projectWorld(a.add(d.scale(len)));
+        if (s1 != null) best = segDistPx(s0, s1, sx, sy);
+        if (p.twoSided()) {
+            Point2D s2 = projectWorld(a.sub(d.scale(len)));
+            if (s2 != null) best = Math.min(best, segDistPx(s0, s2, sx, sy));
+        }
+        return best;
+    }
+
+    /** Screen distance to a ring's projected centerline: the circle
+     *  of radius R·rig.scale about the anchor ⊥ the axis, walked as
+     *  a RING_PICK_N-point closed polyline (the torus's own nu). */
+    private double ringDistPx(GPart p, double sx, double sy) {
+        if (p.dir().get().normalize().length() < 0.5) return Double.MAX_VALUE;
+        double best = Double.MAX_VALUE;
+        Point2D prev = null;
+        for (int i = 0; i <= RING_PICK_N; i++) {
+            Point2D s = projectWorld(ringPoint(p, 2 * Math.PI * i / RING_PICK_N));
+            if (prev != null && s != null) {
+                best = Math.min(best, segDistPx(prev, s, sx, sy));
+            }
+            prev = s;
+        }
+        return best;
+    }
+
+    /** A ring part's centerline point at angle th (world): anchor +
+     *  R·rig.scale·(cos th·u + sin th·v), u/v any basis ⊥ the axis. */
+    private static Vec3 ringPoint(GPart p, double th) {
+        Vec3 c = p.anchor().get();
+        Vec3 ax = p.dir().get().normalize();
+        Vec3 h = Math.abs(ax.y()) < 0.9 ? new Vec3(0, 1, 0)
+                                        : new Vec3(1, 0, 0);
+        Vec3 u = ax.cross(h).normalize();
+        Vec3 v = ax.cross(u);
+        double R = p.radius() * p.rig().scale;
+        return c.add(u.scale(R * Math.cos(th))).add(v.scale(R * Math.sin(th)));
+    }
+
+    /** DEV PROBE (v19.19, D248 — `-Dfvd.pickprobe=1`, driven by
+     *  FvdDesigner.pickProbe on the live default document): (a) every
+     *  rig part kind registers (track ball, center ball, 3 two-sided
+     *  arrows, the yaw ring); (b) the pick bands — a point inside
+     *  each part's band picks THAT part, the rig center picks the
+     *  ball over the arrow roots, a point 3× the ring band off a ring
+     *  picks nothing; (c) synthetic mouse events through the pane
+     *  filter: a press + drag on the UN-REVEALED track ball reveals
+     *  the rig mid-gesture with the pressed ball HIDDEN and the drag
+     *  still alive (the piece moves per event), the release rebuilds
+     *  (ball hidden while its rig shows, one visible center ball);
+     *  then a ring press + tangent drag + release turns the yaw. All
+     *  in-process, no Robot — screen-space math on the real panes.
+     *  Returns the failure count; prints PICKPROBE lines. */
+    int pickProbe(java.io.PrintStream out) {
+        int fails = 0;
+        TrackPiece p0 = app.coaster.pieces.get(0);
+        gizmoReveal = new Reveal(0, 1);
+        refreshGizmo(true);
+        int balls = 0, arrows = 0, rings = 0;
+        for (GPart g : gizmoParts) {
+            if (g.kind() == 0) balls++;
+            else if (g.kind() == 1) arrows++;
+            else rings++;
+        }
+        out.println("PICKPROBE parts balls=" + balls + " arrows=" + arrows
+            + " rings=" + rings + " pane=" + pane.getWidth() + "x"
+            + pane.getHeight());
+        if (balls != 2 || arrows != 3 || rings < 1) {
+            out.println("PICKPROBE FAIL registration (expect 2 balls, 3 arrows, >=1 ring)");
+            fails++;
+        }
+        // (b) bands
+        for (GPart g : gizmoParts) {
+            if (!g.node().isVisible()) continue;   // the hidden track ball
+            Vec3 a = g.anchor().get();
+            Point2D s0 = projectWorld(a);
+            if (s0 == null) {
+                out.println("PICKPROBE FAIL part behind camera kind=" + g.kind());
+                fails++;
+                continue;
+            }
+            double px, py;
+            String what;
+            if (g.kind() == 0) {
+                double rPx = g.radius() * g.rig().scale / uppAt(a);
+                px = s0.getX() + rPx * PICK_BALL_MUL + PICK_BALL_PAD - 1;
+                py = s0.getY();
+                what = "ball zone edge (rPx=" + String.format("%.1f", rPx) + ")";
+            } else if (g.kind() == 1) {
+                Vec3 d = g.dir().get().normalize();
+                Point2D s1 = projectWorld(a.add(d.scale(0.8 * g.radius()
+                    * g.rig().scale)));
+                if (s1 == null) continue;
+                double vx = s1.getX() - s0.getX(), vy = s1.getY() - s0.getY();
+                double L = Math.max(1e-9, Math.hypot(vx, vy));
+                px = s1.getX() - vy / L * (PICK_ARROW_PX - 2);
+                py = s1.getY() + vx / L * (PICK_ARROW_PX - 2);
+                what = "arrow 7 px off its shaft";
+            } else {
+                // a ring point away from the ball zone, 4 px outward
+                // (45° — the θ=0 point lies ON the −Z arrow: u = Y×X)
+                Point2D s1 = projectWorld(ringPoint(g, Math.PI / 4));
+                if (s1 == null) continue;
+                double vx = s1.getX() - s0.getX(), vy = s1.getY() - s0.getY();
+                double L = Math.max(1e-9, Math.hypot(vx, vy));
+                px = s1.getX() + vx / L * (PICK_RING_PX - 2);
+                py = s1.getY() + vy / L * (PICK_RING_PX - 2);
+                what = "ring 4 px outside its line";
+                GPart far = pickPart(s1.getX() + vx / L * PICK_RING_PX * 3,
+                                     s1.getY() + vy / L * PICK_RING_PX * 3);
+                if (far != null && far.kind() == 2 && far == g) {
+                    out.println("PICKPROBE FAIL ring picked 18 px off");
+                    fails++;
+                }
+            }
+            GPart hit = pickPart(px, py);
+            // the rule under test: the NEAREST part inside its band —
+            // where two bands overlap (an arrow crossing a ring) the
+            // closer one wins, and that is correct
+            boolean nearest = hit != null && hit != g && hit.kind() != 0
+                && partDistPx(hit, px, py) <= partDistPx(g, px, py) + 1e-9;
+            boolean ok = hit == g || nearest;
+            out.println("PICKPROBE band " + what + " -> "
+                + (hit == null ? "null" : "kind " + hit.kind())
+                + (hit == g ? " OK" : nearest ? " OK (nearer part)" : " FAIL"));
+            if (!ok) fails++;
+        }
+        {
+            Point2D c = projectWorld(gizmoRigs.get(0).anchor.get());
+            GPart hit = c == null ? null : pickPart(c.getX(), c.getY());
+            boolean ok = hit != null && hit.kind() == 0;
+            out.println("PICKPROBE center (arrow roots cross it) -> "
+                + (hit == null ? "null" : "kind " + hit.kind())
+                + (ok ? " OK" : " FAIL"));
+            if (!ok) fails++;
+        }
+        // (c) drag-reveal through the filter
+        gizmoReveal = null;
+        refreshGizmo(true);
+        Sphere track = revealMarks.get(0).ball();
+        Point2D bc = projectWorld(revealMarks.get(0).at().get());
+        if (bc == null || !track.isVisible()) {
+            out.println("PICKPROBE FAIL track ball not visible/projectable");
+            return fails + 1;
+        }
+        double x0 = p0.x, y0 = p0.y;
+        fire(MouseEvent.MOUSE_PRESSED, bc.getX(), bc.getY(), true);
+        boolean pressed = gPress != null && gPress.kind() == 0 && gPress.rig() == null;
+        fire(MouseEvent.MOUSE_DRAGGED, bc.getX() + 2, bc.getY(), true);
+        boolean stillVis = track.isVisible() && gizmoReveal == null;   // deadband
+        fire(MouseEvent.MOUSE_DRAGGED, bc.getX() + 30, bc.getY() + 20, true);
+        boolean revealed = gizmoReveal != null && !track.isVisible()
+            && gizmoRigs.size() == 1 && gizmoDragging;
+        boolean moved1 = p0.x != x0 || p0.y != y0;
+        fire(MouseEvent.MOUSE_DRAGGED, bc.getX() + 60, bc.getY() + 20, true);
+        boolean moved2 = (p0.x != x0 || p0.y != y0) && gizmoDragging;
+        fire(MouseEvent.MOUSE_RELEASED, bc.getX() + 60, bc.getY() + 20, false);
+        int visBalls = 0;
+        for (GPart g : gizmoParts) if (g.kind() == 0 && g.node().isVisible()) visBalls++;
+        boolean released = !gizmoDragging && gPress == null
+            && gizmoReveal != null && !revealMarks.get(0).ball().isVisible()
+            && visBalls == 1;
+        out.println("PICKPROBE dragReveal press=" + pressed + " deadband="
+            + stillVis + " revealedHidden=" + revealed + " moved=" + moved1
+            + "/" + moved2 + " released=" + released
+            + " dx=" + String.format("%.3f", p0.x - x0));
+        if (!(pressed && stillVis && revealed && moved1 && moved2 && released)) fails++;
+        // ring drag: the yaw ring, tangent travel
+        GPart ring = null;
+        for (GPart g : gizmoParts) if (g.kind() == 2) { ring = g; break; }
+        if (ring != null) {
+            Point2D rc = projectWorld(ring.anchor().get());
+            Point2D r0 = projectWorld(ringPoint(ring, 0));
+            Point2D r1 = projectWorld(ringPoint(ring, 0.05));
+            if (rc != null && r0 != null && r1 != null) {
+                double yaw0 = p0.yawDeg;
+                double tx = r1.getX() - r0.getX(), ty = r1.getY() - r0.getY();
+                double L = Math.max(1e-9, Math.hypot(tx, ty));
+                fire(MouseEvent.MOUSE_PRESSED, r0.getX(), r0.getY(), true);
+                boolean rp = gPress == ring && gizmoDragging;
+                fire(MouseEvent.MOUSE_DRAGGED, r0.getX() + tx / L * 40,
+                     r0.getY() + ty / L * 40, true);
+                boolean turned = p0.yawDeg != yaw0;
+                fire(MouseEvent.MOUSE_RELEASED, r0.getX() + tx / L * 40,
+                     r0.getY() + ty / L * 40, false);
+                out.println("PICKPROBE ringDrag press=" + rp + " turned="
+                    + turned + " dyaw=" + String.format("%.2f", p0.yawDeg - yaw0)
+                    + " ended=" + (!gizmoDragging && gPress == null));
+                if (!(rp && turned && !gizmoDragging)) fails++;
+            }
+        }
+        return fails;
+    }
+
+    private double partDistPx(GPart p, double sx, double sy) {
+        return p.kind() == 1 ? arrowDistPx(p, sx, sy) : ringDistPx(p, sx, sy);
+    }
+
+    /** Synthesize a primary-button mouse event at SCREEN (sx, sy) and
+     *  fire it at the pane (the probe's Robot-free path through
+     *  gizmoMouseFilter — the handlers read screen coords only). */
+    private void fire(javafx.event.EventType<MouseEvent> type,
+                      double sx, double sy, boolean down) {
+        Point2D sc = pane.localToScene(pane.screenToLocal(sx, sy));
+        javafx.event.Event.fireEvent(pane, new MouseEvent(type,
+            sc.getX(), sc.getY(), sx, sy, MouseButton.PRIMARY, 1,
+            false, false, false, false, down, false, false,
+            false, false, false, null));
+    }
+
+    /** Whether a gizmo gesture is live in this pane (the shell's
+     *  mid-drag modifier-key guard, D248): a drag past the deadband
+     *  OR a part still PRESSED — a ball's first 3 px never set
+     *  gizmoDragging, and a Ctrl+Z there would replace the piece under
+     *  the pressed closures just the same (D248 review fix). */
+    boolean isGizmoDragging() {
+        // a live speed-control DISK drag counts too (D248, item S1):
+        // a mid-gesture Ctrl+Z would replace the control under the
+        // dragged (piece, sec, ctl) indices
+        return gizmoDragging || gPress != null || diskDrag != null;
     }
 
     /** Mirror the active main camera onto the overlay SubScene's —
@@ -3517,14 +4714,21 @@ class Viewport3D {
     }
     private String gizmoSig;
     private boolean gizmoDragging, gizmoPushed;
-    private int gizmoPiece = -1;         // rebuild on piece switch
 
     /** REVEAL state (v18.16, D187 — the ball-click gating returns,
-     *  per pane; the v17.7 "Show Gizmos" check is GONE): 0 = balls
-     *  only, 1 = the entry/seam rig, 2 = the bridge-end rig. A
-     *  single click on a white ball toggles its rig; any primary
-     *  press off the gizmo hides it; piece switches reset it. */
-    private int gizmoReveal = 0;
+     *  per pane; the v17.7 "Show Gizmos" check is GONE; a (piece,
+     *  kind) RECORD since v19.18, D247 — every junction of the RUN
+     *  wears a ball, so the revealed rig names its piece): null =
+     *  balls only, kind 1 = the entry/seam rig of `piece`, kind 2 =
+     *  the bridge-end rig of the bridge TRAILING `piece`. A single
+     *  click on a white ball toggles its rig (and ACTIVATES that
+     *  piece/section); any primary press off the gizmo hides it;
+     *  LEAVING THE RUN resets it (D187's piece-switch reset is gone
+     *  — switching within the run via a ball is the feature). The
+     *  piece INDEX, never the object: applyDocState/Load replace
+     *  TrackPiece objects (D205). */
+    private record Reveal(int piece, int kind) { }
+    private Reveal gizmoReveal = null;
     private double gDragX, gDragY;       // screen point of the press
 
     /** One gizmo assembly (piece entry / bridge end): its own anchor,
@@ -3568,12 +4772,32 @@ class Viewport3D {
      *  mid-drag call only repositions/re-aims (rebuilding the pressed
      *  part would kill the mouse capture — positionGizmo's aim hooks
      *  keep the parts tracking the pose in real time, v16.12). */
+    /** Drop this pane's ball-click reveal (v19.19, D248 review fix):
+     *  Reveal(piece, kind) holds a piece INDEX, and a run REORDER
+     *  (Coaster.moveRun — bridge-to / attach) can leave that index on
+     *  another piece of the now-merged run, which the run-membership
+     *  reset below would KEEP. The next rebuild's refreshGizmo redraws
+     *  the bare balls. */
+    void dropGizmoReveal() {
+        gizmoReveal = null;
+    }
+
     void refreshGizmo(boolean force) {
         syncGizmoSubMouse();
-        int ap = app.editor != null ? app.editor.activePiece() : -1;
-        if (ap != gizmoPiece) {
-            gizmoPiece = ap;
-            gizmoReveal = 0;   // a piece switch hides the rig (D187)
+        // RUN-MEMBERSHIP reset (v19.18, D247 — replaces D187's
+        // piece-switch reset): the reveal survives any activation
+        // INSIDE the run (a ball click activates another piece of it
+        // and must keep its freshly revealed rig — this runs from
+        // activation's rebuildTrack BEFORE the click handler's own
+        // refresh); it clears when the revealed piece leaves the run
+        // or no longer exists (docGen replacing pieces).
+        if (gizmoReveal != null) {
+            boolean keep = app.editor != null
+                && gizmoReveal.piece() >= 0
+                && gizmoReveal.piece() < app.coaster.pieces.size()
+                && gizmoReveal.piece() >= app.editor.runStartPiece()
+                && gizmoReveal.piece() <= app.editor.runEndPiece();
+            if (!keep) gizmoReveal = null;
         }
         if (gizmoDragging) {
             positionGizmo();
@@ -3595,12 +4819,17 @@ class Viewport3D {
             return "off";
         }
         int pi = app.editor.activePiece();
-        if (pi < 0 || pi >= app.coaster.pieces.size()) return "off";
-        // the wizard's PENDING piece shows nothing, ball included (D231)
-        if (app.isPendingPiece(app.activeCoaster, pi)) return "off";
-        TrackPiece p = app.coaster.pieces.get(pi);
-        BridgeSection into = app.bridgeInto(pi);
-        BridgeSection trail = app.bridgeInto(pi + 1);
+        List<TrackPiece> pcs = app.coaster.pieces;
+        if (pi < 0 || pi >= pcs.size()) return "off";
+        // the whole RUN is signed (v19.18, D247 — one ball per
+        // junction of the run, so every member's placement/locks/
+        // held angles/bridge mode rebuilds the set); the wizard's
+        // PENDING piece is skipped PER PIECE (D231 — it used to turn
+        // the whole sig 'off', but a pending piece is always its own
+        // run of one, so the outcome is the same) and its flag is
+        // signed here because picked() flips with no docGen bump
+        int rs = app.editor.runStartPiece();
+        int re = Math.min(app.editor.runEndPiece(), pcs.size() - 1);
         StringBuilder sb = new StringBuilder();
         // the DOCUMENT GENERATION (v18.33, D205): applyDocState/Load/
         // New replace the TrackPiece objects — often with identical
@@ -3610,28 +4839,43 @@ class Viewport3D {
         sb.append(app.docGen).append('~')
           .append(app.settings.gizmoLocal() ? 'L' : 'G')
           .append(orthoPlaneAxis())   // fixed-ortho arrow hiding (v18.11)
-          .append(gizmoReveal)        // ball-click reveal (v18.16, D187)
-          .append('|').append(pi)
-          .append('|').append(into != null ? into.optMode : -1)
-          .append('|').append(into != null && into.lockYaw)
-          .append(into != null ? into.lockPitch : p.uiLockPitch)
-          .append(into != null ? into.lockRoll : p.uiLockRoll)
-          .append('|').append(app.editor.followsPrev(pi));   // v17.1
-        if (app.editor.followsPrev(pi)) {
-            // the SEAM gizmo's rings follow the lock toggles + held
-            // angles live (v17.3, D140)
-            sb.append('|').append(p.sLockYaw).append(p.sLockPitch)
-              .append(p.sLockRoll).append('|').append(p.sYawDeg)
-              .append(',').append(p.sPitchDeg)
-              .append(',').append(p.sRollDeg);
-        }
-        appendPose(sb, p);
-        if (trail != null) {
-            sb.append("|T|").append(trail.optMode)
-              .append('|').append(trail.optLen)
-              .append('|').append(trail.lockYaw).append(trail.lockPitch)
-              .append(trail.lockRoll);
-            appendPose(sb, app.coaster.pieces.get(pi + 1));
+          // ball-click reveal (v18.16, D187; (piece:kind) since D247)
+          .append(gizmoReveal == null ? "-"
+              : gizmoReveal.piece() + ":" + gizmoReveal.kind())
+          .append('|').append(pi)     // the active piece: node-0 marker
+                                      // coupling + panel owner rows
+          .append('|').append(rs).append('-').append(re);
+        for (int q = rs; q <= re; q++) {
+            TrackPiece p = pcs.get(q);
+            boolean pending = app.isPendingPiece(app.activeCoaster, q);
+            sb.append("|P").append(q).append(pending ? '!' : ':');
+            if (pending) continue;
+            BridgeSection into = app.bridgeInto(q);
+            BridgeSection trail = app.bridgeInto(q + 1);
+            boolean follows = app.editor.followsPrev(q);
+            sb.append(into != null ? into.optMode : -1)
+              .append('|').append(into != null && into.lockYaw)
+              .append(into != null ? into.lockPitch : p.uiLockPitch)
+              .append(into != null ? into.lockRoll : p.uiLockRoll)
+              .append('|').append(follows);   // v17.1
+            if (follows) {
+                // the SEAM gizmo's rings follow the lock toggles + held
+                // angles live (v17.3, D140); the seam ball exists only
+                // once a compile places the junction (seamWorldPos)
+                sb.append('|').append(p.sLockYaw).append(p.sLockPitch)
+                  .append(p.sLockRoll).append('|').append(p.sYawDeg)
+                  .append(',').append(p.sPitchDeg)
+                  .append(',').append(p.sRollDeg)
+                  .append('|').append(app.editor.seamWorldPos(q) != null);
+            }
+            appendPose(sb, p);
+            if (trail != null && q + 1 < pcs.size()) {
+                sb.append("|T|").append(trail.optMode)
+                  .append('|').append(trail.optLen)
+                  .append('|').append(trail.lockYaw).append(trail.lockPitch)
+                  .append(trail.lockRoll);
+                appendPose(sb, pcs.get(q + 1));
+            }
         }
         return sb.toString();
     }
@@ -3642,7 +4886,23 @@ class Viewport3D {
           .append(',').append(p.pitchDeg).append(',').append(p.rollDeg)
           .append(',').append(p.baseOrient.w()).append(',')
           .append(p.baseOrient.x()).append(',').append(p.baseOrient.y())
-          .append(',').append(p.baseOrient.z());
+          .append(',').append(p.baseOrient.z())
+          // the orientation MODE + the design tier (v19.20, D249): a
+          // DESIGN_ONLY rig aims its rings at the DESIGN frame and
+          // re-aims per design edit; a mode flip / readout swap /
+          // unchecking the independent check rebuilds the rig so it
+          // snaps back to the real frame
+          .append(',').append(p.orientMode.ordinal())
+          .append(',').append(p.designPitchDeg)
+          .append(',').append(p.designRollDeg);
+    }
+
+    /** The frame a piece's rig aims its rings at (D249): the DESIGN
+     *  pose while the piece edits its design orientation, else the
+     *  real entry pose. */
+    private static Quat rigFrame(TrackPiece p) {
+        return p.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
+            ? p.designPose().orient() : p.entryPose().orient();
     }
 
     private void rebuildGizmo() {
@@ -3650,63 +4910,95 @@ class Viewport3D {
         trackBallGroup.getChildren().clear();
         gizmoRigs.clear();
         revealMarks.clear();
+        clearGizmoParts(false);   // every part's node is gone (D248)
         if ("off".equals(gizmoSig)) {
             syncGizmoSubMouse();
             syncGizmoAxesBtn();
             return;
         }
-        int pi = app.editor.activePiece();
-        TrackPiece p = app.coaster.pieces.get(pi);
-        BridgeSection trail = app.bridgeInto(pi + 1);
-        TrackPiece next = trail != null
-            && pi + 1 < app.coaster.pieces.size()
-            ? app.coaster.pieces.get(pi + 1) : null;
-        // reveal markers first: the piece's entry ("first node",
-        // drawn bigger) and — with a trailing bridge — the bridge end.
-        // A STRICT-SEAM follower's mark sits ON THE SEAM instead
-        // (v17.3, D140 — the D136 ghost was the STALE stored x/y/z;
-        // the true junction is a real surface now): single click
-        // reveals the seam gizmo, DOUBLE click opens the seam
-        // settings pop-out.
-        BridgeSection intoP = app.bridgeInto(pi);
-        if (!app.editor.followsPrev(pi)) {
-            // the ENTRY ball: drags the piece in the VIEW PLANE
-            // (v18.11, user spec) unless a bridge owns the placement;
-            // double-click = the Track Piece panel
-            boolean movable = intoP == null
-                || intoP.optMode == BridgeSection.OPT_NONE;
-            addRevealMark(() -> new Vec3(p.x, p.y, p.z), true,
-                () -> app.showPlacementPopup(Boolean.FALSE),
-                !movable ? null : v -> {
-                    app.placementEdit(p, () -> {   // D221 rigid carry
-                        p.x = v.x();
-                        p.y = v.y();
-                        p.z = v.z();
+        // ONE BALL PER JUNCTION OF THE RUN (v19.18, D247 — user spec:
+        // every white ball of the run shows whatever section is
+        // active, and clicking one activates that piece/section):
+        // the head's entry ball, each strict-seam follower's SEAM
+        // ball (v17.3, D140 — the D136 ghost was the STALE stored
+        // x/y/z; the true junction is a real surface), and each
+        // trailing bridge's END ball at the next piece's x/y/z. A
+        // piece bridged in from within the run gets NO separate entry
+        // ball — the previous piece's bridge-end ball IS its junction
+        // (same spot; two coincident balls would z-fight and its own
+        // entry rig builds nothing under optimize modes anyway).
+        // Single click = reveal + activate; DOUBLE click = activate
+        // + the owner's settings; the wizard's PENDING piece shows
+        // nothing (D231).
+        List<TrackPiece> pcs = app.coaster.pieces;
+        int rs = app.editor.runStartPiece();
+        int re = Math.min(app.editor.runEndPiece(), pcs.size() - 1);
+        for (int q = rs; q <= re; q++) {
+            if (app.isPendingPiece(app.activeCoaster, q)) continue;
+            final int pi = q;
+            final TrackPiece p = pcs.get(pi);
+            if (pi == rs) {
+                // the HEAD's ENTRY ball: drags the piece in the VIEW
+                // PLANE (v18.11, user spec) unless a bridge owns the
+                // placement (never at a run head, kept for safety);
+                // double-click = the Track Piece window (D248)
+                BridgeSection intoP = app.bridgeInto(pi);
+                boolean movable = intoP == null
+                    || intoP.optMode == BridgeSection.OPT_NONE;
+                addRevealMark(pi, 1, () -> new Vec3(p.x, p.y, p.z),
+                    () -> {
+                        app.editor.activatePieceSection(pi, 0);
+                        app.openPlacementPopup(false);   // fresh, at the anchor (D248)
+                    },
+                    !movable ? null : v -> {
+                        app.placementEdit(p, () -> {   // D221 rigid carry
+                            p.x = v.x();
+                            p.y = v.y();
+                            p.z = v.z();
+                        });
+                        app.rebuildTrack();
                     });
-                    app.rebuildTrack();
-                });
-        } else if (app.editor.seamWorldPos(pi) != null) {
-            final int fpi = pi;
-            addRevealMark(() -> {
-                Vec3 v = app.editor.seamWorldPos(fpi);
-                return v != null ? v : new Vec3(p.x, p.y, p.z);
-            }, true, () -> app.editor.showStrictSeamSettings(fpi), null);
-        }
-        if (next != null) {
-            TrackPiece n = next;
-            // the BRIDGE-END ball: planar drag only in manual mode
-            // (optimize modes own the position); double-click = the
-            // bridge properties panel
-            boolean movable = trail != null
-                && trail.optMode == BridgeSection.OPT_NONE;
-            addRevealMark(() -> new Vec3(n.x, n.y, n.z), false,
-                () -> app.showPlacementPopup(Boolean.TRUE),
-                !movable ? null : v -> {
-                    n.x = v.x();
-                    n.y = v.y();
-                    n.z = v.z();
-                    app.editor.gizmoBridgeMoved();
-                });
+            } else if (app.editor.followsPrev(pi)) {
+                // the SEAM ball (only once a compile has placed the
+                // junction): single click reveals the seam gizmo,
+                // double click opens the seam settings pop-out
+                if (app.editor.seamWorldPos(pi) != null) {
+                    addRevealMark(pi, 1, () -> {
+                        Vec3 v = app.editor.seamWorldPos(pi);
+                        return v != null ? v : new Vec3(p.x, p.y, p.z);
+                    }, () -> {
+                        app.editor.activatePieceSection(pi, 0);
+                        app.editor.showStrictSeamSettings(pi);
+                    }, null);
+                }
+            }
+            BridgeSection trail = app.bridgeInto(pi + 1);
+            if (trail != null && pi + 1 < pcs.size()) {
+                final TrackPiece n = pcs.get(pi + 1);
+                // the BRIDGE-END ball: planar drag only in manual
+                // mode (optimize modes own the position); double-
+                // click = the bridge properties panel, which syncs
+                // only while the bridge SECTION itself is active —
+                // so it activates (pi, last) first
+                boolean movable = trail.optMode == BridgeSection.OPT_NONE;
+                addRevealMark(pi, 2, () -> new Vec3(n.x, n.y, n.z),
+                    () -> {
+                        app.editor.activatePieceSection(pi,
+                            p.sections.size() - 1);
+                        app.openBridgeWindow(pi);   // "Bridge settings (Strict Seam n)" (D249)
+                    },
+                    !movable ? null : v -> {
+                        // through placementEdit like the rig center
+                        // ball (D247): rigid carry + wizard sync —
+                        // the direct field writes skipped both
+                        app.placementEdit(n, () -> {
+                            n.x = v.x();
+                            n.y = v.y();
+                            n.z = v.z();
+                        });
+                        app.editor.gizmoBridgeMoved(pi);
+                    });
+            }
         }
         // rigs build only for the REVEALED ball (v18.16, D187)
         buildRigsForReveal();
@@ -3719,19 +5011,25 @@ class Viewport3D {
      *  drag on a track ball can reveal mid-gesture without rebuilding
      *  the pressed ball (replacing it would kill the mouse capture). */
     private void buildRigsForReveal() {
-        if (gizmoReveal == 0 || "off".equals(gizmoSig)) {
+        Reveal rv = gizmoReveal;
+        List<TrackPiece> pcs = app.coaster.pieces;
+        // the rig belongs to the REVEALED piece, not the active one
+        // (v19.18, D247 — a ball click activates, a drag reveal does
+        // not; either way the rig is that ball's)
+        if (rv == null || "off".equals(gizmoSig)
+                || rv.piece() < 0 || rv.piece() >= pcs.size()
+                || app.isPendingPiece(app.activeCoaster, rv.piece())) {
             syncGizmoSubMouse();
             return;
         }
-        int pi = app.editor.activePiece();
-        TrackPiece p = app.coaster.pieces.get(pi);
+        int pi = rv.piece();
+        TrackPiece p = pcs.get(pi);
         BridgeSection trail = app.bridgeInto(pi + 1);
-        TrackPiece next = trail != null
-            && pi + 1 < app.coaster.pieces.size()
-            ? app.coaster.pieces.get(pi + 1) : null;
+        TrackPiece next = trail != null && pi + 1 < pcs.size()
+            ? pcs.get(pi + 1) : null;
         boolean local = app.settings.gizmoLocal();
         java.util.function.Consumer<Vec3> ctrMove = null;
-        if (gizmoReveal == 1) {
+        if (rv.kind() == 1) {
             buildPieceGizmo(local, pi, p);
             BridgeSection intoP = app.bridgeInto(pi);
             if (!app.editor.followsPrev(pi)
@@ -3746,8 +5044,8 @@ class Viewport3D {
                     app.rebuildTrack();
                 };
             }
-        } else if (gizmoReveal == 2 && trail != null && next != null) {
-            buildBridgeGizmo(local, trail, next);
+        } else if (rv.kind() == 2 && trail != null && next != null) {
+            buildBridgeGizmo(local, pi, trail, next);
             if (trail.optMode == BridgeSection.OPT_NONE) {
                 TrackPiece n = next;
                 ctrMove = v -> {
@@ -3756,7 +5054,7 @@ class Viewport3D {
                         n.y = v.y();
                         n.z = v.z();
                     });
-                    app.editor.gizmoBridgeMoved();
+                    app.editor.gizmoBridgeMoved(pi);
                 };
             }
         }
@@ -3768,26 +5066,43 @@ class Viewport3D {
     }
 
     /** Reveal a ball's rig mid-drag (v18.17): rig-only build — the
-     *  pressed track ball survives, keeping the drag alive. */
-    private void revealDuringDrag(int mine) {
-        if (gizmoReveal == mine) return;
+     *  pressed track ball's NODE survives (activation would re-point
+     *  lanes and rebuild, D247/D188), but since v19.19 (D248) it is
+     *  HIDDEN the moment the rig builds: the rig's scaling center
+     *  ball replaces it exactly as the build-time rule in
+     *  addRevealMark does, so a close-up drag-reveal shows ONE ball
+     *  (the fixed 0.34 m ball used to peek out from under the 0.272
+     *  × rig.scale center ball whenever rig.scale < 1.25, ≈ 11 m at
+     *  60° FOV). Safe because the gesture rides gPress in the pane
+     *  filter, not the node's visibility (a MOUSE_RELEASED reaches
+     *  the pane whatever became of the pressed node); the release
+     *  rebuild recreates every ball with the right visibility. */
+    private void revealDuringDrag(Reveal mine, Sphere pressed) {
+        if (mine.equals(gizmoReveal)) return;
         gizmoReveal = mine;
         gizmoGroup.getChildren().clear();
         gizmoRigs.clear();
+        clearGizmoParts(true);   // rig parts only; the pressed ball stays registered
         gizmoSig = gizmoSigNow();
         buildRigsForReveal();
+        if (pressed != null) pressed.setVisible(false);
         syncGizmoAxesBtn();
         positionGizmo();
     }
+
+    /** The fixed track ball's radius (world m) and the rig center
+     *  ball's (rig units = 0.34 × the D186 0.8 ratio). */
+    static final double TRACK_BALL_R = 0.34, CENTER_BALL_R = 0.272;
 
     private void addRigCenterBall(Rig rig,
             java.util.function.Consumer<Vec3> moveApply) {
         // 0.272 = the fixed ball's 0.34 × the D186 0.8 rig ratio; the
         // rig group's scale transform grows it with the arrows
-        Sphere ball = new Sphere(0.272, 14);
-        wireBall(ball, rig.anchor, rig.onDouble, moveApply, null,
+        Sphere ball = new Sphere(CENTER_BALL_R, 14);
+        wireBall(ball, rig, CENTER_BALL_R, rig.anchor, rig.onDouble,
+            moveApply, null,
             () -> {
-                gizmoReveal = 0;   // click the center = hide (D187 toggle)
+                gizmoReveal = null;   // click the center = hide (D187 toggle)
                 refreshGizmo(false);
             });
         rig.group.getChildren().add(ball);
@@ -3798,7 +5113,7 @@ class Viewport3D {
      *  revealed); text tracks the shared axes choice. */
     void syncGizmoAxesBtn() {
         if (gizmoAxesBtn == null) return;
-        boolean show = gizmoReveal != 0 && !"off".equals(gizmoSig);
+        boolean show = gizmoReveal != null && !"off".equals(gizmoSig);
         gizmoAxesBtn.setVisible(show);
         gizmoAxesBtn.setManaged(show);
         if (show) {
@@ -3816,39 +5131,68 @@ class Viewport3D {
 
     /** The reveal button (v16.12, user spec: "gizmo only reveals when
      *  you click the first node of the track piece"): a slightly
-     *  bigger sphere at the piece entry — and at a trailing bridge's
-     *  end — toggling the piece's gizmos. Clicking the ENTRY one open
-     *  with the piece's first section active also selects lane node 0
-     *  (it sits on the same spot as the node marker it covers). */
-    private void addRevealMark(java.util.function.Supplier<Vec3> at,
-                               boolean pieceEntry, Runnable onDouble,
+     *  bigger sphere at a junction of the run — the head's entry,
+     *  each strict seam, each trailing bridge's end (D247) — toggling
+     *  that junction's gizmo. `kind` 1 = the entry/seam rig of
+     *  `pieceIdx`, 2 = the bridge-end rig of the bridge trailing it.
+     *  A single click also ACTIVATES the piece/section right after
+     *  the junction (kind 1 → (pieceIdx, 0), kind 2 → (pieceIdx+1,
+     *  0) — like clicking the track there); a ball click selects NO
+     *  node since v19.19 (D248, item S1 — the pane filter DESELECTS
+     *  the graph node at every gizmo press). */
+    private void addRevealMark(int pieceIdx, int kind,
+                               java.util.function.Supplier<Vec3> at,
+                               Runnable onDouble,
                                java.util.function.Consumer<Vec3> moveApply) {
         // the FIXED-SIZE ball (v18.17, D188 — his clarification of
         // "originally not scaling"): part of the TRACK layer, never
         // scales with view distance; click reveals the rig, and a
         // DRAG both moves the owner and reveals
-        Sphere ball = new Sphere(0.34, 14);
-        int mine = pieceEntry ? 1 : 2;
-        wireBall(ball, at, onDouble, moveApply,
-            () -> revealDuringDrag(mine),
+        Sphere ball = new Sphere(TRACK_BALL_R, 14);
+        Reveal mine = new Reveal(pieceIdx, kind);
+        wireBall(ball, null, TRACK_BALL_R, at, onDouble, moveApply,
+            () -> revealDuringDrag(mine, ball),   // hides `ball` (D248)
             () -> {
-                // SINGLE CLICK toggles the ball's rig (v18.16, D187):
-                // entry/seam ball = rig 1, bridge-end ball = rig 2;
-                // the entry ball still selects the covered node 0
-                gizmoReveal = gizmoReveal == mine ? 0 : mine;
-                refreshGizmo(false);
-                if (pieceEntry && app.editor != null
-                        && app.editor.activeSection() == 0) {
-                    app.editor.selectNodeFromViewport(0);
+                // SINGLE CLICK toggles the ball's rig (v18.16, D187)
+                // and activates its piece/section (v19.18, D247):
+                // the reveal is set BEFORE activation — activation's
+                // rebuildTrack refreshes every pane, and the run-
+                // membership rule keeps the reveal through the
+                // in-run switch; the explicit refresh below covers
+                // the no-activation-change path. Under an open convert
+                // preview the reveal toggle refuses too (D247 review
+                // fix — wireBall gates the click first; belt and
+                // braces for a programmatic caller)
+                if (app.convertBusy()) return;
+                gizmoReveal = mine.equals(gizmoReveal) ? null : mine;
+                if (app.editor != null) {
+                    app.editor.activatePieceSection(
+                        kind == 1 ? pieceIdx : pieceIdx + 1, 0);
                 }
+                refreshGizmo(false);
+                // (the D247 node-0 select on a kind-1 click is GONE
+                // since v19.19, D248 item S1: a gizmo select DESELECTS
+                // the graph node — the pane filter clears the
+                // selection at the press — and selects nothing; node
+                // 0 stays reachable in the graph)
             });
         // the track ball HIDES while its own rig is shown (v18.18,
-        // D189 — the rig's scaling center ball replaces it); set at
-        // build time only, so a reveal-by-drag keeps the pressed
-        // ball alive until the release rebuild
-        ball.setVisible(gizmoReveal != mine);
+        // D189 — the rig's scaling center ball replaces it); a
+        // reveal-by-drag hides the pressed ball the same way since
+        // D248 (revealDuringDrag), the release rebuild re-derives it
+        ball.setVisible(!mine.equals(gizmoReveal));
         revealMarks.add(new RevealMark(ball, at));
         trackBallGroup.getChildren().add(ball);
+    }
+
+    /** Reveal piece `pieceIdx`'s entry/seam rig programmatically
+     *  (v19.18, D247 — Copy's "edit the copy" handoff, item C): set
+     *  AFTER the activation that puts the piece in the run, or the
+     *  membership reset clears it at once. */
+    void revealEntryGizmo(int pieceIdx) {
+        if (pieceIdx < 0 || pieceIdx >= app.coaster.pieces.size()) return;
+        gizmoReveal = new Reveal(pieceIdx, 1);
+        refreshGizmo(false);   // the sig carries the reveal
     }
 
     /** Shared white-ball behavior (v18.17, D188 — one wiring for the
@@ -3857,7 +5201,7 @@ class Viewport3D {
      *  Ctrl snaps — GLOBAL = the world grid, LOCAL = step
      *  increments), double-click = the owner's settings, plus a
      *  per-ball single-click action. */
-    private void wireBall(Sphere ball,
+    private void wireBall(Sphere ball, Rig rig, double radius,
                           java.util.function.Supplier<Vec3> at,
                           Runnable onDouble,
                           java.util.function.Consumer<Vec3> moveApply,
@@ -3866,13 +5210,12 @@ class Viewport3D {
         Color idle = Color.rgb(248, 249, 252);
         PhongMaterial mat = new PhongMaterial(idle);
         ball.setMaterial(mat);
-        ball.setOnMouseEntered(e ->
-            mat.setDiffuseColor(Color.rgb(255, 240, 170)));
-        ball.setOnMouseExited(e -> mat.setDiffuseColor(idle));
+        // handlers live in a GPart for the screen-space picker (D248
+        // — the node itself takes no mouse events); bodies unchanged
         double[] st = new double[9];   // rightW, downW, upp, px, py
         Vec3[] base = new Vec3[1];
         boolean[] moved = new boolean[1];
-        ball.setOnMousePressed(e -> {
+        javafx.event.EventHandler<MouseEvent> press = e -> {
             if (e.getButton() != MouseButton.PRIMARY) return;
             e.consume();
             if (moveApply == null) return;
@@ -3902,12 +5245,17 @@ class Viewport3D {
             base[0] = at.get();
             moved[0] = false;
             gizmoPushed = false;
-        });
-        ball.setOnMouseDragged(e -> {
+        };
+        javafx.event.EventHandler<MouseEvent> drag = e -> {
             if (moveApply == null || base[0] == null) return;
             e.consume();
             double ddx = e.getScreenX() - st[7], ddy = e.getScreenY() - st[8];
             if (!moved[0] && Math.hypot(ddx, ddy) <= 3) return;
+            // a DENSITY PREVIEW owns the document (D247): the drag is
+            // refused with the stats reason — pvRerun would snap the
+            // move back on its next tick (clicks refuse too since the
+            // D247 review fix — see the released handler)
+            if (app.convertBusy()) return;
             if (!moved[0]) {
                 // first real move: a track ball reveals its rig here
                 // (the rig-only build keeps THIS ball alive, D188)
@@ -3933,8 +5281,8 @@ class Viewport3D {
             }
             pushOnce();
             moveApply.accept(t);
-        });
-        ball.setOnMouseReleased(e -> {
+        };
+        javafx.event.EventHandler<MouseEvent> release = e -> {
             if (e.getButton() != MouseButton.PRIMARY) return;
             e.consume();
             if (moved[0]) {          // a real drag: no click actions
@@ -3944,8 +5292,14 @@ class Viewport3D {
                 return;
             }
             base[0] = null;
+            // a DENSITY PREVIEW owns the document (D247 review fix —
+            // the F3 gate on CLICKS too): a single click activates
+            // the ball's piece, and an activation off the previewed
+            // section cancels the preview (and ends a range chain)
+            // silently; a double-click would open a panel over it
+            if (app.convertBusy()) return;
             // DOUBLE-CLICK (v17.3, D140; EVERY ball since v18.11):
-            // opens the owner's settings — seam pop-out, Track Piece
+            // opens the owner's settings — seam window, Track Piece
             // panel, bridge properties
             if (e.getClickCount() == 2) {
                 if (onDouble != null) {
@@ -3957,14 +5311,22 @@ class Viewport3D {
             }
             if (e.getClickCount() != 1) return;
             if (onSingleClick != null) onSingleClick.run();
-        });
+        };
+        gizmoParts.add(new GPart(0, rig, ball, mat, idle,
+            Color.rgb(255, 240, 170), at, null, radius, false,
+            press, drag, release));
     }
 
     /** The ACTIVE piece's entry gizmo: translation arrows + the yaw
-     *  ring; pitch/roll rings only where UNLOCKED (bridged-in pieces
-     *  read the bridge's shared padlocks). A piece PLACED by an
-     *  optimize-mode bridge builds none of it (machine-owned — the
-     *  previous piece's bridge gizmo is the surface). */
+     *  ring; pitch/roll rings only where the UI guard is open (🔓).
+     *  A bridged-in piece reads the bridge's shared padlocks in the
+     *  bridge's own sense since v19.20 (D249: rings for the HELD
+     *  axes, the bridge-end rig's rule — reachable only through a
+     *  manual bridge's target, and D247's run-wide balls give such a
+     *  piece no entry ball of its own, so the bridge-end rig is the
+     *  surface in practice). A piece PLACED by an optimize-mode
+     *  bridge builds none of it (machine-owned — the previous piece's
+     *  bridge gizmo is the surface). */
     private void buildPieceGizmo(boolean local, int pi, TrackPiece p) {
         BridgeSection into = app.bridgeInto(pi);
         if (into != null && into.optMode != BridgeSection.OPT_NONE) return;
@@ -3976,7 +5338,12 @@ class Viewport3D {
             return;
         }
         Rig rig = newRig(() -> new Vec3(p.x, p.y, p.z));
-        rig.onDouble = () -> app.showPlacementPopup(Boolean.FALSE);
+        // the panel shows the ACTIVE piece's rows: a rig revealed on
+        // another piece of the run activates it first (D247)
+        rig.onDouble = () -> {
+            app.editor.activatePieceSection(pi, 0);
+            app.openPlacementPopup(false);   // fresh, at the anchor (D248)
+        };
         addTranslationArrows(rig, local, () -> p.entryPose().orient(),
             new AxisSink() {
                 private double bx, by, bz, bProj;
@@ -4013,20 +5380,27 @@ class Viewport3D {
                     app.rebuildTrack();
                 }
             });
-        boolean lockY = into != null && into.lockYaw;
-        boolean lockP = into != null ? into.lockPitch : p.uiLockPitch;
-        boolean lockR = into != null ? into.lockRoll : p.uiLockRoll;
+        // "lockX" = NO ring / not written: a free piece's guard (🔒 =
+        // frozen), a bridged-in piece's FREE axis (🔓 — the bridge's
+        // sense since D249: its held axes are the ones with rings)
+        boolean lockY = into != null && !into.lockYaw;
+        boolean lockP = into != null ? !into.lockPitch : p.uiLockPitch;
+        boolean lockR = into != null ? !into.lockRoll : p.uiLockRoll;
         // LOCAL rings aim along the ENTRY FRAME (v18.18, D189 — the
         // NL2 look) and their drags are TRUE rotations about the
         // drawn axis (v18.19, D190: compose + decompose, all
         // unlocked deltas written); Global keeps the model Euler
-        // axes with the classic one-Euler-per-ring writes.
+        // axes with the classic one-Euler-per-ring writes. Under
+        // DESIGN_ONLY the frame is the DESIGN pose (D249 — rigFrame;
+        // the global pitch axis is the yawed base heading's
+        // horizontal right, identical for both tiers since yaw is
+        // shared).
         java.util.function.Supplier<Vec3> yawAx = () -> local
-            ? p.entryPose().orient().U() : new Vec3(0, 1, 0);
+            ? rigFrame(p).U() : new Vec3(0, 1, 0);
         java.util.function.Supplier<Vec3> pitAx = () -> local
-            ? rightOf(p.entryPose().orient()) : pitchAxis(p);
+            ? rightOf(rigFrame(p)) : pitchAxis(p);
         java.util.function.Supplier<Vec3> rolAx =
-            () -> p.entryPose().orient().T();
+            () -> rigFrame(p).T();
         // GLOBAL rings drive the RAW absolute Euler coordinate (D224:
         // base + delta, unreduced) — absolute-from-press stays
         // continuous THROUGH the pole (no ±85 clamp; the panel shows
@@ -4042,8 +5416,14 @@ class Viewport3D {
                          : null);
         }
         if (!lockP) {
+            // the ring's baseVal is the RAW of the tier the mode edits
+            // (D249 review fix: under DESIGN_ONLY setRawAbs* derives
+            // the design delta from `deg`, so the base must be the
+            // design raw or the tier would jump onto real + drag;
+            // item O re-aims the axes at the design frame)
             addRing(rig, 0.85, RING_PITCH, pitAx,
-                () -> p.rawAbsPitch(), deg -> {
+                () -> p.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
+                    ? p.rawAbsDesignPitch() : p.rawAbsPitch(), deg -> {
                     pushOnce();
                     app.placementEdit(p,
                         () -> p.setRawAbsPitch(deg, true));   // D222
@@ -4053,7 +5433,8 @@ class Viewport3D {
         }
         if (!lockR) {
             addRing(rig, 0.7, RING_ROLL, rolAx,
-                () -> p.rawAbsRoll(), deg -> {
+                () -> p.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
+                    ? p.rawAbsDesignRoll() : p.rawAbsRoll(), deg -> {
                     pushOnce();
                     app.placementEdit(p,
                         () -> p.setRawAbsRoll(deg, true));   // D222
@@ -4074,8 +5455,16 @@ class Viewport3D {
         return new RingLocal() {
             private Quat q0;
             private Vec3 a0;
+            private boolean dOnly() {
+                return p.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+            }
             @Override public void begin() {
-                q0 = p.entryPose().orient();
+                // the frame of the tier the mode edits (D249 review
+                // fix: DESIGN_ONLY rotates the DESIGN pose and the
+                // decomposed deltas are design deltas — editPitch/
+                // editRoll take those there)
+                q0 = dOnly() ? p.designPose().orient()
+                             : p.entryPose().orient();
                 Vec3 a = axis.get();
                 double len = a.length();
                 a0 = len > 1e-9 ? a.scale(1 / len) : new Vec3(0, 1, 0);
@@ -4087,8 +5476,10 @@ class Viewport3D {
                 // nearest the current deltas — through the vertical
                 // the pitch runs past 90 instead of yaw/roll jumping
                 // 180 (the old clamp+canonical pair was the "wobble")
+                boolean dO = dOnly();
                 double[] d = TrackPiece.decomposeNear(p.baseOrient, tgt,
-                    p.yawDeg, p.pitchDeg, p.rollDeg);
+                    p.yawDeg, dO ? p.designPitchDeg : p.pitchDeg,
+                    dO ? p.designRollDeg : p.rollDeg);
                 if (d == null) return;   // heading undefined: hold
                 pushOnce();
                 app.placementEdit(p, () -> {   // D222 routing + carry
@@ -4105,24 +5496,45 @@ class Viewport3D {
      *  anchored ON the junction, rings ONLY for the DISCONTINUOUS
      *  axes (they hold an editable angle; a following axis has no
      *  number to turn — toggle it Discontinuous in the seam settings
-     *  first). Writes go through the editor's seam path; one undo
-     *  per gesture, the gizmo contract. */
+     *  first) — except in DESIGN mode (D249), where the pitch/roll
+     *  rings edit the design frame regardless of the padlocks.
+     *  Writes go through the editor's seam path; one undo per
+     *  gesture, the gizmo contract. */
     private void buildSeamGizmo(int pi, TrackPiece f) {
         Rig rig = newRig(() -> {
             Vec3 v = app.editor.seamWorldPos(pi);
             return v != null ? v : new Vec3(f.x, f.y, f.z);
         });
-        rig.onDouble = () -> app.editor.showStrictSeamSettings(pi);
+        rig.onDouble = () -> {
+            app.editor.activatePieceSection(pi, 0);   // D247: activate first
+            app.editor.showStrictSeamSettings(pi);
+        };
         // LOCAL rings ride the follow-contract frame (v18.18, D189)
         // with TRUE about-the-axis drags (v18.19, D190: eulerOf
-        // decomposition — the held angles ARE euler quantities)
+        // decomposition — the held angles ARE euler quantities).
+        // DESIGN MODE (v19.20, D249 — item O): while the follower
+        // edits its DESIGN orientation the rig SNAPS to the design
+        // frame (designPose — local axes off it, the global pitch
+        // axis = the design heading's horizontal right), the
+        // pitch/roll rings build REGARDLESS of the padlocks with
+        // baseVal = the design elevation/bank and write the design
+        // tier absolutely (GraphEditor.gizmoSetSeamOrient →
+        // Coaster.seamDesignSet — the real entry never moves); the
+        // yaw ring stays the held REAL heading's (sLockYaw-gated —
+        // heading is placement, never a design quantity). The mode
+        // and the design tier ride the gizmo sig, so a flip rebuilds
+        // the rig back onto the real frame.
         boolean local = app.settings.gizmoLocal();
+        boolean design = f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+        java.util.function.Supplier<Quat> frame = () -> design
+            ? f.designPose().orient() : app.editor.seamEntryOrient(pi);
         java.util.function.Supplier<Vec3> yawAx = () -> local
-            ? app.editor.seamEntryOrient(pi).U() : new Vec3(0, 1, 0);
+            ? frame.get().U() : new Vec3(0, 1, 0);
         java.util.function.Supplier<Vec3> pitAx = () -> local
-            ? rightOf(app.editor.seamEntryOrient(pi)) : seamPitchAxis(pi);
-        java.util.function.Supplier<Vec3> rolAx =
-            () -> app.editor.seamEntryOrient(pi).T();
+            ? rightOf(frame.get())
+            : design ? horizontalRight(f.designPose().orient().T())
+                     : seamPitchAxis(pi);
+        java.util.function.Supplier<Vec3> rolAx = () -> frame.get().T();
         if (f.sLockYaw) {
             addRing(rig, 1.0, RING_YAW, yawAx,
                 () -> f.sYawDeg, deg -> {
@@ -4130,33 +5542,56 @@ class Viewport3D {
                     app.editor.gizmoSetSeamOrient(pi, 0, wrapDeg(deg));
                 }, local ? seamLocal(pi, yawAx) : null);
         }
-        if (f.sLockPitch) {
+        if (design || f.sLockPitch) {
             addRing(rig, 0.85, RING_PITCH, pitAx,
-                () -> f.sPitchDeg, deg -> {
+                () -> design ? designEuler(f, 1) : f.sPitchDeg, deg -> {
                     pushOnce();
                     app.editor.gizmoSetSeamOrient(pi, 1,
                         FvdDesigner.clamp(deg, -85, 85));
                 }, local ? seamLocal(pi, pitAx) : null);
         }
-        if (f.sLockRoll) {
+        if (design || f.sLockRoll) {
             addRing(rig, 0.7, RING_ROLL, rolAx,
-                () -> f.sRollDeg, deg -> {
+                () -> design ? designEuler(f, 2) : f.sRollDeg, deg -> {
                     pushOnce();
                     app.editor.gizmoSetSeamOrient(pi, 2, wrapDeg(deg));
                 }, local ? seamLocal(pi, rolAx) : null);
         }
     }
 
+    /** A follower's DESIGN elevation (axis 1) / bank (axis 2) — the
+     *  seam rig's ring baseVal in design mode (D249); 0 when the
+     *  design frame is vertical (the write then refuses with the
+     *  editor's stats reason). */
+    private static double designEuler(TrackPiece f, int axis) {
+        double[] g = Coaster.eulerOf(f.designPose().orient());
+        return Double.isNaN(g[axis]) ? 0 : g[axis];
+    }
+
+    /** The horizontal right of a heading T (the global pitch-ring
+     *  axis for a frame); world X when T is vertical. */
+    private static Vec3 horizontalRight(Vec3 t) {
+        Vec3 r = new Vec3(-t.z(), 0, t.x());
+        double len = r.length();
+        return len > 1e-9 ? r.scale(1 / len) : new Vec3(1, 0, 0);
+    }
+
     /** Bridge-rig local sink (v18.19): decompose against the NEXT
      *  piece's base orientation, write through the editor's combined
      *  bridge path (locks + optimize re-place handled there). */
-    private RingLocal bridgeLocal(TrackPiece t,
+    private RingLocal bridgeLocal(int pi, TrackPiece t,
             java.util.function.Supplier<Vec3> axis) {
         return new RingLocal() {
             private Quat q0;
             private Vec3 a0;
+            private boolean dOnly() {
+                return t.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+            }
             @Override public void begin() {
-                q0 = t.entryPose().orient();
+                // the tier the mode edits (D249 review fix — the piece
+                // rig's rule): DESIGN_ONLY rotates the design pose
+                q0 = dOnly() ? t.designPose().orient()
+                             : t.entryPose().orient();
                 Vec3 a = axis.get();
                 double len = a.length();
                 a0 = len > 1e-9 ? a.scale(1 / len) : new Vec3(0, 1, 0);
@@ -4164,11 +5599,13 @@ class Viewport3D {
             @Override public void rotate(double deltaDeg) {
                 Quat tgt = Quat.aboutAxis(a0,
                     Math.toRadians(deltaDeg)).mul(q0);
+                boolean dO = dOnly();
                 double[] d = TrackPiece.decomposeNear(t.baseOrient, tgt,
-                    t.yawDeg, t.pitchDeg, t.rollDeg);   // D224
+                    t.yawDeg, dO ? t.designPitchDeg : t.pitchDeg,
+                    dO ? t.designRollDeg : t.rollDeg);   // D224
                 if (d == null) return;
                 pushOnce();
-                app.editor.gizmoSetBridgeOrientAll(wrapDeg(d[0]),
+                app.editor.gizmoSetBridgeOrientAll(pi, wrapDeg(d[0]),
                     d[1], wrapDeg(d[2]));
             }
         };
@@ -4177,14 +5614,29 @@ class Viewport3D {
     /** Seam-rig local sink (v18.19): the held angles are eulerOf
      *  quantities, so the rotated frame decomposes via eulerOf;
      *  DISCONTINUOUS axes get the values, following axes just
-     *  follow (they hold no number). */
+     *  follow (they hold no number). DESIGN MODE (D249): the sink
+     *  rotates the DESIGN pose instead — its elevation/bank land on
+     *  the design tier absolutely and the rotation's HEADING DELTA
+     *  (off the press-time design heading) goes to the held real yaw
+     *  when that axis is locked (GraphEditor.gizmoSetSeamDesignAll). */
     private RingLocal seamLocal(int pi,
             java.util.function.Supplier<Vec3> axis) {
         return new RingLocal() {
             private Quat q0;
             private Vec3 a0;
+            private boolean design;
+            private double h0, y0;
             @Override public void begin() {
-                q0 = app.editor.seamEntryOrient(pi);
+                TrackPiece f = pi < app.coaster.pieces.size()
+                    ? app.coaster.pieces.get(pi) : null;
+                design = f != null
+                    && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY;
+                q0 = design ? f.designPose().orient()
+                            : app.editor.seamEntryOrient(pi);
+                if (design) {
+                    h0 = Coaster.eulerOf(q0)[0];
+                    y0 = f.sYawDeg;
+                }
                 Vec3 a = axis.get();
                 double len = a.length();
                 a0 = len > 1e-9 ? a.scale(1 / len) : new Vec3(0, 1, 0);
@@ -4195,6 +5647,13 @@ class Viewport3D {
                 double[] e = Coaster.eulerOf(tgt);
                 if (Double.isNaN(e[0]) || Double.isNaN(e[2])) return;
                 pushOnce();
+                if (design) {
+                    double heldYaw = Double.isNaN(h0) ? Double.NaN
+                        : y0 + TrackPiece.wrap180(e[0] - h0);
+                    app.editor.gizmoSetSeamDesignAll(pi, heldYaw, e[1],
+                        e[2]);
+                    return;
+                }
                 app.editor.gizmoSetSeamOrientAll(pi, e[0], e[1], e[2]);
             }
         };
@@ -4217,16 +5676,29 @@ class Viewport3D {
 
     /** The trailing bridge's end gizmo = the NEXT piece's entry,
      *  shown while revealed whatever section is active (v16.12).
-     *  Manual mode: arrows + unlocked rings; optimize modes: the
-     *  march owns position — ONE orange tangent arrow drags the
-     *  LENGTH (hidden under Optimize length); optimize-orientation
-     *  also owns the unlocked rings, so none show. Writes go through
-     *  the editor's trailing-bridge gizmo paths (undo pushed here,
-     *  once per gesture). */
-    private void buildBridgeGizmo(boolean local, BridgeSection bs,
+     *  Manual mode: translation arrows; optimize modes: the march
+     *  owns position — ONE orange tangent arrow drags the LENGTH
+     *  (hidden under Optimize length). RINGS for the HELD (🔒) axes
+     *  in manual AND position mode since v19.20 (D249 — the seam
+     *  rig's rule, user spec: a held axis holds an editable angle,
+     *  a free one has no ring — lock it in the bridge window first;
+     *  pre-D249 the rings were the UNLOCKED axes' and manual-only);
+     *  optimize-orientation keeps the tangent arrow alone. Writes go
+     *  through the editor's trailing-bridge gizmo paths (undo pushed
+     *  here, once per gesture) — PIECE-INDEXED since v19.18 (D247):
+     *  `pi` is the piece the bridge trails, so a rig revealed from a
+     *  non-active piece's bridge-end ball writes to THAT bridge. */
+    private void buildBridgeGizmo(boolean local, int pi, BridgeSection bs,
                                   TrackPiece t) {
         Rig rig = newRig(() -> new Vec3(t.x, t.y, t.z));
-        rig.onDouble = () -> app.showPlacementPopup(Boolean.TRUE);
+        // the bridge window's rows sync only while the bridge
+        // SECTION itself is active: activate (pi, last) first (D247)
+        rig.onDouble = () -> {
+            if (pi >= app.coaster.pieces.size()) return;   // stale rig
+            app.editor.activatePieceSection(pi,
+                app.coaster.pieces.get(pi).sections.size() - 1);
+            app.openBridgeWindow(pi);   // "Bridge settings (Strict Seam n)" (D249)
+        };
         if (bs.optMode == BridgeSection.OPT_NONE) {
             addTranslationArrows(rig, local, () -> t.entryPose().orient(),
                 new AxisSink() {
@@ -4259,7 +5731,7 @@ class Viewport3D {
                             t.y = fy;
                             t.z = fz;
                         });
-                        app.editor.gizmoBridgeMoved();
+                        app.editor.gizmoBridgeMoved(pi);
                     }
                 });
         } else if (!bs.optLen) {
@@ -4269,7 +5741,7 @@ class Viewport3D {
                 new AxisSink() {
                     private double base;
                     @Override public void begin(Vec3 dir0) {
-                        base = app.editor.gizmoBridgeGap();
+                        base = app.editor.gizmoBridgeGap(pi);
                     }
                     @Override public void apply(double lam, boolean snap) {
                         double gap = base + lam;
@@ -4278,42 +5750,48 @@ class Viewport3D {
                             gap = Math.round(gap / step) * step;
                         }
                         pushOnce();
-                        app.editor.gizmoSetBridgeGap(Math.max(1, gap));
+                        app.editor.gizmoSetBridgeGap(pi, Math.max(1, gap));
                     }
                 });
             rig.group.getChildren().add(arrow);
         }
         if (bs.optMode != BridgeSection.OPT_POS_YAW) {
             // LOCAL rings ride the next piece's entry frame (v18.18,
-            // D189) with TRUE about-the-axis drags (v18.19, D190)
+            // D189) with TRUE about-the-axis drags (v18.19, D190) —
+            // the DESIGN frame while the target edits its design
+            // orientation (D249, rigFrame; the piece rig's rule)
             java.util.function.Supplier<Vec3> yawAx = () -> local
-                ? t.entryPose().orient().U() : new Vec3(0, 1, 0);
+                ? rigFrame(t).U() : new Vec3(0, 1, 0);
             java.util.function.Supplier<Vec3> pitAx = () -> local
-                ? rightOf(t.entryPose().orient()) : pitchAxis(t);
+                ? rightOf(rigFrame(t)) : pitchAxis(t);
             java.util.function.Supplier<Vec3> rolAx =
-                () -> t.entryPose().orient().T();
+                () -> rigFrame(t).T();
             // raw absolute coordinates (D224) — continuous through
-            // the pole like the piece rig
-            if (!bs.lockYaw) {
+            // the pole like the piece rig; a ring per HELD axis (D249)
+            if (bs.lockYaw) {
                 addRing(rig, 1.0, RING_YAW, yawAx,
                     () -> t.rawAbsYaw(), deg -> {
                         pushOnce();
-                        app.editor.gizmoSetBridgeOrient(0, deg);
-                    }, local ? bridgeLocal(t, yawAx) : null);
+                        app.editor.gizmoSetBridgeOrient(pi, 0, deg);
+                    }, local ? bridgeLocal(pi, t, yawAx) : null);
             }
-            if (!bs.lockPitch) {
+            if (bs.lockPitch) {
+                // baseVal = the raw of the tier the mode edits (D249
+                // review fix — the piece rig's rule)
                 addRing(rig, 0.85, RING_PITCH, pitAx,
-                    () -> t.rawAbsPitch(), deg -> {
+                    () -> t.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
+                        ? t.rawAbsDesignPitch() : t.rawAbsPitch(), deg -> {
                         pushOnce();
-                        app.editor.gizmoSetBridgeOrient(1, deg);
-                    }, local ? bridgeLocal(t, pitAx) : null);
+                        app.editor.gizmoSetBridgeOrient(pi, 1, deg);
+                    }, local ? bridgeLocal(pi, t, pitAx) : null);
             }
-            if (!bs.lockRoll) {
+            if (bs.lockRoll) {
                 addRing(rig, 0.7, RING_ROLL, rolAx,
-                    () -> t.rawAbsRoll(), deg -> {
+                    () -> t.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
+                        ? t.rawAbsDesignRoll() : t.rawAbsRoll(), deg -> {
                         pushOnce();
-                        app.editor.gizmoSetBridgeOrient(2, deg);
-                    }, local ? bridgeLocal(t, rolAx) : null);
+                        app.editor.gizmoSetBridgeOrient(pi, 2, deg);
+                    }, local ? bridgeLocal(pi, t, rolAx) : null);
             }
         }
     }
@@ -4432,14 +5910,16 @@ class Viewport3D {
         Runnable aimIt = () -> aim(rot, axis.get());
         aimIt.run();
         rig.aims.add(aimIt);
-        hoverGlow(g, mat, col);
-        wireRingDrag(g, rig, axis, baseVal, applyAbs, localSink);
+        // hover + drag through the screen-space picker (D248)
+        wireRingDrag(g, rig, mat, col, radius, axis, baseVal, applyAbs,
+            localSink);
         rig.group.getChildren().add(g);
     }
 
     /** Shaft + cone tip along +local-Y, aimed along the (live) WORLD
      *  direction — thicker since v16.12 (grabbing needed too much
-     *  precision). */
+     *  precision); since D248 the grab band is the picker's
+     *  PICK_ARROW_PX, independent of the drawn width. */
     private Group gizmoArrow(Rig rig,
             java.util.function.Supplier<Vec3> dir, Color col) {
         return gizmoArrow(rig, dir, col, false);
@@ -4472,7 +5952,9 @@ class Viewport3D {
         Runnable aimIt = () -> aim(rot, dir.get());
         aimIt.run();
         rig.aims.add(aimIt);
-        hoverGlow(g, mat, col);
+        // the picker's build data — wireAxisDrag registers the part
+        // (hover glow is central too, D248)
+        g.setUserData(new ArrowMeta(mat, col, dir, twoSided));
         return g;
     }
 
@@ -4499,10 +5981,12 @@ class Viewport3D {
         return m;
     }
 
-    private static void hoverGlow(Group g, PhongMaterial mat, Color col) {
-        g.setOnMouseEntered(e -> mat.setDiffuseColor(
-            col.interpolate(Color.WHITE, 0.5)));
-        g.setOnMouseExited(e -> mat.setDiffuseColor(col));
+    /** The rigs' hover tint (arrows/rings): the color half-way to
+     *  white — applied by setGizmoHover (D248; the per-node
+     *  MOUSE_ENTERED/EXITED glow of v16.12 is gone with the nodes'
+     *  mouse role). */
+    private static Color hoverTint(Color col) {
+        return col.interpolate(Color.WHITE, 0.5);
     }
 
     /** Axis drag, ABSOLUTE from the press (v16.12): the axis's screen
@@ -4513,10 +5997,12 @@ class Viewport3D {
      *  handlers never see them. */
     private void wireAxisDrag(Group part, Rig rig,
             java.util.function.Supplier<Vec3> axis, AxisSink sink) {
+        ArrowMeta meta = (ArrowMeta) part.getUserData();   // gizmoArrow's
         double[] sv = new double[3];   // press-time screen axis: sx, sy, |s|²
-        part.setOnMousePressed(e -> {
+        javafx.event.EventHandler<MouseEvent> press = e -> {
             if (e.getButton() != MouseButton.PRIMARY) return;
             sub.requestFocus();
+            if (app.convertBusy()) return;   // preview owns the doc (D247)
             Vec3 a = rig.anchor.get();
             Vec3 d = axis.get();
             Point2D p0 = projectWorld(a);
@@ -4534,16 +6020,16 @@ class Viewport3D {
             gDragY = e.getScreenY();
             sink.begin(d);
             e.consume();
-        });
-        part.setOnMouseDragged(e -> {
+        };
+        javafx.event.EventHandler<MouseEvent> drag = e -> {
             if (!gizmoDragging) return;
             double lam = ((e.getScreenX() - gDragX) * sv[0]
                         + (e.getScreenY() - gDragY) * sv[1]) / sv[2];
             lam = FvdDesigner.clamp(lam, -60 * rig.scale, 60 * rig.scale);
             sink.apply(lam, e.isControlDown());
             e.consume();
-        });
-        part.setOnMouseReleased(e -> {
+        };
+        javafx.event.EventHandler<MouseEvent> release = e -> {
             boolean was = gizmoPushed;
             endGizmoDrag();
             // dbl-click anywhere on the rig = its settings (v18.13);
@@ -4553,7 +6039,10 @@ class Viewport3D {
                 rig.onDouble.run();
             }
             e.consume();
-        });
+        };
+        gizmoParts.add(new GPart(1, rig, part, meta.mat(), meta.col(),
+            hoverTint(meta.col()), rig.anchor, meta.dir(), ARROW_LEN,
+            meta.twoSided(), press, drag, release));
     }
 
     /** Ring drag, LINEAR + ABSOLUTE (v16.12, user spec): the press
@@ -4566,15 +6055,17 @@ class Viewport3D {
      *  scene is a Y-MIRROR of the world, so the applied delta is
      *  NEGATED (one documented sign — flip here if a ring ever runs
      *  backwards). Ctrl snaps the value to whole degrees. */
-    private void wireRingDrag(Group part, Rig rig,
+    private void wireRingDrag(Group part, Rig rig, PhongMaterial mat,
+            Color col, double radius,
             java.util.function.Supplier<Vec3> axis,
             java.util.function.DoubleSupplier baseVal,
             java.util.function.DoubleConsumer applyAbs,
             RingLocal localSink) {
         double[] st = new double[4];   // ux, uy, deg/px, base value
-        part.setOnMousePressed(e -> {
+        javafx.event.EventHandler<MouseEvent> press = e -> {
             if (e.getButton() != MouseButton.PRIMARY) return;
             sub.requestFocus();
+            if (app.convertBusy()) return;   // preview owns the doc (D247)
             Vec3 c = rig.anchor.get();
             Vec3 ax = axis.get();
             Point3D cS = world.localToScene(c.x(), -c.y(), c.z());
@@ -4617,8 +6108,8 @@ class Viewport3D {
             gDragX = e.getScreenX();
             gDragY = e.getScreenY();
             e.consume();
-        });
-        part.setOnMouseDragged(e -> {
+        };
+        javafx.event.EventHandler<MouseEvent> drag = e -> {
             if (!gizmoDragging) return;
             double dist = (e.getScreenX() - gDragX) * st[0]
                         + (e.getScreenY() - gDragY) * st[1];
@@ -4635,8 +6126,8 @@ class Viewport3D {
             if (e.isControlDown()) val = Math.round(val);
             applyAbs.accept(val);
             e.consume();
-        });
-        part.setOnMouseReleased(e -> {
+        };
+        javafx.event.EventHandler<MouseEvent> release = e -> {
             boolean was = gizmoPushed;
             endGizmoDrag();
             // dbl-click anywhere on the rig = its settings (v18.13)
@@ -4645,7 +6136,9 @@ class Viewport3D {
                 rig.onDouble.run();
             }
             e.consume();
-        });
+        };
+        gizmoParts.add(new GPart(2, rig, part, mat, col, hoverTint(col),
+            rig.anchor, axis, radius, false, press, drag, release));
     }
 
     /** The mouse ray's hit on the plane through cW ⊥ axW, in SCENE

@@ -6,7 +6,8 @@ import java.util.*;
 /** D222 gate — TWO-TIER ORIENTATION ("Lock Track Shape") + RIGID
  *  DOWNSTREAM CARRY + the D221→D222 re-spec.
  *
- *  a) defaults: fresh piece locked, design (0,0), no conflict.
+ *  a) defaults: fresh piece UNLOCKED + orientOnlyToSeam (D248 —
+ *     was locked, D222), design (0,0), no conflict.
  *  b) edit routing: locked moves TRUE only; unlocked moves BOTH by
  *     the same amount; a pre-existing conflict rides along.
  *  c) compile tiers: design (0,0) = the historic rigid path (exact
@@ -21,9 +22,14 @@ import java.util.*;
  *  g) yaw carry across a strict seam: follower rides exactly.
  *  h) porient IO: new format round-trips; the D221 interim 2-field
  *     line migrates (mode 1 → unlocked + design := true); missing =
- *     locked + (0,0).
- *  i) the march's alignment writes never touch the design tier
- *     (no reshape-loop even on an unlocked target).
+ *     UNLOCKED + (0,0) + orientOnly (D248; was locked).
+ *  Fixtures that mean "locked: pure conflict" set orientMode =
+ *  REAL_ONLY explicitly since D248 (the default flipped; the 3-state
+ *  mode since D249 — LOCKSTEP = the old unlocked).
+ *  i) the march's alignment writes never touch the design tier of a
+ *     REAL_ONLY target (D249's one tier rule: the march routes
+ *     through editPitch/editRoll — LOCKSTEP targets move both tiers,
+ *     gated in OrientModeGate g).
  *  j) button semantics at the model level: real→design keeps the
  *     shape (rigid image); design→real re-solves to the pure-link
  *     shape.
@@ -105,24 +111,26 @@ public class OrientGate {
     public static void main(String[] args) throws Exception {
         // ---------- (a) defaults ----------
         TrackPiece fresh = new TrackPiece(0, 21, 0, 0);
-        check(fresh.shapeLocked && fresh.designPitchDeg == 0
+        check(!fresh.shapeLocked() && !fresh.affectSubsequentSeams
+                && fresh.designPitchDeg == 0
                 && fresh.designRollDeg == 0 && !fresh.orientConflict(),
-            "a  fresh piece: locked, design (0,0), no conflict");
+            "a  fresh piece: UNLOCKED + orientOnly (D248), design (0,0), no conflict");
 
         // ---------- (b) edit routing ----------
         TrackPiece rp = new TrackPiece(0, 21, 0, 0);
+        rp.orientMode = TrackPiece.OrientMode.REAL_ONLY;     // D248: locked is explicit now
         rp.editPitch(10);
         check(rp.pitchDeg == 10 && rp.designPitchDeg == 0
                 && rp.orientConflict(),
             "b1 locked edit: TRUE moves, design holds, conflict opens");
-        rp.shapeLocked = false;
+        rp.orientMode = TrackPiece.OrientMode.LOCKSTEP;
         rp.editPitch(16);          // +6 with a 10-deg conflict riding
         check(rp.pitchDeg == 16 && rp.designPitchDeg == 6,
             "b2 unlocked edit: both tiers move by the same amount");
         rp.editRoll(-9);
         check(rp.rollDeg == -9 && rp.designRollDeg == -9,
             "b3 unlocked roll from zero: tiers stay equal");
-        rp.shapeLocked = true;
+        rp.orientMode = TrackPiece.OrientMode.REAL_ONLY;
         rp.editRoll(-4);
         check(rp.rollDeg == -4 && rp.designRollDeg == -9,
             "b4 re-locked edit: TRUE only again");
@@ -132,6 +140,7 @@ public class OrientGate {
         Coaster c1 = oneHill();
         TrackPiece p1 = c1.pieces.get(0);
         TrackCompiler.Result flat = rebuild(c1);
+        p1.orientMode = TrackPiece.OrientMode.REAL_ONLY;     // D248: locked is explicit now
         p1.editPitch(12);          // locked: pure conflict
         p1.editRoll(-8);
         TrackCompiler.Result rigid = rebuild(c1);
@@ -145,7 +154,7 @@ public class OrientGate {
         // c2: design == true = bakeTilt's re-solve, no ≠v
         Coaster c2 = oneHill();
         TrackPiece p2 = c2.pieces.get(0);
-        p2.shapeLocked = false;
+        p2.orientMode = TrackPiece.OrientMode.LOCKSTEP;
         p2.editPitch(12);
         p2.editRoll(-8);
         TrackCompiler.Result linked = rebuild(c2);
@@ -173,14 +182,15 @@ public class OrientGate {
         // top: the conflicted twin is the exact rigid image
         Coaster cA = oneHill();
         TrackPiece pA = cA.pieces.get(0);
-        pA.shapeLocked = false;
+        pA.orientMode = TrackPiece.OrientMode.LOCKSTEP;
         pA.editPitch(7);           // design = true = (7, -5)
         pA.editRoll(-5);
         TrackCompiler.Result rA = rebuild(cA);
         Coaster cB = oneHill();
         TrackPiece pB = cB.pieces.get(0);
+        pB.orientMode = TrackPiece.OrientMode.REAL_ONLY;     // D248: locked is explicit now
         pB.editPitch(11);          // locked first: conflict 11 deg
-        pB.shapeLocked = false;
+        pB.orientMode = TrackPiece.OrientMode.LOCKSTEP;
         pB.editPitch(18);          // +7 → design pitch 7, true 18
         pB.editRoll(-5);           // design roll -5, true -5
         TrackCompiler.Result rB = rebuild(cB);
@@ -242,6 +252,7 @@ public class OrientGate {
         // ---------- (e/f) RIGID carry through a manual bridge ----------
         Coaster cc = new Coaster();
         TrackPiece hA = new TrackPiece(0, 21, 0, 0);
+        hA.orientMode = TrackPiece.OrientMode.REAL_ONLY;     // D248: locked is explicit now
         hA.sections.add(new ForceSection(hillLanes(), 26));
         cc.pieces.add(hA);
         TrackPiece hB = new TrackPiece(120, 14, 30, 20);
@@ -377,7 +388,7 @@ public class OrientGate {
         Coaster ch = new Coaster();
         TrackPiece ph = new TrackPiece(0, 21, 0, 0);
         ph.sections.add(new ForceSection(flatLanes(4), 26));
-        ph.shapeLocked = false;
+        ph.orientMode = TrackPiece.OrientMode.LOCKSTEP;
         ph.designPitchDeg = 3.25;
         ph.designRollDeg = -1.5;
         ph.pitchDeg = 8;
@@ -393,23 +404,24 @@ public class OrientGate {
         Coaster ch2 = DesignIO.load(new BufferedReader(
             new StringReader(txt))).coaster();
         TrackPiece ph2 = ch2.pieces.get(0);
-        check(!ph2.shapeLocked && ph2.designPitchDeg == 3.25
+        check(!ph2.shapeLocked() && ph2.designPitchDeg == 3.25
                 && ph2.designRollDeg == -1.5 && ph2.pitchDeg == 8,
             "h1 porient round-trips locked + design tier bit-exact");
         String stripped = txt.lines().filter(l -> !l.startsWith("porient"))
             .reduce("", (a, b) -> a + b + "\n");
         Coaster ch3 = DesignIO.load(new BufferedReader(
             new StringReader(stripped))).coaster();
-        check(ch3.pieces.get(0).shapeLocked
+        check(!ch3.pieces.get(0).shapeLocked()
+                && !ch3.pieces.get(0).affectSubsequentSeams
                 && ch3.pieces.get(0).designPitchDeg == 0
                 && ch3.pieces.get(0).designRollDeg == 0,
-            "h2 no porient line: locked + (0,0) = historic rigid");
+            "h2 no porient line: UNLOCKED + orientOnly + (0,0) (D248)");
         String interim = txt.lines().map(l -> l.startsWith("porient")
                 ? "porient 1 1" : l)
             .reduce("", (a, b) -> a + b + "\n");
         Coaster ch4 = DesignIO.load(new BufferedReader(
             new StringReader(interim))).coaster();
-        check(!ch4.pieces.get(0).shapeLocked
+        check(!ch4.pieces.get(0).shapeLocked()
                 && ch4.pieces.get(0).designPitchDeg == 8
                 && ch4.pieces.get(0).designRollDeg == 0,
             "h3 D221 interim line (mode 1) migrates: design := true");
@@ -421,7 +433,7 @@ public class OrientGate {
         ci.pieces.add(iA);
         TrackPiece iB = new TrackPiece(130, 12, 25, 15);
         iB.sections.add(new ForceSection(flatLanes(3), 24));
-        iB.shapeLocked = false;    // even unlocked: machine bypasses
+        iB.orientMode = TrackPiece.OrientMode.REAL_ONLY;   // D249: true-only routing
         ci.pieces.add(iB);
         TrackCompiler.Result ri0 = TrackCompiler.compile(ci, DT);
         BridgeSection ib = BridgeSection.solve(ri0.spans().get(0).exit(),
@@ -434,12 +446,13 @@ public class OrientGate {
         ci.optimizeBridge(ib, 1, 40, true);
         check(iB.designPitchDeg == 0 && iB.designRollDeg == 0
                 && Math.abs(iB.pitchDeg) > 1e-9,
-            "i  march pitch alignment writes TRUE tier only (no loop)",
+            "i  march pitch alignment on a REAL_ONLY target writes the TRUE tier only",
             String.format("true pitch %.3f design 0", iB.pitchDeg));
 
         // ---------- (j) button semantics (model level) ----------
         Coaster cj = oneHill();
         TrackPiece pj = cj.pieces.get(0);
+        pj.orientMode = TrackPiece.OrientMode.REAL_ONLY;     // D248: locked is explicit now
         pj.editPitch(9);           // locked conflict
         TrackCompiler.Result rj = rebuild(cj);
         // Real → Design: true := design, shape preserved
@@ -456,6 +469,7 @@ public class OrientGate {
         // Design → Real: design := true, re-solves to the pure link
         Coaster ck = oneHill();
         TrackPiece pk = ck.pieces.get(0);
+        pk.orientMode = TrackPiece.OrientMode.REAL_ONLY;     // D248: locked is explicit now
         pk.editPitch(9);
         rebuild(ck);
         pk.designPitchDeg = pk.pitchDeg;
@@ -463,7 +477,7 @@ public class OrientGate {
         TrackCompiler.Result rk = rebuild(ck);
         Coaster cl = oneHill();
         TrackPiece pl = cl.pieces.get(0);
-        pl.shapeLocked = false;
+        pl.orientMode = TrackPiece.OrientMode.LOCKSTEP;
         pl.editPitch(9);
         TrackCompiler.Result rl = rebuild(cl);
         double devK = 0;

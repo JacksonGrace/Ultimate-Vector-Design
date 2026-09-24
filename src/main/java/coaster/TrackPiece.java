@@ -61,38 +61,103 @@ public final class TrackPiece {
      *  in canonical space — gravity re-solves there). The design→
      *  true gap applies as the rigid conflict tilt: design == (0,0)
      *  is bitwise the historic D100 path, design == true is the pure
-     *  link (no ≠v from placement). shapeLocked is a pure EDIT-
-     *  ROUTING flag — it never changes the compile: LOCKED (default)
-     *  = orientation edits move TRUE only (the conflict grows, the
-     *  shape is preserved, the downstream chain carries rigidly);
-     *  UNLOCKED = edits move BOTH by the same amount (the offset
-     *  frozen at unlock time rides along — unchecking never moves
-     *  anything, and the shaping any subsequent edit causes is
-     *  IDENTICAL whether or not a conflict rides on top: same design
-     *  triple, same generation bits). Persisted as the `porient`
-     *  line (locked pd rd); missing = locked + (0,0) = every old
-     *  file bitwise. Machine writes (the bridge march's alignment)
-     *  bypass the routing and write TRUE directly — they are
-     *  conflict-writes by convention, so an aligned target can never
-     *  reshape-loop the optimizer. */
-    public boolean shapeLocked = true;
+     *  link (no ≠v from placement). orientMode is a pure EDIT-ROUTING
+     *  choice — it never changes the compile (v19.20, D249 — the
+     *  3-state mode replacing D222/D248's shapeLocked boolean):
+     *  LOCKSTEP (the DEFAULT, = D248's unlocked) = edits move BOTH
+     *  tiers by the same amount (the offset frozen at the time rides
+     *  along — switching modes never moves anything, and the shaping
+     *  any subsequent edit causes is IDENTICAL whether or not a
+     *  conflict rides on top: same design triple, same generation
+     *  bits); REAL_ONLY (= D222's locked, "locks track shape") =
+     *  orientation edits move TRUE only (the conflict grows, the
+     *  shape is preserved, the downstream chain carries rigidly when
+     *  affectSubsequentSeams says so); DESIGN_ONLY = edits move the
+     *  DESIGN tier only — the real entry never moves, the shape
+     *  re-solves, the conflict changes by the design delta. ONE TIER
+     *  RULE (D249, superseding D222's "machine writes bypass the
+     *  routing"): EVERY writer of a piece's pitch/roll — the user's
+     *  boxes/↺/rings AND the bridge march's alignment
+     *  (Coaster.alignPieceForBridge) — goes through editPitch/
+     *  editRoll, so under LOCKSTEP the march can never open a
+     *  conflict, under REAL_ONLY it writes true only (today's
+     *  conflict-write), and DESIGN_ONLY makes optimize-orientation
+     *  unavailable (a defensive march there writes true only). Yaw is
+     *  shared by both tiers in every mode. Persisted as the `porient`
+     *  line (locked pd rd affect mode — field 1 keeps its D222 meaning
+     *  (1 = REAL_ONLY) for old readers, field 5 = the mode ordinal);
+     *  a MISSING line = LOCKSTEP + (0,0) + no carry (the compile never
+     *  reads the mode, so every old file's TRACK is bitwise; only its
+     *  edit routing changed). shapeLocked() is the derived accessor
+     *  (== REAL_ONLY) for readers that only ask "does an edit keep
+     *  the shape?". */
+    public enum OrientMode { LOCKSTEP, REAL_ONLY, DESIGN_ONLY }
+    public OrientMode orientMode = OrientMode.LOCKSTEP;
     public double designPitchDeg;
     public double designRollDeg;
 
-    /** TRUE-pitch edit through the D222 routing: locked = the
-     *  conflict absorbs it; unlocked = design rides along by the
-     *  same amount (Euler-value lockstep — the D222 invariance). */
+    /** Derived: does an orientation edit keep the track shape (true
+     *  tier only)? == orientMode == REAL_ONLY (D249 — the D222
+     *  boolean lives on as this accessor for existing readers). */
+    public boolean shapeLocked() {
+        return orientMode == OrientMode.REAL_ONLY;
+    }
+
+    /** "Affect Subsequent Strict Seams" (v19.20, D249 — the INVERTED
+     *  rename of D248's orientOnlyToSeam, user spec): EDIT-ROUTING
+     *  only, never read by the compile. While TRUE, a REAL_ONLY
+     *  piece's placement edit carries the whole connected downstream
+     *  rigidly (the D221 carry — Coaster.carriesDownstream is the one
+     *  predicate FvdDesigner.placementEdit reads). FALSE (the default
+     *  = D248's default behavior) stops the edit at the piece's own
+     *  exit junction of EITHER kind: an OPT_NONE bridge target keeps
+     *  its stored placement (the septic stretches), optimize-mode
+     *  bridges re-march from the moved head, and a strict follower's
+     *  LOCKED axes keep their absolute held angles while its position
+     *  and unlocked axes follow by compile (a re-aim with a horizontal
+     *  component can open a seam ≠o — accepted). Inert under LOCKSTEP
+     *  (the shape re-solves, the downstream updates naturally) and
+     *  under DESIGN_ONLY (the real entry never moves — nothing to
+     *  carry). Persisted as the `porient` line's 4th field with the
+     *  NEW meaning (1 = carry); a D248 4-field line stored the old
+     *  'only' bit and inverts on load (DesignIO decides by field
+     *  count); missing = false. */
+    public boolean affectSubsequentSeams = false;
+
+    /** Pitch edit through the D249 routing — v is the new DELTA of
+     *  the tier(s) being edited: LOCKSTEP = both tiers move by the
+     *  same amount (Euler-value lockstep — the D222 invariance);
+     *  REAL_ONLY = true only, the conflict absorbs it; DESIGN_ONLY =
+     *  v is the DESIGN delta (design := v), the real entry untouched.
+     *  The setDisp / setRawAbs wrappers derive v from the tier the
+     *  mode edits, so a box/ring value round-trips on that tier. */
     public void editPitch(double v) {
-        if (!shapeLocked) designPitchDeg += v - pitchDeg;
-        pitchDeg = v;
+        switch (orientMode) {
+            case LOCKSTEP -> { designPitchDeg += v - pitchDeg; pitchDeg = v; }
+            case REAL_ONLY -> pitchDeg = v;
+            case DESIGN_ONLY -> designPitchDeg = v;
+        }
     }
 
     public void editRoll(double v) {
-        double d = v - rollDeg;
         // both tiers stay inside the spinners' ±360 (a wrap is the
         // same rotation; in-range values never move — bitwise)
-        if (!shapeLocked) designRollDeg = wrap360(designRollDeg + d);
-        rollDeg = wrap360(v);
+        switch (orientMode) {
+            case LOCKSTEP -> {
+                double d = v - rollDeg;
+                designRollDeg = wrap360(designRollDeg + d);
+                rollDeg = wrap360(v);
+            }
+            case REAL_ONLY -> rollDeg = wrap360(v);
+            case DESIGN_ONLY -> designRollDeg = wrap360(v);
+        }
+    }
+
+    /** Which tier the display/raw write wrappers edit (D249): the
+     *  DESIGN tier under DESIGN_ONLY, the real one otherwise (LOCKSTEP
+     *  moves both by the real-derived delta — bitwise today's). */
+    private boolean editsDesign() {
+        return orientMode == OrientMode.DESIGN_ONLY;
     }
 
     /** Any design→true orientation conflict? (The buttons/readout
@@ -151,6 +216,44 @@ public final class TrackPiece {
         this.y = y;
         this.z = z;
         this.yawDeg = yawDeg;
+    }
+
+    /** A DEEP COPY of this piece translated by dz along world Z
+     *  (v19.18, D247 — the Track Piece panel's Copy button, through
+     *  Coaster.copyRun). EVERY field copies verbatim — the undo
+     *  snapshot's PieceState coverage, incl. the UI padlocks, the
+     *  strict-seam flags/held angles/smoothing, the two orientation
+     *  tiers and the CANONICAL PAIR (a translation never touches it:
+     *  generation runs at position zero, so the copy's shape is
+     *  BITWISE the source's, D199). Sections are NEW objects with
+     *  NEW lists (Coaster.copySection — the editor holds lane/element
+     *  list references, so nothing may be shared); the immutable
+     *  Quats are shared. The copy is a plain list-free piece: the
+     *  caller appends it and decides its links (copyRun normalizes
+     *  the run head's followPrev). */
+    public TrackPiece copy(double dz) {
+        TrackPiece c = new TrackPiece(x, y, z + dz, yawDeg);
+        c.pitchDeg = pitchDeg;
+        c.rollDeg = rollDeg;
+        c.uiLockPitch = uiLockPitch;
+        c.uiLockRoll = uiLockRoll;
+        c.baseOrient = baseOrient;
+        c.canonPsiDeg = canonPsiDeg;
+        c.canonOrient = canonOrient;
+        c.orientMode = orientMode;                       // D249
+        c.affectSubsequentSeams = affectSubsequentSeams;   // D249
+        c.designPitchDeg = designPitchDeg;
+        c.designRollDeg = designRollDeg;
+        c.followPrev = followPrev;
+        c.sLockYaw = sLockYaw;
+        c.sLockPitch = sLockPitch;
+        c.sLockRoll = sLockRoll;
+        c.sYawDeg = sYawDeg;
+        c.sPitchDeg = sPitchDeg;
+        c.sRollDeg = sRollDeg;
+        c.sSmoothLen = sSmoothLen;
+        for (Section s : sections) c.sections.add(Coaster.copySection(s, dz));
+        return c;
     }
 
     /** Entry pose of the piece's first section. Identity base + all
@@ -393,6 +496,19 @@ public final class TrackPiece {
         return (b == null ? 0 : b[2]) + rollDeg;
     }
 
+    /** RAW absolute elevation / bank of the DESIGN tier (base +
+     *  design delta, unreduced — v19.20, D249: the ring drags'
+     *  continuous coordinate while the rig edits the design frame). */
+    public double rawAbsDesignPitch() {
+        double[] b = baseEuler();
+        return (b == null ? 0 : b[1]) + designPitchDeg;
+    }
+
+    public double rawAbsDesignRoll() {
+        double[] b = baseEuler();
+        return (b == null ? 0 : b[2]) + designRollDeg;
+    }
+
     /** Canonical displayed heading (internal sense — the UI negates
      *  per D186), ±360. */
     public double dispYaw() {
@@ -449,15 +565,18 @@ public final class TrackPiece {
 
     /** Displayed elevation := v on the CURRENT pole branch (so a
      *  piece past the pole keeps its heading and moves along its
-     *  mirrored scale); route = the D222 edit routing (true only vs
-     *  lockstep), false = a plain true-tier write (bridge rows). */
+     *  mirrored scale); route = the D249 edit routing (editPitch per
+     *  orientMode — under DESIGN_ONLY the new delta derives from the
+     *  DESIGN raw, so the box that shows dispDesignPitch() reads v
+     *  back), false = a plain true-tier write (the restore paths). */
     public void setDispPitch(double v, boolean route) {
         double[] b = baseEuler();
         double np;
         if (b == null) {
             np = v;
         } else {
-            double raw = b[1] + pitchDeg;
+            double raw = b[1] + (route && editsDesign()
+                ? designPitchDeg : pitchDeg);
             double[] red = reduceElev(raw);
             double target;
             if (red[1] == 0) {
@@ -473,14 +592,16 @@ public final class TrackPiece {
     }
 
     /** Displayed bank := v (the shortest way is NOT taken — the
-     *  spinner's ±360 is honored, like the roll box always was). */
+     *  spinner's ±360 is honored, like the roll box always was). The
+     *  pole flip reads the tier the mode edits (D249). */
     public void setDispRoll(double v, boolean route) {
         double[] b = baseEuler();
         double nr;
         if (b == null) {
             nr = v;
         } else {
-            double flip = reduceElev(b[1] + pitchDeg)[1];
+            double flip = reduceElev(b[1] + (route && editsDesign()
+                ? designPitchDeg : pitchDeg))[1];
             nr = v - b[2] - 180 * flip;
         }
         if (route) editRoll(nr);
@@ -488,7 +609,9 @@ public final class TrackPiece {
     }
 
     /** RAW-coordinate writes for the ring drags (absolute-from-press,
-     *  continuous through the pole): raw absolute := v. */
+     *  continuous through the pole): raw absolute := v. Under
+     *  DESIGN_ONLY (route = true) the raw is the DESIGN tier's —
+     *  rawAbsDesignPitch/Roll are the matching baseVals (D249). */
     public void setRawAbsYaw(double v, boolean route) {
         double[] b = baseEuler();
         yawDeg = wrap360(b == null ? v : v - b[0]);
