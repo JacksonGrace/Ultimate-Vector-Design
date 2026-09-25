@@ -1,0 +1,370 @@
+package uvd;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * BezierBaker.java  (per-lane independent nodes)
+ *
+ * Each of the three property lanes (0 = vertical G, 1 = lateral G,
+ * 2 = roll rate deg/s) has its OWN independent list of nodes over ride
+ * time. A node holds one value plus cubic Bezier handles, stored RELATIVE
+ * to the neighboring segment:
+ *   out handle: outFrac (fraction 0..MAX_FRAC of the time gap to the NEXT
+ *               node) + outDv (absolute value offset at the handle end);
+ *   in handle:  inFrac (fraction of the gap to the PREVIOUS node) + inDv.
+ * Because handle lengths are fractions, moving a node in time rescales the
+ * attached handles automatically — the curve "squishes" horizontally but
+ * keeps its shape exactly (bring two nodes twice as close and the segment
+ * is the same graph at half width).
+ * `smooth` keeps the two handles collinear (C1 continuity) in the editor.
+ *
+ * The ride's duration is the max end time across the three lanes; a lane
+ * whose nodes end earlier simply holds its final value to the end.
+ *
+ * NO JavaFX dependencies: unit-testable headlessly.
+ */
+public class BezierBaker {
+
+    public static final int LANES = 3;
+    public static final double DEFAULT_FRAC = 1.0 / 3.0;
+    // handles may reach 150% of the segment (past the neighbor in time);
+    // the resulting folded time-axis is sanitized by bakeLane's monotonic
+    // guard, so extreme shapes stay finite (fuzz-tested)
+    public static final double MAX_FRAC = 1.5;
+
+    public static class Node {
+        public double t;
+        public double val;
+        public double outFrac = DEFAULT_FRAC, outDv;
+        public double inFrac = DEFAULT_FRAC, inDv;
+        public boolean smooth = true;
+        // straight-lock (Shift+F): the segment leaving this node is held
+        // straight — the editor re-chords its facing handles after every
+        // edit. Pure data here; enforcement lives in the UI layer.
+        public boolean straightOut = false;
+        // level-lock (Shift+H, v10.5): the segment leaving this node is
+        // held HORIZONTAL — the right node takes this node's value and
+        // the facing handles stay flat. Mutually exclusive with
+        // straightOut (the toggles clear each other).
+        public boolean levelOut = false;
+
+        public Node(double t, double val) {
+            this.t = t;
+            this.val = val;
+        }
+
+        /** Either lock owns the segment leaving this node. */
+        public boolean lockedOut() { return straightOut || levelOut; }
+
+        public Node copy() {
+            Node n = new Node(t, val);
+            n.outFrac = outFrac; n.outDv = outDv;
+            n.inFrac = inFrac;   n.inDv = inDv;
+            n.smooth = smooth;
+            n.straightOut = straightOut;
+            n.levelOut = levelOut;
+            return n;
+        }
+    }
+
+    /** Flat one-third default handles for every node in a lane. */
+    public static void applyDefaultHandles(List<Node> lane) {
+        for (Node n : lane) {
+            n.outFrac = DEFAULT_FRAC; n.outDv = 0;
+            n.inFrac = DEFAULT_FRAC;  n.inDv = 0;
+        }
+    }
+
+    /** Flat default handles for one node given its (possibly null) neighbors. */
+    public static void applyDefaultHandles(Node n, Node prev, Node next) {
+        if (next != null) { n.outFrac = DEFAULT_FRAC; n.outDv = 0; }
+        if (prev != null) { n.inFrac = DEFAULT_FRAC;  n.inDv = 0; }
+    }
+
+    /** Remove an INTERIOR node, keeping the neighbors' facing handles
+     *  at their FRACTIONS but preserving their SLOPES (v13.12, D86 —
+     *  the user's spec; a v13.11 attempt kept the absolute knob
+     *  positions instead and was rejected: handles must keep their
+     *  fractional amount like every other edit). Fractions are
+     *  segment-relative, so the merged gap stretches the handles'
+     *  time runs — dv rescales with the new run so the curve still
+     *  LEAVES each survivor at the same dv/dt (a plain removal kept
+     *  dv and halved fitted slopes per delete: converted carpets
+     *  "snapped flat"). Ends fall back to a plain remove. */
+    public static void removeBridging(List<Node> lane, int i) {
+        if (i > 0 && i < lane.size() - 1) {
+            Node prev = lane.get(i - 1);
+            Node next = lane.get(i + 1);
+            double outDt = effOutDt(prev, lane.get(i));
+            double inDt = effInDt(lane.get(i), next);
+            double outSlope = Math.abs(outDt) < 1e-12 ? 0 : prev.outDv / outDt;
+            double inSlope = Math.abs(inDt) < 1e-12 ? 0 : next.inDv / inDt;
+            lane.remove(i);
+            prev.outDv = outSlope * effOutDt(prev, next);
+            next.inDv = inSlope * effInDt(prev, next);
+            return;
+        }
+        lane.remove(i);
+    }
+
+    /** Segment x-gaps of a lane — the pre-edit snapshot for
+     *  {@link #rescaleDvToGaps}. */
+    public static double[] segGaps(List<Node> lane) {
+        double[] g = new double[Math.max(0, lane.size() - 1)];
+        for (int i = 0; i < g.length; i++) {
+            g[i] = lane.get(i + 1).t - lane.get(i).t;
+        }
+        return g;
+    }
+
+    /** After node x-moves changed some segment runs, rescale the dv
+     *  offsets of the handles FACING each changed segment so they keep
+     *  their SLOPES (v16.1, D105 — the removeBridging rule applied to
+     *  node moves, user re-spec 2026-07-12; supersedes D63's "kinks
+     *  accepted": fractions already rescale the handles' x-runs with
+     *  the segment, dv now rides along, so a smooth joint's two
+     *  handles stay collinear through any horizontal move). Node
+     *  count must be unchanged since the snapshot. */
+    public static void rescaleDvToGaps(List<Node> lane, double[] oldGaps) {
+        int n = Math.min(oldGaps.length, lane.size() - 1);
+        for (int i = 0; i < n; i++) {
+            double now = lane.get(i + 1).t - lane.get(i).t;
+            double old = oldGaps[i];
+            if (old < 1e-12 || Math.abs(now - old) < 1e-12) continue;
+            double r = now / old;
+            lane.get(i).outDv *= r;
+            lane.get(i + 1).inDv *= r;
+        }
+    }
+
+    /** Out-handle time offset in SECONDS for segment a->b, from the fraction. */
+    public static double effOutDt(Node a, Node b) {
+        return clamp(a.outFrac, 0, MAX_FRAC) * (b.t - a.t);
+    }
+
+    /** In-handle time offset in seconds (<= 0) for segment a->b. */
+    public static double effInDt(Node a, Node b) {
+        return -clamp(b.inFrac, 0, MAX_FRAC) * (b.t - a.t);
+    }
+
+    /** End time of the ride: latest node across all lanes. EMPTY
+     *  lanes contribute 0 (v19.11, D240 hardening — legal documents
+     *  never hold one, but the editor's NO_LANES placeholder can
+     *  transiently pair with a lane section and a get(-1) here took
+     *  the whole redraw down). */
+    public static double rideEnd(List<List<Node>> lanes) {
+        double end = 0;
+        for (List<Node> lane : lanes) {
+            if (lane.isEmpty()) continue;
+            end = Math.max(end, lane.get(lane.size() - 1).t);
+        }
+        return end;
+    }
+
+    /**
+     * Bake all three lanes onto a uniform time grid of keyframes for the
+     * integrator. gridStep ~0.05s.
+     */
+    public static List<FVDIntegrator.Keyframe> bake(List<List<Node>> lanes, double gridStep) {
+        double end = rideEnd(lanes);
+
+        // EXACT keyframe values (v17.11, D151): each grid point reads
+        // the owning segment's cubic directly. The old path went
+        // through bakeLane's ~0.1-unit PARAMETER-space polyline, whose
+        // knots move under node inserts and section splits even when
+        // the curve itself is identical — the dominant term of the
+        // D147 split-vs-unsplit residual (~2 cm per 100 m on curved
+        // lanes; the knot-invariant exact read leaves only the grid's
+        // own phase, ~mm). The editor keeps the polyline for drawing/
+        // hit tests; only the physics path changed.
+        List<FVDIntegrator.Keyframe> out = new ArrayList<>();
+        for (double t = 0; t < end; t += gridStep) {
+            out.add(new FVDIntegrator.Keyframe(
+                t, exactAt(lanes.get(0), t), exactAt(lanes.get(1), t),
+                exactAt(lanes.get(2), t)));
+        }
+        out.add(new FVDIntegrator.Keyframe(
+            end, exactAt(lanes.get(0), end), exactAt(lanes.get(1), end),
+            exactAt(lanes.get(2), end)));
+        return out;
+    }
+
+    // (bake's exact reads go through the v16.9 exactAt below — D151
+    // widened its use from the abs-roll channel to EVERY keyframe)
+
+    /** Value of a single lane's curve at time t (used by the editor). */
+    public static double evalAt(List<Node> lane, double t) {
+        return evalPolyline(bakeLane(lane), t);
+    }
+
+    /** The lane's baked (t, value) polyline — for editor hit tests that
+     *  need the whole curve (e.g. nearest-point on steep sections). */
+    public static List<double[]> polyline(List<Node> lane) {
+        return bakeLane(lane);
+    }
+
+    /** Sample one lane's chain of cubic Beziers into a (t, value) polyline. */
+    private static List<double[]> bakeLane(List<Node> lane) {
+        List<double[]> poly = new ArrayList<>();
+        if (lane.isEmpty()) return poly;   // D240 hardening (rideEnd's note)
+        if (lane.size() == 1) {
+            Node only = lane.get(0);
+            poly.add(new double[]{ only.t, only.val });
+            return poly;
+        }
+        for (int i = 0; i < lane.size() - 1; i++) {
+            Node a = lane.get(i), b = lane.get(i + 1);
+            double x0 = a.t,                    y0 = a.val;
+            double x1 = a.t + effOutDt(a, b),   y1 = a.val + a.outDv;
+            double x2 = b.t + effInDt(a, b),    y2 = b.val + b.inDv;
+            double x3 = b.t,                    y3 = b.val;
+
+            int n = (int) clamp(Math.round((b.t - a.t) / 0.1), 8, 48);
+            for (int k = 0; k < n; k++) {
+                double u = (double) k / n;
+                poly.add(new double[]{ cubic(x0, x1, x2, x3, u), cubic(y0, y1, y2, y3, u) });
+            }
+        }
+        Node last = lane.get(lane.size() - 1);
+        poly.add(new double[]{ last.t, last.val });
+
+        // enforce strictly increasing t
+        for (int i = 1; i < poly.size(); i++) {
+            if (poly.get(i)[0] <= poly.get(i - 1)[0]) {
+                poly.get(i)[0] = poly.get(i - 1)[0] + 1e-6;
+            }
+        }
+        return poly;
+    }
+
+    /**
+     * De Casteljau split of segment a->b at time t: returns the new middle
+     * node and REWRITES a's out / b's in handles so the two halves trace the
+     * ORIGINAL curve exactly (zero disturbance — this is the standard cubic
+     * Bezier subdivision identity, no approximation involved). The new
+     * node's handles land tangent to the curve and collinear, so it is
+     * naturally smooth.
+     */
+    public static Node splitSegment(Node a, Node b, double t) {
+        double x0 = a.t,                  y0 = a.val;
+        double x1 = a.t + effOutDt(a, b), y1 = a.val + a.outDv;
+        double x2 = b.t + effInDt(a, b),  y2 = b.val + b.inDv;
+        double x3 = b.t,                  y3 = b.val;
+
+        // find u with x(u) = t; x(0) < t < x(1), bisection is robust even
+        // for pathological folded handles
+        double lo = 0, hi = 1;
+        for (int k = 0; k < 60; k++) {
+            double mid = (lo + hi) / 2;
+            if (cubic(x0, x1, x2, x3, mid) < t) lo = mid; else hi = mid;
+        }
+        double u = (lo + hi) / 2;
+
+        double q1x = lerp(x0, x1, u), q1y = lerp(y0, y1, u);
+        double q2x = lerp(x1, x2, u), q2y = lerp(y1, y2, u);
+        double q3x = lerp(x2, x3, u), q3y = lerp(y2, y3, u);
+        double r1x = lerp(q1x, q2x, u), r1y = lerp(q1y, q2y, u);
+        double r2x = lerp(q2x, q3x, u), r2y = lerp(q2y, q3y, u);
+        double mx  = lerp(r1x, r2x, u), my  = lerp(r1y, r2y, u);
+
+        Node n = new Node(mx, my);
+        double leftSeg = mx - a.t, rightSeg = b.t - mx;
+        a.outFrac = clamp((q1x - a.t) / leftSeg, 0, MAX_FRAC);
+        a.outDv   = q1y - a.val;
+        n.inFrac  = clamp((mx - r1x) / leftSeg, 0, MAX_FRAC);
+        n.inDv    = r1y - my;
+        n.outFrac = clamp((r2x - mx) / rightSeg, 0, MAX_FRAC);
+        n.outDv   = r2y - my;
+        b.inFrac  = clamp((b.t - q3x) / rightSeg, 0, MAX_FRAC);
+        b.inDv    = q3y - b.val;
+        n.smooth  = true;
+        return n;
+    }
+
+    /** Analytic slope dval/dt of the drawn curve at time t. The baked
+     *  polyline's slope is piecewise-constant (stair-steps between bake
+     *  samples), so readouts differentiate the actual cubic instead. */
+    public static double slopeAt(List<Node> lane, double t) {
+        int i = 0;
+        while (i < lane.size() && lane.get(i).t < t) i++;
+        if (i == 0 || i >= lane.size()) return 0;   // before start / hold region
+        Node a = lane.get(i - 1), b = lane.get(i);
+        double x0 = a.t,                  y0 = a.val;
+        double x1 = a.t + effOutDt(a, b), y1 = a.val + a.outDv;
+        double x2 = b.t + effInDt(a, b),  y2 = b.val + b.inDv;
+        double x3 = b.t,                  y3 = b.val;
+        double lo = 0, hi = 1;
+        for (int k = 0; k < 50; k++) {
+            double mid = (lo + hi) / 2;
+            if (cubic(x0, x1, x2, x3, mid) < t) lo = mid; else hi = mid;
+        }
+        double u = (lo + hi) / 2;
+        double dx = cubicDeriv(x0, x1, x2, x3, u);
+        double dy = cubicDeriv(y0, y1, y2, y3, u);
+        if (Math.abs(dx) < 1e-6) dx = dx < 0 ? -1e-6 : 1e-6;  // near-vertical
+        return dy / dx;
+    }
+
+    /** EXACT lane value at t — the parametric cubic's u solved by
+     *  bisection, like {@link #slopeAt} (v16.9, D121). The baked
+     *  polyline walks ~0.1-unit parameter steps and LINEAR-fills the
+     *  keyframe grid between them — invisible for rate lanes (tiny
+     *  value error), but an ABSOLUTE roll lane's bank target gets
+     *  DIFFERENTIATED by the ride, so the compiler re-samples its
+     *  roll channel through this instead. Holds the end values
+     *  outside the lane. */
+    public static double exactAt(List<Node> lane, double t) {
+        if (lane.isEmpty()) return 0;
+        if (t <= lane.get(0).t) return lane.get(0).val;
+        Node last = lane.get(lane.size() - 1);
+        if (t >= last.t) return last.val;
+        int i = 0;
+        while (i < lane.size() && lane.get(i).t < t) i++;
+        Node a = lane.get(i - 1), b = lane.get(i);
+        double x0 = a.t,                  y0 = a.val;
+        double x1 = a.t + effOutDt(a, b), y1 = a.val + a.outDv;
+        double x2 = b.t + effInDt(a, b),  y2 = b.val + b.inDv;
+        double x3 = b.t,                  y3 = b.val;
+        double lo = 0, hi = 1;
+        for (int k = 0; k < 50; k++) {
+            double mid = (lo + hi) / 2;
+            if (cubic(x0, x1, x2, x3, mid) < t) lo = mid; else hi = mid;
+        }
+        double u = (lo + hi) / 2;
+        return cubic(y0, y1, y2, y3, u);
+    }
+
+    private static double cubicDeriv(double p0, double p1, double p2, double p3, double u) {
+        double w = 1 - u;
+        return 3 * w * w * (p1 - p0) + 6 * w * u * (p2 - p1) + 3 * u * u * (p3 - p2);
+    }
+
+    private static double lerp(double a, double b, double u) {
+        return a + (b - a) * u;
+    }
+
+    private static double cubic(double p0, double p1, double p2, double p3, double u) {
+        double w = 1 - u;
+        return w * w * w * p0 + 3 * w * w * u * p1 + 3 * w * u * u * p2 + u * u * u * p3;
+    }
+
+    private static double evalPolyline(List<double[]> poly, double t) {
+        if (poly.isEmpty()) return 0;   // D240 hardening (rideEnd's note)
+        if (t <= poly.get(0)[0]) return poly.get(0)[1];
+        int hi = poly.size() - 1;
+        if (t >= poly.get(hi)[0]) return poly.get(hi)[1];
+        int lo = 0;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (poly.get(mid)[0] <= t) lo = mid; else hi = mid;
+        }
+        double[] a = poly.get(lo), b = poly.get(hi);
+        double u = (t - a[0]) / (b[0] - a[0]);
+        return a[1] + (b[1] - a[1]) * u;
+    }
+
+    private static double clamp(double v, double lo, double hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+}

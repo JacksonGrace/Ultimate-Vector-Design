@@ -1,4 +1,4 @@
-import coaster.*;
+import uvd.*;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,7 +31,7 @@ public class BankProbe {
         Coaster fbk = Coaster.singleForce(fb, 24, 0, 21, 0);
         TrackCompiler.Result r = TrackCompiler.compile(fbk, dt);
         List<FVDIntegrator.Sample> s = r.samples();
-        // use worldRates via reflection? it's package coaster, static
+        // use worldRates via reflection? it's package uvd, static
         // package-visible — this probe is outside the package. Recompute
         // inline with the same math instead.
         System.out.println("t  elevDeg  bankDeg  fdBankRate  anPhi'  anPsi'");

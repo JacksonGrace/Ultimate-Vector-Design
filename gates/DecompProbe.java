@@ -1,4 +1,4 @@
-package coaster;
+package uvd;
 
 import java.util.Locale;
 import java.util.Random;

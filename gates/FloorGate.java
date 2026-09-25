@@ -1,10 +1,10 @@
-import coaster.*;
+import uvd.*;
 
 import java.util.*;
 
 /** D249 gate (RE-BASELINED from the D248 depth-lift gate — the
  *  lift API is retired, see FloorDepth's postmortem): the floor's
- *  pure model via coaster.FloorDepth — the D241-D246 STRENGTH LAW
+ *  pure model via uvd.FloorDepth — the D241-D246 STRENGTH LAW
  *  and the GROUND-SPLIT routing of the track layer. Asserts:
  *   f1  strength-law sanity (the D248 f8): the 100 m decade is dead
  *       at a 2 m eye, all three decades alive at 60 m, only the

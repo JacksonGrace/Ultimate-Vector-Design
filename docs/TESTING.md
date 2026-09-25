@@ -3562,7 +3562,7 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     removes it in one step; Cancel un-creates it. Headless:
     OrientGate2 (18) + OrientGate (23) + the recovered battery
     (all in repo `gates/`). Dev hook: `java ... -Dfvd.devshot=DIR
-    coaster.FvdDesigner` writes start-pick/start-lane/start-sc-
+    uvd.FvdDesigner` writes start-pick/start-lane/start-sc-
     floating PNGs.
 
 148. v19.2 (D227-D231): batch 16. (a) UNDO: open Track Piece ▾,
@@ -4569,6 +4569,29 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     Vector Design"), #100/#164 "the entry sphere / node 0's marker"
     under a junction ball (hidden), and D87's "locked = frozen"
     bridge padlocks (held + editable).
+
+167. v19.21 (D250): the package rename coaster → uvd. Headless, all
+    re-run on a WIPED target/classes and a wiped gates/out with the
+    renamed package: mvn compile EXIT 0; every gate compiles; the
+    33-member core battery green with the D249 counts (DetermGate197/
+    198/199/200 6/4/10/7, LoadGate196 7, OrientGate 23, OrientGate2
+    18, MultiCoasterGate 15, SmoothRealGate 15, InflSplitGate 22,
+    ReanchorGate 3, MirrorGate 20, YpAbsGate 22, uvd.SeamShapeGate
+    31, RangeResolveGate 43, CopyGate 73, MergeGate 23, InsertGate
+    40, LabelGate 103, RunGate 66, PlacementGate 41, OrientModeGate
+    51, GestureGate 108, EndFollowGate 73, FloorGate 18, StripGate
+    49, uvd.ConflictGate 17, Nl2ElemProbe 22, uvd.DecompProbe /
+    InflMatchProbe / Phase2Gate / Phase3Gate / DomainGate pass).
+    Package-scoped gates run as `uvd.<Name>` now (gates/README.md).
+    Launches: `mvn javafx:run` → "Untitled — Ultimate Vector
+    Design"; the direct relaunch command line (`java --module-path
+    <openjfx 26 win jars> --add-modules javafx.controls -cp
+    target/classes uvd.Main`, what restartApp rebuilds) → the same
+    title. BY HAND (his machine): Edit > Resolution Scale… > Apply
+    and Restart must bring the app back (the relaunch literal is
+    `uvd.Main` now); File > Open of any older design still loads at
+    this commit (the format is untouched by the rename; the file
+    EXTENSION changes in v19.22, #168).
 
 ## Debugging heuristics learned the hard way
 

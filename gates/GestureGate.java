@@ -1,10 +1,10 @@
-import coaster.*;
+import uvd.*;
 
 import java.util.*;
 
 /** D248 gate — GRAPH-EDITOR GESTURES (v19.19, item G): the pure
  *  arithmetic behind the editor's gestures, factored into
- *  coaster.Gestures so it runs headlessly.
+ *  uvd.Gestures so it runs headlessly.
  *  (1) ARROW NUDGES — Gestures.step / nudge: plain = v ± q bitwise;
  *      Shift = a tenth; Ctrl = the NEXT round multiple from the
  *      current value (never skips a cell, on-grid float dust lands one

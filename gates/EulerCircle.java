@@ -1,4 +1,4 @@
-import coaster.Vec3;
+import uvd.Vec3;
 
 /** The OLD (pre-RK4) integrator loop, inlined, on the analytic circle —
  *  radial deviation is the apples-to-apples accuracy metric vs RK4. */

@@ -1,9 +1,9 @@
-import coaster.*;
+import uvd.*;
 
 import java.util.*;
 
 /** D248 gate — the SPEED STRIP's DESIGN-speed line (v19.19, item S2),
- *  pure model via coaster.SpeedStrip + real compiles:
+ *  pure model via uvd.SpeedStrip + real compiles:
  *  (a) an unconflicted single section: design == true at every
  *      sample, so the pixel split never fires at any strip scale —
  *      the design line is invisible and the hover has no suffix;

@@ -12938,3 +12938,50 @@ tie), the gridshot ladder + the HEAD pixel-diff + the sweep hook
 Cancel flows, the live init-speed window, Delete…, the selection
 choke, the strip readouts / twins and the disks are interactive —
 TESTING #166 walks them.
+
+## D250 (v19.21) — Package rename `coaster` → `uvd` (mechanical; no behavior change)
+
+Date: 2026-09-25, the user's go-ahead on docs/PACKAGE-RENAME-PLAN.md
+("The package name uvd sounds great … please start"; app and editor
+closed, OneDrive paused). ITS OWN COMMIT, nothing else rides on it.
+
+What changed: `git mv src/main/java/coaster src/main/java/uvd`
+(34 files, git sees renames, ≤ 5 changed lines per source file);
+`package coaster;` → `package uvd;` in all 34 sources + the 16
+package-scoped gates and `import coaster.` → `import uvd.` in 88 gate
+files (98 lines) by a count-asserting script (whole-file atomic
+writes, UTF-8, line endings kept, no BOM); pom.xml `<artifactId>` +
+`<mainClass>` → `uvd` / `uvd.Main`; FvdDesigner.restartApp's relaunch
+literal `cmd.add("uvd.Main")` (the D242 Apply-and-Restart path) + the
+three comments naming the launcher; the run lines in gates/README.md,
+CLAUDE.md, docs/TESTING.md and the memory notes now say `uvd.X`.
+NOT renamed, by decision: the settings file
+`~/.fvd-designer.properties` (its name is a user-visible contract —
+renaming it would silently reset every preference), the save format
+magic (FVDD3/FVDD4), gates/attic-noncompiling, the historic prose in
+this file and TESTING (a D-entry describes the tree it was written
+on), the memory folder key (the project folder rename is the user's
+own step and re-keys it), and the Save-As default name "coaster.…"
+(user choice — kept). The file EXTENSION change is the NEXT commit
+(D251), deliberately separate so the rename stays mechanical.
+
+Verification (the plan's steps 7-10): `rm -rf target/classes && mvn
+compile -q` EXIT 0 (119 class files under target/classes/uvd);
+`rm -rf gates/out` + javac of every gate EXIT 0; the full 33-member
+core battery green with counts identical to the D249 closing run
+(DetermGate197/198/199/200 6/4/10/7, LoadGate196 7, OrientGate 23,
+OrientGate2 18, MultiCoasterGate 15, SmoothRealGate 15, InflSplitGate
+22, ReanchorGate 3, MirrorGate 20, YpAbsGate 22, uvd.SeamShapeGate 31,
+RangeResolveGate 43, CopyGate 73, MergeGate 23, InsertGate 40,
+LabelGate 103, RunGate 66, PlacementGate 41, OrientModeGate 51,
+GestureGate 108, EndFollowGate 73, FloorGate 18, StripGate 49,
+uvd.ConflictGate 17, Nl2ElemProbe 22, DecompProbe + InflMatchProbe +
+Phase2/Phase3/DomainGate pass); smoke launch via `mvn javafx:run`
+came up titled "Untitled — Ultimate Vector Design"; a DIRECT
+`java --module-path <openjfx 26 win jars> --add-modules
+javafx.controls -cp target/classes uvd.Main` — the exact command
+restartApp rebuilds — came up with the same title (so Apply-and-
+Restart relaunches); BOM scan clean, line endings unchanged, `git
+diff --stat -M` = 34 renames + 143 files / +212 −180 (no whole-file
+churn). Still the user's by-hand check: Preferences > Resolution
+Scale… > Apply and Restart on his machine (TESTING #167).

@@ -1,6 +1,6 @@
-import coaster.BezierBaker;
-import coaster.FVDIntegrator;
-import coaster.Vec3;
+import uvd.BezierBaker;
+import uvd.FVDIntegrator;
+import uvd.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;

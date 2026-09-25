@@ -1,7 +1,7 @@
 # Headless gates (moved into the repo 2026-08-18, D223)
 
 Compile:  javac -cp target/classes -d gates/out gates/*.java
-Run:      java -cp "target/classes;gates/out" <Name>      (package-coaster probes: coaster.<Name>)
+Run:      java -cp "target/classes;gates/out" <Name>      (package-uvd probes: uvd.<Name>; package coaster → uvd in v19.21, D250)
 
 Core battery (run after ANY compile/reconcile/IO/placement change —
 33 members since D249 (OrientModeGate new; 32 since D248: StripGate new, ConflictGate extended by item S3), all green on wiped classes 2026-09-24):
@@ -10,12 +10,12 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
   MultiCoasterGate SmoothRealGate
   InflSplitGate ReanchorGate MirrorGate YpAbsGate  (influence splits, the
                           delete-first re-anchor, Mirror piece, absolute yaw/pitch)
-  coaster.SeamShapeGate  (D247 — follower design tier: attach keeps a
+  uvd.SeamShapeGate  (D247 — follower design tier: attach keeps a
                           design-tilted piece's shape, seamRealToDesign /
                           bakeFollow, seamDesignLockstep + its pole guard,
                           run-head translate, attach→detach in place with
                           the conflict kept (8a-c), bakeFollow on an
-                          abs-bank follower (9a-c); package coaster; carries
+                          abs-bank follower (9a-c); package uvd; carries
                           recorded pre-D247 sample checksums for the
                           designed=false follower paths — re-record them on
                           any deliberate physics change; 31 checks)
@@ -199,7 +199,7 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
                    tables: the batch-34 scratchpad's
                    b34_edges_M-orientmodel.md + b34_edges_O-orientui.md)
   GestureGate  (D248 — the graph editor's GESTURE arithmetic, pure model
-                via coaster.Gestures: arrow nudges (plain = v ± q bitwise,
+                via uvd.Gestures: arrow nudges (plain = v ± q bitwise,
                 Shift tenth, Ctrl = the NEXT round multiple from the current
                 value — never skips a cell, on-grid dust lands one cell over,
                 2000 random snaps land on the grid —, Shift+Ctrl, the idle
@@ -295,7 +295,7 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
               + rest poses with a line-pixel count) are their
               verification)
   StripGate  (D248, item S2 — the speed strip's DESIGN-speed line, pure
-              model via coaster.SpeedStrip + real compiles: an unconflicted
+              model via uvd.SpeedStrip + real compiles: an unconflicted
               section never splits at any strip scale (design == true
               bitwise), a PINNED section splits at EVERY sample and its
               neighbor at none (purely pixel-based, no ≠v/≠o flag read), a
@@ -323,7 +323,7 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
               strip gestures, the popup twins and the viewport's live
               drag readout are JavaFX-side. Edge table: the batch-34
               scratchpad's b34_edges_S-strip.md)
-  coaster.ConflictGate  (D237 — the phantom unresolvable ≠v (8 checks); EXTENDED
+  uvd.ConflictGate  (D237 — the phantom unresolvable ≠v (8 checks); EXTENDED
                          D248, item S3 — the INVISIBLE lateral-G TRUE STROKE under an
                          ORIENTATION conflict: GraphEditor's split reference keyed off
                          the pre-v19.0 true-tier tilt test, so a DESIGN-tier conflict
@@ -338,11 +338,11 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
                          the tiltDeviates truth table, a geo ABSOLUTE-bank section ~30°
                          off its tilted samples on lane 2 only; 9 new checks — 17 total.
                          The drawing / hover / inactive-strip / B-guard wiring is
-                         JavaFX-side (GraphEditor.splitRef); package coaster)
-  + probes named in CLAUDE.md: coaster.DecompProbe InflMatchProbe Nl2ElemProbe
+                         JavaFX-side (GraphEditor.splitRef); package uvd)
+  + probes named in CLAUDE.md: uvd.DecompProbe InflMatchProbe Nl2ElemProbe
 
 JavaFX DEV HOOKS ride the app, not gates/ (no JavaFX on this classpath):
-  java --module-path <~/.m2 openjfx base/graphics/controls 26-win jars> --add-modules javafx.controls -D<hook> -cp target/classes coaster.Main
+  java --module-path <~/.m2 openjfx base/graphics/controls 26-win jars> --add-modules javafx.controls -D<hook> -cp target/classes uvd.Main
   -Dfvd.devshot=<dir> (start-screen PNGs) · -Dfvd.devmenu=1 (Robot-drives the Coaster menu) · -Dfvd.gridshot=<dir> (floor-grid pose ladder, 15 poses)
   -Dfvd.gridshot.sweep=<dir> (D249 — the ladder's TEMPORAL twin: moving + rest poses with a printed per-frame line-pixel count; the only
    reproduction of a floor artefact that shows up while the camera moves) · -Dfvd.winshot=<dir> (D248 — renders the three live windows)

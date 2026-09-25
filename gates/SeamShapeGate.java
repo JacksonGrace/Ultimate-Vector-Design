@@ -1,4 +1,4 @@
-package coaster;
+package uvd;
 
 import java.util.*;
 
@@ -49,7 +49,7 @@ import java.util.*;
  *
  *  Package coaster (like DecompProbe): bakeFollow and
  *  seamDesignLockstep are package-private. Run: java -cp
- *  "target/classes;gates/out" coaster.SeamShapeGate
+ *  "target/classes;gates/out" uvd.SeamShapeGate
  */
 public class SeamShapeGate {
 

@@ -1,5 +1,39 @@
 # Package rename plan: `coaster` → `uvd` (its OWN commit, next session)
 
+**STATUS 2026-09-25: DONE — v19.21 (D250), steps 1-11 executed exactly as below; the
+`.uvd` file extension follows as its own commit (v19.22, D251). What remains is the
+user's part: the by-hand Apply-and-Restart check and renaming the project folder.**
+
+## Who does what (plain-language version, added 2026-09-25)
+
+Claude does the whole technical rename: re-counting the sites, moving the folder with git, rewriting
+every `package coaster;` / `import coaster.` line with count-asserting scripts, the pom main class,
+the Apply-and-Restart relaunch literal, the docs' run lines, the wiped compile, the gate battery,
+the smoke launch (including a direct `java … uvd.Main` launch, which is the exact command the
+relaunch builds), the line-ending/BOM check, and the commit. Steps 1-11 below are Claude's.
+
+You do five small things, none of them code:
+
+1. DECIDE (tell Claude in the message that starts the rename):
+   - the package name — `uvd` is recommended (short; `ultimatevectordesign` works too);
+   - whether the Maven artifactId changes with it — recommended yes (build-only, harmless);
+   - whether the Save-As default file name "coaster.fvd" becomes "design.fvd" — your call;
+   - the settings file `~/.fvd-designer.properties` stays (a rename there needs a migration).
+2. BEFORE Claude starts: close every running copy of the app, close your code editor/IDE if it has
+   the project open (Windows file locks + its own compiler writing stale classes), and pause
+   OneDrive syncing (tray icon → Pause syncing → 2 hours) so it cannot hold a file handle mid-move.
+3. START it: in a session on this folder say "Do the package rename per
+   docs/PACKAGE-RENAME-PLAN.md, package name uvd" (plus your answers from step 1). One usage window
+   of work; Claude reports the gate counts, the smoke result and the commit hash at the end.
+4. AFTER Claude reports done: resume OneDrive; reopen the editor/IDE and let it re-index — if it shows
+   red errors, close it and reopen the folder; if they persist, tell Claude and it walks you through
+   the refresh (Maven reload).
+5. VERIFY once by hand (the one thing Claude cannot click): launch the app, then Edit > Resolution
+   Scale… > "Apply and Restart" — the app must come back on its own. If it does not, tell Claude
+   ("the restart didn't come back") — that is the single site a stale class name fails silently.
+
+Nothing else is manual. The memory folder and the repo folder keep their names on purpose.
+
 Written 2026-09-24 with batch 34 (D249, item L). The display name
 became "Ultimate Vector Design" in v19.20 (FvdDesigner.APP_NAME);
 the Java PACKAGE, the Maven artifactId and the settings-file name

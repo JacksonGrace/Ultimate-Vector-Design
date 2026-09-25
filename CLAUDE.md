@@ -27,13 +27,15 @@ mvn compile           # compile-only error check
 mvn clean             # nuke target/ if the build gets into a weird state
 ```
 
-- Main class: `coaster.Main` since v19.12 (D241 — a plain launcher, set
+- Main class: `uvd.Main` since v19.12 (D241 — a plain launcher, set
   in pom.xml's javafx-maven-plugin config): it sets `glass.win.uiScale`
   from AppSettings.uiScale BEFORE the toolkit initializes (an
   Application main class gets the toolkit pre-initialized before its
   own main() runs, so the property would arrive too late) and then
-  launches `coaster.FvdDesigner`.
-- Sources live in `src/main/java/coaster/`. Every file starts with `package coaster;`.
+  launches `uvd.FvdDesigner`.
+- Sources live in `src/main/java/uvd/`. Every file starts with `package uvd;`
+  (package `coaster` → `uvd` in v19.21, D250 — a mechanical rename, no behavior
+  change; the settings file `~/.fvd-designer.properties` keeps its name).
 - JavaFX comes from Maven (`org.openjfx:javafx-controls:26`) — no SDK
   download, no `--module-path` flags. Do NOT launch via a plain `java` command
   or IDE run button; only `mvn javafx:run` sets up the JavaFX modules.
@@ -114,7 +116,7 @@ AppSettings.java    APP-WIDE PERSISTENT SETTINGS. Pure Java, no JavaFX.
                     uiScale (v19.12, D241): the Resolution Scale factor
                     RELATIVE to the OS display scale — 1.0 = never set
                     the glass property = today bitwise; read by
-                    coaster.Main pre-toolkit, edited in Preferences >
+                    uvd.Main pre-toolkit, edited in Preferences >
                     Resolution Scale… (restart-only by platform fact:
                     glass.win.uiScale is consumed in WinApplication's
                     clinit; a malformed value crashes startup, so Main
@@ -1945,7 +1947,7 @@ cleanup; recovered from transcripts): `javac -cp target/classes -d
 gates/out gates/*.java` then `java -cp "target/classes;gates/out" X`.
 Run DetermGate197/198/199/200 + OrientGate/OrientGate2 (+
 InflSplitGate/ReanchorGate/SmoothRealGate for influence, splits,
-deletes or seams; + coaster.SeamShapeGate / RangeResolveGate /
+deletes or seams; + uvd.SeamShapeGate / RangeResolveGate /
 CopyGate / MergeGate / InsertGate since D247 for followers' design
 tier, range resolves, Copy, Connect and Insert — gates/README.md
 lists the whole core battery) for anything
@@ -3268,7 +3270,7 @@ the TALL view: resulting TRUE speed green dotted + hoverable
 ("v = … m/s"; HIDDEN inside COMPLEX speed controls since v18.4
 D173/D174 — their graph IS the speed; plain constant segments
 keep it) — and the DESIGN speed as a SECOND dotted line since
-v19.19 (D248, item S2; coaster.SpeedStrip is the pure half,
+v19.19 (D248, item S2; uvd.SpeedStrip is the pure half,
 StripGate 49 since D249): drawn only where |spVToY(design) − spVToY(true)| >
 TRUE_SPLIT_PX (SpeedStrip.split — purely pixel-gated, no ≠v/≠o
 flag read: a tilted piece's line appears mid-section like the
@@ -4079,7 +4081,7 @@ next launch." (restart-only, a platform fact — see AppSettings/Main
 above) + an "Apply and Restart" button since v19.13 (D242, his
 "live like Blender?" ask — a true live apply is impossible:
 FvdDesigner.restartApp spawns a fresh JVM (same java/JVM args/
-classpath on coaster.Main) through the unsaved-changes gate and
+classpath on uvd.Main) through the unsaved-changes gate and
 exits)), VIEW
 menu (v16.13, D125 — the v7.5
 "no View menu" verdict reversed on user spec, between Edit and
@@ -4925,7 +4927,7 @@ render ⊕/emoji glyphs — draw shapes, label with plain words.)
   seam pop-out's seamLive) and structural ops pre-hide it. New
   windows follow all of this. PLACEMENT WINDOWS (v19.19, D248 —
   STANDING): the Track Piece / bridge / seam windows and the node
-  editor are built on coaster.LiveWindow — an owned LIGHT Stage
+  editor are built on uvd.LiveWindow — an owned LIGHT Stage
   placed just above the graph canvas (LiveWindow.place, clamped
   into Screen.getVisualBounds, never a hardcoded size);
   Confirm/Enter/X keep (the focused box commits first),
