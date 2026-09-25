@@ -12985,3 +12985,46 @@ Restart relaunches); BOM scan clean, line endings unchanged, `git
 diff --stat -M` = 34 renames + 143 files / +212 −180 (no whole-file
 churn). Still the user's by-hand check: Preferences > Resolution
 Scale… > Apply and Restart on his machine (TESTING #167).
+
+## D251 (v19.22) — The design file extension `.uvd` (Save enforces it; Load opens NOTHING else)
+
+Date: 2026-09-25, the user's answers to the rename questions: "Would
+this also be a good time to change the file extensions to .uvd? [I
+don't care about any of my past saved files]" and "Make it stop
+opening .fvd files entirely"; the Save-As default NAME stays
+("keep the save as default name" → "coaster.uvd").
+
+What changed (FvdDesigner only — DesignIO and the FVDD3/FVDD4 format
+are untouched, so every headless gate still writes/reads its `.fvd`
+fixtures through DesignIO directly):
+- DESIGN_EXT ".uvd" + DESIGN_FILTER_LABEL "Ultimate Vector Design
+  (*.uvd)"; hasDesignExt(File) = a case-insensitive test on the file
+  NAME (a FileChooser's filter can be bypassed by typing, so both
+  paths re-check the name themselves).
+- Save / Save As: the one filter is *.uvd, the initial name is the
+  open file's or "coaster.uvd", and a chosen name without the suffix
+  gets ".uvd" APPENDED (design.txt → design.txt.uvd, mirroring the
+  Windows chooser's own append for bare names) — because the app
+  opens only .uvd, a design saved under any other name would be a
+  file it could never reopen: the suffix is enforced rather than
+  left as a silent trap.
+- Load: the one filter is *.uvd, and a picked file whose name is not
+  .uvd is REFUSED with the stats-bar line "Not opened: only .uvd
+  files open (<name>)." — before anything touches the live document
+  (the D216 rule: refuse cleanly BEFORE the doc mutates). No content
+  sniffing, no rename-on-open, no .fvd fallback — "entirely" as
+  asked. His old .fvd files: rename them to .uvd by hand if ever
+  wanted (the bytes are the same format).
+- Help (File paragraph): "Save / Save As write a .uvd file — the
+  only kind that opens". CLAUDE.md's settings-split + AppSettings
+  lines say .uvd. The settings file keeps its
+  `~/.fvd-designer.properties` name (D250's reasoning).
+
+Verification: wiped target/classes/uvd + mvn compile EXIT 0;
+LoadGate196 7 / DetermGate198 4 / MultiCoasterGate 15 green (IO
+untouched, run as a belt); smoke launch titled "Untitled — Ultimate
+Vector Design". The chooser behavior itself is his hand test
+(TESTING #168): Save As shows only the .uvd filter and defaults to
+coaster.uvd; typing a bare name saves name.uvd; File > Open lists
+only .uvd files, and a typed .fvd path is refused with the stats
+line while the document stays put.

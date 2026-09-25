@@ -157,7 +157,8 @@ class Dialogs {
             + "its first lane.");
         helpText(box, "Ctrl+Z / Ctrl+Shift+Z undo and redo everywhere. "
             + "File > New opens the start screen for a first coaster; "
-            + "Save / Save As write the .fvd (the title shows * while "
+            + "Save / Save As write a .uvd file — the only kind that opens; "
+            + "the title shows * while "
             + "unsaved, and the camera pose saves along); Export (Ctrl+E) "
             + "hands a coaster — or one piece — to NoLimits 2. A file can "
             + "hold several coasters (Coaster menu). Keys shown here are "

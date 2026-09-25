@@ -4593,6 +4593,23 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     this commit (the format is untouched by the rename; the file
     EXTENSION changes in v19.22, #168).
 
+168. v19.22 (D251): the .uvd file extension. Headless: wiped
+    target/classes/uvd + mvn compile EXIT 0; LoadGate196 7,
+    DetermGate198 4, MultiCoasterGate 15 green (DesignIO and the
+    FVDD3/FVDD4 format are untouched — the gates keep their .fvd
+    fixture names and read them through DesignIO directly); smoke
+    launch → "Untitled — Ultimate Vector Design". BY HAND: (a) File >
+    Save As → the only filter is "Ultimate Vector Design (*.uvd)", the
+    name box says coaster.uvd; save → the title reads "coaster.uvd";
+    (b) Save As again, type a bare name "test" → test.uvd on disk;
+    type "test2.txt" → test2.txt.uvd (the suffix is appended, never
+    a file the app can't reopen); (c) File > Open lists .uvd files
+    only; navigate to an old .fvd by typing its full path into the
+    name box → nothing loads, the stats bar reads "Not opened: only
+    .uvd files open (<name>).", the current design and its * are
+    unchanged; (d) open the test.uvd just saved → loads, title
+    "test.uvd"; (e) Help's File paragraph names .uvd.
+
 ## Debugging heuristics learned the hard way
 
 - Wild 3D output after math edits → check the frame-rotation sign (`−ωU·R`)

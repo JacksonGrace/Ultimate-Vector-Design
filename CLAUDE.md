@@ -112,7 +112,7 @@ FVDIntegrator.java  PHYSICS. Pure Java, no JavaFX. Takes keyframes
 AppSettings.java    APP-WIDE PERSISTENT SETTINGS. Pure Java, no JavaFX.
                     Shortcut bindings + FOV in ~/.fvd-designer.properties
                     (combos are strings like "Ctrl+Z"; UI parses them).
-                    Per-coaster settings do NOT go here — they go in .fvd.
+                    Per-coaster settings do NOT go here — they go in .uvd.
                     uiScale (v19.12, D241): the Resolution Scale factor
                     RELATIVE to the OS display scale — 1.0 = never set
                     the glass property = today bitwise; read by
@@ -2227,7 +2227,11 @@ source tree — they won't compile against the current time-domain API.
   (save→load→save byte-identical) is headlessly gated.
 - **Settings split:** app-wide settings (shortcut bindings, FOV) persist
   across runs via `AppSettings` → `~/.fvd-designer.properties`; per-coaster
-  settings (heart, gauge, rail color) live in the `.fvd` save file.
+  settings (heart, gauge, rail color) live in the `.uvd` save file
+  (`.uvd` since v19.22, D251 — Save enforces the suffix, Load opens
+  ONLY `.uvd` by name; the FVDD3/FVDD4 content is unchanged, the
+  Save-As default name stays "coaster.uvd"; the settings file keeps
+  its `.fvd-designer.properties` name).
 - **JavaFX Y-flip:** JavaFX screen Y+ is down, world Y+ is up. ALL mesh
   vertices and camera math negate Y. Touch 3D code ⇒ re-check signs.
 

@@ -6502,6 +6502,18 @@ public class FvdDesigner extends Application {
     // Save / load
     // =====================================================================
 
+    /** The design file extension (v19.22, D251): ".uvd" — Save enforces
+     *  it, Load accepts NOTHING else (the pre-v19.22 ".fvd" files are
+     *  refused by name; the FVDD3/FVDD4 format inside is unchanged). */
+    static final String DESIGN_EXT = ".uvd";
+    static final String DESIGN_FILTER_LABEL = "Ultimate Vector Design (*.uvd)";
+
+    /** Case-insensitive ".uvd" test on the file NAME (the chooser's own
+     *  filter can be bypassed by typing, so both paths re-check). */
+    static boolean hasDesignExt(File f) {
+        return f != null && f.getName().toLowerCase(java.util.Locale.ROOT).endsWith(DESIGN_EXT);
+    }
+
     /** Save (Ctrl+S) writes straight to the open file; Save As — or a
      *  never-saved document — asks where. Returns true if written. */
     private boolean saveDesign(boolean saveAs) {
@@ -6509,10 +6521,14 @@ public class FvdDesigner extends Application {
         if (saveAs || f == null) {
             FileChooser fc = new FileChooser();
             fc.setTitle("Save coaster design");
-            fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("FVD design (*.fvd)", "*.fvd"));
-            fc.setInitialFileName(currentFile != null ? currentFile.getName() : "coaster.fvd");
+            fc.getExtensionFilters().add(new FileChooser.ExtensionFilter(DESIGN_FILTER_LABEL, "*" + DESIGN_EXT));
+            fc.setInitialFileName(currentFile != null ? currentFile.getName() : "coaster" + DESIGN_EXT);
             f = fc.showSaveDialog(stage);
             if (f == null) return false;
+            // the app opens ONLY .uvd files (v19.22, D251), so a design
+            // saved under any other name would be a file it can never
+            // reopen — the suffix is enforced, never a silent trap
+            if (!hasDesignExt(f)) f = new File(f.getParentFile(), f.getName() + DESIGN_EXT);
         }
         // never save inside the fast pass's ±1e-3 tube (D200): the
         // file must be the exactly-settled session so a reload
@@ -7114,9 +7130,16 @@ public class FvdDesigner extends Application {
         if (!confirmSaveDiscard()) return;   // same courtesy as File > New
         FileChooser fc = new FileChooser();
         fc.setTitle("Load coaster design");
-        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("FVD design (*.fvd)", "*.fvd"));
+        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter(DESIGN_FILTER_LABEL, "*" + DESIGN_EXT));
         File f = fc.showOpenDialog(stage);
         if (f == null) return;
+        // ONLY .uvd files open (v19.22, D251 — user decision: the old
+        // .fvd files are not opened at all, not even by content); the
+        // refusal lands BEFORE anything touches the live document
+        if (!hasDesignExt(f)) {
+            statsLabel.setText("Not opened: only " + DESIGN_EXT + " files open (" + f.getName() + ").");
+            return;
+        }
         try (BufferedReader in = new BufferedReader(new FileReader(f, java.nio.charset.StandardCharsets.UTF_8))) {
             // FVDD3/2/1 parsing lives in DesignIO (Phase 1, D50); legacy
             // flat files arrive as one piece holding one force section
