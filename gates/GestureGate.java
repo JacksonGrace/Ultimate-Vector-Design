@@ -24,14 +24,19 @@ import java.util.*;
  *      as the end-diamond stretch (SpeedControl.rescaleLanes).
  *  (5) BAND EDGES — Gestures.edgeWindowLen: one-sided; the symmetric
  *      form kept for the s/c interior diamond.
- *  (6) INIT SPEED — Gestures.clampInitSpeed: the D198 [0.1, 1e4] band.
+ *  (6) INIT SPEED — Gestures.clampInitSpeed: the D198 [0.1, 1e4] band;
+ *      batch 37: Gestures.speedDiffers (the dialog's speed-conflict
+ *      test, half the box's %.2f quantum) and realSpeedText (the grey
+ *      "real 12.34" readout — z3 zero rule, Locale.US).
  *  (7e) BOUNDARY DISKS — ViewDisks.boundarySamples: PLAIN interior
  *      boundaries only since D249 (item U6): every section's exit
  *      except the last; the piece entry / last exit never; index +
  *      position dedupe, clamped interior i1, a bridge tail's ENTRY.
  *  (8) GIZMO PICK METRIC — Gestures.ballEdgeDist / ballEdgeBand (D249,
  *      item U4): a ball measures from its silhouette edge (inside = 0
- *      px), the edge band keeps the D248 zone's outer reach.
+ *      px), the edge band keeps the D248 zone's outer reach — the
+ *      FALLBACK metric since batch 37 (nothing directly under the
+ *      cursor; inside the silhouette depth decides, section 12).
  *  (9) WHOLE-DISK PICK — ViewDisks.rimPoints / pickRadiusPx /
  *      pickScore (D249, item S3): the ring's rim points lie in the
  *      disk plane at the ring radius; the pick radius is the projected
@@ -40,6 +45,23 @@ import java.util.*;
  *      score d²/pickR² ranks disks so a big near disk cannot steal a
  *      far one, the rim itself is a miss (score 1), pickR ≤ 0 never
  *      hits; the doubled thickness constants.
+ *  (10) GIZMO SLOW TRAVEL — Gestures.slowDebt (batch 36): Shift's
+ *      tenth, re-based per event; never slow = the historic travel
+ *      bitwise.
+ *  (11) GRAPH VIEW WINDOW (batch 37) — Gestures.panToInclude (Append's
+ *      pan-only follow of a manual zoom window: width kept, minimum
+ *      shift, the PAN_MARGIN 8 % margin, clamped into the run's
+ *      domain, a node near the LEFT edge never pans), adoptWindow (a
+ *      drag-grown window kept at release: intersected with the
+ *      domain, domain-wide = auto-fit) and growRightCapped (right-edge
+ *      growth capped at the domain end, never shrinking).
+ *  (12) DEPTH-AWARE GIZMO PICK (batch 37) — Gestures.raySphereFront /
+ *      rayCapsuleFront / arrowRadius / arrowFront / ringFront /
+ *      pickFront: among the parts drawn directly under the cursor the
+ *      front-most wins (the overlay rig over the world's track
+ *      balls), else the D249 px rule verbatim; a ring's near arc and
+ *      an arrow's emerged half beat the ball they are drawn over,
+ *      the far arc / far half / the roots inside the ball lose.
  */
 public class GestureGate {
 
@@ -59,6 +81,12 @@ public class GestureGate {
     }
 
     static final double SINE = 1 - 2 / Math.PI;   // GraphEditor.SINE_FRAC
+
+    /** One pick candidate for the (12) resolver checks. */
+    static Gestures.PickCand pc(int kind, int layer, double px, double band,
+                                double depth) {
+        return new Gestures.PickCand(kind, layer, px, band, depth);
+    }
 
     static List<BezierBaker.Node> lane(double[][] pts) {
         List<BezierBaker.Node> l = new ArrayList<>();
@@ -383,6 +411,31 @@ public class GestureGate {
         check(Gestures.clampInitSpeed(0.05) == 0.1 && Gestures.clampInitSpeed(5e4) == 1e4
             && Gestures.clampInitSpeed(12.34) == 12.34 && Gestures.clampInitSpeed(0.1) == 0.1,
             "6b clampInitSpeed: below → 0.1, above → 1e4, inside untouched");
+        // batch 37: the dialog's speed-conflict test + the grey readout
+        check(Gestures.INIT_SPEED_SHOW_EPS == 0.005
+            && Gestures.INIT_SPEED_REAL_FLOOR == 0.5
+            && !Gestures.speedDiffers(12.34, 12.3449)
+            && Gestures.speedDiffers(12.34, 12.3451)
+            && Gestures.speedDiffers(12.3451, 12.34)
+            && !Gestures.speedDiffers(Double.NaN, 12.34)
+            && !Gestures.speedDiffers(12.34, Double.NaN)
+            && !Gestures.speedDiffers(12.34, 12.34),
+            "6c speedDiffers: more than half the %.2f quantum (0.005) apart, either way; NaN on either side = no conflict");
+        {
+            Locale was = Locale.getDefault();
+            Locale.setDefault(Locale.GERMANY);   // a comma-decimal system
+            String de = Gestures.realSpeedText(12.345678);
+            Locale.setDefault(was);
+            check(Gestures.realSpeedText(12.345678).equals("real 12.35")
+                && Gestures.realSpeedText(-1e-9).equals("real 0.00")
+                && Gestures.realSpeedText(-0.004).equals("real -0.00")
+                && Gestures.realSpeedText(Double.NaN).equals("real —")
+                && Gestures.realSpeedText(1e4).equals("real 10000.00")
+                && Gestures.realSpeedText(0).equals("real 0.00")
+                && de.equals("real 12.35"),
+                "6d realSpeedText: \"real 12.35\"; dust under 1e-6 → 0.00, larger dust keeps its sign (z3); NaN → \"real —\"; a decimal POINT under a comma-decimal default Locale",
+                Gestures.realSpeedText(-0.004) + " / " + de);
+        }
 
         // ================= (7) viewport DISKS (item S1) =================
         // A 3D disk hands the strip's own write path a native x read off
@@ -602,9 +655,10 @@ public class GestureGate {
         }
         {
             // (8) gizmo pick metric (D249, item U4): a center ball measures
-            // from its projected silhouette EDGE — inside = 0 px (wins any
-            // nearest-by-px contest), outside = d − rPx; the edge band keeps
-            // the D248 zone's OUTER reach rPx·1.5 + 6
+            // from its projected silhouette EDGE — inside = 0 px (wins the
+            // nearest-by-px FALLBACK; since batch 37 depth decides inside
+            // the silhouette, section 12), outside = d − rPx; the edge
+            // band keeps the D248 zone's OUTER reach rPx·1.5 + 6
             check(Gestures.ballEdgeDist(3, 5) == 0 && Gestures.ballEdgeDist(5, 5) == 0
                 && Gestures.ballEdgeDist(8, 5) == 3 && Gestures.ballEdgeDist(0, 0) == 0,
                 "8a ball edge distance: inside/on the silhouette 0, outside d − rPx");
@@ -612,12 +666,14 @@ public class GestureGate {
                 && Gestures.ballEdgeBand(10, 1.5, 6) + 10 == 10 * 1.5 + 6
                 && Gestures.ballEdgeBand(2, 1.5, 6) == 7,
                 "8b edge band rPx·(mul−1)+pad == the D248 center zone minus the radius (tiny rigs stay grabbable)");
-            // the contest: a press 1 px inside a 20 px ball with an edge-on
-            // ring 1 px off its line → the ball (0 < 1); the same press 3 px
-            // OUTSIDE the silhouette with the ring at 1 px → the ring
+            // the FALLBACK contest (nothing directly under the cursor): a
+            // press 1 px inside a 20 px ball reads 0 px; the same press 3 px
+            // OUTSIDE the silhouette with a ring at 1 px → the ring, the
+            // ball still in band. Inside the silhouette a ring DRAWN over
+            // the ball is decided by depth (batch 37, section 12)
             double ballIn = Gestures.ballEdgeDist(19, 20), ballOut = Gestures.ballEdgeDist(23, 20);
             check(ballIn < 1 && ballOut > 1 && ballOut <= Gestures.ballEdgeBand(20, 1.5, 6),
-                "8c inside the ball beats a 1 px ring; outside it the ring wins while the ball stays in band");
+                "8c with nothing directly under the cursor the ball competes from its edge: 3 px outside the silhouette a 1 px ring wins while the ball stays in band (inside the silhouette depth decides, section 12)");
         }
         {
             // (d) the drag's polyline mapping
@@ -715,6 +771,339 @@ public class GestureGate {
             check(ViewDisks.CTL_SEL_RING_LIGHTEN > 1.0 && ViewDisks.CTL_SEL_RING_LIGHTEN < 1.5
                 && ViewDisks.PICK_PX == 12 && ViewDisks.RIM_N == 8,
                 "9d selected-ring lighten factor > 1 (brighter, not white); PICK_PX 12 floor; 8 rim points");
+        }
+        {
+            // (10) gizmo SLOW travel (batch 36): Gestures.slowDebt — the
+            // Shift-held tenth, RE-BASED per event. The sinks read
+            // eff = raw − px − debt; the press seeds prev = px, debt 0.
+            check(Gestures.SLOW_K == 0.1, "10 SLOW_K is one tenth");
+            // (a) never slow → the debt stays EXACTLY 0.0, so eff is the
+            // historic raw travel bitwise (the pickprobe identity)
+            double px = 100.25, prev = px, debt = 0;
+            double[] raws = { 103.5, 97.125, 140.0, 140.0, 61.75, 212.333, 100.25 };
+            boolean zero = true, bitwise = true;
+            for (double rw : raws) {
+                debt = Gestures.slowDebt(debt, prev, rw, false);
+                prev = rw;
+                zero &= Double.doubleToRawLongBits(debt) == 0L;
+                bitwise &= Double.doubleToRawLongBits(rw - px - debt)
+                        == Double.doubleToRawLongBits(rw - px);
+            }
+            check(zero && bitwise,
+                "10a never slow: debt == +0.0 bitwise over any sequence, raw − px − debt == raw − px bitwise");
+            // (b) slow from the very first event → eff == 0.1·raw travel
+            prev = px; debt = 0;
+            boolean tenth = true;
+            for (double rw : raws) {
+                debt = Gestures.slowDebt(debt, prev, rw, true);
+                prev = rw;
+                tenth &= near(rw - px - debt, 0.1 * (rw - px), 1e-12);
+            }
+            check(tenth, "10b slow from the start: eff == 0.1·raw (1e-12) at every event");
+            // (c) Shift pressed MID-drag at raw1: the part continues from
+            // where it IS — eff = raw1 + 0.1·(raw2 − raw1), no jump
+            double raw1 = 130, raw2 = 180, raw3 = 200;
+            prev = px; debt = 0;
+            debt = Gestures.slowDebt(debt, prev, raw1, false); prev = raw1;
+            double eff1 = raw1 - px - debt;
+            debt = Gestures.slowDebt(debt, prev, raw2, true); prev = raw2;
+            double eff2 = raw2 - px - debt;
+            check(near(eff1, raw1 - px, 0) && near(eff2, eff1 + 0.1 * (raw2 - raw1), 1e-12),
+                "10c Shift at raw1: eff == (raw1 − px) + 0.1·(raw2 − raw1) — continuous, no 90 % snap-back",
+                eff1 + " -> " + eff2);
+            // (d) released at raw2: full speed resumes FROM the effective
+            // position — eff3 = eff2 + (raw3 − raw2), no leap forward
+            debt = Gestures.slowDebt(debt, prev, raw3, false); prev = raw3;
+            double eff3 = raw3 - px - debt;
+            check(near(eff3, eff2 + (raw3 - raw2), 1e-12),
+                "10d release at raw2: eff == eff2 + (raw3 − raw2) — full speed from the effective spot",
+                String.valueOf(eff3));
+            // a stationary event under Shift changes nothing; backwards
+            // travel under Shift is slowed too (the debt shrinks with it)
+            double d0 = Gestures.slowDebt(debt, prev, raw3, true);
+            double d1 = Gestures.slowDebt(debt, prev, raw3 - 50, true);
+            check(d0 == debt && near(d1, debt - 45, 1e-12),
+                "10e a zero-move event leaves the debt; backwards Shift travel slows symmetrically");
+            // (f) the seam of a toggle sequence composes: eff after
+            // [plain 30, slow 50, plain 20, slow 100] = 30 + 5 + 20 + 10
+            prev = px; debt = 0;
+            double rx = px;
+            boolean[] slow = { false, true, false, true };
+            double[] moves = { 30, 50, 20, 100 };
+            for (int i = 0; i < 4; i++) {
+                rx += moves[i];
+                debt = Gestures.slowDebt(debt, prev, rx, slow[i]);
+                prev = rx;
+            }
+            check(near(rx - px - debt, 30 + 5 + 20 + 10, 1e-12),
+                "10f toggles compose: plain 30 + slow 50 + plain 20 + slow 100 → 65 effective");
+        }
+        {
+            // (11) the graph VIEW window (batch 37). panToInclude = the
+            // pan-only follow Append runs on a MANUAL zoom window: the
+            // width is kept, the shift is the smallest that brings x
+            // inside with the margin to spare on the side it left by.
+            check(Gestures.PAN_MARGIN == 0.08, "11 PAN_MARGIN is 8 % of the window width");
+            double lo = 0, hi = 21 * 1.08;   // a 21 s run + auto-fit's 8 %
+            boolean bit = true;
+            double[][] wins = { {5, 15}, {0.3, 2.7}, {12.125, 12.225}, {1e-3, 20} };
+            for (double[] w : wins) {
+                double m = Gestures.PAN_MARGIN * (w[1] - w[0]);
+                for (double f : new double[]{ 0, 0.25, 0.5, 0.9 }) {
+                    double x = w[0] + f * (w[1] - w[0]);
+                    if (x > w[1] - m) continue;
+                    bit &= Double.doubleToRawLongBits(Gestures.panToInclude(w[0], w[1], x, m, lo, hi))
+                        == Double.doubleToRawLongBits(w[0]);
+                }
+                bit &= Gestures.panToInclude(w[0], w[1], w[1] - m, m, lo, hi) == w[0];
+            }
+            check(bit, "11a x inside [w0, w1 − m] (both ends included): w0 back BITWISE — no pan");
+            double n0 = Gestures.panToInclude(5, 15, 21, 0.8, lo, hi);
+            check(near(n0, 21 + 0.8 - 10, 1e-12) && near((n0 + 10) - n0, 10, 1e-12)
+                && near((n0 + 10) - 21, 0.8, 1e-12),
+                "11b x right of the window: start = x + m − w, width kept, x sits m inside the new right edge",
+                "[" + n0 + ", " + (n0 + 10) + "]");
+            double n1 = Gestures.panToInclude(5, 15, 14.5, 0.8, lo, hi);
+            check(near(n1 - 5, 14.5 - (15 - 0.8), 1e-12) && n1 > 5,
+                "11c x inside the right margin zone: shifted by x − (w1 − m), the margin restored",
+                String.valueOf(n1));
+            double n2 = Gestures.panToInclude(15, 20, 6, 0.4, lo, hi);
+            check(near(n2, 6 - 0.4, 1e-12),
+                "11d x left of the window: start = x − m (x lands m inside the left edge)",
+                String.valueOf(n2));
+            check(Gestures.panToInclude(15, 20, 15, 0.4, lo, hi) == 15
+                && Gestures.panToInclude(15, 20, 15.2, 0.4, lo, hi) == 15
+                && Gestures.panToInclude(15, 20, 15.399, 0.4, lo, hi) == 15,
+                "11e x in [w0, w0 + m): NO pan — only a node fully out on the left pans (the asymmetry)");
+            double n3 = Gestures.panToInclude(0.5, 21.5, 21, Gestures.PAN_MARGIN * 21, lo, hi);
+            check(near(n3, hi - 21, 1e-12) && 21 <= n3 + 21 && n3 >= lo,
+                "11f upper clamp: start = hi − w, the node still inside (the margin = what the headroom leaves)",
+                n3 + " right " + (n3 + 21) + " hi " + hi);
+            check(Gestures.panToInclude(2, 6, 0.1, 0.32, lo, hi) == lo
+                && Gestures.panToInclude(2, 6, -3, 0.32, 1.5, hi) == 1.5,
+                "11g lower clamp: start = lo");
+            check(Gestures.panToInclude(0, 30, 40, 2.4, lo, hi) == lo
+                && Gestures.panToInclude(3, 33, 1, 2.4, lo, hi) == lo,
+                "11h a window wider than the domain: start = lo (lo wins)");
+            check(Gestures.panToInclude(5, 15, Double.NaN, 0.8, lo, hi) == 5
+                && Gestures.panToInclude(5, 5, 21, 0.8, lo, hi) == 5
+                && Gestures.panToInclude(15, 5, 21, 0.8, lo, hi) == 15
+                && Gestures.panToInclude(5, Double.NaN, 21, 0.8, lo, hi) == 5,
+                "11i a NaN x, an empty / negative / NaN-wide window: w0 untouched");
+            double n4 = Gestures.panToInclude(5, 15, 18, 9, lo, 100);
+            double n5 = Gestures.panToInclude(5, 15, 18, -2, lo, 100);
+            check(near(n4, 18 + 5 - 10, 1e-12) && near(n5, 18 - 10, 1e-12),
+                "11j the margin is cut to half the width (9 → 5: x lands mid-window); a negative one is 0",
+                n4 + " / " + n5);
+            double w0 = 5, w1 = 15, end = 14, drift = 0, lastGap = 0;
+            boolean follows = true;
+            for (int i = 0; i < 10; i++) {   // held A: ten 1 s appends
+                end += 1;
+                double n = Gestures.panToInclude(w0, w1, end,
+                    Gestures.PAN_MARGIN * (w1 - w0), 0, end * 1.08);
+                w1 = n + (w1 - w0);
+                w0 = n;
+                drift = Math.max(drift, Math.abs((w1 - w0) - 10));
+                lastGap = w1 - end;
+                follows &= end >= w0 && end <= w1;
+            }
+            check(drift <= 1e-12 && follows && near(lastGap, 0.8, 1e-9),
+                "11k ten successive appends: the width never drifts (no zoom), the node stays in view 8 % inside the right edge",
+                "drift " + drift + ", window [" + w0 + ", " + w1 + "]");
+
+            // adoptWindow = the release of a drag that GREW the window
+            double[] k0 = Gestures.adoptWindow(5, 18.5, 0, 21.6);
+            check(k0 != null && Double.doubleToRawLongBits(k0[0]) == Double.doubleToRawLongBits(5.0)
+                && Double.doubleToRawLongBits(k0[1]) == Double.doubleToRawLongBits(18.5),
+                "11l a grown window inside the domain is kept BITWISE (nothing moves at release)");
+            double[] k1 = Gestures.adoptWindow(5, 30, 0, 21.6);
+            check(k1 != null && k1[0] == 5 && k1[1] == 21.6,
+                "11m a right end past the domain clips to its end, the left end kept",
+                Arrays.toString(k1));
+            double[] k2 = Gestures.adoptWindow(-4, 9, 2, 21.6);
+            check(k2 != null && k2[0] == 2 && k2[1] == 9,
+                "11n a left end before the run clips to its start", Arrays.toString(k2));
+            check(Gestures.adoptWindow(0, 21.6, 0, 21.6) == null
+                && Gestures.adoptWindow(0, 40, 0, 21.6) == null
+                && Gestures.adoptWindow(-3, 21.6 - 1e-10, 0, 21.6) == null,
+                "11o a window at least domain-wide = auto-fit (null — the D75 rule)");
+            check(Gestures.adoptWindow(30, 40, 0, 21.6) == null
+                && Gestures.adoptWindow(-9, -1, 0, 21.6) == null
+                && Gestures.adoptWindow(7, 7, 0, 21.6) == null
+                && Gestures.adoptWindow(Double.NaN, 9, 0, 21.6) == null,
+                "11p nothing left inside the domain (or an empty / NaN window) = auto-fit (null)");
+            // an adopted window already satisfies the per-redraw sanitize:
+            // inside the domain and narrower than it
+            boolean sane = true;
+            Random rv = new Random(37);
+            for (int i = 0; i < 500; i++) {
+                double a0 = rv.nextDouble() * 40 - 10, b0 = a0 + rv.nextDouble() * 40;
+                double dl = rv.nextDouble() * 5, dh = dl + 1 + rv.nextDouble() * 30;
+                double[] k = Gestures.adoptWindow(a0, b0, dl, dh);
+                if (k == null) continue;
+                if (k[0] < dl || k[1] > dh || !(k[1] - k[0] > 0)
+                        || k[1] - k[0] >= dh - dl - 1e-9) sane = false;
+            }
+            check(sane, "11p' 500 random adoptions: every kept window lies inside the domain and is narrower than it");
+
+            // growRightCapped = the right-edge growth under an overshoot
+            check(Gestures.growRightCapped(15, 0.11, 16.2) == 15 + 0.11,
+                "11q below the cap: w1 + grow bitwise");
+            check(Gestures.growRightCapped(21.6, 0.5, 21.6) == 21.6
+                && Gestures.growRightCapped(21.5, 0.5, 21.6) == 21.6,
+                "11r at / reaching the cap: the window stops ON the domain end");
+            check(Gestures.growRightCapped(30, 0.5, 21.6) == 30
+                && Gestures.growRightCapped(30, 0, 21.6) == 30,
+                "11s a window already past the cap (the run shrank under the drag) never shrinks");
+        }
+        {
+            // (12) DEPTH-AWARE gizmo pick (batch 37). Rays are o + t·d,
+            // |d| = 1; fixtures look down +z like an ortho view, a part
+            // in FRONT has the smaller t.
+            final int RING_PICK_N = 48;   // Viewport3D's ring polyline
+            Vec3 o = new Vec3(0, 0, 0), z = new Vec3(0, 0, 1);
+            double N = Double.NaN;
+            // 12a sphere
+            check(Gestures.raySphereFront(o, z, new Vec3(0, 0, 10), 2) == 8,
+                "12a center ray: front hit t = 10 − r");
+            check(near(Gestures.raySphereFront(new Vec3(1, 0, 0), z, new Vec3(0, 0, 10), 2), 10 - Math.sqrt(3), 1e-12),
+                "12a off-center 1: 10 − sqrt(3)");
+            check(Gestures.raySphereFront(new Vec3(2, 0, 0), z, new Vec3(0, 0, 10), 2) == 10,
+                "12a tangent ray: t = 10",
+                String.valueOf(Gestures.raySphereFront(new Vec3(2, 0, 0), z, new Vec3(0, 0, 10), 2)));
+            check(Double.isNaN(Gestures.raySphereFront(new Vec3(2.5, 0, 0), z, new Vec3(0, 0, 10), 2)),
+                "12a miss: NaN");
+            check(Double.isNaN(Gestures.raySphereFront(o, z, new Vec3(0, 0, 10), 0))
+                && Double.isNaN(Gestures.raySphereFront(o, z, new Vec3(0, 0, 10), -1)),
+                "12a r ≤ 0 never hits");
+            check(Gestures.raySphereFront(o, z, new Vec3(0, 0, -10), 2) == -12,
+                "12a a sphere BEHIND the origin reads a negative t (ortho rays start on the projection plane)");
+            // 12b capsule
+            Vec3 A = new Vec3(-5, 0, 10), B = new Vec3(5, 0, 10);
+            check(near(Gestures.rayCapsuleFront(o, z, A, B, 1), 9, 1e-12),
+                "12b body, on-axis: 10 − r", String.valueOf(Gestures.rayCapsuleFront(o, z, A, B, 1)));
+            check(near(Gestures.rayCapsuleFront(new Vec3(0, 0.6, 0), z, A, B, 1), 9.2, 1e-12),
+                "12b body, 0.6 off the axis: 10 − 0.8",
+                String.valueOf(Gestures.rayCapsuleFront(new Vec3(0, 0.6, 0), z, A, B, 1)));
+            check(Double.isNaN(Gestures.rayCapsuleFront(new Vec3(0, 1.5, 0), z, A, B, 1)),
+                "12b 1.5 off the axis: miss");
+            check(near(Gestures.rayCapsuleFront(new Vec3(5.5, 0, 0), z, A, B, 1), 10 - Math.sqrt(0.75), 1e-12),
+                "12b end cap 0.5 past b",
+                String.valueOf(Gestures.rayCapsuleFront(new Vec3(5.5, 0, 0), z, A, B, 1)));
+            check(Double.isNaN(Gestures.rayCapsuleFront(new Vec3(6.5, 0, 0), z, A, B, 1)),
+                "12b 1.5 past b: miss");
+            check(Gestures.rayCapsuleFront(o, z, new Vec3(0, 0, 10), new Vec3(0, 0, 10), 2) == 8,
+                "12b degenerate segment = the sphere");
+            double par = Gestures.rayCapsuleFront(new Vec3(0.5, 0, 0), z, new Vec3(0, 0, 10), new Vec3(0, 0, 20), 1);
+            check(near(par, 10 - Math.sqrt(0.75), 1e-12),
+                "12b ray PARALLEL to the axis (an arrow aimed at the viewer): the near cap", String.valueOf(par));
+            double par2 = Gestures.rayCapsuleFront(new Vec3(0.5, 0, 0), z, new Vec3(0, 0, 20), new Vec3(0, 0, 10), 1);
+            check(near(par2, par, 1e-12), "12b … whichever end is nearer", String.valueOf(par2));
+            double skew = Gestures.rayCapsuleFront(o, z, new Vec3(-3, 0, 13), new Vec3(3, 0, 7), 1);
+            check(near(skew, 10 - Math.sqrt(2), 1e-12),
+                "12b a 45-degree shaft through (0,0,10): 10 − r·sqrt(2)", String.valueOf(skew));
+            // 12c the drawn arrow radius
+            check(Gestures.arrowRadius(0) == 0.05 && Gestures.arrowRadius(0.99) == 0.05
+                && near(Gestures.arrowRadius(1.0), 0.13, 1e-15)
+                && near(Gestures.arrowRadius(1.16), 0.065, 1e-12) && Gestures.arrowRadius(1.32) == 0
+                && Gestures.arrowRadius(1.4) == 0 && Gestures.arrowRadius(-0.1) == 0
+                && Gestures.ARROW_SHAFT_R == 0.05 && Gestures.ARROW_SHAFT_LEN == 1.0
+                && Gestures.ARROW_TIP_R == 0.13 && Gestures.ARROW_LEN == 1.32
+                && Gestures.RING_TUBE_R == 0.06 && Gestures.ARROW_TIP_N == 4,
+                "12c arrow radius: shaft 0.05, cone 0.13 → 0 over 1.0..1.32; the drawn constants",
+                String.valueOf(Gestures.arrowRadius(1.16)));
+            // 12d the resolver, tier 1: DIRECT hits
+            check(Gestures.pickFront(List.of(pc(2, 0, 1, 6, 9), pc(0, 0, 0, 12, 10))) == 0,
+                "12d a ring IN FRONT of the ball under the cursor wins (near half)");
+            check(Gestures.pickFront(List.of(pc(2, 0, 1, 6, 11), pc(0, 0, 0, 12, 10))) == 1,
+                "12d a ring BEHIND the ball loses (far half)");
+            check(Gestures.pickFront(List.of(pc(1, 0, 0, 9, 10), pc(0, 0, 0, 12, 10))) == 1
+                && Gestures.pickFront(List.of(pc(0, 0, 0, 12, 10), pc(1, 0, 0, 9, 10))) == 0,
+                "12d equal depth: the ball, whatever the registration order");
+            check(Gestures.pickFront(List.of(pc(1, 0, 0, 9, 9.5), pc(2, 0, 0, 6, 9), pc(0, 0, 0, 12, 10))) == 1,
+                "12d front-most among arrow/ring/ball");
+            check(Gestures.pickFront(List.of(pc(1, 0, 0, 9, 9), pc(2, 0, 0, 6, 9))) == 0,
+                "12d equal depth, no ball: first registered");
+            check(Gestures.pickFront(List.of(pc(1, 0, 1.5, 9, 9), pc(0, 0, 1, 12, N))) == 0,
+                "12d a DIRECT hit beats a nearer-by-px part that is only in its band");
+            check(Gestures.pickFront(List.of(pc(1, 0, 12, 9, 8))) == 0,
+                "12d a direct hit OUTSIDE its px band still picks (the cone on a tall pane)");
+            check(Gestures.pickFront(List.of(pc(0, 1, 0, 8, 5), pc(1, 0, 1, 9, 9))) == 1,
+                "12d the overlay rig covers a world track ball even when the ball is nearer");
+            check(Gestures.pickFront(List.of(pc(0, 1, 0, 8, 7), pc(0, 1, 0, 8, 5))) == 1,
+                "12d two track balls: the nearer");
+            check(Gestures.pickFront(List.of(pc(0, 1, 0, 8, 7), pc(1, 0, 4, 9, N))) == 0,
+                "12d a track ball under the cursor beats a rig part merely in its band");
+            // 12e tier 2: the band fallback = D249 verbatim
+            check(Gestures.pickFront(List.of(pc(0, 0, 3, 16, N), pc(2, 0, 1, 6, N))) == 1,
+                "12e nothing direct: nearest by px (ring 1 < ball edge 3)");
+            check(Gestures.pickFront(List.of(pc(1, 0, 0, 9, N), pc(0, 0, 0, 12, N))) == 1,
+                "12e nothing direct, px tie: the ball");
+            check(Gestures.pickFront(List.of(pc(1, 0, 4, 9, N), pc(2, 0, 4, 6, N))) == 0,
+                "12e px tie without a ball: first registered");
+            check(Gestures.pickFront(List.of(pc(1, 0, 9.5, 9, N), pc(2, 0, 6.5, 6, N), pc(0, 0, 13, 12, N))) == -1
+                && Gestures.pickFront(List.of()) == -1,
+                "12e everything outside its band / no parts: −1");
+            check(Gestures.pickFront(List.of(pc(1, 0, 9, 9, N))) == 0,
+                "12e the band edge itself is inside");
+            // 12f geometry contests: the ball at (0,0,10), r 0.272 (the
+            // rig's CENTER_BALL_R), the viewer looking +z (ortho rays)
+            Vec3 C = new Vec3(0, 0, 10);
+            double rB = 0.272, pad = 0.02;
+            // an edge-on ring (axis +x → it lies in the y-z plane), the
+            // cursor 0.1 above the center
+            Vec3 o1 = new Vec3(0, 0.1, 0);
+            double bF = Gestures.raySphereFront(o1, z, C, rB);
+            double rF = Gestures.ringFront(o1, z, C, new Vec3(1, 0, 0), 0.7, Gestures.RING_TUBE_R + pad, RING_PICK_N);
+            check(near(bF, 10 - Math.sqrt(rB * rB - 0.01), 1e-12) && rF < bF
+                && near(rF, 10 - Math.sqrt(0.49 - 0.01) - 0.08, 0.01),
+                "12f edge-on ring through the silhouette: its NEAR half is in front of the ball",
+                "ball " + bF + " ring " + rF);
+            // a tilted ring: the near arc passes BELOW the center, the far
+            // arc above it
+            double al = Math.toRadians(15);
+            Vec3 axT = new Vec3(0, Math.cos(al), -Math.sin(al));
+            double yArc = 0.7 * Math.sin(al);
+            double nearArc = Gestures.ringFront(new Vec3(0, -yArc, 0), z, C, axT, 0.7, Gestures.RING_TUBE_R + pad, RING_PICK_N);
+            double farArc = Gestures.ringFront(new Vec3(0, yArc, 0), z, C, axT, 0.7, Gestures.RING_TUBE_R + pad, RING_PICK_N);
+            double bNear = Gestures.raySphereFront(new Vec3(0, -yArc, 0), z, C, rB),
+                   bFar = Gestures.raySphereFront(new Vec3(0, yArc, 0), z, C, rB);
+            check(nearArc < bNear && farArc > bFar,
+                "12f tilted ring: near arc in front of the ball, far arc behind it",
+                "near " + nearArc + " vs ball " + bNear + " | far " + farArc + " vs ball " + bFar);
+            check(Gestures.pickFront(List.of(pc(2, 0, 0, 6, nearArc), pc(0, 0, 0, 12, bNear))) == 0
+                && Gestures.pickFront(List.of(pc(2, 0, 0, 6, farArc), pc(0, 0, 0, 12, bFar))) == 1,
+                "12f … so the press takes the ring on the near arc and the ball on the far arc");
+            check(Double.isNaN(Gestures.ringFront(o, z, C, axT, 0.7, Gestures.RING_TUBE_R + pad, RING_PICK_N)),
+                "12f the ring's tube is not under the center ray");
+            // 12g a two-sided arrow 45° toward the viewer, up on screen
+            double th = Math.toRadians(45);
+            Vec3 dir = new Vec3(0, Math.sin(th), -Math.cos(th));
+            Vec3 in = new Vec3(0, 0.10, 0), out = new Vec3(0, 0.20, 0), back = new Vec3(0, -0.20, 0);
+            check(Gestures.arrowFront(in, z, C, dir, 1.0, true, 0) > Gestures.raySphereFront(in, z, C, rB),
+                "12g the shaft INSIDE the ball is hidden: the ball is in front (cursor 0.10 off the center)");
+            check(Gestures.arrowFront(out, z, C, dir, 1.0, true, 0) < Gestures.raySphereFront(out, z, C, rB),
+                "12g past the shaft's exit the NEAR half is in front (cursor 0.20, still inside the 0.272 silhouette)");
+            check(Gestures.arrowFront(back, z, C, dir, 1.0, true, 0) > Gestures.raySphereFront(back, z, C, rB),
+                "12g the FAR half behind the ball loses (cursor −0.20)");
+            double ctr = Gestures.arrowFront(o, z, C, dir, 1.0, true, 0);
+            check(ctr > Gestures.raySphereFront(o, z, C, rB),
+                "12g the rig center: arrow roots are inside the ball → the ball",
+                ctr + " vs " + Gestures.raySphereFront(o, z, C, rB));
+            // an arrow aimed AT the viewer: its cone covers the center
+            Vec3 at = new Vec3(0, 0, -1);
+            check(Gestures.arrowFront(o, z, C, at, 1.0, true, 0) < Gestures.raySphereFront(o, z, C, rB)
+                && near(Gestures.arrowFront(o, z, C, at, 1.0, true, 0),
+                    10 - Gestures.ARROW_LEN - Gestures.arrowRadius(1.28), 1e-12),
+                "12g an arrow aimed at the viewer covers the center (its tip is the front-most thing)",
+                String.valueOf(Gestures.arrowFront(o, z, C, at, 1.0, true, 0)));
+            Vec3 rim = new Vec3(0.2, 0, 0);
+            check(Double.isNaN(Gestures.arrowFront(rim, z, C, at, 1.0, true, 0)),
+                "12g … but 0.2 off the axis only the ball is under the cursor (cone radius 0.13)");
+            check(Double.isNaN(Gestures.arrowFront(new Vec3(0, 0.3, 0), z, C, new Vec3(1, 0, 0), 1.0, false, 0))
+                && !Double.isNaN(Gestures.arrowFront(new Vec3(-0.5, 0.03, 0), z, C, new Vec3(1, 0, 0), 1.0, true, 0))
+                && Double.isNaN(Gestures.arrowFront(new Vec3(-0.5, 0.03, 0), z, C, new Vec3(1, 0, 0), 1.0, false, 0)),
+                "12g one-sided arrows have no mirrored half");
         }
 
         System.out.println("GestureGate: " + pass + " passed, " + fail + " failed");

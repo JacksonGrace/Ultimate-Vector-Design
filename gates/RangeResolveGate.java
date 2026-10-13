@@ -41,6 +41,31 @@ import java.util.*;
  *      one suspension, the UI's shape), s2 refreezeSpeed (the pure
  *      speed path) + the tail case, s3 the unrelated seam, s4 the
  *      chained Convert's two composite steps, s5 the residual.
+ *  b)  RESOLVE BEHIND A BRIDGE (batch 37): the badge's two resolve ops
+ *      run on the FIRST section of a bridged-in piece while the bridge
+ *      is set to "No optimization" — the model never refused it, the
+ *      gate pins WHY it is safe. Fixture: hill piece A → bridge → a
+ *      3-section force piece B (design pitch 3 / true pitch 8, roll −5,
+ *      vDesign 22 vs a true entry ~28), friction 0 and 0.03/1e-4, for
+ *      the single-section ops, the two range refreezes and the
+ *      speed-only twins:
+ *      b1 the op applies and B's ENTRY POSE is BITWISE unchanged (pos +
+ *         quaternion, B.x/y/z, the bridge's solved entry);
+ *      b2 the bridge's own fields are untouched (lenA/lenB/lastOptDist
+ *         bitwise, mode/locks/optLen, optSig + noneStash references);
+ *      b3 the bridge re-LANDS on the piece (1e-9 m, frames 1e-12);
+ *      b4 the conflict is closed (no ≠o; the seam speed split < 1e-9
+ *         loss-free, < 1e-2 under friction — the bridge's arc moves by
+ *         mm and friction is path-integrated);
+ *      b5 DETERMINISM: one more compile asks for no reconcile / no
+ *         re-optimize and a rebuild is a bitwise no-op;
+ *      b6 the chained Convert Real to Design over [0..2], headless:
+ *         one piece of 3 sections again, entry bitwise, piece B within
+ *         1e-2 m and the bridge within 2e-2 m of their pre-op shapes;
+ *      b7 save → load → rebuild bitwise, re-save byte-identical;
+ *      b8 the CONTRAST — why the optimize modes stay blocked: the same
+ *         "Set Design to Real" under Optimize position / Optimize
+ *         position and orientation re-marches and MOVES the piece.
  */
 public class RangeResolveGate {
 
@@ -301,6 +326,344 @@ public class RangeResolveGate {
         }
         return Coaster.isSeamOrientConflict(
             c.seamConflictTilt(followerIdx, r.spans().get(k).exit()));
+    }
+
+    // ---------- (b) batch 37: resolve BEHIND A BRIDGE ----------
+
+    static List<List<BezierBaker.Node>> brHillLanes() {
+        List<List<BezierBaker.Node>> ls = new ArrayList<>();
+        ls.add(lane(new double[][]{ {0, 1}, {1.2, 1}, {2.4, 3.2}, {4, 0.4},
+            {5.5, 1} }));
+        ls.add(lane(new double[][]{ {0, 0}, {2, 0.4}, {5.5, 0} }));
+        ls.add(lane(new double[][]{ {0, 0}, {5.5, 0} }));
+        return ls;
+    }
+
+    static List<List<BezierBaker.Node>> brTurnLanes() {
+        List<List<BezierBaker.Node>> ls = new ArrayList<>();
+        ls.add(lane(new double[][]{ {0, 1.2}, {3, 1.5}, {6, 1} }));
+        ls.add(lane(new double[][]{ {0, 0.2}, {1.5, 0.5}, {4.5, 0.5},
+            {6, 0} }));
+        ls.add(lane(new double[][]{ {0, 10}, {6, 0} }));
+        return ls;
+    }
+
+    static List<List<BezierBaker.Node>> flatLanes(double len) {
+        List<List<BezierBaker.Node>> ls = new ArrayList<>();
+        ls.add(lane(new double[][]{ {0, 1}, {len, 1} }));
+        ls.add(lane(new double[][]{ {0, 0}, {len, 0} }));
+        ls.add(lane(new double[][]{ {0, 0}, {len, 0} }));
+        return ls;
+    }
+
+    /** Hill piece A (v 26) → bridge → piece B at (120, 14, 30) yaw 20
+     *  holding three force sections (a turn + two flats) at vDesign
+     *  vB. The bridge is created under No optimization; an optimize
+     *  mode then re-places B at the compiled arc. LAST the conflict:
+     *  B edits its real orientation only — design pitch +dPitch, true
+     *  pitch +tPitch, true roll +tRoll (all 0 = a pure speed
+     *  conflict). */
+    static Coaster bridgedChain(int optMode, double fricRoll,
+            double fricAir, double dPitch, double tPitch, double tRoll,
+            double vB) {
+        Coaster c = new Coaster();
+        c.fricRoll = fricRoll;
+        c.fricAir = fricAir;
+        TrackPiece a = new TrackPiece(0, 21, 0, 0);
+        a.sections.add(new ForceSection(brHillLanes(), 26));
+        c.pieces.add(a);
+        TrackPiece b = new TrackPiece(120, 14, 30, 20);
+        b.sections.add(new ForceSection(brTurnLanes(), vB));
+        b.sections.add(new ForceSection(flatLanes(3), vB));
+        b.sections.add(new ForceSection(flatLanes(2), vB));
+        c.pieces.add(b);
+        TrackCompiler.Result r0 = TrackCompiler.compile(c, DT);
+        BridgeSection bs = BridgeSection.solve(r0.spans().get(0).exit(),
+            b.entryPose(), r0.samples().get(r0.spans().get(0).i1()).v());
+        bs.optMode = BridgeSection.OPT_NONE;
+        a.sections.add(bs);
+        rebuild(c);
+        if (optMode != BridgeSection.OPT_NONE) {
+            bs.optMode = optMode;
+            TrackCompiler.Result r = TrackCompiler.compile(c, DT);
+            c.captureBridgeTarget(bs, 1);
+            c.optimizeBridge(bs, 1, Math.max(1, r.spans().get(1).sLen()),
+                optMode == BridgeSection.OPT_POS_YAW);
+            rebuild(c);
+        }
+        b.orientMode = TrackPiece.OrientMode.REAL_ONLY;
+        b.designPitchDeg = b.pitchDeg + dPitch;
+        b.designRollDeg = b.rollDeg;
+        b.pitchDeg = b.pitchDeg + tPitch;
+        b.rollDeg = b.rollDeg + tRoll;
+        rebuild(c);
+        return c;
+    }
+
+    static boolean poseBits(TrackPose a, TrackPose b) {
+        return bitsEq(a.pos().x(), b.pos().x())
+            && bitsEq(a.pos().y(), b.pos().y())
+            && bitsEq(a.pos().z(), b.pos().z())
+            && bitsEq(a.orient().w(), b.orient().w())
+            && bitsEq(a.orient().x(), b.orient().x())
+            && bitsEq(a.orient().y(), b.orient().y())
+            && bitsEq(a.orient().z(), b.orient().z());
+    }
+
+    /** checksum() + the TRUE speed array. */
+    static long checksumTrue(TrackCompiler.Result r) {
+        long h = checksum(r);
+        for (double v : r.trueV()) h = mix(h, v);
+        return h;
+    }
+
+    /** One more compile at the fixed point asks for nothing, and the
+     *  rebuild reproduces the same bits. */
+    static boolean atRest(Coaster c, TrackCompiler.Result settled) {
+        long h = checksumTrue(settled);
+        TrackCompiler.Result r = TrackCompiler.compile(c, DT);
+        boolean rec = c.reconcileChainedSpeeds(r, true);
+        boolean opt = c.autoReoptimizeBridges(r);
+        return !rec && !opt && h == checksumTrue(rebuild(c));
+    }
+
+    static String docText(Coaster c) {
+        java.io.StringWriter sw = new java.io.StringWriter();
+        DesignIO.save(c, DesignIO.Cosmetics.defaults(),
+            new java.io.PrintWriter(sw));
+        return sw.toString();
+    }
+
+    static Coaster reload(String txt) throws Exception {
+        return DesignIO.load(new java.io.BufferedReader(
+            new java.io.StringReader(txt))).coasters().get(0);
+    }
+
+    /** Position on the sample polyline [i0..i1] at arc `arc` from its
+     *  first sample. */
+    static Vec3 atArc(List<FVDIntegrator.Sample> s, int i0, int i1,
+                      double arc) {
+        double s0 = s.get(i0).s();
+        for (int i = i0; i < i1; i++) {
+            double a = s.get(i).s() - s0, b = s.get(i + 1).s() - s0;
+            if (arc <= b || i == i1 - 1) {
+                double u = b > a ? (arc - a) / (b - a) : 0;
+                u = Math.max(0, Math.min(1, u));
+                return s.get(i).pos().add(s.get(i + 1).pos()
+                    .sub(s.get(i).pos()).scale(u));
+            }
+        }
+        return s.get(i1).pos();
+    }
+
+    /** ARC-MATCHED shape deviation of two sample ranges (a refit
+     *  changes the clock, so indices don't pair). */
+    static double shapeDev(TrackCompiler.Result a, int a0, int a1,
+                           TrackCompiler.Result b, int b0, int b1) {
+        double la = a.samples().get(a1).s() - a.samples().get(a0).s();
+        double lb = b.samples().get(b1).s() - b.samples().get(b0).s();
+        double w = 0;
+        for (int i = 0; i <= 400; i++) {
+            double f = i / 400.0;
+            w = Math.max(w, atArc(a.samples(), a0, a1, f * la)
+                .sub(atArc(b.samples(), b0, b1, f * lb)).length());
+        }
+        return w;
+    }
+
+    /** The chained "Convert Real to Design" over [0..2] of piece 1,
+     *  the UI's composite steps run headlessly with a rebuild between
+     *  (RangeChain's shape). */
+    static boolean chainConvert(Coaster c) {
+        final int piece = 1, k = 0, m = 2;
+        boolean ok = c.withSeamsSuspended(piece, () -> {
+            int rp = c.isolateRange(piece, k, m, DT);
+            if (rp != piece) return false;
+            if (m > k && c.makeSeamStrict(rp, 1, DT) < 0) return false;
+            return c.makeGraphsReal(rp, 0, DT, 0.1, 0);
+        });
+        rebuild(c);
+        for (int i = 1; i <= m; i++) {
+            final int ii = i;
+            final int conv = piece, fz = conv + 1;
+            ok &= c.withSeamsSuspended(conv, () ->
+                c.withSeamsSuspended(fz, () -> {
+                    if (ii < m && c.makeSeamStrict(fz, 1, DT) < 0) {
+                        return false;
+                    }
+                    if (!c.makeGraphsReal(fz, 0, DT, 0.1, 0)) return false;
+                    return c.absorbFollower(conv, fz);
+                }));
+            rebuild(c);
+        }
+        return ok;
+    }
+
+    /** b1-b5 for one op behind a No-optimization bridge. */
+    static void behindBridge(String name, double fr, double fa,
+            boolean tilt,
+            java.util.function.Function<Coaster, Boolean> op) {
+        Coaster c = bridgedChain(BridgeSection.OPT_NONE, fr, fa,
+            tilt ? 3 : 0, tilt ? 8 : 0, tilt ? -5 : 0, 22);
+        TrackCompiler.Result r0 = rebuild(c);
+        TrackPiece b = c.pieces.get(1);
+        BridgeSection bs = (BridgeSection) c.pieces.get(0).sections.get(1);
+        int seam0 = r0.spans().get(1).i1();
+        boolean pre = b.orientConflict() == tilt
+            && Math.abs(b.sections.get(0).vDesign()
+                - r0.trueV()[seam0]) > 0.2;
+        TrackPose e0 = b.entryPose();
+        double x = b.x, y = b.y, z = b.z;
+        Vec3 se0 = bs.solvedEntry.pos();
+        double lenA = bs.lenA, lenB = bs.lenB, lod = bs.lastOptDist;
+        boolean optLen = bs.optLen, ly = bs.lockYaw, lp = bs.lockPitch,
+            lr = bs.lockRoll;
+        double[] sig = bs.optSig, stash = bs.noneStash;
+        boolean ok = op.apply(c);
+        TrackCompiler.Result r = rebuild(c);
+        boolean same = c.pieces.get(1) == b && c.pieces.get(0).sections
+            .get(c.pieces.get(0).sections.size() - 1) == bs;
+        TrackPose e1 = b.entryPose();
+        Vec3 se1 = bs.solvedEntry.pos();
+        check(pre && ok && same && poseBits(e0, e1) && bitsEq(b.x, x)
+                && bitsEq(b.y, y) && bitsEq(b.z, z)
+                && bitsEq(se0.x(), se1.x()) && bitsEq(se0.y(), se1.y())
+                && bitsEq(se0.z(), se1.z()),
+            name + " b1 applies; the piece's ENTRY POSE is bitwise"
+            + " unchanged", String.format(Locale.US,
+                "conflict before %b, pos dev %.2e", pre,
+                e1.pos().sub(e0.pos()).length()));
+        check(bitsEq(bs.lenA, lenA) && bitsEq(bs.lenB, lenB)
+                && bitsEq(bs.lastOptDist, lod) && bs.optLen == optLen
+                && bs.optMode == BridgeSection.OPT_NONE
+                && bs.lockYaw == ly && bs.lockPitch == lp
+                && bs.lockRoll == lr && bs.optSig == sig
+                && bs.noneStash == stash,
+            name + " b2 the bridge's own fields are untouched");
+        FVDIntegrator.Sample bl = r.samples().get(r.spans().get(1).i1());
+        double land = bl.pos().sub(e1.pos()).length();
+        double tt = bl.T().dot(e1.orient().T());
+        double uu = bl.U().dot(e1.orient().U());
+        check(land < 1e-9 && tt > 1 - 1e-12 && uu > 1 - 1e-12,
+            name + " b3 the bridge re-lands on the piece",
+            String.format(Locale.US, "pos %.2e m, 1-T.T %.1e, 1-U.U %.1e",
+                land, 1 - tt, 1 - uu));
+        double tol = fr == 0 && fa == 0 ? 1e-9 : 1e-2;
+        double seam = Math.abs(b.sections.get(0).vDesign()
+            - r.trueV()[r.spans().get(1).i1()]);
+        double split = 0;
+        int last = 1 + b.sections.size();   // B's last span
+        for (int i = r.spans().get(2).i0();
+                i <= Math.min(r.spans().get(last).i1(),
+                    r.trueV().length - 1); i++) {
+            split = Math.max(split,
+                Math.abs(r.samples().get(i).v() - r.trueV()[i]));
+        }
+        check(!b.orientConflict() && seam < tol && split < tol,
+            name + " b4 the conflict is closed", String.format(Locale.US,
+                "seam split %.2e, worst over the piece %.2e m/s"
+                + " (bound %.0e)", seam, split, tol));
+        check(atRest(c, r),
+            name + " b5 at rest: no reconcile, no re-optimize, a"
+            + " rebuild is a bitwise no-op");
+    }
+
+    static void behindBridgeBlock() throws Exception {
+        double[][] frics = { {0, 0}, {0.03, 1e-4} };
+        for (double[] f : frics) {
+            String tag = f[0] == 0 ? "[loss-free] " : "[friction] ";
+            behindBridge(tag + "Convert Real to Design k=0", f[0], f[1],
+                true, c -> c.makeGraphsReal(1, 0, DT, 0.1, 0));
+            behindBridge(tag + "Set Design to Real k=0", f[0], f[1],
+                true, c -> c.refreezeSpeed(1, 0, DT));
+            behindBridge(tag + "range [0..0] refreeze", f[0], f[1],
+                true, c -> c.withSeamsSuspended(1, () -> {
+                    int rp = c.isolateRange(1, 0, 0, DT);
+                    return rp == 1 && c.refreezeRange(rp, DT);
+                }));
+            behindBridge(tag + "range [0..2] refreeze", f[0], f[1],
+                true, c -> c.withSeamsSuspended(1, () -> {
+                    int rp = c.isolateRange(1, 0, 2, DT);
+                    return rp == 1 && c.refreezeRange(rp, DT);
+                }));
+            behindBridge(tag + "speed-only Convert Real to Design",
+                f[0], f[1], false,
+                c -> c.makeGraphsReal(1, 0, DT, 0.1, 0));
+            behindBridge(tag + "speed-only Set Design to Real",
+                f[0], f[1], false, c -> c.refreezeSpeed(1, 0, DT));
+
+            // ---- b6: the chained convert over [0..2] ----
+            Coaster c = bridgedChain(BridgeSection.OPT_NONE, f[0], f[1],
+                3, 8, -5, 22);
+            TrackCompiler.Result r0 = rebuild(c);
+            TrackPiece b = c.pieces.get(1);
+            TrackPose e0 = b.entryPose();
+            boolean ok = chainConvert(c);
+            TrackCompiler.Result r1 = rebuild(c);
+            double devB = shapeDev(r0, r0.spans().get(1).i1(),
+                r0.spans().get(4).i1(), r1, r1.spans().get(1).i1(),
+                r1.spans().get(4).i1());
+            double devBr = shapeDev(r0, r0.spans().get(1).i0(),
+                r0.spans().get(1).i1(), r1, r1.spans().get(1).i0(),
+                r1.spans().get(1).i1());
+            check(ok && c.pieces.size() == 2 && c.pieces.get(1) == b
+                    && b.sections.size() == 3 && !b.orientConflict()
+                    && poseBits(e0, b.entryPose()),
+                tag + "b6a chained convert [0..2]: one piece of 3"
+                + " sections again, conflict closed, entry bitwise",
+                "pieces " + c.pieces.size() + " sections "
+                    + b.sections.size());
+            check(devB < 1e-2 && devBr < 2e-2,
+                tag + "b6b the piece and the bridge keep their shape"
+                + " (fit residual)", String.format(Locale.US,
+                    "piece %.2e m, bridge %.2e m", devB, devBr));
+            check(atRest(c, r1), tag + "b6c at rest after the chain");
+
+            // ---- b7: save → load → rebuild ----
+            String txt = docText(c);
+            Coaster d = reload(txt);
+            TrackCompiler.Result r2 = rebuild(d);
+            check(checksumTrue(r1) == checksumTrue(r2)
+                    && txt.equals(docText(d)),
+                tag + "b7a after the chained convert: save → load →"
+                + " rebuild bitwise, re-save byte-identical");
+            Coaster e = bridgedChain(BridgeSection.OPT_NONE, f[0], f[1],
+                3, 8, -5, 22);
+            rebuild(e);
+            boolean okE = e.withSeamsSuspended(1, () -> {
+                int rp = e.isolateRange(1, 0, 2, DT);
+                return rp == 1 && e.refreezeRange(rp, DT);
+            });
+            TrackCompiler.Result q1 = rebuild(e);
+            String t2 = docText(e);
+            Coaster g = reload(t2);
+            TrackCompiler.Result q2 = rebuild(g);
+            check(okE && checksumTrue(q1) == checksumTrue(q2)
+                    && t2.equals(docText(g)),
+                tag + "b7b after the range refreeze: save → load →"
+                + " rebuild bitwise, re-save byte-identical");
+        }
+        // ---- b8: the CONTRAST — optimize modes chase the resolve ----
+        int[] modes = { BridgeSection.OPT_POS, BridgeSection.OPT_POS_YAW };
+        String[] mn = { "Optimize position",
+            "Optimize position and orientation" };
+        for (int m = 0; m < 2; m++) {
+            Coaster c = bridgedChain(modes[m], 0, 0, 0, 8, -5, 22);
+            rebuild(c);
+            TrackPiece b = c.pieces.get(1);
+            Vec3 p0 = b.entryPose().pos();
+            boolean ok = c.refreezeSpeed(1, 0, DT);
+            TrackCompiler.Result r = rebuild(c);
+            double moved = b.entryPose().pos().sub(p0).length();
+            TrackCompiler.Result again = TrackCompiler.compile(c, DT);
+            boolean restless = c.reconcileChainedSpeeds(again, true)
+                | c.autoReoptimizeBridges(again);
+            check(ok && moved > 1e-3 && !restless,
+                "b8 CONTRAST, " + mn[m] + ": the same Set Design to Real"
+                + " re-marches and MOVES the piece (why the block"
+                + " stays); the rebuild still settles",
+                String.format(Locale.US, "moved %.3f m", moved));
+        }
     }
 
     public static void main(String[] args) throws Exception {
@@ -698,6 +1061,9 @@ public class RangeResolveGate {
                     && bitsEq(x1.sSmoothLen, 6.0) && bitsEq(x2.sSmoothLen, 5.0),
                 "s6c an out-of-range index suspends nothing and runs the op");
         }
+
+        // ---------- (b) batch 37: resolve behind a bridge ----------
+        behindBridgeBlock();
 
         System.out.println();
         System.out.println(fail == 0

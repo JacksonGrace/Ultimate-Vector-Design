@@ -25,14 +25,16 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /** THE SHARED LIVE-WINDOW BUILDER (v19.19, D248 — user spec: the
- *  Track Piece panel, the bridge window ("Bridge settings" since
- *  D249) and the Strict
+ *  Track Piece panel, the bridge window ("Bridge Settings") and the
+ *  Strict
  *  seam pop-out become ONE kind of window, "like the node editor"):
- *  an OWNED Stage in the light default theme, placed just ABOVE the
- *  graph canvas (its bottom edge at the canvas top, left at an
- *  anchor x — the toolbar button, the seam strip, a node, or a
+ *  an OWNED Stage in the light default theme, placed AT SHOW just
+ *  ABOVE the graph canvas (its bottom edge at the canvas top, left
+ *  at an anchor x — the toolbar button, the seam strip, a node, or a
  *  pending gizmo double-click anchor), clamped into the screen's
- *  visual bounds, never a hardcoded size. Values apply LIVE through
+ *  visual bounds, never a hardcoded size; later content changes
+ *  grow/shrink it from its TOP-LEFT corner (refit, D254 — nothing
+ *  above a revealed row moves). Values apply LIVE through
  *  the callers' chokes; the footer is explicit [Confirm][Cancel]:
  *  Confirm / Enter / the X = keep (the focused box commits first),
  *  Cancel / Esc = the caller's field-level revert to its open-time
@@ -53,7 +55,7 @@ final class LiveWindow {
     // conflict)" + "Only Affect Orientation Until Next Strict Seam") ----
     /** The independent-edit check (unchecked = LOCKSTEP). */
     static final String INDEP_LABEL =
-        "Edit Real and Design Orientation Independently";
+        "Edit Real and Design Independently";
     static final String INDEP_TIP = "Unchecked: pitch/roll edits move the"
         + " real and design orientation together (the shape re-solves).\n"
         + "Checked: choose which one the boxes and gizmo rings edit.";
@@ -90,10 +92,11 @@ final class LiveWindow {
     static final String READOUT_SWAP_TIP =
         "Click to edit this orientation instead";
     /** Real → Design's gray reason under an optimize-orientation
-     *  bridge — the same sentence in all three windows (D248). */
-    static final String MARCH_OWNS_R2D = "The optimize-orientation bridge"
-        + " owns this piece's pitch/roll — switch the mode or lock the"
-        + " axes.";
+     *  bridge — the same sentence in all three windows (D248). The
+     *  predicate is MODE-only, so the old "or lock the axes" advice
+     *  was never honored; the sentence names the two modes that
+     *  un-gray it (batch 37, SectionNames — LabelGate pins it). */
+    static final String MARCH_OWNS_R2D = SectionNames.MARCH_OWNS_R2D;
     static final String D2R_TIP = "Adopt the real orientation as the"
         + " design — graphs stay,\nthe shape re-solves; conflict closed.";
     static final String R2D_TIP = "Un-rotate the piece (and its carried"
@@ -126,7 +129,7 @@ final class LiveWindow {
      *  it and is consumed). Returns the Stage. */
     static Stage show(FvdDesigner app, String title, VBox content,
                       Runnable onConfirm, Runnable onCancel,
-                      double anchorX) {
+                      double anchorX, Node... footLead) {
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
         dlg.setTitle(title);
@@ -137,10 +140,32 @@ final class LiveWindow {
         Button cancel = new Button("Cancel");
         cancel.setCancelButton(true);
         cancel.setFocusTraversable(false);
-        HBox foot = new HBox(8, confirm, cancel);
+        // footLead = a caller's own action button(s) sitting LEFT of
+        // Confirm/Cancel (the init-speed window's "Set Design to Real"
+        // — its pre-D249 [button][Apply][Cancel] row; batch 36, D254).
+        // They pack against Confirm; a footSpring() among them pushes
+        // what PRECEDES it to the window's left edge (the Track Piece
+        // window's Switch Coaster… / Delete…, batch 37)
+        HBox foot = new HBox(8);
+        if (footLead != null) foot.getChildren().addAll(footLead);
+        foot.getChildren().addAll(confirm, cancel);
         foot.setAlignment(Pos.CENTER_RIGHT);
         content.getChildren().add(foot);
+        content.getProperties().put(FOOT, foot);   // footOf (batch 39)
         content.setPadding(new javafx.geometry.Insets(12, 14, 12, 14));
+        // a row that may be REVEALED later reserves its width now
+        // (batch 37): the window is wide enough for the resolve row
+        // even while that row is hidden (28 = the side padding)
+        double reserve = 0;
+        for (Node c : content.getChildren()) {
+            if (c.getProperties().get(RESERVE_W) instanceof Double d) {
+                reserve = Math.max(reserve, d);
+            }
+        }
+        if (reserve > 0) {
+            content.setMinWidth(Math.max(content.getMinWidth(),
+                reserve + 28));
+        }
         Scene sc = new Scene(content);
         dlg.setScene(sc);
         Runnable doConfirm = () -> {
@@ -240,7 +265,13 @@ final class LiveWindow {
         final double fax = ax, fTop = canvasTop;
         // PRE-SHOW measure + placement (D249)
         content.applyCss();
-        double pw = content.prefWidth(-1);
+        // a caller's pre-measure step (batch 39): CSS is applied, so
+        // the footer's buttons have their real pref widths — the
+        // init-speed window sizes its label column off them here
+        if (content.getProperties().get(PRE_MEASURE) instanceof Runnable pm) {
+            pm.run();
+        }
+        double pw = Math.max(content.prefWidth(-1), content.minWidth(-1));
         double ph = content.prefHeight(pw);
         if (pw > 0 && ph > 0) {
             content.resize(pw, ph);
@@ -278,30 +309,57 @@ final class LiveWindow {
      *  grows when its root's pref size changes after show — the last
      *  rows (ops row, [Confirm][Cancel]) fell off the bottom of a
      *  non-resizable frame. When the root's pref size differs from the
-     *  scene's by more than 0.5 px the Stage re-sizes to its scene and
-     *  is re-placed by the show-time rule (bottom edge ABOVE_GAP above
-     *  the canvas top, the current x kept, clamped into the anchor
-     *  screen). A steady state is free (no size change → no work).
-     *  Called at the end of every row sync. */
+     *  scene's by more than 0.5 px the Stage re-sizes to its scene,
+     *  TOP-LEFT ANCHORED since v19.25 (D254 — see the body: the
+     *  window only resizes, its width ratchets — unless the window
+     *  opted in through allowNarrowing (batch 39) —, the screen clamp
+     *  is the one residual move; D248-D253 re-placed it by the
+     *  show-time rule, bottom edge ABOVE_GAP above the canvas top).
+     *  A steady state is free (no size change → no work). Called at
+     *  the end of every row sync. */
     static void refit(FvdDesigner app, Stage dlg) {
         if (dlg == null || !dlg.isShowing() || dlg.getScene() == null) return;
         Scene sc = dlg.getScene();
         if (!(sc.getRoot() instanceof Region root)) return;
-        double pw = root.prefWidth(-1), ph = root.prefHeight(-1);
+        // the width the scene takes = pref bounded by the (ratcheted /
+        // reserved) min; comparing the bare pref re-ran sizeToScene on
+        // every hook once a wide row had hidden again (batch 37)
+        double pw = Math.max(root.prefWidth(-1), root.minWidth(-1)),
+               ph = root.prefHeight(-1);
+        Prof.count("refitCheck");
         if (Math.abs(pw - sc.getWidth()) <= 0.5
                 && Math.abs(ph - sc.getHeight()) <= 0.5) {
             return;
         }
+        // TOP-LEFT ANCHORED growth (batch 36, D254 — user spec: nothing
+        // above a revealed row may move): the window only RESIZES here;
+        // a revealed row extends the bottom edge downward, a hidden
+        // one pulls it up, and the rows above stay under the mouse. It
+        // never NARROWS either (the root's min width ratchets to the
+        // widest layout seen), so a readout or a shorter label cannot
+        // shift a button sideways. The only move left is the screen
+        // clamp when the bottom/right edge would leave the visual
+        // bounds — minimal, and only then. (D248-D253 re-pinned the
+        // BOTTOM edge above the canvas per size change: every reveal
+        // shifted the whole window UP by the revealed height — the
+        // reported "jumping around".) EXCEPT a window that opted in
+        // through allowNarrowing (batch 39): its min width is left
+        // computed, so a row that lost a node pulls the right edge
+        // back in — the init-speed window's readout, the user's
+        // "remove the real speed readout space" (its spinner never
+        // moves: the column left of the readout is fixed pre-show)
+        if (root.getProperties().get(MAY_NARROW) != Boolean.TRUE) {
+            root.setMinWidth(Math.max(root.getMinWidth(), pw));
+        }
+        long profT = Prof.t();
         dlg.sizeToScene();   // synchronous: the frame size is current after it
+        Prof.add("refitSize", profT);
         double rw = dlg.getWidth(), rh = dlg.getHeight();
         if (Double.isNaN(rw) || Double.isNaN(rh) || rw <= 0 || rh <= 0) return;
-        double[] cv = app != null && app.editor != null
-            ? app.editor.canvasScreenBox() : null;
-        double x = dlg.getX();
-        double top = cv != null ? cv[1] : dlg.getY() + rh;
-        double[] p = clamp(x, top - ABOVE_GAP - rh, rw, rh, x, top);
-        dlg.setX(p[0]);
-        dlg.setY(p[1]);
+        double x = dlg.getX(), y = dlg.getY();
+        double[] p = clamp(x, y, rw, rh, x, y);
+        if (Math.abs(p[0] - x) > 0.5) dlg.setX(p[0]);
+        if (Math.abs(p[1] - y) > 0.5) dlg.setY(p[1]);
     }
 
     /** Drop a pending one-shot gizmo anchor (D248 review fix): every
@@ -339,12 +397,25 @@ final class LiveWindow {
      *  aligned, the label on a fixed column so the rows line up. */
     static HBox orientRow(String label, Node spinner, Node lock,
                           Node revert, Label design) {
+        return orientRow(label, spinner, lock, revert, null, design);
+    }
+
+    /** The 6-arg form (batch 36, D254): `extra` sits RIGHT of the ↺ and
+     *  before the grey readout — the Track Piece window's "Edit with
+     *  gizmo" check; the readout stays LAST so the check's x never
+     *  moves when the readout shows. */
+    static HBox orientRow(String label, Node spinner, Node lock,
+                          Node revert, Node extra, Label design) {
         Label l = new Label(label);
         l.setMinWidth(LABEL_W);
         l.setPrefWidth(LABEL_W);
         HBox row = new HBox(8, l, spinner);
         if (lock != null) row.getChildren().add(lock);
-        if (revert != null) row.getChildren().add(revert);
+        if (revert != null) {
+            row.getChildren().add(revert);
+            row.getProperties().put(REVERT_END, revert);   // rowSeparator
+        }
+        if (extra != null) row.getChildren().add(extra);
         if (design != null) row.getChildren().add(design);
         row.setAlignment(Pos.CENTER_LEFT);
         return row;
@@ -363,11 +434,10 @@ final class LiveWindow {
 
     /** A bridge-style padlock (the D91/D96 red/green look): SELECTED
      *  = 🔓 green, unselected = 🔒 red. The MEANING is the caller's —
-     *  the seam locks AND the bridge locks (incl. a bridged-in
-     *  piece's Track Piece padlocks) hold a typed angle since v19.20
-     *  (🔒 = held/typeable, 🔓 = follows the seam / the bridge aligns
-     *  it — D249, the seam rule); only a FREE piece's Track Piece
-     *  padlocks remain edit guards (🔒 = frozen box). */
+     *  the seam locks AND the bridge locks hold a typed angle since
+     *  v19.20 (🔒 = held/typeable, 🔓 = follows the seam / the bridge
+     *  aligns it — D249, the seam rule). The Track Piece window
+     *  carries none since v19.25 (D254 — "Edit with gizmo" checks). */
     static ToggleButton lockToggle(String tip) {
         ToggleButton b = new ToggleButton("🔒");
         b.setFocusTraversable(false);
@@ -416,10 +486,27 @@ final class LiveWindow {
             + " -fx-border-radius: 3; -fx-padding: 0 3 0 3;"
             + " -fx-border-color: rgb(120,125,140);";
 
+        /** The reserved slot width (batch 36, D254): the widest text
+         *  the readout can show, measured in its own font, so a row's
+         *  width never changes when the readout appears — the Strict
+         *  Seam window grew ~100 px per conflict before. */
+        static final double READOUT_W = reservedWidth();
+
+        private static double reservedWidth() {
+            javafx.scene.text.Text t = new javafx.scene.text.Text("design -180.00°");
+            t.setFont(javafx.scene.text.Font.font(10));
+            return Math.ceil(t.getLayoutBounds().getWidth()) + 10;   // + padding/border
+        }
+
         Readout(Runnable onSwap) {
             node.setStyle(BASE);
             node.setVisible(false);
-            node.setManaged(false);
+            // MANAGED at a fixed width from the start (D254): showing
+            // the readout only toggles visibility — no layout change
+            node.setManaged(true);
+            node.setMinWidth(READOUT_W);
+            node.setPrefWidth(READOUT_W);
+            node.setMaxWidth(READOUT_W);
             tip.setShowDelay(javafx.util.Duration.millis(300));
             node.setOnMouseEntered(ev -> {
                 if (swappable) node.setStyle(HOT);
@@ -436,8 +523,7 @@ final class LiveWindow {
         /** Show/hide with the OTHER tier's prefix + angle (NaN → "—")
          *  and the swap affordance. */
         void set(boolean show, String prefix, double deg, boolean swap) {
-            node.setVisible(show);
-            node.setManaged(show);
+            node.setVisible(show);   // the slot stays managed (D254)
             if (show) {
                 node.setText(prefix + " " + (Double.isNaN(deg) ? "—"
                     : String.format(java.util.Locale.US, "%.2f°",
@@ -471,6 +557,108 @@ final class LiveWindow {
         return r;
     }
 
+    private static final String REVERT_END = "uvd.revertEnd";
+    /** A row's reserved width, read by show() (the resolve row). */
+    private static final String RESERVE_W = "uvd.reserveW";
+    /** The window's footer HBox, stored on the content by show() so a
+     *  caller's pre-measure can read its pref width (batch 39). */
+    private static final String FOOT = "uvd.foot";
+    /** A caller's Runnable run by place() right after the content's
+     *  CSS is applied and BEFORE the pre-show measure (batch 39). */
+    private static final String PRE_MEASURE = "uvd.preMeasure";
+    /** Boolean.TRUE = refit() releases the D254 min-width ratchet for
+     *  THIS window: it narrows when its content narrows (batch 39 —
+     *  the init-speed window's grey readout, the second deliberate
+     *  exception to the no-jump rule; every other window keeps the
+     *  ratchet). */
+    private static final String MAY_NARROW = "uvd.mayNarrow";
+
+    /** Let this window NARROW when a row loses width (batch 39, user
+     *  spec — the init-speed window: "when there is not a speed
+     *  conflict remove the real speed readout space"). refit() then
+     *  skips the ratchet; a steady state is still free. Used only by
+     *  that window — the no-jump rule stands for every other. */
+    static void allowNarrowing(Region content) {
+        content.getProperties().put(MAY_NARROW, Boolean.TRUE);
+    }
+
+    /** Register a PRE-SHOW measure step (batch 39): `r` runs inside
+     *  place() once the content's CSS is applied (every Labeled has
+     *  its skin, font and padding — pref widths are real) and before
+     *  the window is measured, so a caller can size a column off the
+     *  footer's pref width (footOf) and the window opens at the
+     *  right size — no post-show hop. */
+    static void preMeasure(Region content, Runnable r) {
+        content.getProperties().put(PRE_MEASURE, r);
+    }
+
+    /** The footer HBox show() appended to `content` ([footLead…]
+     *  [Confirm][Cancel]); null before show() built it. */
+    static HBox footOf(Region content) {
+        return content.getProperties().get(FOOT) instanceof HBox h ? h : null;
+    }
+
+    /** The yaw | pitch-roll separator (batch 37, user spec): from the
+     *  content's left edge to the right edge of the rows' ↺, and
+     *  lighter than the full-width lines (rgb 222,225,230 — halfway
+     *  from their 200,204,212 to the window's background). The width
+     *  is BOUND to the ↺'s layout position in its row (row and line
+     *  share parent and left inset), so it follows the label / spinner
+     *  / padlock columns of whichever window uses it; layoutX +
+     *  layoutBounds, never boundsInParent (a focus ring would count).
+     *  The rows given may disagree by a pixel or two — the line ends
+     *  at the right-most ↺. */
+    static Region rowSeparator(HBox... rows) {
+        Region r = thinSeparator();
+        r.setStyle("-fx-background-color: rgb(222,225,230);");
+        java.util.List<Node> ends = new java.util.ArrayList<>();
+        for (HBox row : rows) {
+            if (row != null
+                    && row.getProperties().get(REVERT_END) instanceof Node n) {
+                ends.add(n);
+            }
+        }
+        if (ends.isEmpty()) return r;
+        javafx.beans.Observable[] deps =
+            new javafx.beans.Observable[ends.size() * 2];
+        for (int i = 0; i < ends.size(); i++) {
+            deps[2 * i] = ends.get(i).layoutXProperty();
+            deps[2 * i + 1] = ends.get(i).layoutBoundsProperty();
+        }
+        r.maxWidthProperty().bind(
+            javafx.beans.binding.Bindings.createDoubleBinding(() -> {
+                double m = 0;
+                for (Node n : ends) {
+                    m = Math.max(m, n.getLayoutX()
+                        + n.getLayoutBounds().getWidth());
+                }
+                return m > 0 ? m : Double.MAX_VALUE;   // pre-layout: full
+            }, deps));
+        return r;
+    }
+
+    /** A growing gap for show()'s footer: lead nodes BEFORE it sit at
+     *  the window's left edge, Confirm / Cancel stay at the right
+     *  (batch 37). */
+    static Region footSpring() {
+        Region s = new Region();
+        HBox.setHgrow(s, javafx.scene.layout.Priority.ALWAYS);
+        return s;
+    }
+
+    /** A button width that cannot clip its text (batch 37 — the
+     *  bridge window's "Design → Real Orientati…" report): the text
+     *  measured in the button's own font + modena's 0.667 em side
+     *  padding + 4 px of slack. A button laid out at EXACTLY its
+     *  snapped pref width can lose a sub-pixel to snapping on a
+     *  fractional render scale and ellipsize. */
+    static double fixedButtonWidth(String text, double fontPx) {
+        javafx.scene.text.Text t = new javafx.scene.text.Text(text);
+        t.setFont(javafx.scene.text.Font.font(fontPx));
+        return Math.ceil(t.getLayoutBounds().getWidth())
+            + 2 * Math.ceil(0.666667 * fontPx) + 4;
+    }
+
     /** Small gray caption text. */
     static Label grayNote(String text) {
         Label l = new Label(text);
@@ -481,7 +669,7 @@ final class LiveWindow {
     /** THE ORIENTATION-MODE ROW (v19.20, D249 — user spec, replacing
      *  D248's [Lock Track Shape (creates orientation conflict)] [Only
      *  Affect Orientation Until Next Strict Seam]): a CheckBox "Edit
-     *  Real and Design Orientation Independently" (unchecked =
+     *  Real and Design Independently" (unchecked =
      *  LOCKSTEP); checked reveals, directly below and condensed, the
      *  two RadioButtons "Edit real orientation (locks track shape)"
      *  (= REAL_ONLY, pre-selected on check) / "Edit design
@@ -539,11 +727,16 @@ final class LiveWindow {
         if (sc.getRoot() != null) sc.getRoot().requestFocus();
     }
 
+    /** hasNext (batch 36, D254): the "Affect Subsequent Strict Seams"
+     *  row shows only while a junction FOLLOWS the piece in its run
+     *  (Coaster.hasSubsequentJunction); null = always. The stored flag
+     *  is inert while hidden and reappears with its value when a seam
+     *  or bridge is added later. */
     static FlagRow flagRow(Supplier<TrackPiece> live,
                            BooleanSupplier canWrite, Runnable pushUndo,
                            Runnable markDirty, Supplier<String> rowWhy,
                            Supplier<String> designWhy,
-                           Runnable afterWrite) {
+                           Runnable afterWrite, BooleanSupplier hasNext) {
         CheckBox indep = new CheckBox(INDEP_LABEL);
         indep.setFocusTraversable(false);
         indep.setStyle("-fx-font-size: 11px;");
@@ -610,6 +803,10 @@ final class LiveWindow {
             }
             sub.setVisible(on);
             sub.setManaged(on);
+            // the carry row only while a junction follows (D254)
+            boolean next = hasNext == null || hasNext.getAsBoolean();
+            affectWrap.setVisible(on && next);
+            affectWrap.setManaged(on && next);
             // inert under DESIGN_ONLY (the real entry never moves) —
             // grayed with the reason; the design radio grays with the
             // bridge exclusion (the whole row's gray outranks both)
@@ -724,6 +921,14 @@ final class LiveWindow {
         Tooltip.install(r2d, new Tooltip(R2D_TIP));
         d2r.setOnAction(e -> onD2r.run());
         r2d.setOnAction(e -> onR2d.run());
+        // FIXED widths with slack, never shrinking (batch 37): the
+        // same size in all three windows, whatever the render scale
+        double bw = Math.max(fixedButtonWidth(d2r.getText(), 11),
+            fixedButtonWidth(r2d.getText(), 11));
+        for (Button b : new Button[]{ d2r, r2d }) {
+            b.setMinWidth(bw);
+            b.setPrefWidth(bw);
+        }
         HBox row = new HBox(8,
             GraphEditor.grayHint(d2r, () -> {
                 String w = d2rWhy.get();
@@ -734,6 +939,8 @@ final class LiveWindow {
                 return w == null ? "" : w;
             }));
         row.setAlignment(Pos.CENTER_LEFT);
+        row.setMinWidth(2 * bw + 8);
+        row.getProperties().put(RESERVE_W, 2 * bw + 8);   // show() reads it
         Runnable sync = () -> {
             d2r.setDisable(d2rWhy.get() != null);
             r2d.setDisable(r2dWhy.get() != null);

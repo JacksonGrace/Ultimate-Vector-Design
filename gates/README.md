@@ -4,12 +4,67 @@ Compile:  javac -cp target/classes -d gates/out gates/*.java
 Run:      java -cp "target/classes;gates/out" <Name>      (package-uvd probes: uvd.<Name>; package coaster → uvd in v19.21, D250)
 
 Core battery (run after ANY compile/reconcile/IO/placement change —
-33 members since D249 (OrientModeGate new; 32 since D248: StripGate new, ConflictGate extended by item S3), all green on wiped classes 2026-09-24):
+D257 (batch 39) added no member; it REMOVED the translational smoothing mode — SmoothRealGate 24 (section d = d1 the recorded closure
+checksums + d2 the make-real round trip), LabelGate 182 (section 17 = 13 checks) —, grew Phase3Gate to 88 PASS lines (55k/55l, the
+held-control knife edge closed) and RE-PINNED Nl2ElemProbe (22 checks, count unchanged); all green on wiped classes 2026-10-13; the
+recorded clean-span dump (gates/probes/cleanspan-2026-09-30) is batch 39's new.txt (54 documents, the two held-ACCEL files moved);
+LabelGate + uvd.ConflictGate + SmoothRealGate re-run on the merged tree as the docs belt ("LabelGate: 182 passed, 0 failed" /
+"ALL CONFLICT GATES PASS (87)" / "ALL SMOOTH-REAL GATES PASS (24)").
+D256 (batch 38) added TWO members — uvd.KeyRouteGate (103 checks; 131 with the JavaFX module path) and TypedMarkGate (42) — and grew
+three: LabelGate 190, uvd.ConflictGate 87, SmoothRealGate 77 — see their entries; all green on wiped classes 2026-10-12.
+D255 (batch 37) added no member but grew seven: GestureGate 180, FloorGate 34, LabelGate 129, uvd.ConflictGate 51, RangeResolveGate 115,
+MirrorGate 100, RunGate 78 — see their entries; all green on wiped classes 2026-09-30. Compile the gates with `-encoding UTF-8`.
+(Nl2Check, a recovered pre-D184 script, is NOT a battery member: it fails 158 sign checks by design of the later lateral / yaw flips.)
+36 members since D256 (uvd.KeyRouteGate + TypedMarkGate new); 34 since D254 (uvd.PulseClockGate new — 30 checks, the POV/fly ride clock: the even-window median + bounded drift, hitches whole,
+the hitch threshold's nominal floor, the drift surviving a hitch; GestureGate grew to 115 with section 10 = Gestures.slowDebt, the gizmo
+Shift law; LabelGate to 111 with section 12 = File > Rename…'s name refusals); 33 since D249
+(OrientModeGate new; 32 since D248: StripGate new, ConflictGate extended by item S3), all green on wiped classes 2026-09-29):
   DetermGate197 DetermGate198 DetermGate199 DetermGate200 LoadGate196
-  OrientGate OrientGate2 Phase2Gate Phase3Gate DomainGate
-  MultiCoasterGate SmoothRealGate
+  OrientGate OrientGate2 Phase2Gate DomainGate
+  Phase3Gate  (Phase 3 — friction + speed controls; + D257 55k/55l — the
+                          held-ACCEL DIVE fixture (geo pitch −50 °/s for 1 s
+                          then a straight ~55° drop, 90 m start, 10 m/s;
+                          target 20, 0.5 g tied, both flags, 1.5 s to the
+                          5 s end): 55k every design AND real sample within
+                          EPS of the target from the first at-target sample
+                          to the control's end, ≥ 1 held sample one ulp
+                          ABOVE it (the old sign test's "not crossed" step),
+                          end 20.000000000 — the old build leaked 312 of 333
+                          samples, 9.8 m/s; 55l the same fixture min-only
+                          runs free to 46.8 (floor semantics kept); 88 PASS
+                          lines)
+  MultiCoasterGate SmoothRealGate  (SmoothRealGate: D232 — Make smoothing
+                          real + the s/c entry ease, 15 checks; + section d
+                          since D256, REDUCED in D257 (the translational mode
+                          is gone): d1 the smoothing compile's settled
+                          checksums == the pre-D256 snapshot BITWISE (64-bit
+                          sample checksums 28808918c0612fbe at 8 m /
+                          0fc8182da8f4a418 at 20 m over 1601 samples — the D140
+                          closure; re-record on any deliberate blend change),
+                          d2 the make-real round trip on the smoothed compile —
+                          applies, structure, the fresh seam's smoothing off, B
+                          re-anchors at the window-end sample (0.0 m), hold
+                          0.0042 m, tail 0.0042 m; 24 checks)
+  uvd.KeyRouteGate TypedMarkGate  (D256 — see their entries below)
   InflSplitGate ReanchorGate MirrorGate YpAbsGate  (influence splits, the
-                          delete-first re-anchor, Mirror piece, absolute yaw/pitch)
+                          delete-first re-anchor, Mirror piece, absolute yaw/pitch;
+                          MirrorGate + D255: g = Coaster.mirrorRun on STRICT
+                          runs (held yaw/pitch/roll, mixed locks, smoothing,
+                          follower design tier, absolute lanes, an s/c
+                          follower; head yaw 0 and 37°) vs the geometric
+                          reflection ≤ 1e-9 m with a decoy run bitwise
+                          untouched, save → load bitwise, mirror twice ≤ 1e-9
+                          with every lane node bitwise; h = runs with bridges
+                          (three modes × Optimize length) ≤ 1e-6, the target
+                          not moved by the rebuild, plus BANKED CRESTS at 45 m
+                          and 58 m: mirrored-then-edited == the reflection of
+                          an equally edited twin; i = refusals leave the
+                          document field-identical; j = a single-piece run ==
+                          mirrorPiece field-for-field and compile-bitwise;
+                          h-stash (D255 review) = the manual-mode noneStash is
+                          REFLECTED with its target: an untouched stash still
+                          reads untouched bit for bit, a hand-moved one stays
+                          hand-moved by the same distance and yaw; 100 checks)
   uvd.SeamShapeGate  (D247 — follower design tier: attach keeps a
                           design-tilted piece's shape, seamRealToDesign /
                           bakeFollow, seamDesignLockstep + its pole guard,
@@ -35,6 +90,16 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
                      the OBJECTS that own the seams after the splits (new
                      pieces own sharp 0 seams), the unrelated H→P0 seam is
                      never zeroed (scoped), and the smoothed result stays
+                     [D255 adds section b — RESOLVE BEHIND A BRIDGE: hill
+                     piece → bridge → tilted three-section piece; under
+                     "No optimization", for six ops × friction off / on:
+                     the target's entry pose and position BITWISE, the
+                     bridge's stored fields untouched, landing < 1e-9 m,
+                     the conflict closed, a second rebuild a bitwise
+                     no-op, the chained convert, save → load → rebuild
+                     bitwise; b8 = the CONTRAST (the same op under an
+                     optimize mode moves the target > 1e-3 m — why those
+                     modes stay blocked); 115 checks in all]
                      within the fit residual (6 mm), plus the wrapper's own
                      contract — nested no-op, throwing op restored, out-of-
                      range index inert (s6, the D249 review); 43 checks
@@ -78,10 +143,84 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
               fixture; + D249 (batch 34 item L): the DRAWN badge text
               badgeLabel = short word + spaced tags, no number ("Geo ·m
               ◀ fx", "Bridge !" — the D248 "Geo 2" short form is gone),
-              the bridge's "Bridge settings…" item + "Bridge settings
-              (Strict Seam n)" window title (live/orphan/chain) beside the
-              toolbar's kept "(bridge) ▴" form, and the .nl2elem
-              description's "Ultimate Vector Design Export"; 103 checks)
+              the bridge's "Bridge settings…" item + "Bridge Settings
+              (Strict Seam n)" window title (capital S since D254;
+              live/orphan/chain) beside the toolbar's kept "(bridge) ▴"
+              form, and the .nl2elem description's "Ultimate Vector
+              Design Export"; + D254 section 12: DesignIO.fileNameWhy —
+              File > Rename…'s refusal sentences (blank, path-like incl.
+              backslash, illegal characters, control characters, Windows
+              device names) and two passing names; + D255 section 13:
+              SectionNames.bridgeResolveWhy (null under "No
+              optimization", the two optimize sentences ending with the
+              user's hint), MARCH_OWNS_RESOLVE, MARCH_OWNS_R2D,
+              REVERSE_MULTI_WHY, SWITCH_DEST_ORPHAN_WHY (129 checks);
+              + D256 sections 15-16 (batch 38): the badge's THREE-STATE
+              speed glyph — SPEED_GLYPH " ≠v" / SLIGHT_SPEED_GLYPH " ~v"
+              / ORIENT_GLYPH " ≠o", speedLevel / speedGlyph at 0, 0.005
+              (level 0), 0.0050001 and 0.2 (level 1), 0.2000001 and 5.0
+              (level 2), NaN (0), Gestures.DRIFT_EPS == 0.2 (its new
+              home), the composed badge texts "Force ~v" / "Geo ·m ~v
+              ≠o" / "Force ·m ◀ fx ≠v" / a bridge's bare "Bridge";
+              Reverse's gray sentences — the four new REVERSE_*
+              constants verbatim and reverseWhy over all eight (multi,
+              orphanTail, controls) combinations (null for none, multi
+              beats orphan, controls appended to both), every sentence
+              in the "Reverse works on … first." form (169 checks);
+              + D256 section 17, shrunk in D257: the Smoothing Options
+              window's strings (title word, the two seam-menu items, the
+              length label, the two buttons, the teardown reason, the two
+              D141 sentences — the D255 texts —, smoothWindowTitle on a
+              plain seam / past a bridge / run head / out of range; 13
+              checks); 182 checks)
+  uvd.PulseClockGate  (D254 — the POV/fly RIDE CLOCK, pure: the measured
+              Windows sawtooth (24 × 16 ms + one swallowed 32 ms tick)
+              advances within 3 % of its mean and sums to wall time; the
+              24/8 ms hint alternation; mixed + 30 %-hint stress
+              streams; a hitch passes whole and stays out of the
+              window; the 0.1 s cap; the seeding pulse / seed phase;
+              a steady cadence reproduced exactly; reset(); busy
+              startup and sub-hitch busy stretches bounded by BLEED;
+              the hitch threshold's NOMINAL floor (a 32 ms tick over a
+              dipped median is smoothed) and the owed drift surviving a
+              hitch; 30 checks)
+  uvd.KeyRouteGate  (D256 — KEY ROUTING, pure: the "would this key TYPE
+              into the focused box" predicate behind every secondary
+              scene's ride-key forwarder (FvdDesigner.keyTypes →
+              KeyRoute). (a) the numeric-box TEXT table on signed and
+              unsigned boxes — digits, numpad digits, period / decimal,
+              Backspace / Delete, the arrows, Home / End, Enter / Esc /
+              Tab; (b) minus / numpad subtract type ONLY on a signed
+              box; (c) never text: W S A D, Space, Shift, Control, every
+              letter, F1-F12; (d) typesInto's rules — a release never
+              types, a shortcut combo never types, a non-text owner
+              never types, a disabled / read-only box never types, a
+              FREE-TEXT box takes everything (D235 kept), a numeric box
+              exactly the table; (e) with JavaFX on the classpath the 28
+              KeyCode.getCode() ints behind the table (SKIP on the plain
+              battery classpath); 103 checks (131 with the module path).
+              Its UI twin is the `-Dfvd.keyprobe=1` hook: 45 PASS lines
+              covering the density preview, fly, the view digits, a
+              typed box, Esc, Enter = Apply from the parked root (e2),
+              the speed popup, the node editor, Coaster Options, the
+              Shortcuts capture and the five save-on-release drills —
+              run it after any change to forwardViewKey, handleKey's key
+              filters or the two popups' wiring.)
+  TypedMarkGate  (D256 — the TYPED MARK, pure: uvd.TypedMark through a
+              stub spinner modelling the two JavaFX facts (the Spinner
+              renders before our value listener; equal setValue /
+              setText is silent) — sections A–G the prototype's 29-check
+              transition table (typed-identical commits exactly,
+              untouched keeps full precision, program writes never
+              mark, typed-equal IS typing, equal restore keeps the mark,
+              Spinner-first commit then ours inert, same-value commit,
+              arrow commits then steps, discard clears when equal,
+              unmarked non-rendering text parses) + section H the paste
+              / drop model (identical paste marks, rejected / signed-
+              into-unsigned / empty clips never, filterInput stripping,
+              dropMarks); 42 checks — "42 checks, 0 failures — ALL OK".
+              Its UI twin is the `-Dfvd.typedprobe=1` hook: 36 PASS
+              lines, "TYPEDPROBE fails=0".)
   RunGate  (D248 — RUN AS PIECE, pure model: Coaster.runHeads/runCount/
             runOrdinal on a 3-run fixture (strict follower + smoothed held
             seam + an OPT_POS_YAW bridge, a lone piece, head + follower)
@@ -107,7 +246,15 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
             the undo model (re-inserting the removed objects compiles
             bitwise), the untouched runs' samples bitwise and a run-after-
             run delete down to the empty coaster (j10, the D249 review);
-            66 checks (15 new))
+            66 checks (15 new); + D255 k: Coaster.moveRunTo — the block
+            contiguous and in order at the destination's end, every
+            field bit-identical but the head's followPrev, refusals leave
+            both lists untouched, an orphan-bridge run moves and stays
+            orphan, save → load bitwise; k4 / k4b / k4c pin what is and
+            is not bitwise (a smoothed or bridged run landing BEHIND
+            other pieces differs by ~1.2e-11 m — the compiler's global
+            clock / arc offset; to an empty coaster it is bitwise whole);
+            78 checks)
   PlacementGate  (D248 — the three placement WINDOWS' model half: the
                   UNLOCKED default + orientOnlyToSeam (Coaster.
                   carriesDownstream / carryAfterEdit = placementEdit's
@@ -244,7 +391,20 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
                 small far disk beats a big near one, the rim itself
                 misses, ties keep build order, pickR ≤ 0 never hits —
                 and the doubled thickness / lighten-factor constants);
-                108 checks. Edge tables: the batch-34 scratchpad's
+                + D254 section 10: Gestures.slowDebt / SLOW_K — the
+                gizmo Shift law (a gesture that never sees Shift is
+                bitwise the raw travel, Shift re-bases per event,
+                toggles compose); + D255: 6c/6d the init-speed helpers
+                (speedDiffers, realSpeedText), section 11 the graph VIEW
+                math (panToInclude: width kept, minimum shift, the
+                margin, clamps, NaN; adoptWindow: the domain
+                intersection, domain-wide = auto-fit; growRightCapped),
+                section 12 the DEPTH-AWARE GIZMO PICK (raySphereFront,
+                rayCapsuleFront, arrowRadius, arrowFront, ringFront,
+                pickFront's two tiers + the layer rule; 8c re-labelled:
+                the edge metric is the FALLBACK tier); 180 checks. Edge
+                tables: the
+                batch-34 scratchpad's
                 b34_edges_U-uibugs.md + b34_edges_S-strip.md)
   EndFollowGate  (D248 — PRISTINE-LANE END FOLLOW, pure model via
                   LaneSection.endFollows / pristineHold / touchLane /
@@ -286,7 +446,15 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
               the deadband family (a tube centred at −5 mm whole, −5 cm
               sheds its bottom faces, −8 cm half/half, ON y = 0 one
               clean tube, wholly above = the point fast path, a quad at
-              −15 all under), purity + a −30 m translation; 18 checks.
+              −15 all under), purity + a −30 m translation; + D255:
+              f7 itemUnder (strict, ties / NaN toward above), f8 the
+              truth table beforeFloor, f9 clipAtGround on a comb tooth
+              crossing the ground (every above face ≥ the plane, every
+              under face ≤ it, area conserved, no winding flip; the
+              centroid mask's DIAGONAL split pinned as the reason), f10
+              the 500-ring tube (area, shared cut vertices, source-face
+              maps, level tubes, purity) — underMask / splitCounts (f4-
+              f6) no longer describe the render; 34 checks.
               The scene-graph order, the world-order swap on the eye's
               side of the ground and the MeshView cut are JavaFX-side —
               the -Dfvd.gridshot ladder (15 poses incl. the underground
@@ -338,17 +506,171 @@ Core battery (run after ANY compile/reconcile/IO/placement change —
                          the tiltDeviates truth table, a geo ABSOLUTE-bank section ~30°
                          off its tilted samples on lane 2 only; 9 new checks — 17 total.
                          The drawing / hover / inactive-strip / B-guard wiring is
-                         JavaFX-side (GraphEditor.splitRef); package uvd)
-  + probes named in CLAUDE.md: uvd.DecompProbe InflMatchProbe Nl2ElemProbe
+                         JavaFX-side (GraphEditor.splitRef); package uvd;
+                         + D255 block h — "Set Design to Real": h1
+                         realEntrySpeed null for the ride entry / a detached
+                         head / a bridge / a reversed section; h2 a pinned
+                         continuation with friction settles on the dry run's
+                         prediction (the previous DESIGN end, 2e-6 off real);
+                         h3 / h4 the real-anchored continuation and a strict
+                         follower land BITWISE on the real seam speed; h5 a
+                         sub-gate unpinned continuation: the op changes
+                         nothing; h6 the RUN-HEAD fix (a detached head keeps
+                         17.0 — the op used to write the previous piece's end
+                         speed); h7 a stalled seam;
+                         + D255 block i — THE BIT-EXACT REAL SPEED (Pass D's
+                         clean-span rule): i1 unconflicted chains (friction
+                         on / off / a holding control) — every true speed ==
+                         the design speed BITWISE; i2 a pinned section keeps
+                         the march, its neighbors copy; i3 a tilted piece, a
+                         smoothed seam's neighbors and a bridge never copy, a
+                         lockstep tilt does; i4 the SEAM STEP of a control
+                         starting at x = 0 (ctlSampleRows' 4-arg form) against
+                         the historic rows; i5 a bridged-in first section
+                         under friction lands bitwise (the op's fixed point);
+                         i6 rebuild + save → load bitwise; i7 behind a
+                         smoothed seam the op's write ==
+                         Coaster.firstSectionSettle; h2c is bitwise since;
+                         block j — ONE FLOW (the march re-seeded where a
+                         recorded stretch ends): j1 a tilted follower
+                         behind a HELD control — no step at the seam, no
+                         conflict, the op writes nothing; j2 a smoothed
+                         seam copies up to its window, a window too short
+                         to blend changes nothing; j3 24 bridged-in pieces
+                         land bitwise, copy, and stay under a second
+                         press; j4 a bridge the train cannot cross: the op
+                         refuses; j5 a clean stretch ending in a STALL
+                         never re-seeds (energy bound kept); j6 the
+                         re-seed is causal per run (a detached piece's
+                         first control moves no bit of another run);
+                         j7-j8 (review round 4) a bridge the train CRAWLS
+                         off at 0.55 m/s: both resolve ops refuse with the
+                         crawl sentence, nothing written; at 2 m/s the
+                         BLOW-UP BELT takes the write back (bridge arc 38 m
+                         -> 2028 m in the op's own compile, restored) —
+                         the round-4 fixtures bisect the target height;
+                         51 checks; + D256 block k (batch 38) — the "~v"
+                         SLIGHT-conflict glyph on the user's fixture (b38
+                         conflict.uvd embedded verbatim as FVD_B38;
+                         entryLevel = GraphEditor.driftLevel's recipe on a
+                         compile result): after the settle recipe the run
+                         head and piece 0's two continuations enter at
+                         their design speed (level 0, no glyph), the strict
+                         follower's two sections enter 0.045 / 0.077 m/s
+                         off (level 1, " ~v" — nothing showed before, never
+                         ≠v), both gaps inside (0.005, 0.2], a rebuild at
+                         rest keeps every level (58 checks); + D256 block l
+                         (the EXPLICIT REAL ANCHOR, Section.vRealAnchored,
+                         on the same conflict.uvd): l1 the bug reproduces
+                         (p1s0 0.045 off, p1s1 bitwise on the design end,
+                         0.078 under the real seam speed; the follower's
+                         seam tilt is heading-only — not ≠o); l2 the op
+                         flags + un-pins and the rebuild lands p1s1 BITWISE
+                         on the DISPLAYED real seam speed (1 exact rewrite
+                         corrects the op's suspended read, then 0), piece 0
+                         + p1s0 untouched, a second rebuild / second press
+                         bitwise no-ops, the pre-op document reproduces
+                         the pre-op compile; l3 the dry run predicts
+                         max(0.1, real) and reads no conflict after; l4
+                         save → load → rebuild bitwise through the "2"
+                         slot, re-save byte-identical; l5 an upstream edit
+                         after the resolve is followed; l6 smoothing 0
+                         lands the same; l7 the flag is LOAD-BEARING (slot
+                         forced to 0 settles back on the design end); l8
+                         makeGraphsReal flags its fit; l9 the '+'
+                         Transition-to-real hold flagged lands on the real
+                         end speed, unflagged on the design end; l10 one
+                         exact pass writes a nudged flagged section back
+                         (B's rule); l11-l13 item e's model states (pinned
+                         at real un-pins with bits kept, 0.003 off lands
+                         bit-exactly, a run head writes nothing); l14 the
+                         s/c slot, copySection, splitSectionAt (left keeps
+                         / right not), mergeSections (A's); l14f-h the four
+                         CONVERT carries (the review round):
+                         partialConvertSection on BOTH sides — the
+                         entry-owning half keeps, the other half not —,
+                         convertDomain, bakeAxes and convertWholeSection
+                         each install a new object carrying the anchor.
+                         h5 REWRITTEN (the +0.05 pinned-upstream click
+                         STICKS bitwise, the anchor survives save → load)
+                         + h5b (unpressed it settles on the design chain
+                         bitwise). 87 total — "ALL CONFLICT GATES PASS
+                         (87)". RE-RUN IT — and the old-vs-new dump of
+                         real documents, gates/probes/cleanspan-2026-09-30
+                         (CleanProbe2.java + compare3.py: positions, design
+                         and real speeds per sample) — for ANY change to
+                         passD, the integrators' speed recording or
+                         SpeedControl's step logic)
+  + probes named in CLAUDE.md: uvd.DecompProbe InflMatchProbe Nl2ElemProbe (Nl2ElemProbe RE-PINNED D257: its fixture FULL TEST
+   COASTER 7.30.26.fvd runs 1.3 km out under the held-control fix — the position checks take the writer's %e format floor 2q + 1e-5
+   at the measured extent (q 1e-5 → 1e-3), the D202 jitter pin is the 1 %-trimmed rms of the shared resample read through the CSV's
+   %.6f text against a lerp twin (Hermite 0.00021 / 0.00013 vs lerp 0.0043 / 0.0050, bound 0.001 and a quarter of the lerp's;
+   @935 m 0.00035 / 0.00006 < 0.002); 22 checks on both builds)
+  gates/probes/typed-mark/ — FxOrderProbe + UndoableProbe (D256; toolkit-level, Platform.startup, no Stage; need the JavaFX
+  module path — own README): pin the JavaFX 26 ordering facts the typed mark rides on (render before listener,
+  equal-value / equal-text silence, commitValue parse + clamp order, increment commits first, converter re-render order,
+  equal setText resets the caret, identical replaceSelection is silent, commitValue('-') throws, isUndoable is no provenance
+  signal). Re-run on any JavaFX upgrade. Not compiled by the gates/*.java line.
 
 JavaFX DEV HOOKS ride the app, not gates/ (no JavaFX on this classpath):
   java --module-path <~/.m2 openjfx base/graphics/controls 26-win jars> --add-modules javafx.controls -D<hook> -cp target/classes uvd.Main
   -Dfvd.devshot=<dir> (start-screen PNGs) · -Dfvd.devmenu=1 (Robot-drives the Coaster menu) · -Dfvd.gridshot=<dir> (floor-grid pose ladder, 15 poses)
   -Dfvd.gridshot.sweep=<dir> (D249 — the ladder's TEMPORAL twin: moving + rest poses with a printed per-frame line-pixel count; the only
-   reproduction of a floor artefact that shows up while the camera moves) · -Dfvd.winshot=<dir> (D248 — renders the three live windows)
+   reproduction of a floor artefact that shows up while the camera moves) · -Dfvd.winshot=<dir> (D248 — renders the three live windows;
+   D255: its fixture gives the head, the follower and the bridge target an orientation conflict so the resolve rows render, opens the
+   Track Piece window with the head / a follower / the bridged-in target selected (win-trackpiece[-follower|-target].png — the printed
+   rows lines must be identical and the PNGs pixel-equal), lists every label with CLIPPED / MISSING flags, and prints each yaw
+   separator's width against the ↺'s right edge and the x/y/z-to-ops gap; D257: its tail prints THREE "WINSHOT povrow" measures —
+   the POV bar as rendered at the ride start (design hidden), its WORST case (the hidden suffix's slot counted) and the row with the
+   design-speed suffix ON SCREEN over the fixture's bridged-in ≠v target ("-conflict", design shown — asserted: "WINSHOT
+   povrow-conflict MISSING" + exit 1 when the suffix is not shown there) — 1127.3 / 1197.3 / 1197.3 px against the row's 1213.3,
+   plus povrow-hidden.png / povrow-shown.png)
   -Dfvd.pickprobe=1 (D248 — the SCREEN-SPACE gizmo picker on the default document: part registration, pick bands incl.
    the ball-first center rule, a drag-reveal that hides the pressed ball with the drag alive, a ring drag; prints PICKPROBE
-   lines, exits 0 when green — run it after any Viewport3D gizmo/marker change)
+   lines, exits 0 when green — run it after any Viewport3D gizmo/marker change; D255 adds the DEPTH cases, zoomed onto the rig: a ray
+   canary per camera state (the pick ray must agree with projectWorld), front arrow over the ball → arrow, arrow half behind the ball →
+   ball, ring near arc → ring, ring far arc → ball, and the same in true ortho. It fires events AT the pane, so it cannot see a
+   press-target bug — the D255 disk-drag failure needed injection through the Scene (SceneHelper.processMouseEvent))
+  -Dfvd.bridgeringprobe=1 (D257 — the BRIDGE-END RIG's ring rule on the default document + a bridged 1 s hold placed 14 m past the
+   end under "No optimization": the ring set per mode × padlocks (NONE / POS three rings whatever the locks; POS_YAW the held axes
+   only), a Global yaw-ring drag through the pane filter == the typed heading bitwise (yawDeg + a positions fold) under NONE and
+   POS, the D253 knee hold mid-drag under Optimize length, a held pitch-ring drag under optimize-orientation, Local drags, the
+   bridge window's box re-sync; prints PASS/FAIL lines + "PROBE bridgering fails=N", exits 0 when green — 41 PASS; run it after
+   any bridge-rig / bridge-lock change)
+   Launch hooks with --enable-native-access=javafx.graphics (pom.xml passes it to mvn javafx:run since D255) and, for anything that
+   reads settings, -Duser.home=<scratch dir> so the run never touches ~/.fvd-designer.properties.
+  -Dfvd.povprobe=<seconds> (D254 — enters POV on the default layout, holds W, records every pulse's wall delta + ride advance;
+   prints the outlier counts, the largest pulse-to-pulse step and sum(advance)/sum(wall); + -Dfvd.povprobe.raw=1 = the historic raw clock)
+  -Dfvd.timing=1 (D252 — uvd.Prof per-phase profiler: compileLoop / meshes / hooks / bridgeCtl / redraw / refitSize /
+   refreshGizmo / undoSnap / optimizeBridge; zero cost when off) · -Dfvd.bridgeprobe=<file.uvd> (D252 — opens the
+   file, opens the bridge window on piece 0 then 1, steps the next-piece spinners like the arrows, Robot-clicks the
+   pitch arrow, the Length arrow and the Optimize length check; prints per-step sync ms + render pulses + the Prof
+   report; + -Dfvd.renameprobe=1 = a Robot-driven File > Rename… on THAT file — pass a scratch copy;
+   + -Dfvd.bridgeprobe.csstrace=1 = a stack trace per JavaFX CSS warning, D254 §8)
+  -Dfvd.keyprobe=1 (D256 — in-JVM KeyEvents through Event.fireEvent at the main scene's focus owner, so the Window →
+   EventRedirector → popup path is exercised: the density preview / fly / view digits / a typed box / Esc / Enter = Apply from the
+   parked root / the speed popup / the node editor / Coaster Options / the Shortcuts capture, then the five save-on-release drills
+   S1-S5 through the saveDesign test seam; prints KEYPROBE PASS/FAIL lines + "KEYPROBE fails=N" — 45 PASS, fails=0)
+  -Dfvd.typedprobe=1 (D256 — the typed mark's real wiring on the Track Piece pitch box at 12.3456: click in/out keeps the bits,
+   KEY_TYPED 12.35 + Enter stores exactly 12.35 with one undo step, Esc / typed-identical Esc / a lone '-' keep the bits, the Coaster
+   menu's heart box through its ActionEvent; never touches the system clipboard; "TYPEDPROBE fails=0", 36 PASS)
+  -Dfvd.initspeedprobe=<file.uvd> (D256 — opens the file, the init-speed window on piece 1 section 1, Button.fire on "Set Design to
+   Real", editor.undo / redo: the bitwise landing on the displayed real seam speed with the anchor set, the no-op second click,
+   Ctrl+Z / Ctrl+Shift+Z through the DocState snapshot; + D257's LAYOUT checks: on piece 0 section 1 (no conflict) the readout
+   unmanaged and Cancel's right edge on the box's within 1 px, the button at the left padding; a stepped value widens the window
+   with the box unmoved, Ctrl+Z narrows it, Cancel after a width change reverts + closes; on piece 1 section 1 the readout present,
+   gone + narrow after the click, back after undo, gone after redo — geometry read one pulse after each change off layout bounds;
+   prints fails=N — 39 checks, fails=0 on the user's conflict.uvd)
+  -Dfvd.smoothprobe=<file.uvd> (D256, reduced D257 — the smoothing options window on piece 1: title / box / no check box / focus,
+   typed 5 and 0 (clamp 0.5), Cancel, undo / redo of a typed length with the window alive, Disable, re-enable, the teardown reason,
+   hideJunctionWindows, Make real → the density preview; prints "PROBE smooth fails=N" — 28 checks)
+
+Timing probe (D252/D253): uvd.BridgeSlowProbe <file.uvd> [fixed|drag] — the shell's rebuild loop verbatim + the
+bridge-window click route headlessly; `fixed` compares the OLD click route (explicit optimizeBridge on the
+previous compile's capture) against the NEW one (Coaster.captureBridgeTarget first) — same fixed point,
+fewer passes; `drag` = six live node-drag events + the release settle on the section between the bridges and
+the one before the first, per-event knee (LIVE_KNEE=false) vs the live-held knee (D253), settled max |Δ|. The 2026-09-25 cascade hunt's 25 research probes live in probes/cascade-2026-09-25/ (own README;
+not compiled by the gates/*.java line).
 
 History: these lived only in per-session Temp scratchpads until Windows
 Temp cleanup purged them; recovered from the session transcripts with

@@ -104,6 +104,36 @@ public final class DesignIO {
     // Save (FVDD3 only)
     // =====================================================================
 
+    /** File > Rename…'s name check (v19.23 D252; the character and
+     *  device-name refusals since the D254 review — an illegal
+     *  character reached Path.of and threw InvalidPathException, a
+     *  RuntimeException, out of the button handler): the reason a
+     *  typed file NAME is refused, or null when it is usable. Pure —
+     *  LabelGate pins the sentences. */
+    public static String fileNameWhy(String typed) {
+        String t = typed == null ? "" : typed.trim();
+        if (t.isEmpty()) return "Type a name.";
+        if (t.indexOf('/') >= 0 || t.indexOf((char) 92) >= 0   // 92 = backslash
+                || t.indexOf(':') >= 0 || t.equals(".") || t.equals("..")) {
+            return "Just a file name — no folders or drive letters.";
+        }
+        for (int i = 0; i < t.length(); i++) {
+            char ch = t.charAt(i);
+            if (ch < 0x20 || "*?\"<>|".indexOf(ch) >= 0) {
+                return "A file name can't contain * ? \" < > | or control"
+                    + " characters.";
+            }
+        }
+        // Windows device names refuse with or without an extension
+        int dot = t.indexOf('.');
+        String stem = (dot < 0 ? t : t.substring(0, dot)).trim()
+            .toUpperCase(java.util.Locale.ROOT);
+        if (stem.matches("CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]")) {
+            return stem + " is a reserved Windows name — pick another.";
+        }
+        return null;
+    }
+
     /** Single-coaster save (the classic entry; gates + one-coaster
      *  documents): FVDD3, byte-compatible with every reader. */
     public static void save(Coaster c, Cosmetics cos, PrintWriter out) {
@@ -311,10 +341,13 @@ public final class DesignIO {
                     // 1 = global bank °; readers default MISSING fields
                     // to rate 0 so v11.0 saves keep their geometry.
                     // 5th field: pinned design speed (v14.5 D97;
-                    // missing = off — old readers ignore it)
+                    // missing = off — old readers ignore it); a
+                    // TRI-STATE since v19.27 (D256): 2 = REAL-ANCHORED
+                    // (Section.vRealAnchored — an old reader sees it
+                    // as unpinned = the pre-D256 picture, fail-soft)
                     out.printf(Locale.US, "section sc %s distance %d %d%n",
                         d(sc.vDesign), sc.reversed ? 1 : 0,
-                        sc.vPinned ? 1 : 0);
+                        sc.vPinned ? 1 : sc.vRealAnchored ? 2 : 0);
                     for (StraightCurveSection.Element e : sc.elements) {
                         int rm = e.rollMode == StraightCurveSection.RollMode.GLOBAL
                             ? 1 : 0;
@@ -346,13 +379,16 @@ public final class DesignIO {
                 // field 8 (v16.6, D115): per-meter rate units;
                 // field 9 (v16.7, D118): absolute roll; missing = 0
                 // field 10 (v19.8, D237): absolute yaw/pitch; missing = 0
+                // field 6 is a TRI-STATE since v19.27 (D256): 1 = pinned,
+                // 2 = REAL-ANCHORED (Section.vRealAnchored; an old reader
+                // takes 2 as unpinned = the pre-D256 picture, fail-soft)
                 out.printf(Locale.US,
                     "section %s %s %s %d %d %d %d %d %d %d%n",
                     fs instanceof GeoSection ? "geo" : "force",
                     d(fs.influenced() ? fs.vAuthored : fs.vDesign),
                     fs.domain() == Section.Domain.TIME ? "time" : "distance",
                     fs.reversed ? 1 : 0,
-                    fs.vPinned ? 1 : 0,
+                    fs.vPinned ? 1 : fs.vRealAnchored ? 2 : 0,
                     fs.rollGlobal ? 1 : 0,
                     fs.yawPitchGlobal ? 1 : 0,
                     fs.ratePerMeter ? 1 : 0,
@@ -719,8 +755,14 @@ public final class DesignIO {
                             ? Section.Domain.DISTANCE : Section.Domain.TIME);
                     }
                     if (parts.length > 4) curSection.reversed(parts[4].equals("1"));
-                    // v14.5 pinned design speed; missing = off
-                    if (parts.length > 5) curSection.vPinned(parts[5].equals("1"));
+                    // v14.5 pinned design speed; missing = off; the slot
+                    // is a TRI-STATE since v19.27 (D256): 2 = REAL-
+                    // ANCHORED (never pinned); 0 / 1 / missing bitwise
+                    // as before; a bridge's setter is a no-op
+                    if (parts.length > 5) {
+                        curSection.vPinned(parts[5].equals("1"));
+                        curSection.vRealAnchored(parts[5].equals("2"));
+                    }
                     // v16.1 axis flags; missing = local (D107)
                     if (curSection instanceof LaneSection ls6) {
                         ls6.rollGlobal = parts.length > 6

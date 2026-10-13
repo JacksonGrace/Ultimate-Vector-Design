@@ -1,5 +1,7 @@
 target/
 .vscode/
 *.class
-.claude/settings.local.jsonhs_err_pid*.log
+.claude/settings.local.json
+hs_err_pid*.log
 replay_pid*.log
+.claude/worktrees/

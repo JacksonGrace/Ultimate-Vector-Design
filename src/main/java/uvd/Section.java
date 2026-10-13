@@ -60,6 +60,30 @@ public sealed interface Section
 
     default void vPinned(boolean p) { }
 
+    /** REAL-ANCHORED design speed (v19.27, D256 — D101's anchor made
+     *  EXPLICIT, the user's "last force section can't resolve its
+     *  speed conflict" file): the same-piece reconcile lands this
+     *  section's design speed ON its real entry speed (Pass D's true
+     *  speed at the seam sample) instead of the previous section's
+     *  design end — whatever the size of the gap. Before, which anchor
+     *  a section followed was READ off proximity through the D237
+     *  amplified 0.2 gate, so a resolve across a sub-0.2 gap (0.078
+     *  m/s on his file) was rewritten back onto the design chain on
+     *  the very next rebuild and the window rolled it back. Set by
+     *  "Set Design to Real" / "Convert Real to Design" and the '+' /
+     *  Insert "Transition to real" fork; CLEARED by a typed design
+     *  speed (pinned). Inert on run heads, strict followers' and
+     *  bridged-in pieces' first sections (never reconciled — it
+     *  starts to matter once an absorb / Connect makes them a
+     *  continuation) and while pinned (the pin wins). Carried by the
+     *  entry-seam rule: the object that keeps the ORIGINAL entry seam
+     *  keeps the flag (copies, whole converts, the left split half,
+     *  a merge takes A's). Saved as "2" in the section line's pinned
+     *  slot. Default false; bridges never. */
+    default boolean vRealAnchored() { return false; }
+
+    default void vRealAnchored(boolean a) { }
+
     /** SPEED CONTROLS (Phase 3, v18.0 D160): lift/brake/launch
      *  intervals on the section's own authoring axis, applied to the
      *  design AND real speed alike. Bridges have none (pure geometry)

@@ -30,12 +30,17 @@ public final class TrackPiece {
      *  Persisted as `piece` fields 9-10 (missing = 0). */
     public double pitchDeg;
     public double rollDeg;
-    /** UI edit-guards for the Placement pitch/roll rows (v15.3, D101):
-     *  locked = the spinner is frozen, matching the bridge panel's
-     *  padlock defaults. With a bridge connecting INTO this piece the
-     *  bridge's own lock fields govern instead (one shared state);
-     *  these apply only to un-bridged pieces and are deliberately NOT
-     *  persisted (pure edit-guards, like the graph's axis locks). */
+    /** The Track Piece window's "Edit with gizmo" checks, INVERTED
+     *  (v19.25, D254): true = the entry rig builds NO ring for the
+     *  axis (the default), false = the ring shows; the BOX is
+     *  editable either way. They were the D101 edit-guard padlocks
+     *  (true = frozen spinner) v15.3-v19.24 — hence the names. With
+     *  a bridge connecting INTO this piece, or on a strict-seam
+     *  follower, that junction's own rule decides the rings instead
+     *  (the bridge: a ring per EDITABLE axis — BridgeSection.
+     *  axisEditable, D257; the seam: its held axes); these apply
+     *  only to free pieces and are deliberately NOT persisted (UI
+     *  state riding the undo snapshots, D124). */
     public boolean uiLockPitch = true;
     public boolean uiLockRoll = true;
     public Quat baseOrient = Quat.IDENTITY;   // natural orientation
@@ -221,7 +226,7 @@ public final class TrackPiece {
     /** A DEEP COPY of this piece translated by dz along world Z
      *  (v19.18, D247 — the Track Piece panel's Copy button, through
      *  Coaster.copyRun). EVERY field copies verbatim — the undo
-     *  snapshot's PieceState coverage, incl. the UI padlocks, the
+     *  snapshot's PieceState coverage, incl. the ring flags, the
      *  strict-seam flags/held angles/smoothing, the two orientation
      *  tiers and the CANONICAL PAIR (a translation never touches it:
      *  generation runs at position zero, so the copy's shape is

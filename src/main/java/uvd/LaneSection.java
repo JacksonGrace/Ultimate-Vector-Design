@@ -48,6 +48,9 @@ public sealed abstract class LaneSection implements Section
     public double vDesign;
     public boolean reversed = false;
     public boolean vPinned = false;   // v14.5 D97: reconcile-exempt
+    /** v19.27 D256: the reconcile lands vDesign on the REAL seam speed
+     *  (see Section.vRealAnchored). */
+    public boolean vRealAnchored = false;
     public String name = "";
 
     /** Authoring DOMAIN (v16.0, D103): TIME = lane x is seconds (the
@@ -460,6 +463,10 @@ public sealed abstract class LaneSection implements Section
     @Override public boolean vPinned() { return vPinned; }
 
     @Override public void vPinned(boolean p) { vPinned = p; }
+
+    @Override public boolean vRealAnchored() { return vRealAnchored; }
+
+    @Override public void vRealAnchored(boolean a) { vRealAnchored = a; }
 
     @Override public Domain domain() { return domain; }
 

@@ -2056,7 +2056,7 @@
     space evenly between them at roughly the other combs' density
     — fast track gets more, crawls get few. (l) Reverse piece on a
     piece with controls refuses with the hint; Influence entry
-    grays with "(remove speed controls first)". Save/load a doc
+    grays with "Reverse works on a track piece without speed controls — remove its speed controls first." (D256's full sentence). Save/load a doc
     with plain + complex controls + a bare diamond: everything
     returns; Ctrl+Z steps through strip edits one gesture each.
 
@@ -4609,6 +4609,906 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     .uvd files open (<name>).", the current design and its * are
     unchanged; (d) open the test.uvd just saved → loads, title
     "test.uvd"; (e) Help's File paragraph names .uvd.
+
+169. v19.23 (D252): Rename…, the Optimize-length readback, the bridge
+    spinner's stale capture. Headless: wiped target/classes/uvd + mvn
+    compile EXIT 0; DetermGate197/198/199/200 6/4/10/7, PlacementGate
+    41, OrientModeGate 51 green; gates/BridgeSlowProbe `fixed` mode
+    (old click route vs new on the attached file): bridge-1 pitch/
+    roll clicks BITWISE EQUAL with 1+1 passes (was 2+1), bridge-0
+    clicks 2+1 (was 3+1) with the fixed point to ≤ 2.2e-12 m and the
+    auto pass's Optimize-length knee work 334 → 55 ms. REAL APP via
+    `-Dfvd.timing=1 -Dfvd.bridgeprobe=<file>`: every spinner step
+    26-78 ms; bridge-1 steps 1 march + 1 compile (was 2+2), bridge-0
+    2+2 (was 4+3); the Length-arrow-then-check sequence reads box 20
+    / editor "20" / lastOptDist 20 right after the check (was 23 /
+    "23" / 20); `-Dfvd.renameprobe=1` on a scratch copy renamed it on
+    disk and re-titled the window. BY HAND: (a) File > Rename… on a
+    saved design: type a new name → the title, the next Save and Save
+    As all use it, the old name is gone from the folder, the app never
+    reloads; a blank or path-like name and an existing name are
+    refused on the dialog; on an unsaved document the item is grayed
+    with its reason on hover; (b) bridge window: click the Length
+    arrow, then Optimize length → the box shows the new length at
+    once; unlock a held pitch under Optimize position and
+    orientation right after clicking its arrow → the grayed box
+    shows the march's value; (c) both bridge spinners on the
+    attached file feel instant; if a ~5 s click ever returns, save
+    that file and run it with -Dfvd.timing=1 -Dfvd.bridgeprobe=<file>
+    (prints the per-phase breakdown).
+
+170. v19.24 (D253): live gestures hold the Optimize-length knee.
+    Headless: wiped target/classes/uvd + mvn compile EXIT 0;
+    DetermGate197/198/199/200 6/4/10/7, PlacementGate 41,
+    OrientModeGate 51 green; gates/BridgeSlowProbe `drag` on "UVD long
+    bridge update time 2 9.25.26.uvd" (bridge 2 Optimize length ON):
+    per-event knee (old) 520-700 ms / 300-400 ms on the sections
+    between / before the bridges → live-held knee (new) 31-34 ms per
+    event, the release settle 280-340 ms (one re-knee), settled
+    placements old vs new max |Δ| 3.1e-13. REAL APP (-Dfvd.bridgeprobe
+    on the file): bridge-window spinner clicks 230-540 ms — the
+    explicit knee, honest per click. BY HAND: (a) open the file, drag
+    a node of the force section between the bridges — it follows the
+    mouse; on release the second bridge's length may change once (its
+    re-optimization); (b) the same on the section before the first
+    bridge; (c) a bridge-window spinner click on either bridge still
+    pauses briefly (the length search); (d) the settled track after a
+    drag-and-release equals what the old build produced (a saved
+    file's numbers agree to dust).
+
+171. v19.25 (D254): batch 36, round 1. Headless: wiped
+    target/classes/uvd + mvn compile EXIT 0; LabelGate 103 (three
+    "Bridge Settings (Strict Seam n)" expectations), OrientModeGate 51,
+    PlacementGate 41, DetermGate197/198/199/200 6/4/10/7 green;
+    winshot renders: Track Piece 466×259 [yaw | pitch + ↺ + Edit with
+    gizmo + readout slot | roll | Edit Real and Design Independently |
+    sep | Anchor x/y/z | gap + sep | ops | Confirm Cancel], seam
+    389×173 (reserved readout slots), bridge 442×338 titled "Bridge
+    Settings (Strict Seam 2)" with Next piece x/y/z last. The
+    insert-drag jump: the worktree's Robot hook — zoom, then press ON
+    the curve + drag: frozen window == the live window, node lands
+    where dragged (err −0.007 s), both with and without a prior node
+    drag. BY HAND: (a) zoom/pan the plot, then click+drag on the curve
+    to insert-and-move — the plot stays put every time; (b) badge menu:
+    a line under "View in …"/"View rates in …", "Convert…" where
+    "Delete section" was, "Delete section" last; (c) ride the POV onto
+    a piece with ≠o — the Pitch and Roll readouts read "(d = …°)"; off
+    the conflict the rates return; (d) hover a selected node's handle
+    knob — "out 0.33  slope 1.234 g/s" in grey; drag it — white, with
+    the ease name under Ctrl; (e) Initial design speed…: [box] with
+    "Set Design to Real" under it left of Confirm/Cancel; click the
+    box's arrow, then Set Design to Real → the box shows the seam
+    speed at once; (f) Track Piece window: arrow-click Pitch, then its
+    ↺ → the box follows; the rows read [yaw][sep][pitch ↺ ☐ Edit with
+    gizmo][roll …][check][sep][x/y/z][gap sep][ops]; tick Edit with
+    gizmo → the ring appears on the entry gizmo, untick → gone; the
+    pitch/roll boxes edit whether or not it is ticked; on a follower or
+    a bridged-in piece the check is grayed with the junction's name;
+    (g) tick "Edit Real and Design Independently" (new name) — the
+    radios reveal BELOW it, nothing above moves, the window grows
+    downward; "Affect Subsequent Strict Seams" appears only when a
+    strict seam or bridge follows the piece; arrow a pitch on a
+    REAL_ONLY piece until ≠o — the Design ↔ Real buttons reveal below
+    the radios, the pitch box under the mouse does not move; drag the
+    window somewhere, provoke a reveal — it stays put; (h) bridge
+    window: "Bridge Settings (Strict Seam n)" title, x/y/z at the
+    bottom under a line; (i) the strict seam window: readouts appear
+    in their reserved slots without widening the window.
+    CLOSING ROUND (gizmo modifiers + the ride clock): GestureGate 115
+    (section 10 = Gestures.slowDebt: never-slow debt == +0.0 bitwise,
+    slow-from-start == 0.1·raw, mid-drag Shift continues without a
+    jump, release resumes from the effective spot, toggles compose),
+    PulseClockGate 29 (the measured 24 × 16 + 32 ms sawtooth within
+    3 % of its mean, 24/8 hint pairs, mixed streams summing to wall
+    time, hitches whole + out of the window, the nominal seed, busy
+    startup without wobble, the hitch threshold's nominal floor),
+    `-Dfvd.pickprobe=1` fails=0 with drag/ring lines identical to the
+    pre-change build, LabelGate 103 / OrientModeGate 51 / PlacementGate
+    41 / DetermGate 6/4/10/7 on the final tree. `-Dfvd.povprobe=6`
+    (default layout, W held): RAW clock (`-Dfvd.povprobe.raw=1`) 18
+    advances over 1.5× the median per 6 s, max pulse-to-pulse step
+    17.5 ms; FIXED 0 outliers, every advance 16.00-17.00 ms, max step
+    0.54 ms, sum(advance)/sum(wall) 0.995-0.997 over 12 s (one genuine
+    47 ms hitch passed whole in one run). BY HAND: (j) Space, ride the
+    example layout over the first hill and through the rolls watching
+    the horizon edge — no periodic dip every ~half second (an
+    occasional single dropped frame can remain: the platform's, not
+    periodic); fly (right-click) moves evenly too; (k) reveal a gizmo,
+    drag an arrow, a ring, the center ball and a speed-control disk:
+    hold Shift mid-drag → the part continues from where it is at a
+    tenth of the speed, release → full speed again, never a jump; Ctrl
+    snaps as before (arrows/ball by the element-length step, rings to
+    whole degrees, the bridge length arrow to whole steps, disks to
+    the graph's step); Ctrl+Shift snaps at a tenth of those steps
+    (0.1 m, 0.1°).
+    REVIEW ROUND (D254 §8 — three lenses, every finding fixed).
+    Headless on wiped classes: PulseClockGate 30 (+ the owed drift
+    surviving a hitch), GestureGate 115, LabelGate 111 (section 12 =
+    DesignIO.fileNameWhy, File > Rename…'s refusals), OrientModeGate
+    51, PlacementGate 41, RunGate 66, CopyGate 73, FloorGate 18,
+    StripGate 49, DetermGate 6/4/10/7; `-Dfvd.pickprobe=1` fails=0;
+    `-Dfvd.winshot` renders the three windows in the D254 layout;
+    uvd.BridgeSlowProbe <file 2> drag: 23-27 ms per live event, 13 ms
+    release settle, settled placements old vs new 0.0. The ride clock
+    RE-MEASURED on the final tree, a busier machine than the first
+    runs (`-Dfvd.povprobe=6`, 19-31 double-length pulses per 6 s):
+    RAW 39 advances over 1.5× the median, max step 33 ms; FIXED 0, 0
+    and 2 (one genuine 56 ms hitch, passed whole by design), max step
+    0.57-0.69 ms outside that hitch; sum(advance)/sum(wall)
+    0.969-0.989 over the 6 s — the fixed lag (the drift accumulator +
+    the uncorrected seed phase, 0.1-0.2 s here) weighs more on a short
+    window and a loaded machine than the 0.995-0.997 first measured
+    over 12 s; it is a lag, not a rate error. BY HAND: (l)
+    click into an orientation box of any of the three windows (do not
+    type), change that value from outside (a gizmo ring, Ctrl+Z), then
+    click elsewhere — the box shows the new value and NO extra undo
+    step appears (Ctrl+Z goes back exactly one edit); (m) select a
+    node on the speed strip's complex graph, then move the mouse over
+    the main plot, and over an s/c and a bridge strip — no freeze, no
+    console exception; hover a handle of a selected lane node — the
+    grey "out 0.33  slope …" readout, gone when the pointer leaves;
+    (n) POV over a tilted piece's trailing bridge — pitch/roll show
+    the plain rates, "(d = …°)" only on the piece's own sections; (o)
+    File > Rename…: "ride?" → the illegal-character sentence on the
+    dialog; "nul" → the reserved-name sentence; renaming "Ride.uvd" to
+    "ride.uvd" changes the name on disk; (p) a bridge in "Optimize
+    position" with Optimize length on and a locked axis: drag that
+    ring — it follows smoothly (the bridge keeps its length while
+    dragging) and re-lengths once on release; (q) a speed control on a
+    section viewed in the other domain: Ctrl+Shift-drag its 3D disk —
+    the readout lands on tenths of the DISPLAYED step; (r) a piece
+    bridged in under "Optimize position and orientation": its Track
+    Piece pitch box is gray and the hover says to lock it in the
+    bridge window.
+172. v19.26 (D255): batch 37. Headless, wiped classes (`rm -rf
+    target/classes/uvd && mvn compile`, then `javac -encoding UTF-8
+    -cp target/classes -d gates/out gates/*.java`): 32 gates rc 0 —
+    GestureGate 180 (was 115: 6c/6d the init-speed helpers, section 11
+    the view math — panToInclude / adoptWindow / growRightCapped —,
+    section 12 the depth-aware pick, 8c re-labelled as the fallback
+    tier), FloorGate 34 (was 18: f7 itemUnder, f8 the truth table, f9
+    the comb tooth cut, f10 the 500-ring tube cut), LabelGate 129 (was
+    111: section 13 pins the bridge-resolve / Reverse / Switch
+    sentences, section 14 the round-4 crawl / blow-up sentences),
+    ConflictGate 51 (h1-h7: the dry run vs the settled
+    bits, the run-head no-op, the stall; i1-i7 the BIT-EXACT real
+    speed, j1-j6 ONE FLOW and j7-j8 the crawling bridge, see below),
+    RangeResolveGate 115
+    (section b: six ops × two friction settings behind a "No
+    optimization" bridge — entry pose bitwise, landing ~5e-13 m, the
+    second rebuild a no-op, save → load bitwise — and the b8 CONTRAST:
+    the same op under an optimize mode moves the target 1.5 / 3.5 m),
+    MirrorGate 100 (g strict runs, h runs with bridges incl. banked
+    crests at 45 m and 58 m, h-stash the manual-mode stash reflected
+    — untouched stays untouched bit for bit, hand-moved stays
+    hand-moved by the same distance —, i refusals, j a single-piece
+    run == mirrorPiece bitwise), RunGate 78 (k moveRunTo; k4b / k4c isolate
+    the 1.2e-11 m dust of a smoothed / bridged run landing behind other
+    pieces), DetermGate 6/4/10/7 and the rest unchanged. Dev hooks on
+    the same build: `-Dfvd.pickprobe=1` fails=0 with the new lines (ray
+    canaries in the default, zoomed, pitched and ortho views; "front
+    arrow over the ball → kind 1", "arrow half behind the ball → kind
+    0", "ring near arc → kind 2", "ring far arc → kind 0", the ortho
+    trio) and the old dragReveal dx=43.295 / ringDrag dyaw=61.13
+    unchanged; `-Dfvd.winshot=<dir>` prints, per window, every label
+    unclipped (the six resolve buttons included), the yaw separator
+    width == the ↺'s right edge (249.33 / 273.33 / 283.33), the
+    x/y/z-to-ops gap 23.33, and "trackpiece rows identical=true pixels
+    equal=true" for the window opened with the head, a follower and a
+    bridged-in target selected; `-Dfvd.gridshot=<dir>` poses 00-08
+    pixel-identical to the pre-change build, poses 09-14 changed by
+    design (buried markers washed from above: 114,155,214 →
+    235,248,254; saturated from below). In-JVM scratch probes (no OS
+    input; in the session scratchpad, not the repo): the disk probe —
+    first press+drag on an UNSELECTED control 2.000 → 2.935 with one
+    undo step and no stuck state (was 2.000 → 2.000, stuck) —, the
+    graph probe 61 checks, the shell probe 45 checks, the floor probe.
+    THE BIT-EXACT REAL SPEED (D255 §11): ConflictGate i1 unconflicted
+    chains — friction on, off, and with a control holding 23 m/s —
+    every one of 1051 true speeds == the design speed bitwise; i2 a
+    pinned +3 section keeps the real march on all 550 samples while
+    the section before it copies, and the section right of it copies
+    again after "Set Design to Real"; i3 a tilted piece (1050 of 1050
+    samples), a smoothed seam's two neighbors and a bridge (342 of
+    342) are never copied, a lockstep tilt is; i4 the seam step of a
+    control starting at x = 0: +0.0024 m/s like the next step, where
+    the historic rows gave −0.1140; i5 a bridged-in first section
+    typed 19 under friction: vDesign 13.368172921034 == the real seam
+    speed bitwise, a second press a bitwise no-op; i6 a second rebuild
+    and save → load → rebuild reproduce every true speed bit; i7
+    behind a smoothed seam (8° kink, 10 m) the op's write ==
+    Coaster.firstSectionSettle bitwise (11.228126, the displayed real
+    11.189278 is the smoothing's). h2c is bitwise now. ONE FLOW
+    (D255 §11, the rework): j1 a tilted follower behind a HELD speed
+    control, friction off / on: the real speed's step across the seam
+    +0.0809 / +0.0793 against the design's +0.0828 / +0.0811 (the
+    first build stepped +0.8770 / −0.1413 — a conflict nothing could
+    close), no badge, the op writes nothing; j2 a 4 m smoothing window:
+    285 of the upstream span's 301 samples keep copying, the last
+    1.91 m run the march, and a 0.02 m window — too short to blend —
+    leaves both neighbors copying; j3 24 bridged-in pieces, friction
+    on / off: 24 land bitwise, 24 copy, 24 stable under a second
+    press; j4 a bridge the train cannot cross: the op refuses, design
+    speed and pin kept; j5 a clean stretch ending in a STALL (the
+    design 2 m above its energy height): the ride end reads 16.0302 —
+    the plain march — and never exceeds the energy bound (a re-seed
+    from the clamped design record gave 17.7327 against a bound of
+    16.9589); j6 a friction-free run with an anchored section keeps
+    every bit when a DETACHED piece gains the coaster's first control;
+    j7 (review round 4) a bridge the train CRAWLS off at 0.55 m/s (the
+    target height bisected, the reviewer's fixture recipe): both
+    resolve ops refuse with "The train crawls off the bridge at 0.55
+    m/s — re-solving this track piece at that speed would blow the
+    bridge up; raise the bridge or the entry speed first."
+    (Coaster.resolveRefusedWhy == the dry run's sentence), design
+    speed 18 and the pin kept, the sample count 1116 → 1116; j8 the
+    BLOW-UP BELT at 2 m/s (above the crawl threshold, the dry run
+    null): the op's own compile re-solved the bridge from 38.4 m to
+    2028 m of arc, the belt restores the design speed and refuses
+    with the numbers ("at 2.00 m/s the bridge re-solves to 2028 m of
+    track (it was 38 m) — …"), a rebuild shows 38.4 m and 1123
+    samples as before. The round-4 tolerance: BRIDGE_ENTRY_TOL 1e-9 →
+    1e-11 — j3's 24 bridges still land bitwise and copy, i5 unchanged.
+    OLD BUILD VS NEW on 52 documents, 33 of them the user's own files
+    (gates/probes/cleanspan-2026-09-30: CleanProbe2 + compare3.py,
+    read-only): ONE file re-settles on first open, "9.24.26 test.fvd"
+    — one design speed by 1.4e-6 m/s, the track by 4.6e-6 m —, every
+    other file keeps every design speed and sample bit; 66 adversarial
+    fixtures settled by the old build: 9 re-settle once (held ACCEL
+    controls, the largest 7.4 m); a second rebuild and save → load →
+    rebuild are bitwise on all of them. His two files whose op cycled
+    ("7.10.26 test.fvd" piece 1, "UVD long bridge update time 2
+    9.25.26.uvd" piece 2): one press, 21 / 58 ms, real seam == design
+    bitwise, 0 of 100 / 309 samples differ, a second press writes
+    nothing. The hold knife edge, measured and NOT changed: with the
+    one-comparison fix his main test coaster's far end moves 1380 m.
+    THE REVIEW ROUNDS on the final build: `-Dfvd.winshot` prints
+    "WINSHOT povrow pref=1194.0 width=1213.3 (scene 1216.0, gap 7)
+    fits" (1260 before the fix, every caption ellipsized) and the
+    FIRST Track Piece window "at 415,89" like the later two (415,144
+    before); pickprobe fails=0 unchanged; in-JVM scratch probes of the
+    round-3 implementers: the append chain 34 rows, the POV bar's gap
+    fallback (three out-of-template values: clipped 0 / 0 / 0), the
+    anchor tooltips against 12 measured bridge-mode × head-mode moves,
+    30,653 arrow presses over 28 camera poses (none silent, none
+    lighting a part the press does not grab, none dragging the wrong
+    way; 224 historic rows byte-identical). Battery re-run on wiped
+    classes after the merge: every gate rc 0.
+    BY HAND (none of it was done with a real mouse):
+    (a) zoom into the middle of a layout, deselect, press A a few
+    times: the view slides right one step per press, its width never
+    changes, the new node sits a little inside the right edge; select
+    the LAST node and press A: pans; select an interior node and press
+    A: no pan; fully zoomed out nothing changes; on a straight/curve
+    section A pans to the new straight; (b) zoomed in, drag a node past
+    the right edge until the view has widened, let go: nothing moves at
+    release and scroll / pan continue from that view; the same past the
+    left edge, with a handle, an s/c section end and a bridge end line;
+    a drag that never reaches an edge leaves the view as it was; from a
+    fully zoomed-out view the drag ends fully zoomed out; (c) click a
+    strict seam's smoothing diamond, close the menu, scroll over the
+    plot: it zooms at once; (d) badge > Initial design speed… on a
+    section with no conflict: no grey number, "Set Design to Real"
+    grayed, its hover says "No speed conflict…"; type +3: "real NN.NN"
+    appears right of the box, the window does not resize; hover it (an
+    outline, nothing shifts), click it: the box takes the real speed,
+    ≠v goes, the number STAYS, the button grays; Ctrl+Z: the conflict
+    is back and the number is clickable again; close and reopen: the
+    number is gone; on a floating piece's first section the hover says
+    the piece starts its own run; (e) two pieces joined by a bridge in
+    "No optimization", the second piece tilted (≠o): badge > Resolve
+    conflict — both items run; "Convert Real to Design…" keeps the
+    piece where it is with the bridge still on it; switch the bridge to
+    Optimize position: both items gray and the hover ends with convert
+    the bridge first or set it to "No optimization."; (f) a run of
+    head → strict seam → bridge → piece: open Track Piece ▴ and click
+    through every section — no row, check, readout or tooltip changes;
+    type a pitch with the LAST piece selected — the whole run tilts
+    from its anchor; tick "Edit with gizmo" with a follower selected —
+    the ring appears on the anchor's rig; Mirror flips the whole run
+    about the anchor's heading and other runs stay; Switch Coaster…
+    moves the whole run; Reverse… is grayed with the sentence on this
+    run and works on a single piece; (g) the Track Piece window's
+    bottom: a short lighter line under Anchor yaw ending at the ↺, no
+    line above the buttons, Reverse… / Mirror / Copy on one line,
+    Switch Coaster… / Delete… at the left of the Confirm / Cancel line;
+    (h) bridge window with a conflict: both Design ↔ Real buttons show
+    their whole text — if one still clips, a screenshot plus the
+    display scale is what is needed; (i) drop a piece so part of it is
+    under the ground, with a second section and a speed control in the
+    buried part: from above every buried marker / disk / white ball /
+    comb tooth is tinted by the floor and nothing above ground is; fly
+    below ground: the other way round; drag a buried disk along the
+    track up through the ground — it changes its look as it crosses; a
+    comb tooth crossing the ground is cut straight at the ground, not
+    along a diagonal; the gizmo always draws on top, also over the side
+    view's ground line; (j) add two speed controls, click empty track,
+    then press and drag a disk in ONE motion: it moves, Ctrl+Z undoes
+    it in one step; afterwards Ctrl+Z / Ctrl+S and plot drags work (the
+    stuck state is gone); a plain click selects, a double-click opens
+    the options; a disk on another track piece activates and drags in
+    the same motion; (k) reveal a rig with "Edit with gizmo" checked,
+    orbit until a ring crosses the center ball: the ring lights and
+    drags where it passes IN FRONT of the ball, the ball lights where
+    the ring passes behind; an arrow pointing toward you lights over
+    the ball where it sticks out of it; from far away (the startup
+    view) the arrows drag — they used to do nothing there; an arrow
+    aimed straight at the camera posts the orbit hint; (l) everything
+    else in the 3D view still behaves: marker click and double-click,
+    track click to select, double-click insert, comb hover, the
+    "Switch to editing…" click on another coaster, middle-drag orbit,
+    fly, POV; (m) POV over a section with ≠v: "Speed: 24.512 m/s (d =
+    21.500)"; (n) hover or drag a handle: "L=0.33  1.23 g/s" (the "sl" word dropped in D256);
+    (o) confirm the start screen for a floating piece and for a new
+    coaster: the new piece's gizmo is up; (p) `mvn javafx:run` prints
+    no "restricted method" warnings; (q) open the main test coaster:
+    the track is where it was, no section wears a new ≠v, and the thin
+    true strokes that rode beside the lane curves after the lift are
+    gone; type +3 into a section's Initial design speed, click "real
+    NN.NN": the box and the grey number read the same; (r) the POV bar
+    at the default window size shows every caption whole ("Speed:",
+    "Vertical G:"), also while "(d = …)" shows; (s) a strict seam with
+    smoothing on and a held pitch: Initial design speed… on the
+    follower's first section — the button is grayed and its hover says
+    the smoothing opens the difference; (t) fly right up to a junction,
+    right-click out of fly, reveal its gizmo and drag the arrow that
+    points roughly at you: it drags, or the stats bar says to orbit;
+    (u) select the last node, zoom in, hold A: the view keeps the ride
+    end in sight — and with an INTERIOR node selected A never moves
+    the view; (v) the very first Track Piece ▴ of a session on a
+    conflicted piece opens just above the graph, not over it; (w) a
+    "No optimization" bridge up to a piece the train cannot reach
+    (raise the target until the bridge goes ghost): Initial design
+    speed… on the target's first section — the button is grayed and
+    its hover says the train stalls on the bridge; lower the target
+    until the ghost starts AT the target (the train crawls off the
+    bridge under 1 m/s): the hover now says it crawls off at that
+    speed, and the badge's Resolve conflict items are grayed with the
+    same sentence — nothing blows up (round 4: a 0.55 m/s crawl
+    written for real made a 940 km bridge and killed the renderer);
+    (w2) with the initial-speed window open on the middle section of
+    a three-section piece, delete that section from its badge: the
+    window closes with "its section was replaced" (it used to stay
+    open on the next section); (x) open a file
+    with a bridge in "No optimization", type +3 into the target's
+    Initial design speed, click "real NN.NN": one click, the button
+    grays, a second look shows box and grey number equal; (y) hover
+    the "Anchor x/y/z (m)" label on a track piece with an optimizing
+    bridge: three short lines, the last says an optimizing bridge
+    re-places what lies after it.
+
+173. v19.27 (D256): batch 38 — the "~v" slight-conflict glyph, the
+    explicit real anchor + "Set Design to Real" always enabled, ride
+    keys live from every tool window + save on release, the typed
+    mark, the "Smoothing options…" window (its translational check
+    went in D257, see #174),
+    Reverse's gray sentences, the handle readout. The gate list and the
+    dev-hook lines sit at the END of this entry.
+    BY HAND (none of it was done with a real mouse):
+    (a) select a node and hover its handle knob: the grey readout
+    reads "L=0.33  1.23 g/s" — no "sl" between the length and the
+    slope; drag the knob: the same in white; hold Ctrl while dragging
+    onto a preset: "L=0.33 cubic  1.23 g/s"; on a geo section the unit
+    reads "°/s/s", on a distance-domain lane "g/m" — the number is the
+    slope the node window shows; (b) open the b38 fixture
+    (conflict.uvd): piece 0's three badges wear no speed glyph, piece
+    1's two badges wear "~v" (NOT ≠v) — they wore nothing before; a
+    strip too narrow for "Force ~v" shows no badge at all; (c) click
+    piece 1's first badge: the menu has "Resolve conflict: speed";
+    "Set Design to Real (keep graphs, reshape)" removes the "~v";
+    Ctrl+Z brings it back; the second section's badge does the same;
+    (d) badge > "Initial design speed…" on a plain continuation: type
+    the real value + 0.004 → no glyph (the box shows the same two
+    decimals); + 0.01 → "~v"; + 0.3 → "≠v"; ride the POV over it: the
+    speed slot shows "(d = …)" ONLY while the badge says ≠v; (e) a
+    strict follower with seam smoothing whose "~v" exists only because
+    of the smoothing: the badge menu shows the "Speed conflict caused
+    by seam smoothing — shrink the ◇ window instead" line instead of
+    the submenu and the band tints red; shrink the window to 0: the
+    glyph goes; (f) a bridge section never wears "~v" / "≠v"; a run
+    head's first section never does; (g) Track Piece ▴ on a single
+    piece with a speed control: Reverse… is grayed, hover "Reverse
+    works on a track piece without speed controls — remove its speed
+    controls first."; delete the control: enabled; (h) a run of two
+    pieces joined by a strict seam, no controls: the unchanged
+    "Reverse works on a track piece without strict seams or bridges —
+    un-strict its seams and convert its bridges first."; add a control
+    anywhere in the run: "Reverse works on a track piece without strict
+    seams, bridges, or speed controls — un-strict its seams, convert
+    its bridges and remove its speed controls first."; (i) a single
+    piece whose last section is an orphan bridge (delete the target
+    piece): "Reverse works on a track piece without bridges — delete or
+    convert its bridge first."; with a control as well: "… without
+    bridges or speed controls — delete or convert its bridge and remove
+    its speed controls first."; (j) a multi-piece run whose tail is an
+    orphan bridge: the multi sentence (with / without controls);
+    (k) open conflict.uvd (his file), click piece 1's last section's
+    badge > Initial design speed…: the box reads 13.99, "real 13.91"
+    sits grey right of it, "Set Design to Real" is enabled with the
+    plain tooltip; click it (or the grey number): the box reads 13.91,
+    the number stays, nothing on the stats bar; click again: "Set
+    Design to Real changed nothing — the design speed already is the
+    real entry speed."; Ctrl+Z: 13.99 is back; Ctrl+Shift+Z: 13.91
+    again; Cancel: 13.99 and the section is back on the design chain
+    (a rebuild leaves it); (l) after the click, drag a node in piece 0
+    or type a speed into piece 1's FIRST section: the last section's
+    box keeps following the real speed (never 13.99 again); hover its
+    button: "No speed conflict — …"; (m) press B on the last section's
+    first node: its speed stays the real one (no snap back); Shift+B
+    the same; (n) save, reopen: the box still reads the real speed and
+    keeps following; the saved line reads `section force 13.913… time
+    0 2 …`; (o) type 14 into the box: the section pins (≠v / ~v as the
+    gap says); click the button: it un-pins and lands on the real
+    speed; the badge's Resolve items unchanged; (p) a plain chain with
+    no conflict, a CONTINUATION (k ≥ 1): badge > Initial design
+    speed…: no grey number, the button ENABLED, hover "No speed
+    conflict — the design speed already is the real entry speed; a
+    click makes it keep following the real flow."; click: "Set Design
+    to Real changed no speed — … and this section now keeps following
+    it." and one undo step; hover again: "No speed conflict — this
+    section already follows its real entry speed; a click changes
+    nothing."; click: "changed nothing" (no undo step); type the same
+    value (pins), hover "…; a click un-pins it so it keeps following
+    the real flow.", click: "Set Design to Real un-pinned this section
+    — … and now follows the real flow."; the ride entry: hover "… a
+    click sets nothing.", click: "changed nothing"; a floating piece's
+    first section: hover "This track piece starts here — …", click:
+    "changed nothing"; a STRICT FOLLOWER'S first section with no
+    conflict (k == 0): hover "No speed conflict — …; a click changes
+    nothing — a track piece's first section keeps its own design
+    speed.", click: "changed nothing" (no undo step); pin it at the
+    same value: hover "…; a click un-pins it.", click: "Set Design to
+    Real un-pinned this section — its design speed already is the real
+    entry speed." (no "follows"); a continuation typed 0.003 off its
+    real speed (no glyph, no grey number): click → "Set Design to Real
+    un-pinned this section and landed its design speed exactly on the
+    real entry speed." and one undo step; (q) two pieces joined by a
+    bridge in Optimize position with a speed conflict on the second:
+    the button is enabled, hover carries the bridge sentence; click:
+    the piece moves, "Set Design to Real — the bridge before this
+    section re-places this piece after any resolution — …" on the
+    stats bar; a few clicks converge; set the bridge to "No
+    optimization": one click lands; (r) a bridge the train crawls off
+    (< 1 m/s at its end): click → "Set Design to Real refused — The
+    train crawls off the bridge at …"; a reversed (old-file) section:
+    "refused — A reversed section …"; with the density preview open:
+    "Finish or cancel the open convert preview first."; (s) '+' >
+    Transition to real on a conflicted end, then edit upstream: the
+    new section keeps the real speed; split the resolved section (node
+    menu): the left half keeps following, the right half follows the
+    design chain; Connect them back: it follows again; Copy the run:
+    the copy follows too; (t) badge > Convert… > Convert on any force
+    section: with the density preview open and NO click into it, hover
+    the 3D view and press Space — POV starts; Space again stops it;
+    press 2 while a pane is captured (right-click into fly first) —
+    the Front view; (u) right-click into fly with the preview open:
+    W/A/S/D fly, Shift/Ctrl change the speed, Space flips to POV and
+    back, right-click releases; (v) click into the preview's spacing
+    box and type 2 — the digit edits the number and the view does not
+    change; now W/S still ride (fly) and Space still toggles POV from
+    the box; (w) with the preview open press Esc — the preview cancels
+    exactly like Cancel (the stats bar does not say "Finish or cancel
+    the open convert preview first." afterwards, the graph is
+    editable); (x) open a speed control's options popup (double-click
+    its diamond), click into its Speed box, then Space / W while flying
+    — they ride; Esc closes the popup like its ✕ (a later click on the
+    strip reopens it cleanly); (y) double-click a node: the node editor
+    opens with no box focused (no caret) — Space toggles POV; click
+    into a box, type a digit — it edits, Space from that box still
+    toggles POV, Esc closes the editor; (z) Coaster > Coaster Options…:
+    click the name box and press Space — a space is typed, the
+    viewport does nothing (free text keeps every key); (aa) Edit >
+    Shortcuts, click the POV binding button, press Space — the binding
+    reads "Space" and POV did NOT start; (ab) Track Piece ▴ > Delete…:
+    Space presses the focused Delete button (Esc / the Cancel button
+    for a dry run — Space never toggles POV there); (ac) SAVE ON
+    RELEASE: with a saved file open, press and HOLD Ctrl+S for two
+    seconds — the title's * clears ONCE, on the release (watch the
+    stats bar: one "Saved:"); make an edit, press Ctrl+S and WITHOUT
+    releasing click-drag a node — nothing saves (the * stays), release
+    everything — still nothing; press Ctrl+S, release Ctrl first, then
+    S — saves; Edit > Shortcuts: rebind Save to F2, press/release F2 —
+    saves; a never-saved document: Ctrl+S opens the Save-As chooser on
+    the release, cancel it, press Ctrl+S again — the chooser opens
+    again (the latch did not stick); 26b still holds (mid-drag Ctrl+S
+    never saves); (ad) THE TYPED MARK: open the default layout, click
+    the Track Piece ▴ button, reveal the anchor's gizmo (click the
+    white ball) and drag the teal pitch ring a little — the pitch box
+    shows a two-decimal number (say 12.35) while the model holds more
+    digits; click INTO the pitch box and click OUT (the window body):
+    the title shows no *, Ctrl+Z does nothing new (nothing committed);
+    (ae) click into the pitch box, type exactly the shown number
+    (12.35), press Enter: the window closes, the title wears *, ONE
+    Ctrl+Z restores the dragged value; Save and open the .uvd — the
+    piece's `porient` line (the pitch delta) reads exactly 12.35 (a
+    longer tail before); (af) type the shown number again, press Esc:
+    nothing changes, no *, no undo step; same for Cancel; (ag) select
+    the box's text, Ctrl+V the same digits from the clipboard (copy
+    them from the box first with Ctrl+C), press Enter: it applies
+    exactly like (ae); right-click → Paste of the same text, then
+    Enter: nothing (the documented gap); (ah) type something, delete
+    back to exactly the shown digits, Enter: applies (typed = intent);
+    (ai) badge menu > Initial design speed… on an UNPINNED continuation
+    section: retype the shown speed, Enter — the section PINS (its
+    badge keeps ≠v where the real flow differs; the reconcile no longer
+    re-freezes it); retype again on the now-pinned section: nothing
+    further; (aj) a bridge window (Strict Seam n (bridge) ▴) with a
+    held (🔒) yaw: type the shown value, Enter — the next piece's yaw
+    is exactly it (Save and check the `piece` line's yaw field); the
+    box never shows "-0"; (ak) Coaster menu > Heart: type the shown
+    value, Enter — the menu spinner commits through its own Enter (one
+    undo step); type '-' alone and click away — the box re-renders the
+    old value, no *; (al) in any box type '-' then press an arrow: the
+    arrow steps from the OLD value (the '-' never parsed, nothing
+    threw); (am) SMOOTHING OPTIONS: open a file with a smoothed strict
+    seam (conflict.uvd) and click the seam line: the only smoothing
+    item is "Smoothing options…"; on a strict seam without smoothing
+    it is "Enable smoothing (10 m)" alone (grayed with its sentence on
+    a straight/curve edge); (an) pick it: "Smoothing Options (Strict
+    Seam n)" opens just above the graph at the follower's strip, the
+    box shows the length to three decimals, the check is off, no box
+    has focus (W/S still ride the POV); (ao) type 5 — the band resizes
+    as you type; the wheel and ▲/▼ step by the Snapping element-length
+    step, Shift a tenth, Ctrl snaps to round multiples, holding
+    repeats; type 0 — the smoothing stays on and the box reads 0.500
+    once you click away; (ap) drag the ◇ with the window open: the box
+    follows; drag it through zero and back: the window stays; release
+    it at zero: the window closes with "The smoothing options window
+    closed — its seam no longer smooths."; (aq) the translational
+    check was removed in D257, see #174; (ar) Cancel: the length comes
+    back as it was at open (one more Ctrl+Z step undoes the revert);
+    Confirm, Enter and the X keep; (as) "Disable smoothing": the
+    window closes, the ◇ hollow, the seam menu reads "Enable smoothing
+    (10 m)" again; enable: the window opens at 10.000 (nothing is
+    remembered, D257); (at) "Make smoothing real…": grayed with the
+    full reason on hover when it would refuse, else the density
+    preview opens exactly as the old menu item did; (au) the
+    translational sentences went with the check in D257 — the
+    shrink-the-◇ sentences are the only ones, see #174 (u); (av) save
+    and reload: no `psmooth` line is written (D257); a file saved
+    before batch 38 opens with its track exactly as it was; (aw) with
+    the window open: Delete… the run, Un-strict, Split track at seam,
+    Switch Coaster… — the window closes first; with a convert preview
+    open the box and the buttons refuse with "Finish or cancel the
+    open convert preview first."; (ax) struck in D257 (no check to
+    flip); (ay) ride the POV
+    through a banked, pitched turn: the roll readout's parenthesis is
+    the bank's rate against the horizon (what a global roll lane
+    authors — on flat track it equals the body roll rate); over a
+    piece with ≠o the parenthesis shows "(d = …°)" instead.
+    GATES (headless, wiped classes — `rm -rf target/classes/uvd && mvn
+    compile`, then `javac -encoding UTF-8 -cp target/classes -d
+    gates/out gates/*.java`; every rc 0): LabelGate 182 since D257
+    (batch 38's 190 — section 17 shrank to 13 checks with the
+    translational strings; was 129:
+    section 15 the badge's three-state speed glyph — SPEED_GLYPH /
+    SLIGHT_SPEED_GLYPH / ORIENT_GLYPH, speedLevel / speedGlyph at 0,
+    0.005, 0.0050001, 0.2, 0.2000001, 5.0, NaN, Gestures.DRIFT_EPS ==
+    0.2, the composed texts "Force ~v" / "Geo ·m ~v ≠o" / "Force ·m ◀
+    fx ≠v" / "Bridge"; section 16 Reverse's four new sentences +
+    reverseWhy over all eight combinations; section 17 the Smoothing
+    Options window's 21 strings incl. the mode-aware D141 sentences at
+    both sites and smoothWindowTitle on a plain seam / past a bridge /
+    run head / out of range), uvd.ConflictGate 87 (was 51: block k —
+    the b38 fixture embedded as FVD_B38, after the settle recipe the
+    run head and piece 0's two continuations at level 0, the strict
+    follower's two sections at level 1 with gaps 0.045189 / 0.077494,
+    both inside (0.005, 0.2], a rebuild at rest keeps every level; h5
+    REWRITTEN to the new verdict + h5b; block l l1-l14e the explicit
+    real anchor on conflict.uvd — the bug reproduces, the op flags +
+    un-pins and the rebuild lands p1s1 BITWISE on the displayed real
+    seam speed (1 exact rewrite, then 0), dry run, save → load →
+    rebuild bitwise through the "2" slot and a byte-identical re-save,
+    an upstream edit followed, smoothing 0 the same, the flag
+    load-bearing, makeGraphsReal + the Transition-to-real hold flag,
+    B's rule, item e's model states, the s/c slot / copySection /
+    splitSectionAt / mergeSections carries — and the review round's
+    l14f-h: partialConvertSection both sides, convertDomain, bakeAxes,
+    convertWholeSection), SmoothRealGate 24 since D257 (batch 38's 77
+    — its d2-d9 pinned the translational mode and were struck with it;
+    section d is now d1 the recorded closure checksums
+    28808918c0612fbe / 0fc8182da8f4a418 + d2 the make-real round trip
+    on the smoothed compile, see #174), uvd.KeyRouteGate 103 (new; 131
+    with the JavaFX module path — section e pins the 28 KeyCode ints),
+    TypedMarkGate 42 (new — "42 checks, 0 failures — ALL OK": sections
+    A-G the prototype's 29-check transition table, section H the paste
+    / drop model), GestureGate 180, DetermGate197/198/199/200
+    6/4/10/7, LoadGate196 7, RangeResolveGate 115, Phase2Gate 162,
+    Phase3Gate "ALL PHASE-3 GATES PASS" (86 PASS lines),
+    uvd.SeamShapeGate 31, CopyGate 73, MergeGate 23, InsertGate 40,
+    InflSplitGate 22, MultiCoasterGate 15, MirrorGate 100, ReanchorGate
+    3. The clean-span dump (gates/probes/cleanspan-2026-09-30,
+    CleanProbe2 + compare3.py, OLD = the tree before the smoothing
+    change, NEW = after): the two dumps BYTE-IDENTICAL, "documents 54 |
+    geometry or vDesign moved: 0". The TOOLKIT probes
+    (gates/probes/typed-mark, module path per their README — re-run on
+    any JavaFX upgrade): FxOrderProbe prints [1] TEXT '12.35' -> '20'
+    then VALUE (the render precedes our listener), [2]/[2b]/[3] empty
+    (equal value / text is silent), [6a] empty (the identical paste
+    fires NO event), [6b] two TEXT events, [6c]/[6d] empty under the
+    formatter, [4] value=12.35, [4b] empty with editor='5.00', [5]
+    value=90.0 (clamp after the set), [9] value=24.0 (increment commits
+    first), [7] TEXT then CONV, [8] caret 1 -> 0 on an equal setText,
+    [10] THREW NumberFormatException, [11]/[11c] undoable=false /
+    [11b] true; UndoableProbe [a] identical paste undoable=false, [h]
+    a value write resets it. DEV HOOKS on the same build (the
+    module-path launch of CLAUDE.md, -Duser.home=<scratch>):
+    `-Dfvd.keyprobe=1` 45 PASS lines / "KEYPROBE fails=0" — (a) the
+    preview open with focus parked on the root, Space toggles POV; (b)
+    fly W press / release from the preview; (c) 2 while captured =
+    Front; (d) the spacing box clicked, a typed 2 edits "1.00" → "2",
+    fly stays, W rides; (e) Esc cancels; (e2) Enter from the parked
+    root = Apply, one undo step; (f) the speed popup — the Spinner is
+    the focus owner after a click into its editor, Space / W / Esc;
+    (g) the node editor parked on its root; (h) the Coaster Options
+    name box swallows Space; (i) the Shortcuts capture; then the five
+    save-on-release drills S1-S5 (0 → 0 → 1, 1 → 1 → 2, 2 → 2, 2 → 2
+    → 3, 3 → 3 → 4 saves); `-Dfvd.typedprobe=1` 36 PASS lines /
+    "TYPEDPROBE fails=0" — setup 12.3456 through the model; (1) click
+    in / click out keeps 12.3456 BITWISE, no undo step, not dirty; (2)
+    KEY_TYPED "12.35" over the selection marks the box, Enter through
+    the LiveWindow scene filter stores EXACTLY 12.35, one undo step,
+    dirty, mark clear, Ctrl+Z / Ctrl+Shift+Z move the bits back and
+    forth; (3) Esc after typing 45 keeps the bits; (4) Esc after the
+    typed-identical text the same; (5) a lone '-' then a click away
+    re-renders 12.35 with nothing dirty; (6) the Coaster menu's heart
+    box commits the retyped rendering through the editor's
+    ActionEvent (one undo step), a same-value '1.230' re-renders
+    canonical 1.23 with no mark and no undo step;
+    `-Dfvd.initspeedprobe=<conflict.uvd>` fails=0 (39 checks since
+    D257: the D256 ten + the layout states, see #174 — the D256 ten: the
+    button enabled, the click lands 13.913246110656 bitwise on the
+    displayed real seam speed with the anchor set, a second rebuild
+    and a second click are no-ops with "changed nothing — …" posted,
+    Ctrl+Z restores 13.991003664686 + unflagged and a rebuild keeps
+    it, Ctrl+Shift+Z restores the landed bits + anchor and a rebuild
+    keeps them); `-Dfvd.smoothprobe=<conflict.uvd>` "PROBE smooth
+    fails=0" (28 checks since D257: title / box / no check box /
+    focus, 5 and 0 typed (clamp 0.5), Cancel, undo / redo of a typed
+    length with the window alive, Disable, re-enable, the teardown
+    reason, hideJunctionWindows, Make real → the preview);
+    `-Dfvd.winshot=<dir>` the five window PNGs, "trackpiece rows
+    identical=true pixels equal=true", povrow fits. THE DOCS
+    INTEGRATOR'S BELT on the merged tree (wiped classes, after the
+    Help edits): mvn rc=0, javac rc=0; `java -cp "target/classes;gates/out"
+    LabelGate` → "LabelGate: 190 passed, 0 failed" (rc 0); `java -cp
+    "target/classes;gates/out" uvd.ConflictGate` → "ALL CONFLICT GATES
+    PASS (87)" (rc 0).
+
+174. v19.28 (D257): batch 39 — the POV bar's design-speed suffix in
+    its own slot, the initial design speed window's layout, the
+    translational smoothing mode REMOVED + the tooltip rule, the
+    bridge-end rig's rings follow the box, the held-control knife edge
+    closed. The gate list and the dev-hook lines sit at the END of
+    this entry. BY HAND (none of it was done with a real mouse): (a)
+    THE POV BAR: open any file with no speed conflict and press Space:
+    the stats line reads "Speed: 26.000 m/s | Vertical G: …" with ONE
+    gap between the speed and the "|" — no empty stretch where "(d =
+    …)" would sit (D255 left ~70 px there); (b) give a section a ≠v
+    (badge > "Initial design speed…", type the real value + 1) and
+    ride the POV into it: at the moment the train crosses into the
+    section the speed readout grows "(d = …)" and every readout to its
+    right slides over to make room — the one place the stats line
+    moves; the digits of the design speed never move anything while it
+    shows; ride out of the section: the readouts slide back; (c) ride
+    over the inside of a tilted piece (≠o with a speed split inside,
+    no ≠v): the suffix appears and disappears where the split opens
+    and closes by more than 0.2 m/s — the row follows each flip; (d)
+    over a bridge the suffix never shows (D255); (e) Pitch / Roll keep
+    their "(d = …°)" form on an ≠o piece and never move; (f) make the
+    stats bar say something (a refusal reason, Ctrl+S) and scroll the
+    POV: the row returns in the state of that moment — no stale
+    suffix; (g) two view panes (View ▸ Add View): one stats line, the
+    same behaviour; (h) resize the window narrower than the row with
+    the suffix shown: captions clip as before (the templates, not the
+    ratchets, are what the window must fit — the default 1216 px scene
+    fits both states); (i) THE INITIAL DESIGN SPEED WINDOW: open
+    conflict.uvd, click piece 0's second badge > "Initial design
+    speed…": the row is [Initial design speed (m/s)][box], no grey
+    number; "Set Design to Real" sits at the window's LEFT edge,
+    Confirm / Cancel at the right, and Cancel's right edge is exactly
+    on the box's right edge; (j) type the shown value + 0.3 and WAIT
+    (the window applies live): "real 14.06" appears right of the box,
+    the window grows to the right by that slot, the box does not move,
+    Cancel moves right with the window; Ctrl+Z: the number goes, the
+    window shrinks back, Cancel is on the box's edge again; (k) type +
+    0.3 again, press Cancel: the window closes and the badge wears no
+    glyph (the speed reverted); (l) click piece 1's last badge >
+    "Initial design speed…": the window opens WIDE with "real 13.91"
+    beside 13.99; click "Set Design to Real" (or the grey number): the
+    box reads 13.91, the number goes and the window narrows — Cancel
+    back on the box's edge; Ctrl+Z: wide again, Ctrl+Shift+Z: narrow;
+    (m) with the window open and narrow, drag a node of the section
+    BEFORE it so its entry speed changes: the number appears and the
+    window widens live (and shrinks back on Ctrl+Z); (n) the ride
+    entry (piece 0 section 0): never a grey number, narrow, the
+    button's hover says "The ride entry's speed is already real — a
+    click sets nothing."; hover the button elsewhere: one short
+    sentence each ("Sets the design speed to the real entry speed." on
+    a conflict; "No speed conflict — a click changes nothing." / "…
+    un-pins the section." / "… makes the section follow the real
+    flow." / "… un-pins the section to follow the real flow." without
+    one); (o) drag the window to the screen's right edge while narrow,
+    then open a conflict: it widens and is pushed LEFT to stay on
+    screen; resolve it: it narrows at its right edge and stays where
+    it was pushed; (p) the Track Piece / strict seam / bridge windows
+    and the node editor: unchanged — a revealed row still only grows
+    them, nothing narrows; (q) THE SMOOTHING WINDOW: open conflict.uvd
+    and click the smoothed strict seam's line: the only smoothing item
+    is still "Smoothing options…"; pick it — the window "Smoothing
+    Options (Strict Seam 1)" holds the length box, "Make smoothing
+    real…", "Disable smoothing" and Confirm / Cancel — NO check box;
+    (r) hover the Make-real button while it is grayed: one short
+    sentence (why it refuses), nothing else in the window carries a
+    tooltip; (s) type 5, 0 (reads 0.500 once you click away), drag the
+    ◇ with the window open (the box follows), Cancel (the length comes
+    back, one more Ctrl+Z step), Ctrl+Z / Ctrl+Shift+Z with the window
+    open (the box follows); (t) "Disable smoothing" closes the window
+    and the ◇ goes hollow; "Enable smoothing (10 m)" from the seam
+    menu re-opens at 10.000 — nothing is remembered between them; (u)
+    give the seam a violent kink and a long window so the follower's
+    badge wears ≠v and the band tints red: the badge's resolve line
+    reads "Speed conflict caused by seam smoothing — shrink the ◇
+    window instead" and the follower's "Initial design speed…" button
+    hover says "Seam smoothing opens this speed difference — shrink
+    the ◇ window instead." — the single sentences, whatever the seam;
+    (v) a file saved by the batch-38 build with the check ON opens
+    with the seam smoothing the ordinary way (the track after the seam
+    sits back on the closure's placement — millimetres on an ordinary
+    seam); a file saved before batch 38 opens exactly as it was; save
+    and reload: no `psmooth` line in the file; (w) zoom the 3D view on
+    the far end of a smoothed follower and resize the window: nothing
+    after the seam moves (the closure, as before batch 38); (x) THE
+    BRIDGE-END RINGS: default layout, split the track and '+' > Bridge
+    to piece ▸ (or open any file with a bridge in "No optimization");
+    click the bridge's white END ball: the rig wears THREE rings — yaw
+    (yellow), pitch (teal), roll (orange) — with the default padlocks
+    (yaw 🔓, pitch 🔒, roll 🔒); before this batch only pitch + roll
+    showed; (y) drag the yaw ring: the next piece turns and the bridge
+    follows, the bridge window's "Next piece yaw" box (open it with
+    Strict Seam n (bridge) ▴) reads the new heading live; Ctrl+Z steps
+    it back as one step; type the same heading into the box after an
+    undo — the track is identical; (z) flip any padlock in this mode:
+    no ring appears or vanishes, nothing moves; (aa) pick "Optimize
+    position": still three rings + the orange length arrow (the arrow
+    hides under Optimize length); a yaw-ring drag re-places the next
+    piece per event; with Optimize length checked the length holds
+    while you drag and re-optimizes when you let go; (ab) pick
+    "Optimize position and orientation": only the 🔒 axes' rings show
+    (defaults → pitch + roll; the yaw box is grayed "The bridge aligns
+    this axis — lock it to hold a value." and has no ring); lock yaw →
+    the yaw ring appears; unlock pitch → its ring goes; unlock all
+    three → no ring, the arrow alone; a held ring's drag moves that
+    axis and the bridge re-aligns the free ones around it; (ac)
+    "Gizmos: Local": under No optimization a yaw-ring drag turns the
+    piece about its own up with pitch / roll staying put; under
+    optimize-orientation only the held axes move; (ad) hover a
+    padlock: one sentence ("Locked holds this axis at the typed angle;
+    unlocked lets Optimize position and orientation align it."); (ae)
+    THE HELD CONTROL: New coaster; in the start screen pick Geometric,
+    start height 90, speed 10, Create; on the pitch lane make a dive:
+    node 0 = −50 °/s, a node at 1 s = −50, a node at 1.2 s = 0, the
+    end node (5 s) = 0 — the 3D track pitches over and drops straight
+    at ~55°; (af) +V, click-drag the control line from 1.5 s to the
+    section end, double-click the control → Acceleration, target 20,
+    Acceleration 0.5 (linked), Max AND Min checked; ▲ expands the tall
+    strip: the true-speed line climbs from ~13 to exactly 20 at ~1.66
+    s and stays FLAT at 20 to the control's end; the POV speed readout
+    over the whole control reads 20.000 (before the fix the line
+    snapped to 20, then climbed to ~29.8 by the end — a 0.5 g brake
+    cannot hold a 55° dive once the hold is lost); (ag) uncheck Max:
+    after reaching 20 the line rises freely above it (a floor, not a
+    hold) — end ~46.8; re-check Max: flat at 20 again; (ah) unlink and
+    set Deceleration 0.3: still flat at 20 (the brake's size governs
+    the approach from above, never the hold); (ai) Complex on the
+    acceleration graph, drag a middle node below zero (a coasting
+    dip): the speed stays on 20 across the dip (the graph governs only
+    the approach); (aj) type target 22: the hold moves to 22, flat;
+    target 25: flat at 25; (ak) open "B Shortcut not working
+    7.28.26.fvd": it re-settles once on open (the window title turns
+    dirty), the track looks the same (1.5 mm), save → reopen: nothing
+    changes, Ctrl+Z is a no-op; (al) open "FULL TEST COASTER
+    7.30.26.fvd": expected — its far end now runs ~1.4 km away (the
+    held lift and brakes hold; he wrote this file off), it re-settles
+    once on open and then saves / reloads bitwise; (am) a Speed-type
+    control (constant speed) anywhere: unchanged — it snaps and holds
+    as before. GATES (headless, wiped classes — `rm -rf
+    target/classes/uvd && mvn -q compile`, then `javac -encoding UTF-8
+    -cp target/classes -d gates/out gates/*.java`; every rc 0):
+    SmoothRealGate "ALL SMOOTH-REAL GATES PASS (24)" (was 77 — section
+    d is now d1 the recorded closure checksums 28808918c0612fbe /
+    0fc8182da8f4a418 over 1601 samples + d2 the make-real round trip
+    on the smoothed compile: B re-anchors at the window-end sample to
+    0.0 m, hold 0.0042 m), LabelGate "LabelGate: 182 passed, 0 failed"
+    (was 190: section 17 = 13 checks), Phase3Gate "ALL PHASE-3 GATES
+    PASS" (88 PASS lines, was 86 — 55k the dive: 0 of 334 governed
+    samples off the target for design AND real, 47 held one ulp above
+    it, end 20.000000000; 55l min-only runs free to 46.831),
+    Nl2ElemProbe re-pinned (22/22 on both builds: the position checks
+    at the writer's %e format floor 2q + 1e-5, the D202 jitter pin as
+    the 1 %-trimmed rms of the shared resample against a lerp twin —
+    Hermite 0.00021 / 0.00013 vs lerp 0.0043 / 0.0050),
+    uvd.ConflictGate "ALL CONFLICT GATES PASS (87)",
+    DetermGate197/198/199/200 6/4/10/7 (DetermGate197 reports 14
+    reconcile passes on the main coaster where it reported 0),
+    LoadGate196 7 (7422 samples, was 7423), uvd.SeamShapeGate 31,
+    CopyGate 73, MirrorGate 100, RangeResolveGate 115,
+    MultiCoasterGate 15, PlacementGate 41, uvd.KeyRouteGate 103,
+    TypedMarkGate 42, InsertGate 40, ReanchorGate 3, GestureGate 180,
+    Phase2Gate 162, MergeGate 23, InflSplitGate 22 — the whole
+    36-member battery green; the clean-span dump
+    (gates/probes/cleanspan-2026-09-30, CleanProbe2 + compare3.py):
+    byte-identical over 54 documents after the smoothing removal (and
+    to the batch-38 dump), then "documents 54 | geometry or vDesign
+    moved: 2" under the held-control fix — only "B Shortcut not
+    working 7.28.26.fvd" (1.5 mm) and "FULL TEST COASTER 7.30.26.fvd"
+    (1.38 km); new.txt is the recorded dump from here on. TrackPiece /
+    PlacementSnapshot are byte-identical to the pre-batch-38 tree,
+    TrackCompiler differs by one comment. DEV HOOKS on the same build
+    (the module-path launch of CLAUDE.md, -Duser.home=<scratch>):
+    `-Dfvd.smoothprobe=<conflict.uvd>` "PROBE smooth fails=0" (28
+    checks: title / box / no check box / focus, 5 and 0 typed (clamp
+    0.5), Cancel, undo / redo of a typed length with the window alive,
+    Disable, re-enable, the teardown reason, hideJunctionWindows, Make
+    real → the preview); `-Dfvd.initspeedprobe=<conflict.uvd>` "PROBE
+    initspeed fails=0" (39 checks — the D256 ten + the three geometry
+    states, each with the PROBE geo line's sceneW / cancelR / spinR /
+    readout managed: 276.0 px narrow with Cancel's right edge 262.0 on
+    the box's 262.0, 365.3 px wide with the readout present, through a
+    live step, Ctrl+Z, Cancel, the click, undo and redo);
+    `-Dfvd.bridgeringprobe=1` "PROBE bridgering fails=0" (41 PASS
+    lines — the ring set per mode × locks: NONE 7/7/7/7, POS 7/7,
+    POS_YAW 6/7/5/0/7/6; a Global yaw-ring drag under No optimization
+    / Optimize position == the typed heading bitwise (yawDeg +
+    positions fold), the D253 knee hold mid-drag, a held pitch-ring
+    drag under optimize-orientation, Local drags, the windows open);
+    `-Dfvd.pickprobe=1` "PICKPROBE fails=0" (unchanged);
+    `-Dfvd.winshot=<dir>` "WINSHOT povrow pref=1127.3 width=1213.3
+    (scene 1216.0, gap 7, design hidden) fits", "WINSHOT povrow-worst
+    pref=1197.3 width=1213.3 (scene 1216.0, gap 7, design hidden)
+    fits", "WINSHOT povrow-conflict pref=1197.3 width=1213.3 (scene
+    1216.0, gap 7, design shown) fits" (D255: one line, 1194.0; the
+    -conflict line must read "design shown" — otherwise the hook
+    prints "WINSHOT povrow-conflict MISSING" and exits 1),
+    povrow-hidden.png / povrow-shown.png beside the window shots,
+    "trackpiece rows identical=true pixels equal=true", the three
+    placement-window PNGs byte-identical to batch 38's (468×344 /
+    389×203 / 442×405); `-Dfvd.povprobe=3` 146 pulses clean. THE DOCS
+    INTEGRATOR'S BELT on the merged tree (wiped classes — `rm -rf
+    target/classes/uvd && mvn -q compile` mvn rc=0, `javac -encoding
+    UTF-8 -cp target/classes -d gates/out gates/*.java` rc=0, 131
+    classes — after the Help edits): `java -cp
+    "target/classes;gates/out" LabelGate` → "LabelGate: 182 passed, 0
+    failed" (rc 0); `java -cp "target/classes;gates/out"
+    uvd.ConflictGate` → "ALL CONFLICT GATES PASS (87)" (rc 0); `java
+    -cp "target/classes;gates/out" SmoothRealGate` → "ALL SMOOTH-REAL
+    GATES PASS (24)" (rc 0).
+
+175. v19.29 (D258): batch 39, round 2 — the seam band's red tint and
+    the init-speed readout width (both user spec, UI-only).
+    (a) Open the batch-38 fixture (a copy of "UVD speed conflict not
+        resolving 10.4.26.uvd"): piece 1 follows a smoothed strict seam
+        and its first section wears "~v" (0.045 m/s) — the shaded
+        smoothing band is NOT red, and the badge's Resolve conflict
+        submenu offers the two speed ops (no "Speed conflict caused by
+        seam smoothing" line).
+    (b) Make a smoothed seam whose follower wears a full "≠v" that the
+        window itself opens (drag the ◇ wide on a kinked seam until the
+        badge reads ≠v; set the window to 0 and the glyph goes): the
+        band tints red and the submenu shows only the D141 hint line —
+        as before batch 38.
+    (c) Badge > Initial design speed… on piece 1 section 1 of the
+        fixture: the grey "real 13.91" readout is just wide enough for
+        three digits and two decimals (the window is 352 px wide on
+        this machine, was 365 with the "real 10000.00" slot); click it
+        — the readout and its space go, Cancel's right edge lands on
+        the box's right edge.
+    Headless: LabelGate 182, uvd.ConflictGate 87 (no pinned sentence
+    changed); -Dfvd.initspeedprobe=<conflict.uvd> fails=0 (39 PASS —
+    geometry lines "B-conflict sceneW=352.0 cancelR=338.0 spinR=262.0",
+    "A-open sceneW=276.0 cancelR=262.0 spinR=262.0"); -Dfvd.winshot
+    "WINSHOT povrow pref=1127.3 … fits" / "-worst 1197.3 … fits" /
+    "-conflict 1197.3 … design shown … fits".
 
 ## Debugging heuristics learned the hard way
 

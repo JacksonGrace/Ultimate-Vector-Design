@@ -32,7 +32,10 @@ import java.util.List;
  *    d(v²)/ds = 2g(A − T.y), i.e. loss' = −2gA (friction is absorbed
  *    by the drive: the rider feels exactly A). A step that CROSSES the
  *    target snaps onto it; at the target the control holds it exactly
- *    (the limit of the ramp) until the flags release it.
+ *    (the limit of the ramp) until the flags release it — a step that
+ *    STARTS within EPS of the target counts as crossing (v19.27,
+ *    D257), so the hold never depends on the rounding of the last
+ *    snap.
  *  - COMPLEX: the graph replaces the constant — target speed for
  *    SPEED controls (green), accel magnitude for ACCEL controls
  *    (blue, negative values coast); ACCEL keeps its constant target
@@ -223,8 +226,18 @@ public class SpeedControl {
         }
         // ACCEL: a driven step that crossed the target lands ON it; an
         // at-target step whose natural drift violates a flag holds it
-        // (the ramp's limit behavior)
-        boolean crossed = (vB - vt) * (vA - vt) <= 0;
+        // (the ramp's limit behavior). A step that STARTS at the target
+        // counts as crossed since v19.27 (D257): after a snap the
+        // recorded speed is sqrt(E - loss) with loss += vA² - vt², i.e.
+        // the target ± one rounding (measured 0-1 ulp over his files),
+        // and the bare sign test read "not crossed" whenever that
+        // rounding fell on the drift's side — a held control lost its
+        // hold on a coin flip (1-3 sample dips for a strong control; a
+        // brake weaker than the slope it held against never regained
+        // it, 9.8 m/s on the 55k fixture). The band is the drive's own
+        // EPS, so "at the target" means the same thing on both sides.
+        boolean atTarget = Math.abs(vB - vt) <= EPS;
+        boolean crossed = atTarget || (vB - vt) * (vA - vt) <= 0;
         if (crossed && (drove || (max && vA > vt) || (min && vA < vt))) {
             return vA * vA - vt * vt;
         }

@@ -239,6 +239,14 @@ public final class TrackCompiler {
         // {first sample index, entry speed = first section's vDesign}
         // (run 0's equals v0 through the Start-speed coupling).
         List<double[]> runs = new ArrayList<>();
+        // CLEAN SPANS (batch 37 — see passD's clean variant): one row
+        // per span, null = not clean; {entry sample, first sample,
+        // last sample, the section's design entry speed, 1 = the
+        // entry sample is a BRIDGE's last}
+        List<double[]> cleanRows = new ArrayList<>();
+        // per span: did it DROP its first sample onto the previous
+        // span's last (a continuation)? - ctlSampleRows' seam rule
+        List<Boolean> contRows = new ArrayList<>();
         boolean prevEndsBridge = false;
         double hNext = 0;   // energy height of the next section's entry
         for (int p = 0; p < c.pieces.size(); p++) {
@@ -500,14 +508,81 @@ public final class TrackCompiler {
                 spans.add(new Span(i0, all.size() - 1, t0, end.t(),
                     s0, end.s() - s0, line.exit(),
                     cp.psiDeg(), cp.canon(), tilt));
+                // a CLEAN span's samples are the design solve's own
+                // geometry: generated here (never a bridge), placed
+                // rigidly WITHOUT a tilt or a smoothing shift (either
+                // changes the heights the train really climbs), and
+                // shedding friction in travel order (a legacy reversed
+                // section's design profile sheds it backward)
+                boolean cleanSpan = local != null && tilt == Quat.IDENTITY
+                    && postShift == null && !section.reversed()
+                    && i0 <= all.size() - 1;
+                contRows.add(contAtAppend && i0 > 0);
+                cleanRows.add(cleanSpan ? new double[]{
+                    contAtAppend && i0 > 0 ? i0 - 1 : i0, i0,
+                    all.size() - 1, section.vDesign(),
+                    bridgedIn && secIdx == 0 && contAtAppend ? 1 : 0 }
+                    : null);
                 continuation = true;
                 if (smoothSeam && secIdx == 0
                         && !(section instanceof BridgeSection)) {
+                    // the blend REPLACES the samples it rewrites
+                    // (records): remember the upstream span's objects
+                    // and heights to find where its window begins
+                    int nsp = spans.size();
+                    Span up = nsp >= 2 ? spans.get(nsp - 2) : null;
+                    FVDIntegrator.Sample[] was = null;
+                    double[] wasH = null;
+                    if (up != null && up.i1() >= up.i0()) {
+                        int n = up.i1() - up.i0() + 1;
+                        was = new FVDIntegrator.Sample[n];
+                        wasH = new double[n];
+                        for (int k = 0; k < n; k++) {
+                            was[k] = all.get(up.i0() + k);
+                            wasH[k] = hyAcc.get(up.i0() + k);
+                        }
+                    }
                     postShift = smoothStrictSeam(all, spans,
                         piece.sSmoothLen, hyAcc);
-                    // the blend re-stamped heights up to the span end
                     if (postShift != null) {
+                        // the blend re-stamped heights up to the span end
                         hNext = hyAcc.get(all.size() - 1);
+                        // CLEAN ROWS (review round 2, C1): a window too
+                        // short to blend rewrote nothing — both rows
+                        // stand. A blend leaves the follower PIECE from
+                        // the window on to the march (this span is
+                        // blended, the remainder rides postShift — no
+                        // later row of the piece is clean, and each
+                        // downstream piece runs the march until an
+                        // exact entry; dust-level, continuous), and the
+                        // upstream span the design solve's own UP TO
+                        // its window: the row ends on the last sample
+                        // the blend left alone
+                        int nc = cleanRows.size();
+                        cleanRows.set(nc - 1, null);
+                        double[] upRow = nc >= 2 ? cleanRows.get(nc - 2)
+                            : null;
+                        if (upRow != null && was != null) {
+                            int first = up.i1() + 1;
+                            for (int k = 0; k < was.length; k++) {
+                                int i = up.i0() + k;
+                                if (all.get(i) != was[k]
+                                        || Double.doubleToLongBits(
+                                            hyAcc.get(i))
+                                           != Double.doubleToLongBits(
+                                               wasH[k])) {
+                                    first = i;
+                                    break;
+                                }
+                            }
+                            if (first - 1 >= (int) upRow[1]) {
+                                upRow[2] = Math.min(upRow[2], first - 1);
+                            } else {
+                                cleanRows.set(nc - 2, null);
+                            }
+                        } else if (nc >= 2) {
+                            cleanRows.set(nc - 2, null);
+                        }
                     }
                 }
                 secIdx++;
@@ -515,8 +590,10 @@ public final class TrackCompiler {
         }
         double[] hy = new double[hyAcc.size()];
         for (int i = 0; i < hy.length; i++) hy[i] = hyAcc.get(i);
+        List<double[]> clean = new ArrayList<>();
+        for (double[] row : cleanRows) if (row != null) clean.add(row);
         double[] trueV = passD(all, runs, c.fricRoll, c.fricAir,
-            ctlSampleRows(all, spans, c), hy);
+            ctlSampleRows(all, spans, c, contRows), hy, clean);
         // rates difference per SECTION SPAN since v18.35 (D207): the
         // ±1 central windows never straddle a seam, so seam-adjacent
         // rates are one-sided and CLEAN — the graphs draw right up to
@@ -537,6 +614,60 @@ public final class TrackCompiler {
      *  (the hardware sits where the design put it). */
     static double[][] ctlSampleRows(List<FVDIntegrator.Sample> all,
                                     List<Span> spans, Coaster c) {
+        return ctlSampleRows(all, spans, c, null);
+    }
+
+    /** THE SEAM STEP (v19.26, D255): rows[i] governs the real march's
+     *  step i -> i+1, and a CONTINUATION span's first own sample sits
+     *  one step INSIDE its section - the sample it dropped IS the
+     *  previous span's last. The step that starts on the seam
+     *  therefore runs over the NEW section's x = 0..ds, but its row
+     *  was resolved from the PREVIOUS section at its end coordinate
+     *  (none: a control's interval is half-open). A control starting
+     *  exactly at a section start - every promoted x = 0 diamond -
+     *  lost its first step in the real march while the design solve
+     *  drove it: on the user's 62-degree lift the real speed fell
+     *  0.09 m/s behind the design in that one step and carried the
+     *  phantom split down the whole ride. cont = per span, true where
+     *  the span dropped its first sample (compile's contAtAppend);
+     *  the seam sample then takes the NEW section's row at x = 0, or
+     *  none. null = the historic rows. */
+    static double[][] ctlSampleRows(List<FVDIntegrator.Sample> all,
+                                    List<Span> spans, Coaster c,
+                                    List<Boolean> cont) {
+        double[][] rows = ctlSampleRowsOwn(all, spans, c);
+        if (cont == null) return rows;
+        int flat = 0;
+        for (TrackPiece piece : c.pieces) {
+            for (Section sec : piece.sections) {
+                int idx = flat++;
+                if (idx >= spans.size() || idx >= cont.size()
+                        || !cont.get(idx)) continue;
+                int seam = spans.get(idx).i0() - 1;
+                if (seam < 0 || seam >= all.size()) continue;
+                double[] row = null;
+                if (sec.speedControllable()) {
+                    for (SpeedControl sc : sec.speedControls()) {
+                        if (0 >= sc.x0 && 0 < sc.x0 + sc.len) {
+                            row = SpeedControl.rowFor(sc, 0 - sc.x0);
+                            break;
+                        }
+                    }
+                }
+                if (rows == null) {
+                    if (row == null) continue;
+                    rows = new double[all.size()][];
+                }
+                rows[seam] = row;
+            }
+        }
+        return rows;
+    }
+
+    /** Each span's OWN samples resolved against its section's
+     *  controls (the historic rows). */
+    private static double[][] ctlSampleRowsOwn(
+            List<FVDIntegrator.Sample> all, List<Span> spans, Coaster c) {
         double[][] rows = null;
         int flat = 0;
         for (TrackPiece piece : c.pieces) {
@@ -1629,8 +1760,78 @@ public final class TrackCompiler {
                                  List<double[]> runs,
                                  double fricRoll, double fricAir,
                                  double[][] ctl, double[] hy) {
+        return passD(samples, runs, fricRoll, fricAir, ctl, hy, null);
+    }
+
+    /** How close the train must enter a BRIDGED-IN piece to its design
+     *  speed for the flows to count as one (m/s): the bridge's own
+     *  time sampling reacts to the last bits of the target's design
+     *  speed, so "design speed -> real speed at the bridge's end" has
+     *  NO bit-level fixed point on some bridges (2- and 3-cycles of
+     *  adjacent doubles, up to 19 ulp wide, on two of the user's
+     *  files). Far below anything the app shows or compares (the
+     *  init-speed window's 0.005, the badge's 0.2), two orders above
+     *  the widest cycle (6.75e-14) and the change a rigid move of a
+     *  whole document makes to the gap (5e-14 over 120 documents x 4
+     *  moves) — AND the tolerance Coaster.refreezeSpeedOnly rests at
+     *  (review round 4): its loop reads the recorded seam speed, so
+     *  it ends the moment the raw march is inside this band; a wider
+     *  band (1e-9 at first) left the resting gap anywhere inside it.
+     *  Same size as Coaster.REFREEZE_TOL by design. */
+    static final double BRIDGE_ENTRY_TOL = 1e-11;
+
+    /** CLEAN-SPAN variant (v19.26, D255 - the user's "is the design
+     *  speed the real speed BITWISE?"): clean = compile's rows {entry
+     *  sample, first sample, last sample, the section's design entry
+     *  speed, 1 = the entry sample is a bridge's last}, ascending -
+     *  stretches whose samples ARE the design solve's own geometry
+     *  (no bridge, no rigid tilt, no smoothing blend, travel-order
+     *  friction). Where the train ENTERS such a stretch at exactly the
+     *  section's design speed (BIT equality of the RECORDED speed at
+     *  the entry sample; within BRIDGE_ENTRY_TOL behind a bridge, and
+     *  the seam then records the design speed), the real flow and the
+     *  design flow are one initial-value problem on one track - so
+     *  the stretch RECORDS the design speed as its true speed. Before,
+     *  the same physics was integrated twice by different rules (the
+     *  design integrators carry friction in their RK4 state, this
+     *  march sums it by Heun over the sample arc; held speed controls,
+     *  before D257, lost their hold at different samples), so an
+     *  unconflicted chain's real speed sat beside its design speed for
+     *  good - 1e-6 m/s with friction, up to 0.15 on the user's lift -
+     *  and "Set Design to Real" could not land on the real speed's
+     *  bits: the reconcile chains sections on the DESIGN end speed.
+     *  ONE FLOW (review round 2): the march is RE-SEEDED on the last
+     *  sample of every recorded stretch - it continues FROM the
+     *  design speed there - so the recorded real speed never steps
+     *  where a clean stretch hands over to one that is not (a tilted
+     *  follower, a smoothing window, a bridge, a conflicted section).
+     *  A first build recorded the design speed but let the march run
+     *  on beside it: the record stepped by their drift at every such
+     *  hand-over, the badge and the resolve op read opposite sides of
+     *  the step, and behind a held control the step was a speed
+     *  conflict nothing could close. THE RE-SEED IS CAUSAL, per run:
+     *  it happens only where the two CAN have drifted - friction is
+     *  on, or a control governed a step of THIS run upstream. Where
+     *  neither holds they agree to rounding, the march keeps its
+     *  historic bits, no design speed moves and the GEOMETRY is
+     *  bitwise what it was (a coaster-wide switch let the first
+     *  control on a DETACHED piece re-round every other run). And
+     *  never from a STALLED design sample: the recorded design speed
+     *  is clamped at 0 while the design creeps above its energy
+     *  height, so seeding from it would forget the deficit and hand
+     *  the descent more speed than the energy allows. With friction
+     *  or controls a document can re-settle ONCE on first open -
+     *  where a section had been anchored on the old march's seam
+     *  speed (see D255 section 11). null = the historic recording. */
+    public static double[] passD(List<FVDIntegrator.Sample> samples,
+                                 List<double[]> runs,
+                                 double fricRoll, double fricAir,
+                                 double[][] ctl, double[] hy,
+                                 List<double[]> clean) {
         double[] v = new double[samples.size()];
         boolean fOn = fricRoll != 0 || fricAir != 0;
+        int ci = 0;               // the next clean row
+        int cFrom = 0, cTo = -1;  // the clean stretch being recorded
         for (int r = 0; r < runs.size(); r++) {
             int i0 = (int) runs.get(r)[0];
             int i1 = r + 1 < runs.size()
@@ -1639,11 +1840,59 @@ public final class TrackCompiler {
             double v0 = runs.get(r)[1];
             double y0 = hy != null ? hy[i0] : samples.get(i0).pos().y();
             double loss = 0;
+            // has a control governed a step of THIS run yet?
+            boolean ctlSeen = false;
             for (int i = i0; i < i1; i++) {
                 double vh = Math.sqrt(Math.max(v0 * v0
                     + 2 * FVDIntegrator.G0 * (y0
                         - (hy != null ? hy[i] : samples.get(i).pos().y()))
                     - loss, 0));
+                // what this sample RECORDS: the design speed inside a
+                // clean stretch entered at its design speed, the march
+                // everywhere else
+                boolean inside = i >= cFrom && i <= cTo;
+                // the stretch ends HERE: the march takes over from the
+                // design speed (one flow)
+                boolean handOver = inside && i == cTo;
+                double rec = inside ? samples.get(i).v() : vh;
+                if (clean != null) {
+                    // rows whose entry lies behind the march belong
+                    // to spans it has passed
+                    while (ci < clean.size()
+                            && (int) clean.get(ci)[0] < i) ci++;
+                    while (ci < clean.size()
+                            && (int) clean.get(ci)[0] == i) {
+                        double[] cr = clean.get(ci++);
+                        int a = (int) cr[1];
+                        int b = Math.min((int) cr[2], i1 - 1);
+                        if (a < i || a > b) continue;
+                        boolean bridged = cr.length > 4 && cr[4] != 0;
+                        if (bridged
+                                ? !(Math.abs(rec - cr[3])
+                                    <= BRIDGE_ENTRY_TOL)
+                                : Double.doubleToLongBits(rec)
+                                  != Double.doubleToLongBits(cr[3])) {
+                            continue;
+                        }
+                        cFrom = a;
+                        cTo = b;
+                        // behind a bridge the seam records the design
+                        // speed it met within the tolerance
+                        if (bridged) rec = cr[3];
+                        // a run head's span starts ON its entry sample
+                        if (a == i) {
+                            rec = samples.get(i).v();
+                            handOver = b == i;
+                        }
+                    }
+                }
+                if (handOver && (fOn || ctlSeen)
+                        && samples.get(i).v() > 0) {
+                    vh = samples.get(i).v();
+                    loss = v0 * v0 + 2 * FVDIntegrator.G0 * (y0
+                        - (hy != null ? hy[i] : samples.get(i).pos().y()))
+                        - vh * vh;
+                }
                 // recorded HONEST since v18.6 (D175 — the user's
                 // "speed becomes piecewise near zero"): the old
                 // max(0.1, vh) parked every slow dip at exactly
@@ -1652,8 +1901,9 @@ public final class TrackCompiler {
                 // seed design speeds floor at THEIR sites, and the
                 // viewport's stall predicate (≤ 0.1) reads the same
                 // ranges either way.
-                v[i] = vh;
+                v[i] = rec;
                 double[] row = ctl == null ? null : ctl[i];
+                if (row != null && i + 1 < i1) ctlSeen = true;
                 double drv = SpeedControl.driveRow(row, vh);
                 if (!Double.isNaN(drv) && i + 1 < i1) {
                     // driven interval: loss' is the constant ∓2gA —

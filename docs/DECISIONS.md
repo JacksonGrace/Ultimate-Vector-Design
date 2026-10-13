@@ -13028,3 +13028,2913 @@ Vector Design". The chooser behavior itself is his hand test
 coaster.uvd; typing a bare name saves name.uvd; File > Open lists
 only .uvd files, and a typed .fvd path is refused with the stats
 line while the document stays put.
+
+## D252 (v19.23) — File > Rename…, the Optimize-length readback (a DISABLED box is never "typing"), and the slow bridge spinner (the stale target-head capture)
+
+Date: 2026-09-25, the user's session-opening list: a Rename… item
+under File; a file "relatively similar" to the attached "UVD long
+bridge update time 9.25.26.uvd" (3 pieces, 2 optimize-orientation
+bridges, REAL_ONLY targets, pitch/roll held) where every bridge-window
+spinner click took ~5 s to update BOTH bridges; and the Length box not
+updating when Optimize length was clicked right after an arrow click.
+He then asked not to over-spend on the stall if it stayed
+unreproducible — the mechanism below was already confirmed.
+
+1. RENAME… (FvdDesigner.renameDesign, File menu after Save As…): a
+   small owned WINDOW_MODAL dialog (the Delete… confirm's dark look)
+   pre-filled with the current name; Rename/Enter = java.nio
+   Files.move in the SAME folder with the .uvd suffix enforced like
+   Save, then currentFile := the new file + updateTitle — the
+   in-memory document and its dirty flag are untouched (an unsaved
+   edit still saves, to the new name). No reload, no restart: the
+   open file is only a path the next Save writes to. Refusals on the
+   dialog itself: blank, a path (/ \ : . ..), an existing file (a
+   case-only rename passes — same file on Windows); an OS failure
+   (open elsewhere, no permission) reads "Rename failed: …". A
+   never-saved document grays the item with "Save the design first —
+   there is no file to rename yet." (fileMenu.setOnShowing swaps the
+   slot, the D235 rule). Help's File paragraph names it. Robot-driven
+   end to end by the bridgeprobe hook's -Dfvd.renameprobe=1 step on a
+   scratch copy: "rename test.uvd" → "rename test-renamed.uvd", title
+   + stats line followed, old name gone.
+
+2. OPTIMIZE-LENGTH READBACK — ROOT-CAUSED in the running app (the
+   new -Dfvd.bridgeprobe hook Robot-clicks the Length arrow, then the
+   check): after the arrow click the Length EDITOR holds focus; the
+   check's apply (setBridgeOptLen → applyOptimalLength → optimizeBridge
+   + rebuildTrack → updateBridgeControls → syncBridgeRows) runs
+   setIfOff on the box while typing() reads it focused → SKIPPED;
+   refreshBridgeRows then disables the box, but JavaFX moves focus off
+   a disabled node only at the NEXT pulse, so every later sync inside
+   the same click skipped too — the box showed 23 while lastOptDist
+   was 20 until the next unrelated rebuild (his "updated when
+   unchecked"). FIX: FvdDesigner.typing() returns false for a DISABLED
+   spinner (the skin cannot take typing into it, so the D247 guard has
+   nothing to protect), and every row sync sets the enable state
+   BEFORE its value writes — syncBridgeRows (refreshBridgeRows moved
+   to the top, the duplicate tail call dropped), syncPlacementSpinners
+   (the x/y/z + yaw + pitch/roll writes moved after their disables)
+   and the seam window's per-axis sync (setDisable first, `||
+   sp.isDisabled()` in the write condition; its padlock path already
+   forced). Same class, same fix, in all three windows: a box the
+   model just took over (the Length box under Optimize length, a free
+   axis handed to the march, an unlocked seam axis) now shows the
+   model at once. Probe after the fix: after check — box 20, editor
+   "20", lastOptDist 20.
+
+3. THE SLOW BRIDGE SPINNER. Not reproduced on the attached file:
+   headless (gates/BridgeSlowProbe.java — the shell's rebuild loop
+   verbatim + the click route) 15-350 ms per click across REAL_ONLY /
+   LOCKSTEP × locks × Optimize length; in the REAL app (the
+   bridgeprobe hook stepping the spinners like the arrows, -Dfvd.timing
+   breakdown) 50-130 ms per click, frames 10-80 ms. A six-family
+   headless hunt (modes × locks × optLen × conflicts; target-head
+   types; chain topology; energy/reconcile; the D249 inner settle;
+   his likely edit history) with independent re-verification of every
+   report found NO runaway to the 12 + 40 cap on the file, but ONE
+   real inefficiency on every click and three documented heavy
+   regimes:
+   (a) THE STALE STAMP (the fix shipped): the UI's explicit re-place
+   (bridgeTargetWrite / setBridgeLock / the Length paths →
+   GraphEditor.applyBridgeGap / applyOptimalLength → optimizeBridge)
+   ran BEFORE any compile had seen the write it follows, so the march
+   and the stamped signature were built on the PREVIOUS compile's
+   target-head capture (solvedTarget / accB / jerkB / rollB / vB — a
+   typed pitch changes tB.y at once). The stamp never matched the next
+   capture → the auto pass re-marched the bridge again in pass 1, then
+   the moved target changed the NEXT bridge's A side → pass 2 → …:
+   a bridge-0 click = 3 compiles + 4 marches, a bridge-1 click = 2 + 2,
+   and under Optimize length every one of those marches runs the
+   ~100-140 ms knee ladder (optimalBridgeLength — 3 knees + 4 compiles
+   per click on this file, ~1.5-3 s on a loaded machine per the
+   verifiers, 4 s measured under sibling load). His third bullet says
+   Optimize length was on while he saw the stall — the likeliest
+   story. Coaster.captureBridgeTarget(bs, targetIdx) =
+   TrackCompiler.captureTargetHead on the target AS IT IS NOW; the two
+   GraphEditor chokes call it before marching/kneeing. Effect (gates/
+   BridgeSlowProbe `fixed`: the OLD route vs the NEW route on the same
+   click): bridge-1 clicks BITWISE the old fixed point with 1 + 1
+   passes instead of 2 + 1; bridge-0 clicks 2 + 1 instead of 3 + 1 and
+   the auto pass's knee work 334 → 55 ms, the fixed point to 6e-14 …
+   2e-12 m (the old route wrote the aligned yaw twice — ulp dust); in
+   the app bridge-1 clicks 1 march + 1 compile (was 2 + 2), bridge-0
+   2 + 2 (was 4 + 3). Model callers (gates, fresh bridges) call
+   optimizeBridge exactly as before — DetermGate197/198/199/200 6/4/
+   10/7, PlacementGate 41, OrientModeGate 51 green. (A free-yaw write
+   slipped past the UI guard used to be KEPT by the stale march — the
+   +1 survived because the delta cancelled the old heading — and is
+   now aligned away; the UI never offers that write.)
+   (b) DOCUMENTED LIMITS, not changed (his budget call): N chained
+   optimize bridges settle in chain-depth passes (each re-march moves
+   the next entry — inherent; N=5 ≈ 6 compiles ≈ 0.2 s, knees extra);
+   a LOCKSTEP target with pitch/roll FREE at long lengths (120 m)
+   spends 1-2.5 s INSIDE optimizeBridge in the D249 inner settle
+   (24 rounds × captureTargetHead), and the documented slow-pitched
+   class (2 m/s, +30°, 80 m) 5 s; a deep REAL-anchored chain (46
+   resolved sections behind a bridge) costs one exact pass per
+   section — 37 passes / 4 s (the D200 triangular termination is the
+   cost). If the stall returns, his actual file + the -Dfvd.timing
+   breakdown pin it in one run.
+
+4. TOOLING: uvd.Prof (the static-final-guarded profiler),
+   FvdDesigner.loadDesignFile(File) (the chooser-free half of Load),
+   the -Dfvd.bridgeprobe / -Dfvd.renameprobe hooks, gates/
+   BridgeSlowProbe.java, and the hunt's 25 probes parked under
+   gates/probes/cascade-2026-09-25/ (research, not battery). Also
+   .gitignore: the `hs_err_pid*.log` pattern had been glued onto the
+   settings.local.json line (no newline) — three August crash logs
+   sat untracked in the root; split, they ignore again.
+
+## D253 (v19.24) — Live gestures HOLD the "Optimize length" knee (the second slow-bridge file)
+
+Date: 2026-09-25, the user's follow-up with "UVD long bridge update
+time 2 9.25.26.uvd": dragging the graph nodes of the force section
+between the two bridges was visibly sluggish, editing the bridge
+itself had a smaller delay, and converting the second bridge away
+made the section before the first bridge instant again. He allowed
+that it might be a valid edge case; it was, and it had a cheap answer.
+
+The file differs from the first one in one setting: the SECOND bridge
+has Optimize length ON (blen field 4 = 1). Headless (gates/
+BridgeSlowProbe `drag` — six live events on piece 1's lane-0 node 1
+with the fast loop only, then the release settle): 520-700 ms per
+event, ~90 % inside autoReoptimizeBridges. Per event the fast loop
+runs three compiles: pass 0 re-marches bridge 1 (its target head
+changed — cheap), which moves piece 1, so pass 1 re-marches bridge 2
+— and under Optimize length that means optimalBridgeLength's ladder
+(8 candidates + 3 bisections, each a virtual march + a probe
+integration; 300-550 ms on this banked crest, where the D156 damped/
+staged march runs long per candidate). Dragging piece 0's nodes did
+the same through both bridges (300-400 ms). Removing bridge 2
+removes the knee, exactly his observation.
+
+The knee is a REST-TIME answer (the D200 split: live gestures keep the
+fast tube, the release settles): Coaster.autoReoptimizeBridges(r,
+live) — rebuildTrack's fast loop passes gestureHot; a live event
+re-marches an optLen bridge at its LAST length and sets the transient
+BridgeSection.kneePending, and the first AT-REST pass treats a
+pending knee as a signature mismatch, re-knees, stamps and clears it.
+The live march keeps a PROPER stamp — a first draft stamped SIG_STALE
+and would have run every live rebuild to its 12-pass cap (SIG_STALE
+never matches), caught before compiling. GraphEditor.applyOptimalLength
+takes the same branch under gestureHot (the bridge's own rig drags).
+At rest (live = false, kneePending false) the pass is bitwise the
+historic one. Measured: per drag event 700/380 → 31-34 ms (three
+compiles + two cheap marches), the release settle re-knees once
+(280-340 ms), the settled placements old vs new to 3.1e-13 (yaw
+alignment dust); DetermGate197/198/199/200 6/4/10/7, PlacementGate 41,
+OrientModeGate 51 green.
+
+What stays: a SPINNER CLICK on an optLen bridge (or upstream of one)
+is a discrete edit, so it knees at once — 230-540 ms per click on
+this crest in the real app (the explicit knee, or bridge 2's at-rest
+re-knee after a bridge-1 click). Deferring the knee across a
+hold-repeat arrow burst would need a burst-end timer (no release
+event exists for a spinner) — offered, not built. Help's bridge
+paragraph says the length holds during a drag and re-optimizes on
+release.
+
+## D254 (v19.25) — Batch 36, round 1: the POV pulse clock, the insert-drag jump, FOCUSED ≠ TYPING, the orientation windows restructured (Edit with gizmo, top-left-anchored growth), gizmo Shift/Ctrl, the POV design readout, the handle readout, the badge-menu order
+
+Date: 2026-09-28, the user's first feedback list on batches 32-35 plus
+new items (verbatim list in the session; each point below quotes its
+ask). Method: five parallel investigators (two in worktrees with
+instrumented runs of the app, three read-only audits) with an
+adversarial challenge on every root-cause claim, then ONE writer.
+Items 4 (gizmo modifiers) and 1 (the POV skip) were implemented from
+the audits by a worktree agent — see their own paragraphs below.
+
+1. THE INSERT-AND-DRAG JUMP ("if I adjust the view of the graph
+   editor then try to click+drag on the graph to add and move the
+   added node in the same motion, the graph editor jumps … if I
+   click+drag an existing node first it doesn't"). ROOT CAUSE
+   (measured with a Robot hook in a worktree, then independently
+   re-run by the challenger): GraphEditor.pressCurveInsert froze the
+   drag window with two bare field writes, dragWinT0 = viewStart()
+   then dragWinT1 = viewEnd() — and viewEnd() returns the FROZEN
+   field the moment dragWinT0 is set, so the second read returned
+   dragWinT1 itself: the PREVIOUS gesture's end (0.0 at startup).
+   After any zoom/pan (which write viewT0/viewT1 only) the
+   insert-drag mapped through [live start, stale end] for the whole
+   gesture — the plot jumped and the node landed ~2 s back on its
+   left neighbor (frozen [0.9115, 0.0000] vs [0.9115, 13.5522], node
+   8.76 → 7.17 s); a plain node drag (beginGesture, which read both
+   ends into locals first) left the CURRENT end in the field, so an
+   insert-drag right after it happened to work — exactly the user's
+   cure. FIX: one helper freezeView() (both ends into locals, then
+   the writes), beginGesture calls it (bitwise its old math) and
+   pressCurveInsert freezes THROUGH it BEFORE the insert (behaviorally
+   identical for an on-curve insert — t ≤ the section end, the run
+   domain cannot change) and unfreezes on a refused insert. Verified
+   in the worktree: both Robot phases PASS (err −0.007 s = the Robot's
+   event cadence; the mapping identical before, during and after the
+   drag). No Help change (a bug, not a control).
+
+2. FOCUSED IS NOT TYPING — the init-speed window's "Set Design to
+   Real" stale box ("the value in the box doesn't update even though
+   the value is correctly updated … do a sweep of the program"). The
+   audit measured JavaFX 26 itself (standalone probes against the
+   same jar): a Spinner is AUTO-FOCUSED on show when it is the
+   window's only traversable node, SpinnerSkin fake-focuses its
+   editor whenever the Spinner has focus, an arrow click keeps it
+   there, and a non-traversable button click never moves it. So the
+   init-speed window's own button ran refreezeSpeedOnly → the hook's
+   setUnlessTyping → typing() read the editor focused → SKIPPED, until
+   a click into another window blurred it. The D252 disabled clause
+   cannot help a box that stays enabled. The sweep found the SAME
+   class on the Track Piece and bridge windows' own ↺ / Real → Design
+   / Design → Real (under DESIGN_ONLY) beside a just-clicked row, on
+   the init-speed ride-entry clamp (typed 0.5 → model 1.0, box
+   "0.50"), and on the speed-control POPUP (a Popup's editor never
+   blurs on main-window presses, so every strip/disk drag resync of a
+   once-clicked box was skipped for the popup's life); cross-window
+   writers were already safe (owned Stages blur on any main-window
+   press, the 3D/graph presses pull focus explicitly). THE ONE RULE
+   (replacing "a window's own actions force their writes", which
+   would have been the third patch of this class in three days and
+   still missed the popup): FvdDesigner.typing() = focused AND the
+   editor text differs from the converter's rendering of the current
+   value (isUntouchedEditor — commitTyped's own D247 definition of
+   "nothing was typed"). A merely-focused box follows the model; a
+   half-typed one ("12" over "12.00") keeps its text; a same-value
+   resync is a no-op either way, so the caret moves only when the
+   number was actually stale. The seam window's inline guard routes
+   through app.typing (one predicate for the three windows); the
+   node editor's LiveNum guard is already an equal-text no-op.
+   D247's motivating case (re-syncs per gizmo drag event fighting
+   the caret of the D232-D247 DARK POPUP seam pop-out) moved out from
+   under the guard when those windows became owned Stages in D248.
+
+3. THE INIT-SPEED WINDOW LAYOUT ("Set Design to Real" had moved right
+   of the box). git log -S: the only change was 4ae50e2's D249
+   LiveWindow conversion — show() builds its own Confirm/Cancel
+   footer with no slot for a caller's button, so the conversion
+   parked the button in the only row the caller still owned. FIX:
+   LiveWindow.show takes footLead nodes placed LEFT of Confirm/Cancel;
+   the window is [label][box] / [Set Design to Real][Confirm][Cancel]
+   again (the pre-D249 shape with Confirm/Cancel in Apply/Cancel's
+   seats).
+
+4. THE ORIENTATION WINDOWS (items 1-7 of the "Track Piece / Strict
+   Seam orientation features" list):
+   - ROW ORDER: Track Piece = orientation block (yaw | pitch, roll |
+     the mode row + what it reveals | Design ↔ Real) → separator →
+     Anchor x/y/z → a 10 px gap + separator → the ops row (Reverse…
+     Mirror Copy Switch Coaster… Delete…) → Confirm/Cancel; bridge =
+     mode + Length | yaw | pitch, roll | the target's mode row +
+     Design ↔ Real → separator → Next piece x/y/z → footer. Only the
+     x/y/z rows moved.
+   - "EDIT WITH GIZMO" (Track Piece only, right of the ↺, unchecked
+     by default): the check = RING VISIBILITY; the box is ALWAYS
+     editable on a free piece — the user's words define the check
+     that way, so the padlock's accidental-edit guard (D101) is gone
+     (flagged). Backed by uiLockPitch/Roll INVERTED (no new field:
+     snapshots, Cancel, TpRecord, copy, the gizmo sig and the rig
+     builder untouched). On a follower / a bridged-in piece the
+     check is disabled with the junction-named reason and reports
+     that rig's truth; a bridged-in piece's Track Piece window no
+     longer carries the bridge's padlocks (D249's sharing ends —
+     the bridge window is the one surface). The wizard's
+     open-rings-while-editing (uiLock false) and Done's reset (true
+     = unchecked) keep their meaning.
+   - "Affect Subsequent Strict Seams" shows only while a junction
+     FOLLOWS the piece in its run: Coaster.hasSubsequentJunction(p)
+     = p < runEndOf(p) (a live trailing bridge or a follower — the
+     flag's own contract carries bridge targets; an orphan bridge /
+     run tail = none); LiveWindow.flagRow(…, hasNext) hides the row
+     (the stored flag is inert then and reappears with its value).
+   - Renames: "Edit Real and Design Independently" (INDEP_LABEL);
+     the bridge window title "Bridge Settings (Strict Seam n)"
+     (SectionNames.BRIDGE_TITLE — title case like "Track Piece" /
+     "Strict Seam n"; the badge-menu item keeps "Bridge settings…"
+     in sentence case; LabelGate's three title expectations updated).
+   - THE NO-JUMP MODEL (structural, per the user's spec): LiveWindow.
+     refit no longer re-pins the window's BOTTOM edge above the
+     canvas — that rule shifted the whole window UP by every
+     revealed row (the resolve buttons, the mode radios) and back
+     down when they hid, and re-snapped a dragged window on every
+     size change: the "jumping around". refit now only RESIZES
+     (top-left anchored: a revealed row extends the bottom edge; the
+     root's min width RATCHETS so a window never narrows; the
+     screen-bounds clamp is the one residual move), the readouts
+     RESERVE their width (Readout is managed at READOUT_W from the
+     start, show = visibility only — the seam window used to grow
+     ~100 px per conflict), and every revealable row sits BELOW the
+     always-visible rows, so the item under the mouse never moves
+     and the rows below shift by exactly the revealed height. The
+     pre-show placement (D249) stays; a reveal now overlaps the
+     canvas top by the revealed height until it hides — accepted
+     (the window can be dragged and stays). Residual, flagged: the
+     Anchor x/y/z row of a bridged-in target under REAL_ONLY +
+     optimize-orientation can still shift when a march toggles the
+     target's conflict (the resolve row sits above it by the
+     requested order).
+   Measured with the winshot hook: Track Piece 466×259 (was 430×234
+   — the check row is the widest), seam 389×173 (was 302 — the
+   reserved slots), bridge 442×338, titles as specified; LabelGate
+   103 / OrientModeGate 51 / PlacementGate 41 green.
+
+5. SMALL ITEMS: the badge menu swaps "Delete section" (now LAST,
+   after the influence block's separator) and "Convert…" (now right
+   after the resolve block's separator, where Delete was) and draws a
+   line UNDER the view items ("View in … domain" / "View rates in …")
+   before "Orientation settings…" (non-bridge sections). The POV bar's
+   pitch/roll parentheses show the DESIGN elevation/bank as
+   "(d = 12.345°)" while the POV sits on an orientation-conflicted
+   piece (FvdDesigner.povConflictTilt: entry ⊕ design⁻¹ for a free
+   piece, Coaster.seamConflictTilt off the previous exit span for a
+   follower; design orient = tilt⁻¹ · true per sample; the slot
+   templates widened so the swap never ratchets). Hovering or
+   dragging a HANDLE shows "out 0.33 [ease]  slope 1.234 g/s" — the
+   fraction and the slope in lane units per axis unit, the node
+   window's own numbers (hoverKnob via hitKnob on the selected node's
+   knobs; grey on hover, white while dragging).
+
+6. GIZMO MODIFIERS ("Make holding shift while making adjustments to
+   gizmos adjust the movement ten times slower, and for any gizmos
+   that don't already … snap incrementally when holding ctrl make
+   them do this too"). THE AUDIT of every drag sink (entry-rig
+   arrows, manual-bridge arrows, the tangent length arrow, the three
+   ring families — piece / bridge end / seam —, the center + track
+   balls, the speed-control disks): EVERY sink already snapped under
+   Ctrl (Local arrows/ball in increments from the press, Global ones
+   onto the absolute world grid by D183, the length arrow and Global
+   rings on absolute values, Local rings in increments, disks on the
+   strip's grid) — no new snap path was needed. SHIFT = a tenth of
+   the mouse travel, RE-BASED per event: Gestures.slowDebt keeps a
+   per-gesture DEBT (raw − effective travel) that grows by 0.9·Δ
+   while Shift is down and freezes otherwise, so pressing Shift
+   mid-drag continues from where the part IS at a tenth of the speed
+   and releasing resumes full speed from there — the whole-travel
+   ×0.1 variant would have snapped the part 90 % back toward the
+   press. With Shift never touched the debt is exactly 0.0 and
+   `x − px − 0.0` is bitwise the historic travel (GestureGate 10a;
+   the pickprobe's drag and ring lines identical before and after).
+   Viewport3D: beginSlowTravel / slowTravel feed wireAxisDrag,
+   wireRingDrag and wireBall (the ball's 3 px deadband stays on the
+   RAW travel); the disks carry the debt in NATIVE units seeded from
+   the disk's own x. CTRL+SHIFT = the snap at a TENTH of the step —
+   the app's own keyboard convention (nudges, spinners: Shift =
+   tenths, Ctrl = snap, both combine), not "the full step on the
+   slowed value": arrows/ball by snapLen/10 (Global: the world grid
+   at that step), the length arrow by step/10, rings to 0.1°, disks
+   on their native step/10 (AxisSink.apply gained a `fine` flag;
+   gizmoStep). Flag: under a cross-domain view a Ctrl+Shift disk
+   snaps on the NATIVE tenth-grid, not the display grid (the strip's
+   own snap takes no step; plain Ctrl keeps the display grid). The
+   pickprobe itself had a latent NPE (partDistPx routed a BALL
+   through ringDistPx, whose dir() is null — the probe aborted
+   before its drag sections); fixed with pickPart's own
+   silhouette-edge metric. GestureGate 115 (was 108).
+
+7. THE POV PULSE CLOCK ("Periodically [every roughly half second] …
+   the POV skips forward just a frame or two … noticeable when
+   pitching or rolling"). ROOT CAUSE, measured and then reproduced
+   by the challenger: on Windows the JavaFX glass pulse timer ticks
+   at an INTEGER 16 ms (QuantumToolkit.PULSE_INTERVAL = 1000 / 60 —
+   62.5 Hz; WinTimer has no vsync timer) while vsync'd frames present
+   every 16.67 ms; each pulse's scene sync waits behind the previous
+   present for the accumulated 0.67 ms/tick drift until a whole tick
+   is SWALLOWED, every ~25 pulses. The pulse-start deltas read 16,
+   16, …, 32 while the frames still display one per vblank — so the
+   ride, advanced by the raw delta, ran 4 % slow for 24 frames and
+   then jumped two frames at once: a barcode painted per pulse and
+   read off the SCREEN at 60 Hz showed 27 consecutive-frame 32 ms
+   ride jumps per 6 s at 0.4 s spacing. Not FX-thread work (timer
+   handlers ≤ 8 ms), not GC, not the sample interpolation, not the
+   stall ratio, not the floor. FIX: uvd.PulseClock drives the POV
+   and fly timers. The first cut (a 32-slot MEAN) was REJECTED by the
+   challenger on measurements — 3-8 ms vsync-hint pulses and
+   busy-startup 32 ms runs inflate/deflate a mean (the ride ran
+   20-45 % fast for a second, sank to 13.5 ms). Shipped: the advance
+   = the MEDIAN of the last 32 raw deltas (EVEN window, the mean of
+   the two middle order statistics — an odd median flips 8/24 on an
+   exact hint alternation, and 32 slots keep a 12-pulse busy run a
+   minority) + a bounded DRIFT term (deficit = Σraw − Σadvance bled
+   at deficit/32 per pulse, capped at 12 % of the median, the
+   accumulator bounded at ±0.10 s, off while seed slots remain) so
+   the long-term rate is wall time; the window starts full of the
+   nominal 1/60 s; a HITCH (> 2.5 × max(median, 1/60 s), or the
+   historic 0.1 s cap) passes through whole and stays out of the
+   window, the owed drift kept. Two closing-round corrections from
+   my own -Dfvd.povprobe runs: (a) the hitch threshold is FLOORED at
+   the nominal period — on a hint-heavy machine (65 of 430 pulses
+   under 8 ms) the median dipped to ~12.7 ms and 2.5 × 12.7 let the
+   32 ms swallowed tick itself pass WHOLE, the skip back; (b) the
+   first bounds (accumulator ±0.05 s, bleed 10 %, drift zeroed per
+   hitch) CLIPPED under load — 80 double-length pulses in 694 and
+   two hitches left the ride 2.3 % slow over 12 s; the wider bounds
+   read 0.995-0.997 (a fixed ~50 ms lag, not a rate error). Measured
+   in the app, default layout, W held: RAW 18 double advances per
+   6 s (one every ~0.33 s), max step 17.5 ms; FIXED 0 outliers,
+   every advance 16.00-17.00 ms, max step 0.54 ms. Speed factors
+   (true/design, Shift/Ctrl) multiply OUTSIDE the clock, so the
+   ride's dynamics keep their instant response. RESIDUAL PLATFORM
+   LIMIT, documented rather than claimed fixed: JavaFX frame
+   production is not paced to the display (timer pulses + hint
+   pulses into a 60 Hz desktop, no present callback), so now and
+   then a rendered frame is superseded before composition and the
+   screen steps two pulses' worth at once (~1-3 per second in the
+   challenger's barcode runs, any clock). Deliberate limit: a machine
+   dropping more than ~1 frame in 8 runs the ride slow rather than
+   jumping. PulseClockGate 29 (30 after §8); the display-side count after the
+   median clock was NOT re-measured (the barcode sampler lived in a
+   scratch worktree) — his eye on the first hill is the acceptance.
+   Tooling: -Dfvd.povprobe=<s> (+ .raw=1 for the historic clock).
+
+8. THE REVIEW ROUND (three lenses over the finished batch — code
+   paths, the D252/D253 bridge work, docs/UX; every finding fixed):
+   (a) HIGH — THE PHANTOM EDIT, a consequence of §3's own rule. Since
+   FOCUSED ≠ TYPING a merely-focused box is resynced to the model —
+   its editor then shows the ROUNDED rendering of a value it no
+   longer equals in the last bits. JavaFX's Spinner commits on focus
+   loss BY ITSELF (its own focused listener calls commitValue, which
+   re-parses the editor text): leaving such a box wrote 12.35 over
+   12.3456 as a user edit — undo step, dirty flag, a re-solve. FIX at
+   the converter, the one place every commit entry passes:
+   BlankSafeConverter.fromString returns the factory's CURRENT value
+   when the text equals the rendering of that value (the D247
+   isUntouchedEditor rule applied where JavaFX itself commits).
+   Consequence, same as D247's: typing exactly the displayed text
+   into a box whose value carries more digits is a no-op.
+   (b) the handle-hover readout (§5) called hitKnob on every mouse
+   move with no surface guard: with a strip control's node selected
+   (selIdx belongs to the STRIP lane) or over an s/c / bridge
+   section, knobPos indexed the wrong lane — IndexOutOfBounds per
+   move. Guarded like the cursor's own overKnob test (which had the
+   same latent hole and got the same guard): node-hit first, no
+   strip focus, a lane section active, selIdx inside the lane.
+   hoverKnob also resets on press and when the pointer enters the
+   strip.
+   (c) the POV "(d = …°)" readout ignored BRIDGE spans: bridges never
+   tilt (D100 — they re-solve to world endpoints), so over a
+   conflicted piece's trailing bridge the readout showed a design
+   angle that exists nowhere. povConflictTilt returns null there; the
+   plain rates stay.
+   (d) RENAME: an illegal character (* ? " < > |, a control
+   character) reached Path.of and threw InvalidPathException — a
+   RuntimeException, out of the button handler, nothing on the
+   dialog. DesignIO.fileNameWhy (pure, LabelGate section 12) refuses
+   those and the Windows device names with a sentence; the move
+   catches RuntimeException too. A CASE-ONLY rename was a silent
+   half-success: Files.move is a no-op when source and target are the
+   same file, so the title changed and the disk did not — it goes
+   through a temporary sibling name now and moves back if the second
+   hop fails.
+   (e) the bridge-end RING drags under "Optimize position" + Optimize
+   length ran optimalBridgeLength PER DRAG EVENT, off the previous
+   compile's target head — D252's and D253's bugs on the one path
+   neither had covered. GraphEditor.gizmoReplace: live events hold
+   the last knee and leave kneePending, a rest call captures the head
+   first. The D249 settle's INNER re-knee ran per live event too (a
+   LOCKSTEP target): Coaster.optimizeBridge gained a holdKnee
+   overload, passed by autoReoptimizeBridges and applyBridgeGap; the
+   4-arg form is the historic body. BridgeSection.copy carries
+   kneePending (a snapshot taken between a live march and its settle
+   kept the held knee for good). BridgeSlowProbe drag on his second
+   file after the change: 23-27 ms per event, 13 ms release settle,
+   settled placements old vs new 0.0.
+   (f) disks under Ctrl+Shift rounded NATIVELY in the viewport, off
+   the displayed grid under a cross-domain view (§6's flag): the
+   strip's own snap takes a step scale now (spSnapNative's overload,
+   spViewportDragTo(nx, snap, fine)) — the display grid at a tenth,
+   scale 1 literally the historic method. The flag is closed.
+   (g) a bridged-in piece's grayed Track Piece pitch/roll box said
+   "lock it to hold a value" — this window has no padlock since §4;
+   it says "…lock it in the bridge window…" like the yaw row.
+   (h) DOCS: twelve CLAUDE.md passages still described the Track
+   Piece padlocks, the shared bridge padlocks or the old row order;
+   Help's "Strict seams" said the independent check appears only
+   under a conflict (it is always there) and "Window" promised a 3D
+   ring in every bridge mode (the rig builds rings in the two
+   non-orientation modes); source javadocs for the removed padlock
+   code, autoReoptimizeBridges ("stamps SIG_STALE" — the opposite of
+   what it does) and LiveWindow.refit; gates/README counts.
+   NOT CHANGED, a documented limit: PulseClock's seed phase runs the
+   nominal 1/60 s for the first 32 pulses, so on a display cadence far
+   from 60 Hz the first half second of a ride advances at the wrong
+   rate before the median takes over (no drift correction while seeds
+   remain — by design: a busy startup must not bank catch-up).
+   OBSERVED, not resolved: the dev bridge probe logs four JavaFX CSS
+   warnings (a ClassCastException inside CssStyleHelper, converting
+   -fx-background-color for .spinner / .text-input) when the bridge
+   window is re-opened on a DIFFERENT bridge — thrown inside `new
+   Scene(root)` while JavaFX resets the re-parented rows' styles; no
+   visible effect. A plain close → re-open reproduces it neither on
+   this tree nor on 3f6c67e, so whether it predates the batch is
+   unknown; `-Dfvd.bridgeprobe.csstrace=1` prints a stack per warning
+   for the next look.
+   Gates after the round, wiped classes: PulseClockGate 30 (the drift
+   surviving a hitch is pinned now), GestureGate 115, LabelGate 111,
+   OrientModeGate 51, PlacementGate 41, RunGate 66, CopyGate 73,
+   FloorGate 18, StripGate 49, DetermGate197/198/199/200 6/4/10/7,
+   -Dfvd.pickprobe=1 fails=0, -Dfvd.winshot renders the three windows
+   in the new layout.
+
+## D255 (v19.26) — Batch 37: the Track Piece window is the RUN's window (anchor rows, run-scoped Mirror / Switch Coaster), the graph view follows appends and keeps a drag-grown window, the init-speed real readout + the bitwise answer + the run-head refreeze bug, resolve behind a "No optimization" bridge, the floor-order sweep (glyph routing + exact ground cut), the one-motion disk drag (a JavaFX press-target fact), the depth-aware gizmo pick, window layout polish
+
+User feedback round on batches 35-36 (eighteen items, three of them
+questions). Method (the standing early-edge-case rule): eight READ-ONLY
+investigators, one per item cluster, each returning sites with verbatim
+anchors, the state combinations, a patch plan and gate checks — BEFORE
+any code; then two implementation phases with DISJOINT FILE OWNERSHIP
+(phase 1: Gestures / FloorDepth / SectionNames + Coaster, each with its
+gates; phase 2: Viewport3D, GraphEditor, FvdDesigner + Dialogs — one
+owner per file, every agent compiling only its own files into a scratch
+class directory that shadows target/classes, so parallel work never saw
+another agent's half-edited file); then a review. The working tree was
+uncommitted throughout, so no worktrees (a worktree starts from HEAD).
+
+1. THE TRACK PIECE WINDOW ("it always is referring to the very start of
+   the run"). Since D247/D248 only the Anchor x/y/z row targeted the run
+   head; yaw / pitch / roll, the "Edit with gizmo" checks, the ↺
+   reverts, the open-time record, the mode row, Design ↔ Real and the
+   readouts all resolved the ACTIVE piece — with a follower selected the
+   rows showed the follower's stored angles, grayed; with a bridged-in
+   piece selected they edited THAT piece (D249's "the two windows are
+   one route"). The window's own gray text said it: "Anchor orientation
+   is editable while a section before the first strict seam is
+   selected." The user's model is the other one: the window belongs to
+   everything the graph shows, and its rows are the anchor's. NOW
+   FvdDesigner.placementTargetIdx / placementTargetRef is the ONE
+   accessor of every row. A run head is never a follower and never
+   bridged-in, so every follower / bridged-in branch in this window is
+   DEAD and deleted (seamOwned, bridgeOwned, tiltWhyFor, gizmoWhy,
+   BRIDGE_ALIGNS_ELSEWHERE, pieceOrientWrite's bridge route): on a head
+   no row has a gray cause left; the wizard and an open convert preview
+   are the only blocks, as before. The record re-captures when the
+   active RUN's head changes (index + object identity), not when the
+   selection moves inside the run. The orientation after a strict seam
+   or a bridge is edited in that junction's own window only. Superseded:
+   D247 item 5, D248's "the orientation rows keep editing the active
+   piece", D249's shared Track Piece route for a bridge target, D254's
+   disabled "Edit with gizmo" readback on followers / targets.
+   THE OPS ("the relevant functions that apply to the entire run"):
+   Copy and Delete already were run-scoped. MIRROR is now
+   (Coaster.mirrorRun / mirrorRunWhy): every piece takes the per-piece
+   mirror (mirrorPieceCore — mirrorPiece's body, extracted verbatim),
+   and every NON-head piece also reflects its stored heading, yaw delta,
+   x / z and its HELD SEAM HEADING about the vertical plane through the
+   anchor's heading (sYawDeg is an absolute world heading — the old
+   per-piece op negated the held bank and never touched it, which is why
+   it could not mirror a run); bridges get optSig = null and noneStash =
+   null (first sight = record only, the Copy rule), so the rebuild does
+   not move a target at all. A single-piece run is field-for-field and
+   compile-bitwise the old mirrorPiece. Measured against the geometric
+   reflection: strict runs ≤ 2.1e-13 m, runs with bridges (three modes,
+   Optimize length on / off) ≤ 1.3e-11 m, target moved 0.0 m by the
+   rebuild; mirror twice returns within 2.3e-13 m with every lane node
+   bitwise (dust, not bits, on multi-piece runs; a held yaw outside
+   ±180 comes back as its wrapped twin). The risk the investigator
+   named — a CREST march that is not reflection-equivariant — is gated:
+   banked crests at 45 m and 58 m (past the old D156 cliff), two head
+   yaws, mirrored-then-edited vs the reflection of an equally edited
+   twin: ≤ 1.1e-12 m, the march spine rendering in all eight. An
+   orphan-bridge tail refuses (its frozen target-side inputs would need
+   reflecting). SWITCH COASTER… moves the whole block
+   (Coaster.moveRunTo): links are index-relative inside the block, so
+   nothing is baked or detached any more (the old op cut the run in up
+   to three); a destination whose list ends in an orphaned bridge is
+   grayed in the picker (it would seize the moved run as its target — a
+   latent bug of the old op). NOT bitwise without qualification: lane
+   sections and a bridged-in target's geometry are, but a run with a
+   smoothed seam or a bridge that lands BEHIND other pieces differs by
+   up to 1.24e-11 m — the smoothing window and the bridge's time
+   resampling read the global clock / arc offset; moved to an empty
+   coaster the same run is bitwise whole (RunGate k4 / k4b / k4c).
+   REVERSE… stays a single-piece op and is GRAYED on a multi-piece
+   track piece ("Reverse works on a track piece without strict seams or
+   bridges — un-strict its seams and convert its bridges first."): on
+   such a run the old op dropped the reversed piece out of the run and
+   let the follower after it jump to the new exit. A whole-run reversal
+   needs decisions the user has not made (the output structure across
+   kinked seams, what a bridge becomes, a synthesized EXIT row) — asked,
+   not built. Also fixed on the way: a refused Mirror pushed an undo
+   step before its refusal check; Delete / Switch now gray when removing
+   the block would shift a hidden wizard piece's index.
+
+2. THE GRAPH VIEW. (a) APPEND never touched the view: in auto-fit the
+   redraw re-derives the whole (longer) run — the behavior he liked —
+   while a manual window simply stayed put and the new node landed
+   off-screen. Now a PAN-ONLY follow (Gestures.panToInclude — width
+   kept, the smallest shift that brings the node inside with an 8 %
+   margin, clamped into the run's domain), computed AFTER the rebuild
+   (a distance section's axis x needs the fresh spans), from
+   appendSecond, from the hold-insert ONLY when the selected node was
+   the lane's last node, and from the s/c element insert only at the
+   END of the list. (b) THE GROWN WINDOW: every drag freezes a copy of
+   the window (dragWinT0/T1) and the edge overshoot grew only that copy;
+   the release's `dragWinT0 = NaN` dropped it, so the view fell back to
+   the untouched manual window — the v7-era "view re-fits on release".
+   Now a window that grew at a LEFT / RIGHT edge is ADOPTED at release
+   (Gestures.adoptWindow: intersected with the run's domain; at least
+   domain-wide = auto-fit, the D75 rule, so the release redraw's
+   sanitize never moves it again). A gesture that began in AUTO-FIT
+   stays auto-fit — the mode means "follows edits", and adopting would
+   silently hide the ⊕ in the 8 % headroom. Right growth is capped at
+   the run's domain end (growRightCapped — there is nothing to see past
+   it, and a node pinned against its neighbor no longer grows the view
+   forever). The value axis is untouched: the editor has no manual
+   value window, it re-fits to data that includes the dragged node.
+   Found on the way: a clean click on a seam's smoothing diamond
+   returned without unfreezing (scroll-zoom looked dead until the next
+   canvas click); and A with a STRIP graph node selected ran the
+   hold-insert on the MAIN lane at the strip's index.
+
+3. THE INITIAL DESIGN SPEED WINDOW. A grey "real 12.34" sits right of
+   the spinner in a RESERVED slot (the window never resizes), built on
+   the node-editor twin recipe (same style strings, a constant
+   transparent border, the hover outline, no cursor change); a click is
+   the SAME Runnable as "Set Design to Real". It shows once a conflict
+   is seen and stays until the window is closed (a latch local to the
+   open window); afterwards it is a plain label. THE PREDICATE is not
+   the badge's 0.2 m/s — a value typed 0.05 off real shows no ≠v, and
+   he could not snap back — and not a bit difference either (with
+   friction every continuation differs from real by ~1e-6 for good, the
+   button would never gray and would do nothing): "the click would
+   change the design speed by more than 0.005 m/s" (half the box's
+   display quantum), computed by a pure dry run
+   (Coaster.realEntrySpeed) that twins the reconcile's anchor gate.
+   Gray reasons, each its own sentence: the ride entry, a piece that
+   starts its own run, a reversed section, nothing compiled, a stall,
+   "follows the section before it, which carries the speed difference",
+   an optimizing bridge before it (§4's sentence — the readout then
+   shows as a plain, non-clickable label: the LATCH keys on the speed
+   conflict itself, the CLICKABILITY on the button being enabled), and
+   plain "No speed conflict". A click that still changes nothing (the
+   knife edge of the dry run) rolls back instead of leaving an empty
+   undo step, and puts the window's Cancel record back (the rollback
+   fires the restore hooks, which would re-base it).
+   THE BITWISE QUESTION ("the design speed is set to be the same as the
+   real initial speed bitwise?") — the first answer was NOT ALWAYS:
+   bitwise for followers, real-anchored continuations and everything
+   with friction off; with friction a plain continuation settled on the
+   previous section's DESIGN end, 2e-6 m/s off the real speed
+   (11.228125804341 vs 11.228127915835), and a bridged-in first section
+   2.5e-3 off after one click. He asked for the friction case to be
+   made exact — §11 is that change, and the answer is now YES wherever
+   the button is enabled, with two documented exceptions (a smoothed
+   seam, a stalled entry). "Entry" is the SEAM sample (the previous
+   span's last); a continuation's own first sample is one dt later.
+   THE BUG FOUND: refreezeSpeedOnly picked its anchor by
+   FLATTENED span index, so on a detached run head at piece index > 0
+   it read the PREVIOUS piece's last sample — another run — and wrote
+   that speed into the head (17.0 became 12.482); the badge's range
+   "Set Design to Real" on a tilted detached head inherited it, and
+   makeGraphsReal had the same read. A run head's real entry speed IS
+   its design speed (Pass D's run entry): Coaster.hasUpstream gates the
+   write now. (A ride entry whose vDesign sat in [0.1, 0.5) is no
+   longer raised to 0.5 by the op.)
+
+4. RESOLVE BEHIND A BRIDGE. The badge's two resolve ops were grayed on
+   the first section of ANY bridged-in piece, whatever the bridge's
+   mode (GraphEditor.leftIsBridge never read optMode). The block's own
+   rationale — "it re-blends to follow any resolution" — describes the
+   OPTIMIZE modes: a resolve changes the target's head dynamics, those
+   are in the bridge's signature, the auto pass re-marches and re-places
+   the target, and the resolution is chased (probed: the target moved
+   0.2-3.5 m and the split re-opened at 0.21-0.27 m/s). Under "No
+   optimization" none of that machinery runs. Probed on a hill → bridge
+   → tilted three-section piece: every op (single convert, single
+   refreeze, isolateRange + refreezeRange, the chained convert) leaves
+   the target's ENTRY POSE BITWISE, the bridge re-lands to 1e-13 m
+   through the ordinary per-compile re-capture, the second rebuild is a
+   bitwise no-op, save → load → rebuild bitwise. So BOTH ops run there —
+   the user named the convert; "Set Design to Real" rests on the same
+   invariance (the only placement write is bakeTilt: pose kept, deltas
+   zeroed) and withholding it would be a gray with no true reason.
+   Nothing has to happen afterwards beyond the rebuild. With friction
+   the bridge's arc changes by mm and the true seam speed by ≤ 1.3e-3
+   m/s — below every threshold, the rebuild still a no-op. "Set Design
+   to Real" visibly reshapes the BRIDGE (0.3 m on the fixture: the
+   target's head curvature changed) — the op's documented reshape, seen
+   on a bridge for the first time. The optimize modes stay blocked, with
+   the user's hint: "The bridge before this section re-places this
+   piece after any resolution — convert the bridge first or set it to
+   "No optimization."" ("…re-places and re-aims…" under optimize
+   orientation). Two older sentences advised "lock the axes" although
+   both predicates are mode-only; they name the modes that un-gray now.
+   No model guard ever refused a preceding bridge — the block was
+   UI-only; the range dialog re-checks at Resolve (the bridge window is
+   a sibling Stage).
+
+5. THE FLOOR SWEEP ("many viewport items do not draw with respect to
+   the floor correctly"). D249's see-through floor is pure scene-graph
+   ORDER, and only MESHES were ground-split. The four glyph kinds — node
+   markers, boundary disks, speed-control disks and the un-revealed
+   reveal balls — were added WHOLE to the after-floor block ("flagged").
+   Because that whole block moves BEFORE the floor while the eye is
+   below ground, an underground glyph was wrong in BOTH eye states: eye
+   above = drawn after the floor, untinted (pixels: marker 114,155,214
+   beside washed rails 176,196,244); eye below = drawn before the floor
+   and washed by the sheet (212,251,255) with nothing in between — the
+   "highlighted" look. THE TRUTH TABLE (FloorDepth.beforeFloor): a
+   drawable is submitted before the floor exactly when it and the eye
+   sit on OPPOSITE sides of the ground. FIX: each glyph routes PER ITEM
+   by its center's y (FloorDepth.itemUnder, strict < −0.07, ties and NaN
+   toward above — never a two-tone sphere) into an "under" twin group
+   inside the before-floor block (markerUnder / boundaryUnder /
+   ctlDiskUnder inside trackUnder, trackBallUnder beside it), so the
+   existing eye-crossing swap handles everything with no per-item work.
+   Routing re-runs for free (every glyph set rebuilds per rebuild / sig
+   change) except the balls, which re-parent where they are positioned.
+   The stated reason for not routing them ("pick anchors whose groups
+   are index-walked") was mostly untrue: only pickMarkerIndex walks a
+   group, keyed by userData; it walks both now. SECOND FINDING: the
+   per-face CENTROID split mis-routes long faces — every comb tooth
+   crossing the ground was cut along its side quads' DIAGONAL (a
+   two-tone tooth), and straight rails have faces up to 1.2 m, not the
+   documented 0.14. FloorDepth.clipAtGround cuts straddling triangles
+   EXACTLY at the plane (shared cut vertices, winding kept, area
+   conserved to 1e-9, smoothing groups mapped through their source
+   faces) — one rule for every mesh; a rail lying ON the ground (the
+   plane stays at −0.07) is still one untouched tube. underMask /
+   splitCounts stay for the gate's history but no longer describe the
+   render. THIRD: the side view's 2D ground line was the LAST pane child
+   and drew over the gizmo overlay; it sits under it now. Left as
+   documented-accepted: the ghost track showing through nearer solid
+   track (JavaFX has no depth-read-without-write) and the Top view's 2D
+   grid over everything. The gizmo stays on top of all of it.
+
+6. THE ONE-MOTION DISK DRAG. The disk gesture always was a single
+   press-drag-release; it died on a JAVAFX EVENT-ROUTING FACT. The press
+   on a disk of an unselected control changes the strip selection; the
+   disk signature signs the selection; the disks rebuild DURING the
+   MOUSE_PRESSED dispatch — removing the very MeshView JavaFX had picked
+   as the press target. Scene.MouseHandler sets pdrInProgress only AFTER
+   the press was delivered and re-targets a gesture on node removal only
+   while it is set, so every DRAGGED and the RELEASED went to the
+   detached node and never reached the pane (isolated: removed during
+   PRESSED 0 / 5 drags, removed during DRAGGED or hidden 5 / 5). The
+   second press found the control already selected, nothing rebuilt,
+   and worked. The lost release also left the gesture state stuck: the
+   mid-drag modifier guard stayed armed (Ctrl+Z / Ctrl+S dropped), the
+   next plot drag was swallowed, the popup did not follow, the view
+   stayed frozen. FIX, one line: world.setMouseTransparent(true) —
+   every pick in the pane is screen-space, so JavaFX's node pick only
+   ever chose the gesture's TARGET, and it chose a removable one; the
+   SubScene (it has a fill) is the target now and is never removed.
+   Making only the disks transparent fails for a control on a piece
+   outside the run (its activation replaces every mesh at press). The
+   same hazard sat under gizmo presses (their press deselects, which
+   rebuilds markers). STANDING LESSON: nothing that a press handler can
+   rebuild may be a JavaFX mouse target. Why no probe saw it: pickprobe
+   fires events AT the pane, bypassing the Scene's press-drag-release
+   targeting.
+
+7. THE GIZMO PICK ("if the hitbox for the center dot is closest it gets
+   selected"). D249's picker was purely 2D: nearest by pixels with the
+   ball measured from its silhouette edge — a filled disc reading 0 px
+   everywhere inside, against arrows and rings that are lines. Inside
+   the silhouette the ball could never lose, whether the ring / arrow
+   was drawn in FRONT of it or hidden behind it; that was his
+   complaint. Now TWO TIERS (Gestures.pickFront): (1) among parts
+   DIRECTLY under the cursor — the cursor ray pierces the drawn sphere /
+   shaft / cone / tube, inflated by 1 px — the FRONT-MOST along the ray
+   wins; (2) only when nothing is directly under the cursor, D249's
+   nearest-by-px-within-band rule runs, verbatim. An arrow's root runs
+   inside the ball and loses there; its emerged near half wins (45°
+   arrow: the switch at 0.15-0.17 rig units from the center); the far
+   half behind the ball loses; a ring's near arc wins, its far arc
+   loses. The drawn geometry and the picked geometry read the same
+   constants. Two more findings: an un-revealed track ball (world
+   layer, drawn UNDER the overlay rig) stole presses from rig parts
+   drawn over it — a layer rule; and an arrow aimed at the camera
+   refuses its press silently, so ungrabbable arrows are outranked
+   (they are picked only when nothing else is in reach, as before).
+   The ball's click-to-hide target shrinks by exactly the pixels where
+   something is drawn over it — the requested trade. FOUND WHILE
+   PROBING, older than the batch: the arrow press test measured a 1 m
+   world vector ("spans under 2 px = edge-on"), so once the camera was
+   far enough that 1 m projected under 2 px — about 134 m of view
+   depth at the default pane, i.e. the STARTUP framing — every arrow
+   swallowed its press silently. The test is scale-free now
+   (Viewport3D.arrowDraggable: the arrow's own projected length
+   against the length it would show lying in the view plane, under 6 %
+   = aimed at the viewer), the drag law keeps the press-time image of
+   1 m, and a refused press says "That arrow points at the camera —
+   orbit a little to drag it." 
+
+8. SMALL ITEMS. POV BAR: over a speed conflict the speed reads
+   "12.345 m/s (d = 12.000)" — the section under the POV wears ≠v, or
+   design and true differ right there by more than the badge's 0.2 m/s
+   (a tilted piece's interior split carries no ≠v); never over a
+   bridge; the slot template carries the wide form, so nothing shifts
+   (the bar measures 1261 px of a ≤ 1400 px window). HANDLE READOUT:
+   "L=0.33 [ease]  sl 1.23 g/s". WIZARD: confirming a floating piece or
+   a new coaster leaves the piece's entry gizmo revealed (Copy's
+   handoff). WINDOWS: the yaw | pitch-roll separator ends at the right
+   edge of the ↺ (LiveWindow.rowSeparator — bound to the ↺'s layout
+   position in its row, so it follows each window's columns) and is
+   lighter (222,225,230 vs 200,204,212); the Track Piece pitch / roll
+   spinners are 82 px like yaw's so the three ↺ line up; no line above
+   the ops buttons, the same 23 px gap (an invisible separator keeps it
+   identical at every render scale); Reverse… / Mirror / Copy on one
+   line, Switch Coaster… and Delete… on the bottom line, left, beside
+   Confirm and Cancel (LiveWindow.footSpring). THE CLIPPED RESOLVE
+   BUTTONS ("Orientati…") were NOT reproduced — three windows, three
+   bridge modes, revealed late or present at open, 14 render scales, 240
+   random steps: never clipped; the bridge window is 442 px wide against
+   a 293 px row, so "too narrow" is not it. What is true: the buttons
+   were laid out at EXACTLY their snapped pref width with 0.01-0.65 px
+   to spare and could shrink — losing exactly "on" is a sub-pixel
+   shortage. HARDENING, not a root-cause repair: fixed measured widths
+   with 4 px slack that cannot shrink, and the window reserves the
+   row's width while it is hidden. If it clips again the cause is
+   outside button sizing — a screenshot with the display setup settles
+   it. THE STARTUP WARNINGS ("A restricted method in java.lang.System
+   has been called … System::load … NativeLibLoader in module
+   javafx.graphics") are JDK 24+'s native-access notice (JEP 472):
+   JavaFX loads its rendering DLLs, which is what it must do; harmless
+   today, but a future JDK will block the load unless access is
+   granted. pom.xml passes --enable-native-access=javafx.graphics
+   (verified: four WARNING lines without it, none with it; "Apply and
+   Restart" re-launches with the same JVM arguments).
+
+9. AN INCIDENT, AND THE RULE. One investigator drove the bridge window
+   with javafx Robot clicks while the app was not in the foreground;
+   six left clicks landed in the user's mail client (no keyboard input;
+   nothing visibly deleted or sent). Reported to the user at once; he
+   allows OS-level input for probes. RULE for probes from here on:
+   prefer in-JVM event injection; if Robot is used, the Stage is
+   always-on-top and showing, every click point comes from a node's
+   own screen bounds and is re-checked right before the click, mouse
+   only. A SECOND ENVIRONMENT FACT the parallel agents ran into:
+   target/classes is rewritten within ~2 s of every source SAVE by the
+   IDE's Java build (VS Code), with "Unresolved compilation problems"
+   stubs while a file is mid-edit — so "the current build" moved under
+   every agent that ran a hook against it, and two of them froze
+   private snapshots. It is why the standing rule "wipe
+   target/classes/uvd, then mvn compile, then run" exists; nothing may
+   be trusted that ran between a save and that rebuild.
+
+10. ASKED, NOT CHANGED: "Typing exactly the number a box already
+   displays does nothing." The chain: his stale-box reports (D252,
+   D254 §3) → a merely-focused box is refreshed from the model → its
+   text is then the ROUNDED rendering of a value with more digits →
+   JavaFX's Spinner commits on focus loss BY ITSELF and re-parses that
+   text → leaving the box would write 12.35 over 12.3456 as an edit →
+   the guard (D254 §8): text equal to the rendering of the current
+   value commits as a no-op. The guard cannot tell "retyped the same
+   digits" from "never touched". His wish — typing the shown number
+   makes the value EXACTLY that — is right and reachable: mark a box
+   as typed-in on real input (a key, a paste, a cut) and clear the mark
+   on every programmatic write; commit parses whenever the mark is set.
+   Proposed for the next batch; nothing reverted meanwhile.
+
+11. THE REAL SPEED IS THE DESIGN SPEED, BIT FOR BIT, ON UNCONFLICTED
+   TRACK (his follow-up: "please make the friction case bit-exact").
+   WHY IT WAS NOT: the same physics was integrated twice by different
+   rules — the design solves carry the friction loss in their RK4
+   state, Pass D sums it by Heun over the sample arcs — so an
+   unconflicted chain's real speed sat ~1e-6 m/s beside its design
+   speed for good, and the reconcile chains sections on the DESIGN end
+   speed: "Set Design to Real" could not land on the real speed's bits.
+   THE RULE (TrackCompiler.passD, the clean variant — three builds to
+   get there, see below): a stretch whose samples are the design
+   solve's own geometry (not a bridge, no rigid conflict tilt, not a
+   legacy reversed section, outside a smoothing blend) and which the
+   train ENTERS at exactly the section's design speed records the
+   design speed as its true speed — one initial-value problem on one
+   track has one answer, and the design solve already computed it.
+   ONE FLOW: the march is RE-SEEDED on the last sample of every
+   recorded stretch, so the real flow continues FROM the design speed
+   there and the record never steps where a clean stretch hands over
+   to one that is not. The re-seed is CAUSAL and per run: only where
+   the two can have drifted — friction is on, or a control governed a
+   step of THIS run upstream; elsewhere they agree to rounding and the
+   march keeps every historic bit (a coaster-wide switch, the design
+   critic showed, let the first control on a DETACHED piece re-round
+   the other runs). And never from a STALLED design sample: the design
+   record is clamped at 0 while the design creeps above its energy
+   height, and seeding from it handed the descent 6 m/s more than the
+   energy allows.
+   SMOOTHED SEAMS: a window too short to blend rewrites nothing and
+   both neighbors keep copying; a blend leaves the follower PIECE from
+   the window on to the march — the blended first span and, riding
+   its closure residual (postShift), every later section of the
+   piece, then each downstream piece until an exact entry: the march
+   is the honest speed there, dust-level and continuous (3e-9 m/s
+   friction-free, 1e-5 with friction on the gate fixture; review
+   round 4 wording — the first write said "the follower's first
+   span") — and the upstream span copying UP TO its window (the first
+   sample object the blend replaced).
+   BEHIND A BRIDGE the entry test is a tolerance, 1e-11 m/s
+   (TrackCompiler.BRIDGE_ENTRY_TOL — 1e-9 until review round 4), and
+   the seam then records the design speed: the bridge's own time
+   sampling reacts to the last bits of the target's design speed, so
+   "design speed → real speed at the bridge's end" has NO bit-level
+   fixed point on some bridges.
+   THE BUILDS. (1) A draft that skipped the march across clean
+   spans and re-based it moved a real-anchored section's speed by an
+   ulp in a friction-free fixture: SeamShapeGate 7a (the pinned
+   pre-D247 checksum) failed — geometry had changed where nothing
+   should. (2) The first merged build recorded the design speed but
+   let the march run on beside it, untouched. The adversarial
+   verification took it apart: the record STEPPED by the march/design
+   drift wherever a clean span handed over to a non-clean one; the
+   badge reads the first own sample and the resolve op the seam
+   sample — opposite sides of the step; behind a held speed control
+   the step was 0.2-0.9 m/s, a speed conflict "Set Design to Real"
+   could not close (it read "no conflict" and wrote nothing); both
+   neighbors of a smoothed seam lost the copy for their WHOLE span,
+   even under a window too short to blend; and the op's fixed-point
+   loop behind a bridge ran all twelve passes on two of the user's own
+   files (2- and 3-cycles of adjacent doubles) and still ended off by
+   ulps. (3) The rework, written by the main session while a DESIGN
+   CRITIC built its own overlay of the same design and attacked it:
+   the stall guard, the causal switch, the op's tolerance and the
+   stalled-bridge refusal are its corrections. (4) The build described
+   above, verified once more as merged.
+   WHAT IT COSTS, measured old build vs new on 52 documents, 33 of
+   them his own files (gates/probes/cleanspan-2026-09-30, read-only):
+   ONE of his files re-settles on first open — "9.24.26 test.fvd", one
+   design speed by 1.4e-6 m/s, the track by 4.6 micrometres — and
+   never again (a second rebuild and save → load → rebuild are bitwise
+   on all of them). Every other file of his keeps every design speed
+   and every sample bit. The general statement is weaker and must be
+   said: a document with friction or speed controls in which a section
+   had been ANCHORED on the old march's seam speed re-settles once,
+   by the old march/design drift — friction dust in ordinary chains,
+   more behind held speed controls (9 of 66 adversarial fixtures
+   settled by the old build moved, the largest by 7.4 m). It is the
+   pre-v18.25 / pre-v18.27 precedent: a one-time arithmetic
+   re-baseline.
+   WHAT THE COMPARISON UNCOVERED. On his main test coaster the old
+   real speed sat up to 0.15 m/s beside the design speed in sections
+   that wore no conflict. Two causes, both in how speed controls are
+   stepped: (a) THE SEAM STEP — Pass D's control rows are per sample,
+   rows[i] governs the step i → i+1, and a continuation's first own
+   sample sits one step inside its section; the step that starts ON
+   the seam was resolved against the PREVIOUS section at its end
+   coordinate, where no control reaches (the interval is half-open).
+   A control starting exactly at a section start — every promoted
+   x = 0 diamond — lost its first step in the real march: on his 62°
+   lift the real speed fell 0.09 m/s behind in that one step. FIXED
+   (ctlSampleRows' 4-arg form: the seam sample takes the NEW section's
+   row at x = 0, or none). (b) THE HOLD KNIFE EDGE — NOT CHANGED, his
+   call: SpeedControl.snapCore decides "crossed the target" by the
+   sign of (vB − vt)(vA − vt); after a snap vB is the target ± one
+   rounding, so whether the next step holds is a coin flip on the
+   rounding direction. With a control as strong as his (0.76-0.9 g)
+   the hold leaks one- to three-sample dips of 0.03 m/s, in the design
+   solve AND in the real march, at different samples. With a control
+   WEAKER than the slope it holds against (a 0.3 g trim brake on a
+   steep drop, a complex graph that coasts) a lost hold is never
+   regained: design and march part by up to 1 m/s for the rest of the
+   ride. The fix is one comparison (treat |vB − vt| ≤ EPS as at the
+   target) — but it changes the DESIGN solve, and his main test
+   coaster passes a slow crest that amplifies everything upstream:
+   with the fix its far end moves 1.4 KILOMETRES (design speeds by up
+   to 4 m/s, 25 samples fewer); "B Shortcut not working" moves 1.5 mm.
+   Not a change to make without him. On unconflicted track the clean
+   rule shows the design's side of the coin as the real speed; inside
+   conflicted, tilted or blended stretches the two still flip their
+   own coins.
+   THE OP'S OWN PART: a bridged-in piece's first section is never
+   reconciled, so refreezeSpeedOnly owns its bits — and the seam's real
+   speed moves with the speed written (the bridge re-blends onto it):
+   the op re-reads until the write reproduces itself. The loop reads
+   the RECORDED seam speed, so it ends the moment the raw march is
+   inside the seam's band (BRIDGE_ENTRY_TOL — the record then IS the
+   written bits; review round 4 found the first write's "rests two
+   orders inside the band" claim false: the resting gap sat anywhere
+   inside the then-1e-9 band, path-dependent — so the band itself is
+   1e-11 now, two orders above the widest cycle found, 6.75e-14, and
+   above the 5e-14 a rigid move of a whole document changes the gap
+   by; Coaster.REFREEZE_TOL, the same size, bounds only a TILTED
+   target's loop, whose seam never snaps), two to four compiles; a
+   read within the band of the CURRENT design speed writes nothing (a
+   second press changes no bit); a value seen before ends the loop. A
+   bridge the train CANNOT CROSS refuses outright, in the model and as
+   a gray sentence in the window ("The train stalls on the bridge
+   before this track piece — there is no real entry speed to take."):
+   writing the 0.5 floor re-blended the bridge onto it — half a
+   million samples, a runaway 76 m/s end speed — and every later press
+   flipped between the two. A bridge the train CRAWLS OFF refuses too
+   since review round 4 (§14). On his two cycling files: one click,
+   21 / 58 ms, the real seam speed == the design speed bitwise, the
+   piece copies, a second click writes nothing.
+   STILL NOT BITWISE, documented: a seam speed that SMOOTHING changes
+   (the op reads with smoothing suspended, D141: that difference is the
+   ◇ window's to close — the window grays with that sentence, §12 E1);
+   a stalled entry (real 0.0, design lands on the 0.1 / 0.5 floors); a
+   continuation whose upstream is itself conflicted by less than the
+   reconcile's gate (it chains on the design end — the button is
+   grayed there, "resolve it there").
+   CONSEQUENCES ELSEWHERE, all display-side: on unconflicted track the
+   true felt G, the rail gradient, the combs and the POV advance read
+   the design values exactly (ratio 1), and the thin true strokes his
+   main coaster drew at the 1.5 px threshold are gone. Stall ranges,
+   the POV stall wrap and the ghost track are unchanged on 52
+   documents (15 of them stall).
+   Gates: uvd.ConflictGate blocks i (i1-i7) and j (j1-j6) + h2c
+   bitwise, 49 checks; the whole battery green; DetermGate197/198/199/
+   200 and SeamShapeGate's pinned checksums untouched.
+
+12. THE REVIEW ROUND (three lenses, every finding adversarially
+   verified; 16 findings, 1 refuted). FIXED: SH-1 (HIGH) the POV bar
+   OVERFLOWED the default window on his display — the speed slot's
+   permanent "(d = …)" reserve took the row to 1260 px in a 1216 px
+   scene, and since value slots never shrink the CAPTIONS were
+   ellipsized ("Spe…", "Vertica…") from the first POV update on:
+   templates for what a ride shows (speeds under 100 m/s, elevation
+   within ±90°; the ratchet covers the rest) and POV_GAP 7 (was 10)
+   bring it to 1194 px, and -Dfvd.winshot prints "WINSHOT povrow
+   pref=… width=… (scene …, gap …) fits" — against the row's
+   LAID-OUT width, 2.7 px under the scene's (§13) — so a template
+   change cannot overflow silently again. E1 the init-speed window behind a SMOOTHED seam: its dry run
+   read the displayed compile, the op the smoothing-suspended one —
+   the button never grayed, the first click pushed an empty undo step,
+   every later one rolled the document back with a false sentence;
+   the dry run takes Coaster.firstSectionSettle (the op's own read,
+   cached per displayed compile) for piece-first sections while any
+   seam smooths, a difference the smoothing alone opens grays with
+   "Seam smoothing opens this speed difference — shrink the ◇ window
+   instead.", and the knife-edge sentence is keyed on k. E2 the
+   optimizing-bridge block is tested AFTER the conflict itself (the
+   hover never recommends a mode change that leaves the button gray);
+   the block STAYS — the verifier measured 3-5 clicks and up to 19 m
+   of target travel under both optimize modes. E3 the range resolve's
+   Resolve-time re-check covers the optimize-orientation block for any
+   k. E5 mirrorRun REFLECTS the manual-mode stash (nulling it forced
+   Optimize length on at the round trip back). V1 the arrow press with
+   the eye within a metre of the junction: the 1 m point projected
+   behind the eye and the press returned without a word; a step the
+   drawn arrow covers is measured instead and scaled back to px per
+   metre, and no projection at all speaks the refusal. V2 stale
+   comments. SH-3 / SH-5 / SH-4 Help and the anchor tooltips say what
+   happens (the anchor moves the track up to the next bridge; Cancel's
+   record re-bases on a track-piece switch; "(d = …)" shows wherever
+   the speeds differ by more than 0.2 m/s). SH-6 holding A from the
+   last node walked the end off screen (the selection stays on the
+   original node, so every press after the first is an interior
+   insert) — first answered with "pan whenever the ride end was
+   visible", which §13 replaces. SH-7 "track piece" in Copy / Delete's
+   sentences. SH-8 (from batch 36) the first Track Piece window of a
+   session opened 55 px lower than later ones: the revealed rows take
+   their shown state BEFORE the window is measured (tpOpening).
+   KEPT AS DECISIONS FOR HIS EYE: SH-2 Reverse… is grayed on a track
+   piece with strict seams or bridges (a whole-run reversal is not
+   built); V3 an un-revealed white junction ball below ground shows
+   behind the floor, its revealed gizmo on top; E4 (refuted) a pinned
+   section whose value equals the real speed cannot be un-pinned from
+   the init-speed window.
+
+13. ROUNDS 2 AND 3 — THE FIXES VERIFIED, AND FIXED AGAIN. The §12
+   fixes and the first bit-exact build went through a second
+   adversarial pass (three lenses + skeptics, 15 findings, all
+   confirmed or plausible). The compile lens is §11's story. The rest:
+   THE APPEND PAN (R2-ES-3): §12's "pan whenever the ride end was
+   visible" also panned on INTERIOR inserts — the selected node
+   scrolled out of view — against his rule ("only … appending from the
+   last node"). Now an APPEND CHAIN: a press with the lane's last node
+   selected starts it; a following press pans only with the same lane
+   object, the same selection, and every node right of the selection
+   being a hold this chain created (by identity); anything else ends
+   the chain. Holding A keeps the end in sight, an interior insert
+   never moves the view.
+   THE POV BAR (R2-ES-4): templates leave 19 px of headroom, and
+   ratchets add up — two rare out-of-template values in one session
+   would clip captions for the rest of it. povFit: once a slot has
+   ratcheted and the row no longer fits its laid-out width, the gaps
+   tighten a pixel at a time, 7 → 2, and are never restored. None of
+   his 33 files holds a value that leaves its template.
+   THE INIT-SPEED WINDOW: the grey readout latches on the DISPLAYED
+   real speed too, so a gray sentence that speaks of a difference
+   (smoothing, the section before, a stall) has its number on screen
+   (R2-ES-5); the smoothing-suspended settle is not recomputed per
+   mouse event of a live gesture — the release's rebuild does it
+   (R2-ES-6: +19 ms per event on his main coaster), at the price of a
+   gray sentence that can lag until the release; a bridge the train
+   cannot cross grays the button (§11).
+   THE ANCHOR TOOLTIPS AND HELP (R2-ES-2): "what lies after a bridge
+   stays where it is" was true only under "No optimization" — an
+   optimizing bridge re-places its target with the anchor (10.0000 m
+   for a 10 m move, in every mode of the head). Three short lines now;
+   11 of the 14 bridges in his files optimize.
+   THE GIZMO ARROWS WITH THE EYE AT THE JUNCTION (RV2-1, RV2-2): ONE
+   function, Viewport3D.arrowAxis, is the press test, the pick's
+   grabbable test and the source of the drag law's screen axis. The
+   measuring step is chosen by VIEW DEPTH — the historic 1 m step,
+   bitwise, wherever that point sits at least half as deep as the
+   anchor; a step the drawn arrow covers otherwise (the 1 m point
+   3 mm in front of the eye plane projected to x = 49,019 px and 40 px
+   of mouse moved the piece 0.8 mm) — and a TWO-SIDED arrow whose +
+   half cannot steer is measured on its mirrored half. 30,653 presses
+   over 28 camera poses: none silent, none where the lit part was not
+   the picked one, none dragging the wrong way; 224 historic rows
+   byte-identical. ACCEPTED: the gain steps by 1.67× at the step
+   switch and 3× at the hand-over to the mirrored half — both only
+   with the eye under 2 m from the junction, where it used to fall to
+   0.004 of the mouse. A two-sided arrow pointing 3-4° AWAY from the
+   camera is draggable now at any distance, like its mirror image
+   always was. The refusal sentences: "points at the camera" for a
+   foreshortened arrow, "runs behind the camera — back away a little"
+   when the anchor or a one-sided tip has no screen image.
+   HELP (R2-ES-7, inherited): "hover the badge menu's title row for
+   the numbers" named a tooltip D249 removed.
+   METHOD, worth keeping: the rework was written by the main session
+   in a scratch copy WHILE a design critic built its own overlay of
+   the same written design and attacked it, and two implementers fixed
+   the UI findings on scratch copies of files they alone owned; the
+   tree was written once, at the merge, with nobody probing it.
+
+14. ROUND 4 — THE MERGED TREE VERIFIED ONCE MORE (two lenses +
+   skeptics on a snapshot of the final build; seven findings, all
+   confirmed, all fixed; the compile lens found only wording).
+   THE CRAWLING BRIDGE (R4-UI-1, HIGH — the round-3 stall guard
+   stopped exactly at 0.5 m/s): a "No optimization" bridge whose
+   target sits so high that the train crests it at 0.55 m/s. The
+   window said "real 0.55", clickable, the button enabled; the click
+   wrote 0.5499999 and the compile re-captured the target's head at
+   that design speed — a 3.2 g hill at 0.55 m/s is κ ≈ 71 rad/m —
+   which the septic absorbs as accB·lb² and j·lb³ over its 32 m
+   tangents: 940 KILOMETRES of bridge, 134,000 samples, 2.4 GB of
+   heap, QuantumRenderer out of memory, the application dead. At
+   0.8 m/s 120 km, at 2 m/s still 2 km from 38 m. Two guards now,
+   both in the MODEL: (a) SectionNames.bridgeCrawlWhy — a bridged-in
+   first section refuses BY THE REAL SPEED at the bridge's end,
+   stalled at or under Pass D's 0.1 floor ("The train stalls on the
+   bridge before this track piece — there is no real entry speed to
+   take."; R4-UI-3: the old sentence said "stalls" for 0.1 < real ≤
+   0.5 while the readout beside it read "real 0.45" — the train does
+   cross, the POV rides it, the ghost starts at the target) or
+   CRAWLING under BRIDGE_CRAWL_SPEED 1 m/s ("The train crawls off the
+   bridge at 0.55 m/s — re-solving this track piece at that speed
+   would blow the bridge up; raise the bridge or the entry speed
+   first."); Coaster.bridgeCrawlWhy is the dry run off any arrays,
+   refreezeSpeedOnly and makeGraphsReal refuse with it before any
+   bake, and (b) the BLOW-UP BELT inside refreezeSpeedOnly's re-read
+   loop: a compile whose bridge arc exceeds 3× the arc it had + 30 m
+   (BRIDGE_BLOWUP_MUL/ADD — a slower crossing keeps a bridge's arc, a
+   head it cannot absorb multiplies it: 53× at 2 m/s, 30,000× at
+   0.55; a usable entry never trips it, ConflictGate j3's 24 bridges
+   unchanged) restores the design speed and the pin, re-captures the
+   bridge's stored solve inputs at the restored state (the blown-up
+   compile had written them — orphan-only data, but a save right
+   after would have carried it) and refuses with the numbers ("at
+   2.00 m/s the bridge re-solves to 2028 m of track (it was 38 m) —
+   raise the bridge or the entry speed first."), before anything
+   renders it. The REASON travels with the model
+   (R4-UI-2: window and op read DIFFERENT compiles — the displayed
+   one and the smoothing-suspended one — and behind a smoothed seam
+   with friction they straddled the 0.5 floor by 1e-3 m/s: the window
+   enabled the button, the op refused, and the stats bar said
+   "Nothing compiled for this section yet."): Coaster.resolveRefusedWhy
+   is the last refusal's sentence, nulled at every op's start and by
+   the UI before each call, read BEFORE any rollback; every refusal
+   site — the badge ops, the range op, the init-speed window, the
+   density preview's first run — posts it, and the window re-syncs
+   its gray after a refused click. The badge's Resolve-conflict items
+   are PRE-GRAYED with the sentence (R4-UI-4 — the D235 rule where a
+   dry run exists; the refusal's rollback replaced every piece object
+   and re-based the open windows' Cancel records for a click that
+   changed nothing), the action-time belts test the crawl before the
+   snapshot, and rangeResolveWhy carries it for the range flow. Help
+   'Resolving' names the case. ConflictGate j7 (0.55 m/s: both ops
+   refuse with the sentence, the dry run agrees, nothing written) and
+   j8 (2 m/s: the belt takes the write back, arc 38.4 → 38.4, sample
+   count unchanged), LabelGate 14 pins the sentences; the fixtures are
+   the reviewer's recipe, the target height bisected for the wanted
+   crossing speed.
+   THE INIT-SPEED WINDOW'S SECTION (R4-UI-5): index-resolved like the
+   node editor, it silently re-targeted itself to the NEXT section
+   when its own was deleted (or a Connect / Insert / split put
+   another object at its index) — the box then showed and WROTE that
+   section, and the window carries no section name to tell. It now
+   remembers the section OBJECT: a restore or an unseen document
+   generation re-bases it, the same generation with another object at
+   k tears the window down ("The initial design speed window closed —
+   its section was replaced.").
+   THE TOLERANCE STORY (R4C-1, wording + one constant): the loop
+   never converged a copying target to REFREEZE_TOL — it reads the
+   snapped record, so it stops as soon as the raw march is inside
+   BRIDGE_ENTRY_TOL, wherever inside (fuzz 60: median 4e-12, max
+   9.5e-10 under the 1e-9 band, the written bits depending on the
+   starting value). The band is 1e-11 now (two orders above the widest
+   cycle, 6.75e-14; a rigid move of a whole document changes the gap
+   by ≤ 5e-14 — 0 flips in 120 documents × 4 moves at the old band,
+   the margin holds at the new one by 200×), REFREEZE_TOL keeps its
+   value as the TILTED target's stop, and the comment, the javadoc,
+   §11 and CLAUDE.md say what happens. ConflictGate j3's 24 bridges
+   still land bitwise and copy, i5 unchanged. THE SMOOTHING WORDING
+   (R4C-2): after a blend the whole follower piece and every
+   downstream piece run the march, not "the follower's first span" —
+   §11 and the compile comment say so now.
+   ACCEPTED, documented: opening the init-speed window on a smoothed
+   document re-captures the bridge's stored bpose off the unsmoothed
+   compile (compileForFit's capture writes the bridge's solve fields
+   — 1e-7 m of dust in the saved text, no shape change; the op's own
+   compile does the same). The junction windows still close before a
+   range op runs (hideJunctionWindows precedes the model call — the
+   pre-gray keeps the refused click from reaching it). VERIFIED on
+   the final build with the reviewers' own in-JVM probes: the 0.55
+   and 0.45 m/s fixtures open the window grayed with the crawl
+   sentence (readout not clickable), the badge's two items pre-grayed
+   with it, the button's action invoked directly refuses with the
+   same sentence, document unchanged through undo and Cancel; the
+   2 m/s fixture enables the button, the click posts the belt's
+   sentence and the document is unchanged (before the re-capture it
+   differed by the blown-up bpose until the next rebuild); the
+   three-section window probe: deleting the window's section closes
+   it with "its section was replaced", deleting the last one with
+   "no longer exists". Gates 57 green, the 52-document dump
+   byte-identical to round 3's, winshot / pickprobe unchanged, the
+   two cycling user files still one press (16 / 56 ms).
+
+## D256 (v19.27) — Batch 38: the "~v" slight speed-conflict glyph, the EXPLICIT real anchor (the unresolvable 0.078 m/s file) + "Set Design to Real" always enabled, ride keys live from every tool window (the pv-keys root cause) + save on release, the TYPED MARK (typing the number a box shows sets exactly it), the "Smoothing options…" window + TRANSLATIONAL seam smoothing, Reverse's gray sentences, the handle readout without "sl" — and his answers to the batch-37 open list
+
+User feedback round on batch 37 (2026-10-12): five items from his list,
+the nine open decisions of D255 answered, and two explanations he asked
+for. Method (the standing early-edge-case rule): five READ-ONLY
+investigation reports first (small-items, the conflict bug, pv-keys,
+typed-mark, smooth-options — sites with verbatim anchors, state
+combinations, patch plans, gate checks), then one implementer per
+item, each enumerating its state combinations before coding (the
+-enumeration notes; 41 rows for the smoothing window) and leaving a
+docs note, one lean reviewer per item (the review findings are named
+where they changed the design), and the docs integrated last from the
+notes. Two pure classes are new (uvd.KeyRoute, uvd.TypedMark), two
+gates (uvd.KeyRouteGate, TypedMarkGate) and four in-JVM dev hooks
+(-Dfvd.keyprobe, -Dfvd.typedprobe, -Dfvd.initspeedprobe,
+-Dfvd.smoothprobe); the battery is §11.
+
+1. THE "~v" SLIGHT SPEED-CONFLICT GLYPH (user spec, verbatim: "When the
+   design and real speed are just barely not the same up to two decimal
+   places [what is displayed in initial design speed], add a '~v' to
+   the section settings button to show that there is a slight speed
+   conflict [if speed conflict is below two decimal places, show
+   nothing. If the difference is above two decimal places but below
+   the current speed conflict threshold, show '~v', and if it is above
+   the current speed conflict threshold display the not equal sign + v
+   symbol as it does currently]"). THE RULE is pure (SectionNames,
+   LabelGate 15): speedLevel(gap) of the section's ENTRY gap (D247's
+   entry-only measure — |max(0.1, trueV[i0]) − design v[i0]|) = 0 for
+   NaN or gap ≤ Gestures.INIT_SPEED_SHOW_EPS 0.005 (half the initial
+   design speed box's %.2f quantum — the box's own "two decimals"), 1
+   for gap ≤ Gestures.DRIFT_EPS 0.2 (the historic badge threshold,
+   MOVED HOME from GraphEditor to Gestures; GraphEditor.DRIFT_EPS
+   stays the package alias so nothing else moved), else 2;
+   speedGlyph(gap) = "" / SLIGHT_SPEED_GLYPH " ~v" / SPEED_GLYPH " ≠v".
+   The exact 0.005 and 0.2 are the LOWER levels (≤), matching
+   Gestures.speedDiffers's strict > and the historic gap > DRIFT_EPS
+   bitwise. ORIENT_GLYPH " ≠o" joined the constants (GraphEditor's two
+   literals are gone). THE EDITOR: GraphEditor.driftLevel / driftGlyph
+   / driftGap(p, k) — a bridge hands the helper NaN (never a speed
+   glyph, as sectionDrifted ruled), no compile → NaN;
+   sectionDrifted(p, k) is driftLevel == 2 now, so speedConflictAt
+   (the POV bar's "(d = …)" design-speed suffix — DECIDED to stay at
+   0.2), seamDrifted / pieceEndDrifted (the '+' fork and the Insert
+   dialog's fork row), sectionDriftedSpan and the B-match belts keep
+   the 0.2 threshold untouched. THREE sites moved to the three-state:
+   (1) the badge (driftGlyph + ORIENT_GLYPH; badgeWidth measures
+   "Force ~v" — a strip too narrow shows no badge, the historic rule);
+   (2) the badge menu's speedC = driftLevel ≥ 1 — DECIDED: a "~v" badge
+   DOES open "Resolve conflict: speed" (title unchanged) with exactly
+   the grays ≠v gets (bridgeResolveWhyAt by the bridge's mode,
+   bridgeCrawlWhyAt, MARCH_OWNS_RESOLVE, rangeResolveWhy, the reversed
+   gate): the two ops have no threshold of their own — makeGraphsReal /
+   refreezeSpeed write the exact seam speed, so a slight conflict is as
+   resolvable as a full one; (3) smoothingCausedDrift keys on the
+   three-state (pre-check driftLevel(p, 0) == 0 → false; the
+   zero-window test smcVal = speedLevel(split) == 0) so the D141
+   "shrink the ◇ window" hint and the red band keep agreeing with the
+   drawn glyph (the D247 invariant), now for a smoothing-caused sub-0.2
+   gap too. WHAT HE SEES: on his fixture (conflict.uvd — piece 0 three
+   force sections, piece 1 an all-locked strict follower entering 0.045
+   / 0.077 m/s off its design speeds) piece 1's two badges wear "~v"
+   where they wore nothing (ConflictGate k0-k6 pins the levels after
+   the app's settle recipe: the run head + piece 0's continuations 0,
+   the follower's sections 1, never 2). The init-speed window already
+   lived at 0.005; its predicate measures a DIFFERENT sample than the
+   badge (the settle value vs vDesign, against the span's first
+   in-span sample vs true), so a "~v" section can still hover a
+   no-conflict sentence — the same window-vs-badge disagreement that
+   exists at 0.2 today, documented, seen more often at the fine level;
+   not changed. A VISIBLE CHANGE on existing documents (stated on
+   purpose): a smoothed strict follower already wearing ≠v whose
+   smoothing-suspended residual lies in (0.005, 0.2] used to be classed
+   "caused by smoothing" (the D141 hint + the red band — smcVal = split
+   ≤ 0.2); it is NOT any more (level 1 ≠ 0): the resolve ops are
+   offered and the band stays plain, and only a residual at or under
+   0.005 takes the D141 hint — consistent with the three-state (the
+   window-at-zero would wear "~v") and the badge/hint agreement
+   invariant; after a resolve the leftover smoothing-only gap
+   re-classes as caused, so the ops converge. DEVIATIONS from the
+   investigator's proposal: none — the POV suffix at 0.2 and the
+   submenu opening on "~v" were its two open questions, decided as
+   above. LabelGate 15, ConflictGate k.
+
+2. THE EXPLICIT REAL ANCHOR — Section.vRealAnchored (his "last force
+   section can't resolve its speed conflict" file). THE BUG: the file's
+   piece 1 is a strict follower whose first section enters 0.045 m/s
+   off its design speed — under the badge's 0.2 (no ≠v; §1's "~v" now
+   shows it), so he never resolved it there. Energy conservation
+   carries that offset to the section's end, where it reads 0.078 m/s
+   (13.991 design end vs 13.913 real). "Set Design to Real" on the
+   last section wrote 13.913 — and the very next rebuild wrote 13.991
+   back: Coaster.reconcileChainedSpeeds re-chains every continuation
+   onto the previous section's DESIGN end unless its D237 amplified
+   anchor-recognition gate fires, and that gate needs |vTrue − vIn| ·
+   (vTrue/vMin) > 0.2. A 0.078 m/s resolve could never be recognized,
+   the window saw the bits unchanged, rolled the document back and
+   said "changed nothing — this section follows the section before
+   it". Batch 37 had pinned exactly that as the design answer
+   ("resolve it on the section before", ConflictGate h5) — he did not
+   find the section before, which wears no ≠v. The smoothing was not
+   the cause (the op's suspended read differs from the displayed seam
+   speed by 2.6e-7 m/s; with smoothing 0 every number repeats); the
+   piece's seam tilt is a pure HEADING re-aim (x ≈ 1e-16, z = 0 — NOT
+   an orientation conflict, contrary to the investigation's "≠o"
+   reading; it only means the follower's interior can never be a
+   clean span). THE FIX — D101's anchor made EXPLICIT. Which of design
+   / true a resolved section chases was READ off proximity (the one
+   "deliberate piece of history" the D200 exact reconcile kept). It is
+   a persisted per-section flag now: Section.vRealAnchored() /
+   vRealAnchored(boolean), default false; LaneSection +
+   StraightCurveSection store it beside vPinned, bridges never (pure
+   geometry in Pass D). Coaster.reconcileChainedSpeeds (both passes):
+   a flagged continuation takes vIn := max(0.1, trueV[seam])
+   UNCONDITIONALLY — the D237 proximity gate stays as the FALLBACK for
+   sections nobody resolved, so every existing document settles
+   bitwise as before (ConflictGate h5b pins the unpressed sub-0.2
+   picture). GraphEditor.refreezeSeamSpeed (B / Shift+B): a flagged
+   downstream takes v = vTrue before the gate — B never snaps a
+   resolved section back. SET by Coaster.refreezeSpeedOnly (after its
+   vDesign / vPinned write; the bridged "already there" branch too;
+   the blow-up refusal restores the flag with vWas / pinWas; a RUN
+   HEAD only un-pins and sets nothing — it has no seam), by
+   Coaster.makeGraphsRealBody (the s/c path and the fitted LaneSection
+   it installs — RangeResolveGate's 115 bounds did not move, so the
+   flag ships there too) and by the '+' / Insert "Transition to real"
+   fork (GraphEditor.buildLaneHold + buildScStraight + the addSection
+   chain, keyed on the TRUE arrays being used; a custom speed that
+   PINS the section clears it). CLEARED by a typed design speed: the
+   init-speed window's live write and the node-0 dialog's initial
+   design speed (both pin; a typed speed supersedes the anchor; the
+   pin always wins in the reconcile — its continue precedes the flag).
+   CARRIES by the ENTRY-SEAM RULE — the object that keeps the original
+   entry seam keeps the flag: copySection (Copy run), convertDomain,
+   bakeAxes, convertWholeSection copy it; splitSectionAt → the LEFT
+   half keeps, the right half (its vDesign is the design profile at
+   the cut, the D130 bitwise split) does not; partialConvertSection →
+   the half owning the original entry keeps; mergeSections takes A's;
+   makeSmoothingReal's prevLeft copies, the window section and
+   nextRight stay false; continuation() / reversePiece's fits are
+   fresh (false); the three PIN sites (unstrict, partial bridge
+   convert, whole bridge convert) are untouched. UNDO:
+   FvdDesigner.SecState.realAnchored (last component) — snapshotPieces
+   + applyDocState; redo stays bitwise (without it a redone resolve
+   would snap back); PlacementSnapshot untouched (placement fields
+   only). FILE: the section line's pinned slot (field 6, every kind)
+   is a TRI-STATE — writer pinned ? 1 : anchored ? 2 : 0 on force /
+   geo and sc lines (the bridge line unchanged); reader vPinned(=="1")
+   / vRealAnchored(=="2"). Missing / 0 / 1 load bitwise as today; an
+   OLD build reads 2 as unpinned = the pre-D256 picture (fail-soft —
+   batch-37 answer 8: he does not care about old-build compatibility
+   until the first release). A new trailing field was rejected — three
+   different positions (force/geo 11, sc 6). DRY RUN:
+   Coaster.realEntrySpeed for a continuation (secIdx ≥ 1) returns the
+   settle max(0.1, vReal) — the flagged landing — instead of the
+   copied gate; a piece-first keeps max(0.5, vReal) and
+   firstSectionSettle. The op still writes max(0.5, …) off its
+   smoothing-suspended read; the at-rest EXACT pass corrects the
+   2.6e-7 to the displayed bits in ONE pass (ConflictGate l2b: 1 exact
+   rewrite, then 0), so D255's "after the click + rebuild vDesign ==
+   the real seam speed BITWISE" holds by the reconcile, not by the
+   read. USER-FACING: a section that CONTINUES the one before it, once
+   set to its real speed (Set Design to Real, Convert Real to Design,
+   the Transition-to-real add), KEEPS following its real entry speed
+   after upstream edits, whatever the size of the difference — and on
+   his file the last section's window now takes the click: the box
+   reads 13.91, the grey number matches, a second click says it
+   changed nothing, Ctrl+Z puts 13.99 back. A TRACK PIECE'S FIRST
+   SECTION (one after a strict seam or a bridge — his p1s0, the "~v"
+   follower-first) is the exception: its design speed stays
+   independent by D135 (the reconcile never re-chains a piece-first,
+   so the anchor is INERT there — review finding); set it again after
+   an upstream edit. The section before it keeps its own 0.045 m/s
+   difference (it wears "~v" now) and its shape. Typing a speed into
+   the box ends the following (the section is pinned at the typed
+   value, as before). DEVIATIONS from the investigation: (a) the
+   '+' / Insert fork and makeGraphsReal DO set the flag (its "if
+   adopted" options — decided yes); (b) the fixture's piece 1 is NOT
+   ≠o (the seam tilt is heading-only; the gate asserts a non-identity
+   tilt and reports the verdict as detail); (c) undo / redo through
+   the DocState snapshot is pinned by the in-JVM -Dfvd.initspeedprobe
+   hook (DocState is JavaFX-side), ConflictGate l2f pins the pre-op
+   document's rebuild as the headless twin; (d) DetermGate198 reads a
+   FILE fixture (no in-code one) — the flagged save → load → rebuild
+   is pinned in ConflictGate l4 / h5 instead. ConflictGate 87 (was 58
+   after §1): h5 REWRITTEN to the new verdict + h5b, block l l1-l14e
+   on his conflict.uvd (embedded as FVD_B38) + the review round's
+   l14f-h (the four CONVERT carries: partialConvertSection both sides,
+   convertDomain, bakeAxes, convertWholeSection); DetermGate 6/4/10/7,
+   LoadGate196 7, RangeResolveGate 115, SmoothRealGate, CopyGate 73,
+   MergeGate 23, InsertGate 40, InflSplitGate 22, MultiCoasterGate 15,
+   Phase2Gate 162 green; the hook prints fails=0 (10 checks): the
+   click lands 13.913246110656 bitwise on the displayed real seam
+   speed with the anchor set, a second rebuild and a second click are
+   no-ops, Ctrl+Z restores 13.991003664686 + unflagged and a rebuild
+   keeps it, Ctrl+Shift+Z restores the landed bits + anchor.
+
+3. "SET DESIGN TO REAL" ALWAYS ENABLED (small item e, user verbatim:
+   "actually make 'Set Design to Real' always able to be used/pressed,
+   even if there isn't any speed conflict [never grayed out]"). The
+   init-speed window's button never grays; its reasons became ONE live
+   tooltip of two kinds. HARD — the click REFUSES and posts "Set
+   Design to Real refused — <sentence>" on the stats bar: nothing
+   compiled for the section, a legacy reversed section, a bridged-in
+   first section the train stalls on / crawls off
+   (SectionNames.bridgeCrawlWhy — the model refuses too, and its
+   blow-up belt posts bridgeBlowUpWhy through toRealRefusedWhy), and an
+   open convert preview (CONVERT_BUSY_MSG, as before). SOFT — the click
+   RUNS; the sentence says what it does or why a difference may
+   remain: the ride entry ("… — a click sets nothing."), a run head
+   ("This track piece starts here — …; a click sets nothing."), an
+   OPTIMIZING bridge leading into the piece (SectionNames.
+   bridgeResolveWhy — batch-37 answer 7: the click runs, the bridge
+   re-places the piece after it and the click can need repeating, 3-5
+   measured), a stall, "Seam smoothing opens this speed difference —
+   shrink the ◇ window instead." (k == 0 only — a continuation's
+   settle IS the real seam speed since §2's anchor, so batch 37's
+   "This section follows the section before it, which carries the
+   speed difference — resolve it there." arm is GONE; §7 makes the
+   sentence mode-aware), and the NO-CONFLICT sentence KEYED ON THE
+   STATE (review finding — the anchor is INERT at k == 0, and a
+   flagged section already follows): k ≥ 1 pinned "No speed conflict —
+   the design speed already is the real entry speed; a click un-pins
+   it so it keeps following the real flow.", k ≥ 1 un-pinned + flagged
+   "No speed conflict — this section already follows its real entry
+   speed; a click changes nothing.", k ≥ 1 un-pinned + un-flagged "No
+   speed conflict — the design speed already is the real entry speed;
+   a click makes it keep following the real flow."; k == 0 (a strict
+   follower's / bridged-in piece's first section) pinned "No speed
+   conflict — the design speed already is the real entry speed; a
+   click un-pins it.", un-pinned "No speed conflict — the design speed
+   already is the real entry speed; a click changes nothing — a track
+   piece's first section keeps its own design speed." The D248
+   verbatim tip shows while a conflict the click resolves is the whole
+   story. AFTER THE CLICK: bits + pin + anchor unchanged → the
+   knife-edge rollback (no empty undo step) + "Set Design to Real
+   changed nothing — the design speed already is the real entry
+   speed." (one wording now; at k == 0 a click that moved ONLY the
+   anchor is this knife edge too — the flag is inert on a piece-first
+   and the hover said "changes nothing", review finding); bits equal
+   but the pin cleared → one undo step + at k ≥ 1 "Set Design to Real
+   un-pinned this section — its design speed already is the real entry
+   speed and now follows the real flow." (batch-37 answer 6: a section
+   pinned AT its real speed un-pins with its bits kept), at k == 0
+   "Set Design to Real un-pinned this section — its design speed
+   already is the real entry speed." (no "follows" clause); bits equal
+   and only the anchor set (k ≥ 1) → one undo step + "Set Design to
+   Real changed no speed — the design speed already is the real entry
+   speed, and this section now keeps following it."; bits changed →
+   one undo step and, when a SOFT sentence other than a "No speed
+   conflict…" one still applies (an optimizing bridge, the smoothing),
+   "Set Design to Real — " + that sentence as information — and when
+   the hover had named NO conflict yet the bits moved (a gap under the
+   box's two decimals — a sub-display landing, review note), "Set
+   Design to Real un-pinned this section and landed its design speed
+   exactly on the real entry speed." (the pin cleared) or "Set Design
+   to Real landed the design speed exactly on the real entry speed —
+   the difference sat under the shown decimals." instead of a silent
+   undo step. The grey "real NN.NN" readout is clickable WHENEVER
+   SHOWN (the same Runnable, the same live tooltip); Cancel restores
+   vDesign + vPinned + vRealAnchored (+ v0 for the entry) as one more
+   undo step. The BADGE menu's two resolve items keep their grays (not
+   in the ask). Model unchanged for this item (refreezeSpeedOnly
+   already un-pinned on an equal value and on run heads); the
+   grayHint wrapper around the button is gone — LiveWindow.show takes
+   the Button itself. ConflictGate l11-l13 pin the model states.
+
+4. RIDE KEYS LIVE FROM EVERY TOOL WINDOW — the per-key typing rule
+   (the pv-keys root cause; user verbatim: "It seems that when the
+   convert node density menu is open [the one that appears after
+   clicking the "Convert" button in the Convert window] the viewport
+   isn't able to be moved [at least POV can't be moved, wasd doesn't
+   work in fly, space doesn't switch views, etc.]. Please find the root
+   cause of this and fix this bug for all menus like it."). ROOT CAUSE
+   (code reading + javap of the JavaFX 26 jars; the in-JVM probe
+   reproduces and verifies it): the density preview popup DOES install
+   the ride-key forwarder (v16.2) — the defect was the v19.6 / D235
+   TYPING GUARD in FvdDesigner.forwardViewKey, which returned for ANY
+   focused TextInputControl. The popup is a JavaFX Popup (never
+   OS-focusable; every key enters the MAIN stage and PopupWindow's
+   EventRedirector fires a copy at the popup scene's focus owner
+   before the main Scene sees it), and on the first pulse after show
+   Scene.focusInitial hands its key focus to the first
+   focus-traversable node — the NUMERIC spacing TextField. The guard
+   then bailed for W/S/A/D, Space, the view digits, Shift and Ctrl,
+   and TextInputControlBehavior's catch-all KEY_PRESSED mapping
+   consumed every plain press (the redirector consumes the original
+   when the copy was consumed), so handleKey's convert-UI branch —
+   which keeps POV / digits live — never ran either. D235 was written
+   for the Coaster Options NAME field (Space must type a space) and
+   silently killed the exact window the forwarder was built for; the
+   same guard killed ride keys in every window whose focus owner was a
+   plain TextField (the node editor's LiveNum boxes on open, the
+   Reverse… entry speed, the Add / Insert speed box, the element
+   dialog, the color picker's RGB boxes). CORRECTION to the
+   investigator's report: numeric SPINNERS were never affected, before
+   or after a click — JavaFX's FakeFocusTextField forwards
+   requestFocus() to its parent Spinner (javap-verified; the probe's
+   (f) step shows the Spinner as the focus owner after a click into
+   its editor), so a Spinner editor is never a text-box focus owner
+   and the Track Piece / seam / bridge / init-speed / speed-popup
+   spinners were live all along; the dead class was exactly the bare
+   TextFields. A LATENT COMPANION on the same path: neither
+   non-autohide popup (density preview, speed-control options) set
+   hideOnEscape(false) — JavaFX's default auto-hides a Popup on an
+   unconsumed Esc. In the preview, Esc was dead while the spacing box
+   had focus (the TextField swallowed it) and, after a click on the
+   slider or the "Optimal placement" check, hid the popup WITHOUT
+   clearPv, leaving pvBefore set — the app locked behind
+   CONVERT_BUSY_MSG until an activation change cancelled; the speed
+   popup's auto-focused radio never consumed Esc, so Esc hid it past
+   spHideCtlPopup's null-before-hide teardown (stale spPopup / spHook
+   until the next open). THE FIX, one root-cause change at the one
+   choke every secondary scene uses, plus companions on the same
+   path: (A) THE PREDICATE — uvd.KeyRoute (pure Java):
+   numericTextKey(awtCode, signed) = digits 0x30-0x39, numpad
+   0x60-0x69, period, numpad decimal, Backspace, Delete, the four
+   arrows, Home, End, Enter, Escape, Tab, plus minus / numpad subtract
+   on a SIGNED box; typesInto(press, shortcutDown, textBox,
+   disabledOrReadOnly, numericSigned, code) = a release never types, a
+   shortcut combo never types, a non-text focus owner never types, a
+   disabled or read-only box never types (the D252 rule), a FREE-TEXT
+   box (null sign) takes everything (D235 kept), a numeric box takes
+   exactly the table. FvdDesigner.keyTypes(Scene, KeyEvent) reads the
+   scene's focus owner, its disabled / editable state and its numeric
+   tag and asks KeyRoute. forwardViewKey now reads `if
+   (e.isConsumed()) return; if (source is a Scene && keyTypes(scene,
+   e)) return;` — the isConsumed bail is new too: an earlier
+   same-scene filter that consumed the key (the Shortcuts dialog's
+   binding capture, a window's Esc / Enter filter) keeps the forwarder
+   out, so a Space captured as a binding no longer ALSO toggles POV
+   (same-node filters all run regardless of consumption). handleKey
+   (the MAIN scene) keeps its D235 guard untouched — the user can
+   always click the viewport there. (B) THE NUMERIC TAG —
+   FvdDesigner.NUM_BOX_TAG ("fvd-numeric-box", a Boolean = the sign
+   flag) + ONE factory numericField(TextInputControl, signed) =
+   formatter + tag. Every hand-installed numFormatter /
+   signedNumFormatter routes through it: the density preview's
+   spacing box and the Reverse… entry-speed box (GraphEditor), the
+   node editor's LiveNum (signed), the Add-section / Insert-section
+   speed box (two sites), the element dialog's loop (signed), the
+   color picker's three RGB boxes (Dialogs — the hex box stays free
+   text: A and D are hex digits). numericEditor tags every Spinner
+   editor the same way and NUM_SPINNER_TAG now carries the sign (every
+   reader used containsKey; unchanged). numericBoxSigned(owner) = the
+   box's own tag, else its tagged Spinner's (a belt — see the
+   correction above), else null = free text. A site that is ever
+   missed stays a free-text box = fully guarded, the fail-safe
+   direction. StartPanel has no bare formatter site (its spinners go
+   through typable → numericEditor; its name box is free text by
+   design). (C) NO WINDOW OPENS "TYPING" — FvdDesigner.parkFocus(Scene)
+   = root.requestFocus() right after show (the LiveWindow.settleTyping
+   / winshot precedent — requestFocus needs no focusTraversable, and
+   the first pulse's focus cleanup keeps a non-null owner) in the two
+   windows whose first traversable node is a plain TextField: the
+   density preview and the node editor. From an untouched density
+   preview the view digits switch views (under handleViewDigit's own
+   rule — only while a pane is captured or the mouse is over a view;
+   hovering the popup itself is not "over a view") and W/S/Space
+   ride; Tab or a click enters a box, and a digit typed into a clicked
+   numeric box NEVER switches views (typing wins — decided).
+   Spinner-first windows need no parking (the Spinner node is the
+   owner). (D) ESCAPE IN THE TWO POPUPS — pvPopup.setHideOnEscape(false)
+   + a KEY_PRESSED scene filter: Esc → cancelDensityPreview() (= Cancel;
+   identity-guarded); Enter stays as today (root focused = the Apply
+   default button, box focused = the box's own commit); spPopup.
+   setHideOnEscape(false) + Esc → spHideCtlPopup() (= the ✕, the
+   null-before-hide teardown). The pv popup's two hand-rolled filters
+   (the D247 Ctrl+Z chain step-back and the forwarder pair) are
+   replaced by app.installDocUndoKeys(scene) — its undo branch under
+   convertUiActive is the same logic (chain step-back, else
+   CONVERT_BUSY_MSG), and the forwarder now comes from the one install
+   site. (E) MODAL CONFIRMS — installDocUndoKeys gained a (Scene,
+   boolean viewKeys) overload; the two WINDOW_MODAL confirms — Delete…
+   (FvdDesigner.confirmDeleteRun) and the Resolve-range end picker
+   (GraphEditor) — pass false: undo keys stay (D227), the ride-key
+   forwarder is dropped, so Space presses their focused default button
+   instead of toggling POV (the viewport is blocked while they are
+   modal anyway). Untouched by design: the showAndWait Alerts (unsaved
+   changes, zero-distance bridge), Rename (WINDOW_MODAL free text,
+   auto-focused), the Shortcuts dialog WHILE capturing (its filter
+   owns every key — the isConsumed bail), any focused FREE-TEXT box
+   (Coaster Options name, color hex, wizard name: D235's full
+   swallow), the Coaster menu's ChoiceBox row (Space toggles POV before
+   the menu's own activation, since v18.1) and the switch-coaster
+   prompt (autohide, non-traversable buttons, live by fall-through).
+   USER-FACING: ride and view keys work with ANY tool window open,
+   whatever box has focus — a number box you are typing in keeps
+   exactly the keys it can type (digits, period, minus where allowed,
+   Backspace / Delete, arrows, Enter, Esc, Tab) and lets W/S/A/D,
+   Space, Shift and Ctrl through; a text box you are typing in
+   (coaster name, file name, hex color) keeps everything; the density
+   preview and the node editor open with no box focused (digits switch
+   views until you click or Tab into a box); Esc in the density
+   preview is Cancel; Esc in the speed-control popup closes it like
+   its ✕; Space on the Delete… / Resolve confirm presses the button.
+   DEVIATIONS from the investigator's proposal: (i) its claim that
+   spinner windows go dead after a click into an editor was wrong (the
+   FakeFocusTextField fact) — the tag on spinner editors is a belt,
+   not a fix; (ii) the optional installViewKeys on
+   Viewport3D.showSwitchPrompt was not added (live by fall-through,
+   out of scope); (iii) the gate's optional JavaFX-on-classpath run is
+   folded into KeyRouteGate as a conditional section (e): it SKIPs on
+   the plain battery classpath and pins the 28 KeyCode ints when run
+   with the module path (131 checks there, 103 without). GATES:
+   uvd.KeyRouteGate 103 / 131; the -Dfvd.keyprobe=1 hook
+   (FvdDesigner.keyProbe — synthetic KeyEvents fired at the main
+   scene's focus owner through Event.fireEvent so the Window →
+   EventRedirector → popup path is exercised; GraphEditor exposes
+   probePvPopup / probePvField / probeSpPopup / probeCanvas /
+   probeWholeConvert / probeCreateControl as read-only seams): 45
+   PASS lines, fails=0 (41 before the review round's (e2) — Enter from
+   the parked popup root FIRES APPLY: popup gone, convertUiActive
+   false, undo depth +1 — the Help's "Apply or Enter" claim is pinned,
+   not assumed) — (a) preview open, focus parked on the root, Space
+   toggles POV on / off; (b) fly: W press writes / release clears
+   moveKeys from the preview; (c) 2 while captured leaves fly and
+   enters the Front view; (d) spacing box clicked: a typed 2 edits the
+   text ("1.00" → "2"), fly stays, no ortho, W still rides; (e) Esc
+   cancels — popup null, convertUiActive false; (f) speed popup: a
+   control created with its popup, the Spinner is the focus owner after
+   a click into its editor, Space toggles POV, W rides, Esc closes it
+   through spHideCtlPopup; (g) the node editor opens parked on its
+   root, Space toggles POV; (h) the Coaster Options name box: Space
+   never toggles POV; (i) Shortcuts capture: Space captured, POV
+   untouched, the button shows "Space" again. -Dfvd.winshot re-run:
+   the five window PNGs render, "trackpiece rows identical=true pixels
+   equal=true", povrow fits.
+
+5. SAVE ON RELEASE (small item a, user verbatim: "Make ctrl+s to save
+   happen on release to make it not happen if ctrl+s and then
+   click+drag graph node, etc. [less likely to accidently ctrl+s]").
+   MECHANISM (FvdDesigner only): two fields beside slideKey —
+   savePending (the save binding was pressed and nothing disarmed it)
+   and saveKeyHeld (its main key is still down: OS auto-repeat must
+   neither re-arm nor fire). bindingKey(actionId) = the non-modifier
+   KeyCode of a binding (extracted from matches(), which now calls
+   it). armSave() = `if (saveKeyHeld) return; saveKeyHeld = savePending
+   = true;` replaces the three saveDesign(false) dispatches in
+   handleKey (its start-panel, no-coaster and main branches — their
+   gating untouched: a press inside a drag / slide / gizmo gesture
+   never reaches them, fly and captured POV swallow S as a movement
+   key, the convert-UI branch stays save-dead, a focused text box in
+   the wizard returns first). DISARM: a new main-scene MOUSE_PRESSED
+   filter (savePending = false, beside the KEY filters — it precedes
+   every handler: canvas, viewport, gizmo picker, toolbar, menu bar;
+   saveKeyHeld stays so the repeat that follows the click cannot
+   re-arm) and the stage focus-loss listener (clears BOTH flags — the
+   D200 backstop: a release landing in a tool window or after Alt+Tab
+   never reaches the main filter). FIRE: saveKeyReleased(e), called at
+   the end of the main scene's KEY_RELEASED filter after the
+   gestureHot settle block — the release of the binding's MAIN key
+   (normalizeNumpad(code) == bindingKey("save")) clears both flags
+   and, if it was still armed and no convert preview owns the
+   document, runs saveDesign(false). Both flags clear BEFORE the save
+   runs, so the Save-As chooser a never-saved document opens (a nested
+   loop that swallows the real key release) can never leave the latch
+   stuck. SEMANTICS DECIDED: the release of the binding's MAIN key
+   fires, modifier state at release ignored — releasing Ctrl first
+   then S saves on the S release; releasing S first saves at once; a
+   held Ctrl+S saves ONCE (today: once per OS repeat); a binding
+   without modifiers (F2) presses / releases the same key; the
+   modifier's own release never fires or clears anything. The
+   slide-key case: Ctrl+S at rest never sets slideKey; the node press
+   disarms; mid-drag S repeats take the waived branch and are
+   swallowed by the modifier guard, so after the mouse release nothing
+   re-arms and the S release saves nothing — TESTING 26b holds and his
+   "Ctrl+S then click-drag" saves nothing. Ctrl+S armed then Ctrl+Z
+   before the S release: undo fires at its press, the release saves
+   the undone document (both were asked for). Untouched: File > Save /
+   Save As (menu items call saveDesign directly), "export" (Ctrl+E)
+   stays a press action, Ctrl+S inside a LiveWindow / popup scene does
+   nothing (as today — no save dispatch there). USER-FACING: Ctrl+S
+   saves when you RELEASE the key; press it and start a drag, a click
+   or any mouse gesture instead and nothing saves; holding it saves
+   once; the title's * clears on the release. GATES: the keyprobe
+   hook's five drills through the saveDesign test seam (keyProbeOn
+   counts and returns before the chooser; inert without the property):
+   S1 one save per Ctrl+S press + release, none at the press (0 → 0 →
+   1); S2 30 synthetic auto-repeat presses then one release save once
+   (1 → 1 → 2); S3 Ctrl+S then a canvas press / drag / release (+ a
+   repeat after the click) then the key release saves nothing (2 →
+   2); S4 Ctrl released first: nothing at the Ctrl release, one save
+   at the S release (2 → 2 → 3); S5 a modifier-less binding (F2)
+   saves once, on its release (3 → 3 → 4).
+
+6. THE TYPED MARK — typing or pasting the number a box already shows
+   sets EXACTLY that number (batch-37 answer 5, his verbatim
+   acceptance of the D255 §10 proposal; closes D255 §10, supersedes
+   the consequence sentence of D254 §8 and of the D254-review
+   BlankSafe note — "typing exactly the displayed text … is a no-op"
+   is no longer true). WHY IT WAS A NO-OP: the only evidence of
+   "typed" every numeric box kept was its TEXT. isUntouchedEditor
+   (D247), typing() (D254) and BlankSafeConverter.fromString's
+   short-circuit (D254 review) all tested text == the converter's
+   rendering of the current value — and a box showing the "#.##"
+   rendering of a value with more digits (12.35 over a ring-dragged
+   12.3456) cannot tell "retyped 12.35" from "never touched".
+   Decompiling javafx-controls 26 pinned the facts the fix rides on
+   (gates/probes/typed-mark/FxOrderProbe, re-run this batch against
+   the current jars — every line identical): the Spinner's own value →
+   editor render runs BEFORE any listener on spinner.valueProperty()
+   (wrapper listeners first); an equal setValue / setText fires
+   nothing; commitValue parses the editor text through the factory
+   converter; increment commits the editor first; a converter swap
+   re-renders first; an EQUAL setText resets the caret to 0;
+   commitValue('-') THROWS out of the default converter; and — the key
+   one — a paste of the IDENTICAL text over a selection produces NO
+   text event at all (TextInputControl.paste = Clipboard.getString →
+   replaceSelection; isUndoable() is equally blind, UndoableProbe [a]),
+   while typing the same digits char by char fires two. THE MECHANISM
+   — uvd.TypedMark (pure, no JavaFX): one flag per numeric editor,
+   kept in the editor's properties (FvdDesigner.markOf). SET by real
+   input: any editor-text ChangeListener event outside a program-write
+   bracket, or the PASTE PRE-MARK — a KEY_PRESSED filter on the editor
+   for EXACTLY the chords Shortcut+V / Shift+Insert / the bare Paste
+   key (review fix: TextInputControlBehavior's bindings are
+   KeyBinding(V).shortcut() / KeyBinding(INSERT).shift(), whose
+   unmentioned modifiers default to FALSE and KeyBinding.
+   getSpecificity returns 0 with one down — Ctrl+Shift+V, Ctrl+Alt+V,
+   Ctrl+Shift+Insert or a modified Paste key paste NOTHING, so they
+   never pre-mark; the first build matched them and the next commit of
+   the shown "#.##" text would have been the D247 phantom re-opened by
+   a chord) that reproduces the result (text[0, selStart] + the clip
+   with control characters stripped like TextInputControl's
+   filterInput + text[selEnd, ]) and marks iff the box's own regex
+   (TypedMark.SIGNED_RX / UNSIGNED_RX — the formatters read the same
+   constants now) accepts it, so a rejected clip never marks. CLEARED
+   by every program write: the value ChangeListener registered in
+   numericEditor (it runs AFTER the Spinner's render and BEFORE every
+   site's own listener, so the render's transient mark is gone before
+   wireDocSpinner / seamEdit / apply run), a listener on the factory's
+   converterProperty (re-hooked on a valueFactory swap — fricRoll /
+   fricAir and the wizard's sMu / sK install their fixed-decimal
+   converter AFTER typable), the DISABLE belt (a box disabled
+   mid-event re-renders the model and clears — the D252 class),
+   commitTyped and the Cancel discard. The app's own four
+   editor.setText sites (commitTyped's blank rule ×2, its catch path —
+   which renders through the converter now, not String.valueOf —, the
+   discard) are bracketed through progSet. untouched := !typed && text
+   == rendering (TypedMark.untouched) is the ONE predicate
+   isUntouchedEditor, typing() and BlankSafeConverter.fromString share
+   — the three readers changed by one line each. BlankSafeConverter
+   takes the Spinner and NEVER THROWS any more (try / catch around
+   base.fromString, LOAD-BEARING: a lone '-' used to throw out of
+   commitValue, and Spinner's own focus-loss listener then ran
+   cancelEdit() — the one rendering write nothing can bracket, which
+   would have re-opened the D247 phantom on a marked box). commitTyped
+   ends with canonical text (bracketed, the caret kept at the end
+   while the editor is focused — only the in-place Enter routes
+   outside the LiveWindows can see it) and a clear mark, so the
+   same-value commit ('5.00' typed over 5.0 — no value event) leaves
+   nothing behind. An ACTION handler on the editor routes Enter
+   OUTSIDE the LiveWindows (the Coaster menu, the speed popup,
+   Snapping / G-stops / Export / Insert) through commitTyped — it runs
+   before the Spinner's own setOnAction commit, and the order is
+   irrelevant: the second commit sees untouched text. discard clears
+   the mark ALWAYS (the shown digits retyped then Esc = equal text + a
+   set mark; the clear is what makes the hide-time commit a no-op).
+   The init-speed editor's focus-loss re-seed skips a box still marked
+   (it can run before the Spinner's commit; the commit's value change
+   clears the mark and the model hook re-seeds). ONE COLLATERAL: the
+   bridge window rows were the only ROUNDED mirror — setIfOff stored
+   Math.round(v·100)/100 — so a typed-equal commit there parsed to the
+   very value already stored and no listener could fire. It stores
+   the EXACT model value now (the eps band kept, so the display
+   behaves as before; a held axis is a value the march never moves),
+   and the yaw site adds + 0.0 against "-0". USER-FACING: typing or
+   pasting the number a box already shows (char by char, select-all +
+   type, delete-and-retype, Ctrl+V / Shift+Insert of the identical
+   string) sets exactly that number — one undo step, dirty, a re-solve
+   where the number feeds the track; a box you only clicked into still
+   changes nothing (D247 / D254 kept — the in-JVM probe keeps 12.3456
+   bitwise through click-in / click-out, Esc after typing, Esc after
+   the typed-identical text, and a lone '-' then a click away). The
+   init-speed window's re-typed-equal value on an unpinned section
+   PINS again (D242's rule, which D254 had silently dropped for
+   equal-rendering text; equal + already pinned stays a no-op).
+   DECIDED, documented: (a) a right-click context-menu Paste of the
+   IDENTICAL text stays a no-op — JavaFX offers no hook short of
+   replacing the editor's context menu (accepted gap, answer 5); (b)
+   "typed something then deleted back to the shown digits" commits
+   the shown number exactly (typed = intent); (c) an undo that
+   restores a value EQUAL to the spinner's current value keeps a
+   pending mark, so the later commit lands the typed number; (d) the
+   node editor's LiveNum boxes are untouched (text-driven, they apply
+   at the last keystroke; an identical paste shares the gap).
+   DEVIATIONS from the investigation: none in substance. The
+   DRAG_DROPPED pre-mark is added as proposed but VERIFIED after the
+   event — JavaFX 26 has NO text-drop handler on a TextField (zero
+   DragEvent references in TextInputControl / TextField / both skins /
+   both behaviors; without a DRAG_OVER acceptance no DRAG_DROPPED is
+   ever dispatched to the editor), so the filter is a belt for a
+   toolkit that gains one: a runLater after the event marks only when
+   the drop changed nothing visibly AND the selection-model result is
+   that same text (TypedMark.dropMarks) — inert on JavaFX 26 by
+   construction. The paste model lives on TypedMark as pure statics
+   (pasteResult / pasteMarks / stripControl) so the gate pins it
+   without a clipboard (the in-JVM probe deliberately never touches
+   the user's system clipboard). GATES: TypedMarkGate 42 (the
+   prototype's 29 checks verbatim as sections A-G + section H, 13
+   checks, for the paste / drop model); -Dfvd.typedprobe=1 36 PASS,
+   fails=0; FxOrderProbe + UndoableProbe re-run against the JavaFX 26
+   jars, every line as recorded (gates/probes/typed-mark, own README
+   — re-run on any JavaFX upgrade); no compile / reconcile / IO path
+   reads the mark, the only model-facing delta is setIfOff's exact
+   value in a UI sync.
+
+7. "SMOOTHING OPTIONS…" — the strict-seam smoothing window +
+   TRANSLATIONAL seam smoothing. (The TRANSLATIONAL mode — the check,
+   the field, the `psmooth` line, the compiler's closure switch and
+   the mode-aware sentences — was REMOVED in D257 §3 on his request;
+   the window, its length box and its two buttons stay.) USER SPEC
+   (verbatim intent): in the
+   strict seam's dropdown, while smoothing is on, a "Smoothing
+   options…" window carrying the smoothing length as a graph-editor
+   style number box; a check "Allow translational movement of later
+   sections" toggling between today's strict-seam smoothing (no
+   translation of the track after the seam) and the s/c-element kind
+   of smoothing (the downstream translates — smoother, but a speed
+   conflict can open; the later track keeps its shape and only
+   translates); the "Make smoothing real…" and "Disable smoothing"
+   items as buttons, removed from the menu; with no smoothing only
+   "Enable smoothing" remains in the menu, with smoothing only
+   "Smoothing options…"; converts work as before ("convert as if no
+   smoothing, then add existing smoothing"). WHAT THE TWO MODES ARE:
+   the strict-seam smoothing is one pass, TrackCompiler.
+   smoothStrictSeam — a quintic SLERP of the two sides' frames over
+   the ±len/2 arc window, positions re-marched along the blended
+   tangents at the original per-step arc, and, since v17.3 D140, a
+   POSITION CLOSURE (sin² corrective humps capped 0.2 rad + a
+   hump-weighted arc stretch capped ±5 %) that bends the window back
+   onto its original end so the remainder's translation all but
+   vanishes. The closure is the ONLY position-restoring step; the
+   window-end miss dp was already returned and applied to the
+   follower's remainder (later sections shiftLine'd, a trailing
+   bridge's solvedEntry shifted, the span exit re-stamped, later
+   followers entering at the shifted exit) for the closure's residual.
+   The s/c reference he names (ScIntegrator.Profile.blend) is exactly
+   the blend WITHOUT closure. (removed in D257) TRANSLATIONAL mode is
+   therefore one boolean in the compiler: smoothStrictSeam(all, spans,
+   len, hy,
+   boolean closure) — closure = true runs the D140 block (the 4-arg
+   overload delegates with true: every historic caller bitwise);
+   closure = false skips it, so the window is the pure blend marched
+   at the ORIGINAL per-step arc (the s fields equal the drawn arc
+   exactly — no stretch, so D140's "ties / combs sit a hair wide"
+   corner does not exist in this mode; the interior felt is the
+   blend's own curvature by the κ identity) and the honest miss dp
+   translates the remainder through the SAME postShift machinery.
+   Nothing else in the compiler changed; the call site passes
+   !piece.sSmoothTranslate. THE NUMBERS HE MUST BE TOLD (the design
+   probe on the frozen snapshot + SmoothRealGate d2): the visible
+   difference between the two modes is SMALL on realistic seams. The
+   pure blend's miss — what the translational mode moves the rest of
+   the track by — is 0.2 mm on his conflict.uvd seam (3.0146 m
+   window, held pitch −39.57°), 3.1 mm at 10 m on the same seam,
+   6.9 mm on the gate's 6°-kink fixture at 8 m and 36.9 mm at 20 m;
+   today's closure removes a bend of only 0.01°-0.21° and a stretch of
+   ≤ 0.11 % from those windows. The speed difference a translation
+   opens downstream is the constant energy offset −2g·dp.y ≈ −0.0001 /
+   −0.0010 / +0.0009 / +0.0022 m/s on those four cases — two orders
+   under the 0.2 m/s ≠v badge, a hair-width true-stroke split; it
+   becomes a badge-level conflict only on violent kinks with large
+   windows (D140's 147° probe moved 0.69 m). The entry split the
+   follower already shows is the seam's own and equal in both modes
+   (his file −0.045 m/s; the gate fixture 7.962 vs 7.963 m/s).
+   (removed in D257) THE MODEL: TrackPiece.sSmoothTranslate (default
+   false = every old file
+   bitwise), beside sSmoothLen; INERT while sSmoothLen ≤ 0.01. Carried
+   by TrackPiece.copy, PlacementSnapshot (PieceRec.sTrans — record /
+   differs / restore, so the three placement windows' Cancel reverts a
+   flip exactly as they revert a diamond drag), FvdDesigner.PieceState
+   (sSmoothTrans after sSmooth — Ctrl+Z after a flip returns the
+   mode). "Disable smoothing" KEEPS the flag (disable → enable
+   remembers the mode); "Enable smoothing (10 m)" writes the length
+   only; makeSmoothingReal resets it beside B.sSmoothLen = 0 on the
+   fresh window-end seam. mirrorPieceCore / mirrorRun leave it
+   (mirror-invariant like the length); moveRun / Switch Coaster move
+   objects. compileForFit and withSeamsSuspended stash and restore the
+   LENGTH only — the flag is never written by them (SmoothRealGate
+   d9). (removed in D257) IO: a new fail-soft line `psmooth 0|1` is
+   written for EVERY
+   piece right after the porient line (the piece line's fields 19-23
+   are conditional, so a 24th field is ambiguous — the porient
+   precedent); the loader's case "psmooth" reads field 1 when present.
+   Missing line, a truncated psmooth, or an unknown value = false —
+   every pre-D256 file compiles bitwise (SmoothRealGate d6 reloads a
+   file with the line stripped onto the recorded closure checksum);
+   the canonical save → load → save round trip is byte-identical; old
+   readers ignore the unknown line (D50). MAKE-REAL AND CONVERTS: NO
+   mechanism change. makeSmoothingReal compiles WITH smoothing (the
+   blend IS the target), reads the window-end sample at arc sB — which
+   in translational mode is exactly the translated window-end sample
+   (the blend's last point) — and re-anchors the follower there, so
+   the translation is carried into the real geometry to the fit
+   residual (d5: B.x/y/z == the sharp cut + dp to 0.0 m, whole-track
+   hold 0.3 mm, the tail 0.1 mm). Every lane-refit / resolve op keeps
+   reading compileForFit with EVERY seam suspended — his own spec:
+   the refit fits the sharp shape and the still-active blend
+   re-applies on top with ≈ the same dp. CONSEQUENCE (unchanged by
+   decision, told to him): the speed-resolve ops (refreezeSpeedOnly /
+   makeGraphsReal / firstSectionSettle) anchor on the UNSMOOTHED seam;
+   under translation the displayed compile differs from that read by
+   the ~1e-3 m/s energy offset — inside the class D255 already
+   documents for smoothed seams. A conflict that exists only because
+   of the window keeps the D141 gray, now with a MODE-AWARE sentence
+   (shrinking the window shrinks but never zeroes a translation;
+   making it real or switching the mode back does). THE UI: (a) the
+   seam menu — with sSmoothLen ≤ 0.01 the only smoothing item is
+   "Enable smoothing (10 m)" (grayed on an s/c edge with the D232
+   sentence, as before); with smoothing on, the only one is
+   "Smoothing options…" — the "Disable smoothing" and "Make smoothing
+   real…" items LEFT the menu. Order: Strict Seam n… / Insert
+   section… / Enable | Smoothing options… / Un-strict seam / Split
+   track at seam. The diamond's clean click still opens the menu, the
+   diamond / band drags are untouched and the window's box follows
+   them live. (b) THE WINDOW, GraphEditor.showSmoothingOptions(
+   followerIdx): an owned LiveWindow titled SectionNames.
+   smoothWindowTitle = "Smoothing Options (Strict Seam n)" (n = the
+   follower's own junction, live-renumbered), anchored like the strict
+   seam window (the follower's first strip x, else the junction
+   button). Rows: "Smoothing length (m)" with a GraphEditor.LiveNum
+   box — the node editor's box: every parseable text change applies
+   at once (f.sSmoothLen = v; markDirty; rebuildTrack; redraw, undo
+   coalesced per 0.8 s burst via the liveUndo recipe), ▲/▼, wheel,
+   Shift tenths, Ctrl snaps to the diamond's own step
+   (app.settings.snapLen(), Snapping > element length, default 1 m),
+   hold-repeat, z3 three-decimal display; range [0.5, SEAM_SMOOTH_MAX
+   100] — a typed 0 CLAMPS to 0.5 and never disables (Disable is the
+   off switch; the drag's snap-shut threshold is the same 0.5); the
+   box re-seeds from the model on focus loss so a clamped entry shows
+   what the model took; the live hook never overwrites a focused box
+   (an undo restore does). (removed in D257) Then the CheckBox "Allow
+   translational
+   movement of later sections" (tooltip: "Unchecked: the window bends
+   and stretches to land back on its original end — nothing after the
+   seam moves (the strict-seam smoothing as before). Checked: a pure
+   blend like a straight/curve transition — the track after the seam
+   keeps its shape but translates by the window's miss; a speed
+   difference can open."), one undo step per flip. Then the buttons
+   "Make smoothing real…" — grayHint with the FULL
+   makeSmoothingRealWhy sentence, computed per displayed at-rest
+   compile and CACHED on app.lastSamples identity (+ the length and
+   mode as belts), the last answer kept while app.gestureHot (the
+   smcGen / fssGen pattern — the dry run is a whole compile; diamond
+   drags with the window open stay fast); click = hide the window,
+   then makeSmoothingRealPreview (the menu item's exact behaviour) —
+   and "Disable smoothing" = hide the window FIRST (null-before-hide:
+   the seam stops smoothing, so the window's own hook would otherwise
+   tear it down with a reason), then the D141 toggle's exact write
+   (pushUndo, length := 0, dirty, rebuild, redraw), the flag kept.
+   Footer Confirm / Enter / X keep; Cancel / Esc = app.cancelRestore
+   of the open-time PlacementSnapshot (length AND mode revert as one
+   more undo step; the seam window's recipe incl. rebuild +
+   syncPlacementSpinners + updateBridgeControls + refreshGizmos),
+   CANCEL_STALE_MSG on a coaster / generation mismatch. No box takes
+   focus on open (FvdDesigner.parkFocus — §4's node-editor rule; W/S
+   keep riding). (c) LIFECYCLE = the seam window's: fields smoothWin /
+   smoothWinCoaster / smoothWinPiece / smoothWinObj, the live supplier
+   by index on the open-time coaster, every handler identity-guarded;
+   smoothLive(win, idx) = win is the live window AND the coaster is
+   active AND idx in range AND followsPrev AND the piece at idx IS the
+   object the window opened on (re-based on every document generation
+   the hook has not seen — the init-speed window's rule — and on every
+   undo restore through the docRestoreHooks force twin, which also
+   re-captures the Cancel record) AND sSmoothLen > 0.01 — the length
+   test DEFERRED while app.gestureHot, so a diamond drag through zero
+   and back keeps the window and the release's at-rest rebuild tears
+   it down if the window is still off; any failure tears the window
+   down with the stats reason "The smoothing options window closed —
+   its seam no longer smooths." (SectionNames.SMOOTH_WINDOW_CLOSED).
+   Registered as a model hook (smoothHook) and a docRestoreHooks twin
+   (smoothRestoreHook); setOnHidden routes to the same teardown;
+   hideJunctionWindows hides it (every index-shifting op's pre-hide —
+   Delete…, Connect, lock-Insert, Make seam strict, attach, Switch
+   Coaster, Un-strict), and the three bare hideSeamPopup sites
+   (split-at-seam, attachThroughBridge, the winshot hook) call
+   hideSmoothingWindow too; every write refuses under
+   app.convertBusy() (the box reverts muted, the check reverts,
+   Disable / Cancel refuse, Make real grays with CONVERT_BUSY_MSG —
+   the F3 transaction guard); LiveWindow.show installs the global
+   undo + ride keys. (d) (removed in D257) THE D141 SENTENCES are
+   MODE-AWARE through
+   GraphEditor.smoothingTranslatesInto(p) (the nearest smoothing
+   strict seam at or upstream of p in its run — for the badge's k == 0
+   line that is p's own seam; A BRIDGE ENDS THE TRANSLATION'S REACH
+   since the review round: the walk returns false at a bridged-in
+   piece, p itself included — the bridge re-solves from the shifted
+   exit to its target's OWN placement, so the sharp and the
+   translated compiles reach the target at the same height and the
+   −2g·dp.y energy offset closes at its entry; a seam before the
+   bridge cannot have opened a speed difference behind it, and the
+   init-speed window's k > 0 sentence no longer blames a translating
+   seam upstream of a bridge): the badge's grayed line =
+   SectionNames.smoothingCausedWhy(translate) — closure: "Speed
+   conflict caused by seam smoothing — shrink the ◇ window instead"
+   (verbatim), translational: "Speed conflict caused by the
+   translating seam smoothing — make the smoothing real (Smoothing
+   options…) or switch it back to anchored."; the initial design
+   speed window's k == 0 soft sentence = SectionNames.initSmoothingWhy
+   — closure: "Seam smoothing opens this speed difference — shrink the
+   ◇ window instead." (verbatim), translational: "The translating seam
+   smoothing opens this speed difference — make the smoothing real
+   (Smoothing options…) or switch it back to anchored." The red band
+   and smoothingCausedDrift (incl. §1's three-state driftLevel read)
+   are unchanged and tint in both modes — the conflict IS the
+   window's. (e) DEV HOOK -Dfvd.smoothprobe=<file.uvd>
+   (FvdDesigner.smoothProbe, in-JVM, no Robot): opens the file, the
+   window on piece 1, checks title / box text / check / focus, types 5
+   and 0 (clamp 0.5, window stays), flips the check (flag set,
+   rebuilt, the tail translated by ONE constant vector: |dp| 0.5 mm on
+   conflict.uvd at 5 m, variation 1.8e-15), Cancel (length bitwise +
+   mode restored, one more undo step), undo / redo with the window
+   alive (the check resyncs; Cancel after a restore reverts to the
+   state the restore left — flag kept, no undo step), Disable (closed,
+   length 0, flag KEPT), a model re-enable (the remembered check +
+   "10.000"), a model zero + rebuild (teardown with the reason),
+   hideJunctionWindows, "Make smoothing real…" (closes the window,
+   opens the density preview; its Cancel restores the seam).
+   DEVIATIONS from the investigator's proposal: (1) the initial-speed
+   window's translational sentence keeps that site's own subject ("The
+   translating seam smoothing opens this speed difference — …")
+   instead of the badge's "Speed conflict caused by …" sentence — the
+   two sites have always worded their closure sentences differently
+   and each keeps its form (four constants + two choosers in
+   SectionNames, all LabelGate-pinned): the proposal's "both in
+   SectionNames" is honored, its single shared sentence is not; (2)
+   the sentence chooser reads the nearest smoothing strict seam at or
+   upstream of the piece (smoothingTranslatesInto) rather than the
+   piece's own flag — identical for the badge line, and the only
+   honest answer for the initial-speed window on a k > 0 section
+   behind a translating seam; (3) the length box re-seeds its text
+   from the model on focus loss (the init-speed window's rule) —
+   beyond the node editor's put rule — so a typed 0 reads 0.5 once
+   focus leaves; (4) the dev hook is an addition (the standing in-JVM
+   probe rule); (5) gate d2 pins dp as EQUAL (0.0 m) to the gate's own
+   re-marched pure blend plus a magnitude band (8 m 6.5-7.3 mm, 20 m
+   35-39 mm) rather than "within 1e-9 of the probe's printed value"
+   (printed to 4 decimals only). EDGE DECISIONS (the enumeration, 41
+   rows): a window too tight to engage behaves identically in both
+   modes (no blend, no shift; Make real grays "too small to
+   convert"); the flag is inert while off; translations compound down
+   follower-of-follower chains and shift a trailing bridge's captured
+   entry (an optimize-mode bridge re-marches at rest — the same path a
+   diamond drag takes); Disable / snap-shut / Un-strict / Split at
+   seam move the remainder back by dp (mm-cm, visible unlike the
+   closure's 1e-6) and detachStrictSeam bakes the follow-contract
+   pose = the sharp junction (correct); converts of the seam sections
+   fit the sharp shape and re-blend; the follower's k > 0 sections
+   and every downstream piece carry the constant −2g·dp.y as a
+   true-stroke split; an old file with smoothing on an s/c edge still
+   gets "Smoothing options…" (box + check + Disable work, Make real
+   grays with the s/c sentence). GATES: SmoothRealGate 77 (was 15:
+   section d — d1 the recorded closure checksums 28808918c0612fbe /
+   0fc8182da8f4a418 over 1601 samples, d2 locality + dp == the pure
+   blend's miss (6.9 mm at 8 m, 36.9 mm at 20 m, the third strict
+   piece and a trailing bridge's entry shifted by it), d3 arc-exact +
+   no humps bitwise, d4 trueV² == sharp − 2g·dp.y to 2.9e-12, d5
+   make-real under translation, d6 the psmooth line's round trip /
+   missing / truncated / unknown, d7 PlacementSnapshot + copy, d8 the
+   entry split's level equal in both modes, d9 withSeamsSuspended),
+   LabelGate section 17 (21 checks: the window's strings, the
+   mode-aware D141 sentences at both sites + choosers,
+   smoothWindowTitle on a plain seam / past a bridge / run head / out
+   of range); Phase3Gate, uvd.SeamShapeGate 31, DetermGate 6/4/10/7,
+   LoadGate196 7, CopyGate 73, MirrorGate 100, InsertGate 40,
+   ReanchorGate 3, ConflictGate, RangeResolveGate 115, MultiCoasterGate
+   15 green; the clean-span dumps (gates/probes/cleanspan-2026-09-30,
+   OLD = this tree before the change, NEW = after, both off frozen
+   class copies) BYTE-IDENTICAL, compare3.py "documents 54 | geometry
+   or vDesign moved: 0"; -Dfvd.smoothprobe fails=0 (34 checks).
+
+8. SMALL ITEMS. (c) THE HANDLE READOUT loses the word "sl" (user:
+   "Remove 'sl' from the handle readouts"): GraphEditor's one format
+   string (the drag readout in white and the selected node's knob
+   hover in grey share it) is "L=%.2f%s  %.2f %s" now, so a readout
+   reads "L=0.33 cubic  1.23 g/s" (or "L=0.33  1.23 g/s" without a
+   Ctrl ease preset): the length keeps its "L=" and the preset name
+   keeps its slot right after it (D255 §8), the SLOPE NUMBER and its
+   UNIT stay — "g/s", "g/m", "°/s/s", "°/m/s", "m/s/s" per surface,
+   the unit already names the number as a slope — only the redundant
+   "sl" token is gone. Read as "drop the word, keep the number": the
+   slope readout itself was his own D254 ask and D255 §8 set its form
+   a batch ago; dropping the whole slope would have reversed that.
+   Nothing else in the call changed; no gate pins the string (none
+   did). Supersedes D255 §8's "L=0.33 [ease]  sl 1.23 g/s" form.
+   (f) REVERSE'S GRAY SENTENCES — one chooser, five full sentences
+   (batch-37 answer 2: keep the gray; when the run ALSO has a speed
+   control the sentence mentions both). FvdDesigner's ad-hoc chain
+   (REVERSE_MULTI_WHY / "Delete or convert the bridge first." /
+   "Remove the speed controls first.") became the pure,
+   LabelGate-pinned SectionNames.reverseWhy(multi, orphanTail,
+   controls) (null = allowed; the busy / no-piece reasons still come
+   first in the shell): precedence multi → orphanTail → controls, with
+   speed controls APPENDED to the first two sentences instead of
+   hidden behind them — REVERSE_MULTI_WHY unchanged ("Reverse works on
+   a track piece without strict seams or bridges — un-strict its seams
+   and convert its bridges first."), REVERSE_MULTI_CONTROLS_WHY
+   "Reverse works on a track piece without strict seams, bridges, or
+   speed controls — un-strict its seams, convert its bridges and
+   remove its speed controls first." (his wording completed),
+   REVERSE_BRIDGE_WHY "Reverse works on a track piece without bridges
+   — delete or convert its bridge first.", REVERSE_BRIDGE_CONTROLS_WHY
+   "Reverse works on a track piece without bridges or speed controls —
+   delete or convert its bridge and remove its speed controls first.",
+   REVERSE_CONTROLS_WHY "Reverse works on a track piece without speed
+   controls — remove its speed controls first."; a multi-piece run
+   whose tail is an orphan bridge takes the multi sentence ("bridges"
+   covers it). The stats-bar belt on a racing click keeps "Reverse
+   refused — " + sentenceTail(revWhy) and reads "Reverse refused —
+   reverse works on …" in every case; GraphEditor.reverseActivePiece's
+   own two belts (a bridge section / a section with controls, reached
+   from the keyboard path) post the SAME sentences through a local
+   refusalTail (the model's "a lift / brake on the mirrored flow is
+   ill-defined" explanation moved into the code comment). LabelGate
+   16 pins the four new constants and all eight (multi, orphanTail,
+   controls) combinations. DEVIATIONS: none (the orphan-tail pair was
+   the report's proposal; the decision fixed the five sentences
+   verbatim).
+
+9. BATCH-37 OPEN DECISIONS, HIS ANSWERS (2026-10-12; the D255 §12
+   "kept as decisions for his eye" list and the batch summary's nine
+   questions). (1) SpeedControl.snapCore's hold knife edge — he asked
+   for the explanation; NO change (RESOLVED in D257 §5: he then asked
+   for the one-line fix). snapCore decides "the step crossed
+   the target" by the sign of (vB − vt)(vA − vt); after a snap the
+   recorded speed sits at the target ± one rounding, so on the NEXT
+   step the sign test is a coin flip on that rounding — the hold
+   either re-engages or lets the step run free. A control stronger
+   than the slope it holds against only leaks one- to three-sample
+   dips (0.03 m/s); a control WEAKER than the slope (a 0.3 g trim
+   brake on a steep drop, a complex graph that coasts) never regains
+   a lost hold — up to 1 m/s for the rest of the ride; the design
+   solve and the real march flip their OWN coins, so inside conflicted
+   / tilted / blended stretches they can disagree by that much. The
+   one-line fix (treat |vB − vt| ≤ EPS as at the target) changes the
+   DESIGN solve: on his main test coaster the far end would move
+   1.4 km (a slow crest amplifies), "B Shortcut not working" 1.5 mm.
+   Standing rule unchanged: never change it without him. (2)
+   Whole-run Reverse: KEEP THE GRAY; when the run also has speed
+   controls the sentence must mention both — §8 (f). (3) Anchor x/y/z
+   carrying what lies after a bridge: behaves as it does today (no
+   change). (4) Un-revealed white junction balls below ground drawn
+   behind the floor: INTENDED, confirmed. (5) "Typing exactly the
+   number a box already displays does nothing": IMPLEMENT the
+   proposal — any typed / pasted text directly from the user results
+   in that value exactly — §6; accepted gaps: the right-click
+   context-menu Paste of the identical text stays a no-op,
+   typed-then-deleted-back-to-the-shown-digits commits the shown
+   number. (6) A pinned section equal to the real speed could not be
+   un-pinned from the init-speed window (button grayed "no conflict")
+   — he asked what a pinned section is: a section whose design speed
+   the user set by hand (the init-speed box or a custom speed in the
+   Add dialog), so the reconcile never overwrites it; "Set Design to
+   Real" is the un-pin. He confirmed the related intent: the FIRST
+   section of a track piece (a run head) cannot have a speed conflict
+   created — correct, a run head's real entry IS its design speed.
+   RESOLVED by §3's "always enabled" rule: a click on an equal value
+   un-pins (bits kept) and posts "Set Design to Real un-pinned this
+   section — …". (7) "Set Design to Real" grayed behind an OPTIMIZING
+   bridge — he asked for more detail: the bridge re-places its target
+   piece after every resolution, so each click moves the piece —
+   batch 37 measured 3-5 clicks and up to 19 m of target travel before
+   it settles; the badge's two resolve items keep that gray. RESOLVED
+   for the init-speed window by §3: the click runs, the bridge
+   re-places the piece, the stats bar says why the conflict can reopen
+   and that another click converges. (8) Old files re-settling once on
+   first open (the 4.6 µm case): he does not care about changes to
+   past files until the first release — so §2 persists the new
+   per-section anchor as a tri-state in the section line's pinned
+   slot ("2") rather than a new field. (9) BRIDGE_CRAWL_SPEED 1 m/s and
+   the blow-up belt 3× + 30 m: accepted as judgment calls; he will say
+   if a legitimate case is refused.
+
+10. THE EXPLANATIONS HE ASKED FOR. (a) "Set Design to Real on a
+   non-first detached piece wrote the previous piece's end speed
+   instead of its own" (batch 37, D255 §3). Every piece in the list
+   has an index, and a "run" is a chain of pieces joined by strict
+   seams or bridges. A DETACHED piece (one that starts a new run — a
+   run head) has no upstream track at all: the train is placed on it
+   at its own design speed, so its real entry speed IS its design
+   speed and "Set Design to Real" has nothing to write. Before batch
+   37 the op found "the previous track" by LIST INDEX (piece p−1's
+   last sample) instead of by RUN TOPOLOGY: for a detached piece at
+   index ≥ 1 it therefore read the end speed of whatever piece
+   happened to precede it in the list — an unrelated run — and wrote
+   that number into the detached piece's first section as if the
+   train arrived from there. The fix made the op ask
+   Coaster.hasUpstream(p, k) (k > 0, or the piece follows a strict
+   seam, or is bridged into) and write nothing for a run head (it only
+   un-pins the section); the init-speed window's hover says "This
+   track piece starts here — its real entry speed is its design
+   speed." §3's always-enabled button keeps that: a click on a run
+   head runs, changes nothing and posts the k == 0 "changed nothing"
+   sentence. (b) THE POV ROLL-RATE REQUEST ("make the roll rate
+   readout global rather than local"). Finding (a probe on his file,
+   3015 samples): the POV bar's roll parenthesis ALREADY prints the
+   bank-vs-horizon rate — Coaster.worldRates' third component φ' =
+   Ω·T − ψ'·sin θ — since D211 (v18.39), and the probe shows it equals
+   the numeric slope of the displayed bank angle over the true clock
+   to three decimals at every interior sample, while differing from
+   the LOCAL body roll by up to 35.9 °/s on pitched turns (i = 1751:
+   pitch 18°, heading rate −114 °/s → global −31.6 °/s, body 4.3). The
+   pitch / yaw parentheses are the same world rates (elevation',
+   heading' reported-left). On FLAT track global and local are the
+   same number by identity, and over an orientation-conflicted piece
+   the slot shows the DESIGN BANK ANGLE "(d = …°)" (D254), not a rate
+   — those are the two places a local-looking number can be seen. No
+   code change; the summary asks him where he saw a local value. Help
+   gained one clarifying clause (the roll rate in parentheses is the
+   bank's rate against the horizon, what a global roll lane authors).
+
+11. THE BATTERY (wiped classes, every rc 0). 36 members since D256:
+   uvd.KeyRouteGate 103 (131 with the JavaFX module path) and
+   TypedMarkGate 42 are new; LabelGate 190 (was 129: section 15 the
+   three-state glyph, 16 Reverse's sentences, 17 the Smoothing Options
+   strings), uvd.ConflictGate 87 (was 51: block k the "~v" levels on
+   his fixture, h5 rewritten + h5b, block l the explicit anchor incl.
+   the convert carries), SmoothRealGate 77 (was 15: section d);
+   GestureGate 180, DetermGate197/198/199/200 6/4/10/7, LoadGate196 7,
+   RangeResolveGate 115, Phase2Gate 162, Phase3Gate (86 PASS lines),
+   uvd.SeamShapeGate 31, CopyGate 73, MergeGate 23, InsertGate 40,
+   InflSplitGate 22, MultiCoasterGate 15, MirrorGate 100,
+   ReanchorGate 3 unchanged. In-JVM hooks on the same build:
+   -Dfvd.keyprobe=1 45 PASS / fails=0, -Dfvd.typedprobe=1 36 PASS /
+   fails=0, -Dfvd.initspeedprobe=<conflict.uvd> fails=0 (10 checks),
+   -Dfvd.smoothprobe=<conflict.uvd> fails=0 (34 checks), -Dfvd.winshot
+   the five PNGs with "trackpiece rows identical=true pixels
+   equal=true" and the povrow fitting; gates/probes/typed-mark's
+   FxOrderProbe + UndoableProbe re-run against the JavaFX 26 jars,
+   every line as recorded; the clean-span dump byte-identical over 54
+   documents. The docs integrator's belt on the merged tree: LabelGate
+   and uvd.ConflictGate re-run on wiped classes (TESTING #173 carries
+   the lines).
+
+## D257 (v19.28) — Batch 39: the POV bar's design-speed suffix in its own slot, the initial design speed window's layout (button left, no readout space without a conflict), the TRANSLATIONAL smoothing mode REMOVED + the tooltip rule re-asserted, the bridge-end rig's rings follow the box (a ring wherever the box is typeable), and the held-control knife edge CLOSED (his answer to batch-37 open decision 1)
+
+User feedback round on batch 38 (2026-10-13): five items, each quoted
+verbatim in its §. Method (the standing early-edge-case rule): one
+implementer per item, each enumerating its state combinations before
+coding (the -enumeration notes in the batch-39 scratchpad:
+smooth-remove, bridge-rings, pov-slot, init-speed-layout, snap-fix — 25
+rows for the snap fix) and leaving a docs note; one lean reviewer per
+item; a polisher applying the review's six should-fix findings (the ten
+initial-speed tooltip sentences, two Help rows, the winshot assertion, a
+passD comment, two note corrections — polish.md); the docs integrated
+last from the notes. One new in-JVM dev hook (-Dfvd.bridgeringprobe); no
+new gate; the battery is §6. The only model / compile change is §5's one
+line in SpeedControl.snapCore; §3 removes a one-batch compiler branch
+(TrackPiece.java and PlacementSnapshot.java are byte-identical to the
+pre-batch-38 tree again, TrackCompiler.java differs from it by one
+comment).
+
+1. THE POV BAR'S DESIGN-SPEED SUFFIX IS ITS OWN SLOT, SHOWN ONLY ON A
+   CONFLICT (user, verbatim: "For the speed POV readout, when there is
+   not a speed conflict, remove the space where the design speed readout
+   would be [an exception to the statistics not jumping around]").
+   BEFORE: D255's review round (SH-1) sized the speed slot for the
+   conflict form "88.888 m/s (d = 88.888)" permanently, so the " (d =
+   …)" reserve sat empty in the row whenever the POV was off a speed
+   conflict — 70 px of nothing between the speed and the "|" before
+   Vertical G — in the name of D239's rule that the stats never move.
+   NOW the suffix is a slot of its OWN: povVal[POV_DES] (= 9), a Label
+   right after the speed slot (3) in the same HBox, template " (d =
+   88.888)" measured like every slot, with its own ratchet
+   (povSet(POV_DES, …)). updatePovStats writes the speed as "12.345 m/s"
+   into slot 3 (template "88.888 m/s") and hands the suffix to
+   povDesign(String): a string shows it (text + managed + visible), null
+   takes it OUT of the layout (unmanaged + invisible), so the HBox lays
+   the row out without it — the readouts right of the speed slide 70 px
+   left off a conflict and back right on one. The managed / visible
+   writes happen only when the state CHANGES (a guard on isManaged), so
+   a ride inside or outside a conflict costs nothing per frame beyond
+   the text, like every other slot. This is the ONE deliberate exception
+   to D239's no-jump rule: the layout right of the speed moves at
+   exactly two moments — a conflict appearing and one ending — never per
+   frame or per digit (inside a conflict the suffix is a fixed slot: its
+   digits move nothing). The pitch / roll "(d = …°)" orientation form is
+   untouched (not asked): those slots keep their wide templates. povFit
+   FITS THE WORST CASE: the gap-tightening fallback (D255 round 3: once
+   a slot has ratcheted and the row no longer fits its laid-out width,
+   POV_GAP 7 → POV_GAP_MIN 2 a pixel at a time, never restored) now
+   measures povRowPrefWidthWorst = the row's pref width PLUS the
+   suffix's slot while the suffix is hidden, so the tightening is a
+   function of the ratchets alone — once and for the session, never of
+   what the POV happens to be over — and a conflict appearing after a
+   ratchet can never overflow the bar (the gaps already gave way); with
+   no ratchet povFit still returns at once: the default look is the
+   templates', bit-identical whatever the window's width. MEASURED (the
+   -Dfvd.winshot fixture, his 1216 px scene, the row laid out at
+   1213.3): as rendered off a conflict 1127.3 px (D255: 1194.0 with the
+   permanent reserve); the worst case / with the suffix on screen 1197.3
+   px — 3.3 px over D255's 1194 because two labels each carry
+   statsTextW's +2 px ceiling where one did (16 px of headroom remain);
+   the suffix slot " (d = 88.888)" measures 70 px. THE DEV HOOK:
+   -Dfvd.winshot's last lines are THREE "WINSHOT povrow" measures
+   instead of one — the row as rendered at the ride start (the suffix
+   hidden), its worst case ("-worst", what povFit fits) and — the POV
+   ridden onto the fixture's bridged-in target piece, whose design speed
+   (24) differs from the real one it enters at by well over 0.2 m/s (the
+   PNG reads "21.649 m/s (d = 23.895)"), so povSpeedConflict holds — the
+   row with the suffix ON SCREEN ("-conflict", "design shown"); each
+   line ends "fits" or "OVERFLOWS (captions clip)" and the new field
+   "design hidden|shown" says which state was measured. Since the
+   batch-39 review the "-conflict" measure ASSERTS its state: if
+   povDesignShown() is false after the ride onto the target the hook
+   prints "WINSHOT povrow-conflict MISSING: the design-speed suffix is
+   not shown on span N" and exits 1, so a fixture drift (the target's
+   design speed sliding under DRIFT_EPS, the span index landing on a
+   bridge) can never leave the line reading "fits" vacuously (the
+   negative branch is not exercised — it needs a fixture without the ≠v
+   target; the positive run reads "design shown" and exits 0). Two PNGs
+   of the laid-out row join the window shots (povrow-hidden.png /
+   povrow-shown.png, 1214×26, one pulse after each update).
+   -Dfvd.povprobe prints the pulse clock only (no row widths) and stays
+   the per-frame smoke test (146 pulses clean at 3 s). FILES:
+   FvdDesigner.java only (the POV bar block — updatePovStats, the
+   fixed-slot fields + POV_DES, povRowPrefWidth / povRowPrefWidthWorst /
+   povDesignShown, povFit, buildPovRow, povDesign — and the winshot
+   tail); no model / compile / reconcile / IO code, no gate-pinned
+   string, no gate grew or shrank, no tooltip. DEVIATIONS: none from the
+   request; nothing else in the row changes (captions, separators, gaps
+   and the other eight slots keep D239 / D255 bitwise). The hook's
+   earlier "trackpiece rows identical=true pixels equal=…" line — the
+   Track Piece window shot three times, before this item's code runs —
+   printed "false" once in four runs and "true" otherwise, on the
+   baseline classes too: a timing flake of that comparison, not this
+   change.
+
+2. THE INITIAL DESIGN SPEED WINDOW'S LAYOUT (user, verbatim: "For the
+   initial design speed window, put the 'set design to real' button on
+   the left side of the window. Then when there is not a speed conflict
+   [creating a real speed readout button], remove the real speed readout
+   button space and have the right edge of the cancel button be in line
+   with the right edge of the spinners [no speed conflict makes it look
+   like how it looked before]"). THREE CHANGES. (a) "Set Design to Real"
+   sits at the window's LEFT edge: LiveWindow.show takes it as a
+   footLead followed by a footSpring (the Track Piece window's Switch
+   Coaster… / Delete… recipe, D255) — D254 had packed it against
+   Confirm. (b) The grey "real NN.NN" readout takes NO SPACE while no
+   speed conflict is displayed: it is UNMANAGED (not merely invisible),
+   so the row is [label][box] and the window's content width is the
+   row's — the right-aligned footer ends on the box's right edge:
+   Cancel's right edge == the box's right edge EXACTLY (262.0 == 262.0
+   measured, the pre-D255 look). D255's RESERVED slot ("the window never
+   resizes") and its LATCH ("shows once a conflict is seen and stays
+   until the window closes") are GONE: the readout shows WHILE the D256
+   predicate holds (speedDiffers(vDesign, settle) ||
+   speedDiffers(vDesign, displayed real), re != null — unchanged) and
+   hides when it stops; a conflict appearing (a typed value, an upstream
+   edit, an undo) WIDENS the window at its right edge by the readout's
+   slot, its end (the click, an undo, an upstream edit) NARROWS it back
+   — measured on conflict.uvd: 276.0 px ↔ 365.3 px scene width. The
+   readout keeps its D254 fixed width WHILE SHOWN (the widest text,
+   "real 10000.00"), so the digits changing per compile never resize the
+   window; no distinct real speed (a run head, a reversed section,
+   nothing compiled) = hidden (D255's latched "real —" state no longer
+   exists); clickable whenever shown = the button's Runnable, the one
+   live tooltip, as D256 left them. (c) THE BOX NEVER MOVES between the
+   two states: the footer [Set Design to Real][spring][Confirm][Cancel]
+   can be wider than the bare [label][box] row, so the row's LABEL
+   COLUMN is sized PRE-SHOW to max(label pref, footer pref − 8 − box
+   pref) — then the no-conflict row is exactly the footer's width (or
+   wider by itself; on his machine the row wins by 0.7 px: label 154 + 8
+   + box 86 = 248 vs the footer's 247.3) and the column stays fixed, so
+   a conflict adds the readout to the RIGHT of a box that stays put (x =
+   176..262 in both states). REJECTED: letting the label grow (HGrow) —
+   the box would slide ~15 px left under the typist when a conflict
+   opens live. MECHANISM — three LiveWindow additions, every other
+   window bitwise on its old path (no property → no branch):
+   allowNarrowing(content) sets a MAY_NARROW property that refit() reads
+   to SKIP the D254 min-width ratchet (the window's min width stays
+   computed, so sizeToScene shrinks it — the SECOND deliberate exception
+   to the no-jump rule after the screen clamp, this window alone;
+   top-left anchored still: the right edge moves, nothing above a row
+   moves, the clamp is the one residual move when the widening would
+   leave the screen); preMeasure(content, Runnable) runs the caller's
+   step inside place() right AFTER content.applyCss() and BEFORE the
+   pre-show measure (every Labeled has its skin, font and padding there,
+   so the buttons' pref widths are real and the window opens at the
+   right size with no post-show hop — the D249 flash lesson);
+   footOf(content) returns the footer HBox show() stored on the
+   content's properties (FOOT). syncReal ends with LiveWindow.refit(app,
+   win) (a no-op before show; the refit's steady state is free). The
+   readout carries the id "initSpeedReal" for the probe. TOOLTIPS: none
+   added by this item; the batch-39 review then had the polisher trim
+   every D256 HARD / SOFT sentence and the default to ONE short sentence
+   — the list is in §3. MEASURED (the -Dfvd.initspeedprobe hook, 39
+   checks, fails=0, conflict.uvd): no-conflict open on piece 0 section 1
+   — scene 276.0 px wide, readout unmanaged + hidden, Cancel right edge
+   262.0 = box right edge 262.0, the button at x 14.7 (content padding
+   14 — a 0.7 px pixel-snap remainder of the footer being 0.7 px
+   narrower than the row; 14.0 in the wide state; sub-pixel, accepted);
+   stepping the box +3 m/s pins it and the window widens to 365.3 with
+   the readout managed + visible and the box at the same x; Ctrl+Z
+   narrows it back to 276.0 aligned; a re-opened conflict then Cancel
+   closes the window with the section reverted and un-pinned; on piece 1
+   section 1 (the conflict) the window opens at 365.3 with the readout
+   present, the D256 click lands 13.913246110656 bitwise + anchored and
+   one pulse later the readout is gone and the window is 276.0 and
+   aligned; the second click, Ctrl+Z (readout back, 365.3), Ctrl+Shift+Z
+   (gone, 276.0) as in D256. The probe measures LAYOUT bounds — the
+   auto-focused box's boundsInLocal include modena's focus ring at −1.4
+   px insets (a first run read 263.4 against 262.0). winshot: the three
+   placement windows byte-identical to the batch-38 PNGs (468×344 /
+   389×203 / 442×405, rows identical, pixels equal). Belts:
+   uvd.ConflictGate 87/87, LabelGate 182/0 (no sentence changed by the
+   layout). KNOWN: the window is re-measured per model hook (refit's
+   size compare is the whole cost at a steady state); near the screen's
+   right edge a widening is clamped LEFT by the overflow and the later
+   narrowing leaves x there (refit's documented one move). FILES:
+   LiveWindow.java, GraphEditor.java (showInitSpeedDialog),
+   FvdDesigner.java (the hook); no model / IO / compile change; no gate
+   grew or shrank (the hook 10 → 39 checks). DEVIATIONS: none.
+
+3. THE TRANSLATIONAL SMOOTHING MODE IS GONE; THE TOOLTIP RULE
+   RE-ASSERTED (user, verbatim: "Actually completely remove the
+   translational movement checkbox from the smoothing window, it didn't
+   do exactly what I had in mind and it's a small feature. Also I
+   noticed that the hover tooltip was egregiously long and did not
+   follow the rule for hover tooltip length I had set a while ago.
+   Please make sure to follow this rule for all future tooltips."). WHY:
+   the mode of D256 §7 — a pure blend that translates the track after
+   the seam by the window's miss — was not what he had in mind, and it
+   is small; it is removed on his request (D256 §7 carries inline
+   "(removed in D257)" notes — the history stays). WHAT WENT (the whole
+   D256 §7 feature, which existed only in the uncommitted batch 38): the
+   "Allow translational movement of later sections" CheckBox and its
+   tooltip in GraphEditor.showSmoothingOptions;
+   TrackPiece.sSmoothTranslate and every carrier — TrackPiece.copy,
+   PlacementSnapshot (PieceRec.sTrans record / differs / restore),
+   FvdDesigner.PieceState (sSmoothTrans); DesignIO's `psmooth 0|1`
+   writer and its reader case; TrackCompiler.smoothStrictSeam's 5-arg
+   `boolean closure` form — the 4-argument signature is back with the
+   D140 position-closure block UNCONDITIONAL, and the call site passes
+   four arguments again (TrackPiece.java and PlacementSnapshot.java are
+   byte-identical to the pre-batch-38 tree; TrackCompiler.java was too
+   until the polisher's §5 comment edit); the `B.sSmoothTranslate =
+   false` reset in Coaster.makeSmoothingReal;
+   GraphEditor.smoothingTranslatesInto and the mode-aware sentence
+   choosers SectionNames.smoothingCausedWhy / initSmoothingWhy with
+   their translational constants SMOOTH_TRANSLATE_LABEL /
+   SMOOTH_TRANSLATE_TIP / SMOOTH_TRANSLATE_WHY /
+   INIT_SMOOTH_TRANSLATE_WHY; the -Dfvd.smoothprobe hook's check steps;
+   SmoothRealGate's translational checks (d2-d4, d6-d9, d5's translation
+   assertions) and LabelGate 17e / 17f / 17k / 17l / 17n / 17o. WHAT
+   STAYS: the "Smoothing options…" window itself (D256: the live
+   "Smoothing length (m)" box, the "Make smoothing real…" and "Disable
+   smoothing" buttons, Confirm / Cancel, the seam-window lifecycle, the
+   reduced seam menu with ONE smoothing item), every strict seam
+   smoothing as the D140 CLOSURE always (the window bends and stretches
+   back onto its original end; nothing after the seam moves). The two
+   D141 sentences are the single D255 texts again, kept as
+   LabelGate-pinned constants: the badge's grayed line
+   SectionNames.SMOOTH_SHRINK_WHY "Speed conflict caused by seam
+   smoothing — shrink the ◇ window instead" and the initial-speed
+   window's SectionNames.INIT_SMOOTH_SHRINK_WHY "Seam smoothing opens
+   this speed difference — shrink the ◇ window instead." (that site's k
+   > 0 handling from the batch-38 real-anchor item is untouched: the
+   sentence shows whenever the displayed difference exceeds the window's
+   0.005 m/s gate). "Disable smoothing" → "Enable smoothing (10 m)"
+   remembers nothing (there is no mode to remember). The window's
+   Make-real gray-reason cache is keyed on the displayed compile's
+   identity + the length (the mode belt is gone). FILES: no `psmooth`
+   line is written; the loader has no `psmooth` case, so a line in a
+   file saved by the batch-38 build is ignored by the unknown-line rule
+   (D50) and that seam compiles the closure — a seam that was
+   translating snaps back by its blend's miss (mm–cm, the D256 numbers)
+   on open. Accepted: the feature never reached a commit, and a grep
+   over his design folder finds no file carrying `psmooth 1`, so no file
+   re-settles on open. The canonical save → load → save round trip is
+   byte-identical (DetermGate197/198, LoadGate196 green); the clean-span
+   dump of his 54 documents is byte-identical old vs new for this item
+   and to the dump batch 38 recorded (54 DOC blocks / 8,649,952 bytes
+   each, `cmp` identical; compare3.py "documents 54 | geometry or
+   vDesign moved: 0" — §5 then moves two). THE COMPILE IS BITWISE THE
+   CLOSURE MODE: SmoothRealGate d1 keeps the two 64-bit checksums
+   recorded from the frozen pre-D256 snapshot — 28808918c0612fbe at 8 m
+   / 0fc8182da8f4a418 at 20 m over 1601 samples — now simply the
+   smoothing compile's regression pins (re-record on any deliberate
+   blend change); d2 = the make-real round trip on the smoothed compile
+   (applies, structure, the fresh window-end seam's smoothing off, B
+   re-anchors at the smoothed compile's window-end sample to 0.00e+00 m,
+   whole-track hold 0.0042 m, tail 0.0042 m). The gate shrank 77 → 24;
+   LabelGate 190 → 182 (section 17 = 13 checks: title word, the two
+   seam-menu items, the length label, the two buttons, the teardown
+   reason, the two D141 sentences, smoothWindowTitle on a plain seam /
+   past a bridge / run head / out of range). UI probe
+   -Dfvd.smoothprobe=<conflict.uvd>: "PROBE smooth fails=0" (28 PASS
+   lines; it gained one check — "no check box in the window" — and
+   drives its undo / redo leg through a typed length (7) instead of the
+   removed flip). THE TOOLTIP RULE, RE-ASSERTED (STANDING, the user's
+   rule restated this batch): a hover tooltip is ONE short sentence
+   saying what the control does — never how it works, never multi-line;
+   a gray reason likewise one sentence. The offending tooltip was the
+   check's SMOOTH_TRANSLATE_TIP — two labelled paragraphs over a line
+   break explaining both modes' mechanisms — and it went with the check.
+   The sweep of every tooltip batch 38 added (the b38 src-baseline vs
+   the tree: `new Tooltip(` / `grayHint(` / `setTooltip(` /
+   `Tooltip.install` in GraphEditor / FvdDesigner / Dialogs /
+   LiveWindow): (a) the smoothing window's remaining hover text is the
+   Make-real button's grayHint = Coaster.makeSmoothingRealWhy's
+   one-clause fragments ("the smoothing window is too small to convert",
+   …) — compliant, unchanged; (b) the initial-speed window's ONE live
+   tooltip (the batch-38 real-anchor item: realTip / toRealTip fed by
+   tipText) — CORRECTED BY THE BATCH-39 REVIEW: its default text was NOT
+   the user's D248 verbatim (D248's read "Fills box with the real entry
+   speed, resolving a speed conflict. Does not resolve an orientation
+   conflict"; batch 38 wrote a new two-sentence default, absent from
+   b38/src-baseline), and the live sentences, though one sentence each,
+   were long and explained mechanism. The polisher trimmed EVERY one to
+   ONE SHORT sentence saying what the click does
+   (GraphEditor.showInitSpeedDialog; none is pinned by a gate —
+   LabelGate pins only SectionNames.INIT_SMOOTH_SHRINK_WHY and the
+   badge's bridge sentences, both unchanged; the post-click branch still
+   keys on the "No speed conflict" lead; the initspeedprobe asserts only
+   the stats line "Set Design to Real changed nothing…", unchanged). Old
+   → new: the default (tipDefault) "Sets this section's design speed to
+   the real entry speed at once, resolving a speed conflict. Does not
+   resolve an orientation conflict" → "Sets the design speed to the real
+   entry speed."; "A reversed section (from an older file) has no real
+   entry speed to take." → "A reversed section has no real entry speed
+   to take."; "The ride entry's design speed is the real one — a click
+   sets nothing." → "The ride entry's speed is already real — a click
+   sets nothing."; "This track piece starts here — its design speed is
+   its real entry speed; a click sets nothing." → "This track piece
+   starts here — a click sets nothing."; "The train stalls before this
+   section — the design speed is already at its lowest." → "The train
+   stalls before this section."; noConflict (k ≥ 1, pinned) "No speed
+   conflict — the design speed already is the real entry speed; a click
+   un-pins it so it keeps following the real flow." → "No speed conflict
+   — a click un-pins the section to follow the real flow.";
+   noConflictFollows (k ≥ 1, real-anchored), RENAMED noConflictNone, "No
+   speed conflict — this section already follows its real entry speed; a
+   click changes nothing." → "No speed conflict — a click changes
+   nothing."; noConflictFree (k ≥ 1, neither) "No speed conflict — the
+   design speed already is the real entry speed; a click makes it keep
+   following the real flow." → "No speed conflict — a click makes the
+   section follow the real flow."; noConflictFirstPin (k == 0, pinned)
+   "No speed conflict — the design speed already is the real entry
+   speed; a click un-pins it." → "No speed conflict — a click un-pins
+   the section."; noConflictFirst (k == 0, un-pinned), FOLDED into
+   noConflictNone, "No speed conflict — the design speed already is the
+   real entry speed; a click changes nothing — a track piece's first
+   section keeps its own design speed." → "No speed conflict — a click
+   changes nothing."; unchanged: "Nothing compiled for this section
+   yet.", INIT_SMOOTH_SHRINK_WHY, the bridge sentences
+   (bridgeResolveWhyAt / bridgeCrawlWhyAt — pre-batch-38, pinned). The
+   Help's "Resolving" sentence "its hover says what a click will do:
+   with no speed conflict a click just un-pins the section, or makes it
+   keep following the real flow, or changes nothing — the hover says
+   which" still describes them; (c) Reverse's four gray sentences (D256
+   §8) are one sentence each; (d) FvdDesigner, Dialogs and LiveWindow
+   added no tooltip in batch 38; (e) §4's BRIDGE_LOCK_TIP, three lines
+   since D249, is one sentence now. Changed tooltips in all: the removed
+   check tooltip (old → gone), the ten initial-speed sentences above and
+   BRIDGE_LOCK_TIP. FILES: TrackPiece, PlacementSnapshot, TrackCompiler,
+   Coaster, DesignIO, FvdDesigner (PieceState + the -Dfvd.smoothprobe
+   hook), GraphEditor, SectionNames, gates/SmoothRealGate,
+   gates/LabelGate. DEVIATIONS: (1) the two D141 sentences stay as
+   SectionNames constants (SMOOTH_SHRINK_WHY / INIT_SMOOTH_SHRINK_WHY,
+   LabelGate-pinned) rather than the D255 inline literals — the texts
+   are the D255 sentences verbatim; only the translational twins and the
+   choosers went. (2) The reduced SmoothRealGate section d numbers its
+   two surviving blocks d1 / d2 (d2 = the D256 d5 round trip in its
+   closure form). (3) The smoothprobe hook gained one check and drives
+   its undo / redo leg through a typed length instead of the removed
+   check flip. (4) His own files were scanned for `psmooth 1` to make
+   the "no file re-settles" claim honest — none found.
+
+4. THE BRIDGE-END RIG BUILDS A RING WHEREVER THE BRIDGE WINDOW'S BOX IS
+   TYPEABLE (user, verbatim: "For bridges that have no optimization or
+   have position optimization checked, if an orientation is unlocked
+   still allow the unlocked orientation to be edited with the gizmo.
+   Only disallow this for when position and orientation is optimized. In
+   other words, only if the value in the box is grayed out should you
+   hide its respective gizmo."). WHAT CHANGED: the bridge-end rig (the
+   rig the trailing bridge's white end ball reveals — the NEXT piece's
+   entry) builds a ring for axis k exactly when
+   BridgeSection.axisEditable(k) — D249's ONE enable predicate,
+   unchanged: `locked || optMode != OPT_POS_YAW` — which is precisely
+   the condition under which the bridge window's box for that axis is
+   NOT grayed. So: under "No optimization" and "Optimize position" EVERY
+   axis wears a ring, locked or not (nothing aligns it there, the box is
+   typeable and the value is de facto held); under "Optimize position
+   and orientation" the HELD (🔒) axes wear rings and the free ones — the
+   march's, their boxes grayed "The bridge aligns this axis — lock it to
+   hold a value." — do not. D249 had built the held axes' rings only, in
+   the two non-aligning modes, and NO ring at all under
+   optimize-orientation ("the tangent arrow alone"); a default free-yaw
+   bridge therefore showed no yaw ring in manual mode even though its
+   yaw box was typeable — the asymmetry the user called out. THE WRITE
+   PATH IS THE BOX'S: a ring drag writes exactly the field the bridge
+   window's typeable box writes — the target piece's own yaw / pitch /
+   roll through GraphEditor.gizmoSetBridgeOrient (Global aiming:
+   setRawAbsYaw / Pitch / Roll(…, true), routed through the target's
+   orientation mode like the box — LOCKSTEP both tiers, REAL_ONLY the
+   real tier, DESIGN_ONLY the design tier; placementEdit's D221 carry)
+   and then re-places per mode like a typed value: a plain rebuild under
+   "No optimization", and under BOTH optimize modes
+   GraphEditor.gizmoReplace (D254's live path — re-place at the current
+   / held length, NEVER applyOptimalLength's zero-distance prompt
+   mid-drag; under optimize-orientation applyBridgeGap's alignYaw
+   re-aligns the free axes around the held value just written, the D249
+   typed-held-value semantics). The refusal belt is
+   `!axisEditable(axis)` (was: optimize-orientation refused outright,
+   then `!axisLocked`). gizmoReplace's at-rest knee passes `alignYaw =
+   optMode == OPT_POS_YAW` to optimalBridgeLength (it was hard-wired
+   `false` while "Optimize position" was its only caller). The
+   LOCAL-aiming sink (bridgeLocal → gizmoSetBridgeOrientAll, a true
+   rotation about the drawn axis) writes every EDITABLE axis's
+   decomposed value — all three under the two non-aligning modes, so the
+   object follows the ring exactly; the held ones only under
+   optimize-orientation, where a free axis is the march's (the piece
+   rig's locked-axis rule); it refuses only when no axis is editable (no
+   ring could have fired it). One undo step per gesture (wireRingDrag's
+   pushOnce), the gizmo contract. The D253 live knee hold rides along:
+   under Optimize length a drag event re-places at lastOptDist and sets
+   kneePending, the release's settle re-knees once. THE RING SET FOLLOWS
+   THE MODE AND THE PADLOCKS LIVE: the gizmo signature already signed
+   the trailing bridge's optMode, optLen and the three locks; every
+   rebuild (rebuildMeshes → GraphEditor.refreshMarkers →
+   refreshTrackMarkers → refreshGizmo) and every graph redraw re-reads
+   it, the padlock buttons call refreshGizmos(false) explicitly, and
+   setBridgeOptMode's two exits (applyBridgeGap → rebuildTrack; the
+   manual entry's redraw()) both reach it — verified by reading, and the
+   drill switches modes / flips locks through the real chokes
+   (setBridgeOptMode / setBridgeLock under withBridge) and counts the
+   rings after. A padlock flip under "No optimization" / "Optimize
+   position" changes NOTHING now (no ring appears or vanishes — every
+   axis wears one; setBridgeLock's doc said "it only changes which rings
+   the bridge-end rig builds" — reworded); under optimize-orientation a
+   flip re-marches (as before) and the ring set follows the held set.
+   THE PIECE RIG'S BRIDGED-IN BRANCH (buildPieceGizmo with a bridge
+   leading into the piece — unreachable through the balls since D247,
+   which gives a bridged-in piece no entry ball, kept consistent): a
+   ring per `into.axisEditable(k)` — under the manual mode the early
+   return admits, every ring builds. TOOLTIP: BRIDGE_LOCK_TIP, the
+   padlocks' hover text, was three lines explaining both states'
+   mechanics (D249) → ONE sentence per the rule re-asserted in §3:
+   "Locked holds this axis at the typed angle; unlocked lets Optimize
+   position and orientation align it." BRIDGE_ALIGNS_AXIS (the grayed
+   box's reason) is unchanged, one sentence; no other tooltip touched,
+   none added. SURFACES THAT STATE THE RULE: only comments and the docs
+   — BridgeSection's lock doc, Viewport3D.buildBridgeGizmo /
+   buildPieceGizmo / bridgeLocal docs, GraphEditor.gizmoSetBridgeOrient
+   / gizmoSetBridgeOrientAll / gizmoReplace / setBridgeLock docs,
+   TrackPiece's uiLock* doc, CLAUDE.md and Help. The Track Piece
+   window's "Edit with gizmo" checks show the RUN HEAD (D255) — never a
+   bridged-in piece — so no junction-named reason exists there any more
+   (D255 deleted gizmoWhy); nothing to change. MEASURED (the
+   -Dfvd.bridgeringprobe=1 drill, on the default document + a 1 s hold
+   bridged 14 m past the end under "No optimization"): ring sets NONE
+   7/7/7/7 (defaults, yaw locked, pitch freed, defaults), POS 7/7,
+   POS_YAW 6 (defaults) / 7 (yaw locked) / 5 (pitch freed) / 0 (all
+   free) / 7 (all held) / 6, back to NONE 7 — bits yaw 1 / pitch 2 /
+   roll 4. A Global yaw-ring drag under NONE through the pane filter
+   turned the next piece −68.6219° → 7.7574°, one undo step (5 → 6),
+   Ctrl+Z bitwise back; typing the same heading into the bridge window
+   landed the same yawDeg BITWISE and the same compiled positions (fold
+   b01a1d64bede6677 both ways). The same under POS with Optimize length
+   off: yawDeg bitwise, placement delta 0.00e+00 m, positions fold
+   3071def4ee884cd1 both ways. POS + Optimize length (the knee at the
+   120 m ladder cap on this fixture): mid-drag kneePending set and
+   lastOptDist 120.0 held, cleared by the release settle (D253).
+   POS_YAW: no yaw ring to drag (code 0); the held pitch ring wrote
+   0.0000° → 76.3800° with no conflict under LOCKSTEP, padlock + mode
+   untouched; Local pitch ring 0.2175° → −76.1559°. Local yaw ring under
+   NONE: turned 7.7574° → 84.1451° with pitch / roll written through the
+   combined path staying put (0.00e+00 / 0.00e+00). With the bridge
+   window and the Track Piece window open a drag re-synced the
+   next-piece yaw box (−26.8606 == −dispYaw) and never moved the run
+   head. -Dfvd.pickprobe=1 unchanged (fails=0). FILES:
+   BridgeSection.java (comments), Viewport3D.java (buildBridgeGizmo's
+   ring gating + doc, buildPieceGizmo's bridged-in branch + doc,
+   bridgeLocal's doc, the probe helpers probeBridgeRings /
+   probeBridgeRingDrag), GraphEditor.java (gizmoSetBridgeOrient,
+   gizmoReplace, gizmoSetBridgeOrientAll, setBridgeLock's doc),
+   FvdDesigner.java (BRIDGE_LOCK_TIP; the hook: bridgeRingProbe /
+   bridgeRingFixture / bridgeRingChecksum / bridgeRingBs /
+   bridgeRingSteps), TrackPiece.java (the uiLock* doc sentence). No
+   model / compile / IO code changed; gates DetermGate197 6,
+   DetermGate198 4, LabelGate 182, PlacementGate 41 (it pins
+   axisEditable's truth table, h0 — unchanged). DEVIATIONS: (1) the spec
+   names the two non-aligning modes; the implementation is the one
+   predicate the boxes already gray on, so optimize-orientation's HELD
+   axes gain rings too (their boxes are typeable — "only if the value in
+   the box is grayed out should you hide its respective gizmo", the
+   user's own restatement; D249 showed none there). (2) The drill's
+   fixture is built in the model (Coaster.continuation +
+   BridgeSection.solve, the '+' menu's recipe) rather than through a
+   file. (3) PlacementGate (41) was run as an extra belt.
+
+5. THE HELD-CONTROL KNIFE EDGE IS CLOSED (his answer to D255's open
+   decision 1 and D256 §9 (1), verbatim: "For the number one of the
+   batch-37 questions, please implement the 'one-line fix'. I don't care
+   about the main coaster any more as it was already messed up from the
+   lack of saving determinism back then"). RESOLVED by his request: D255
+   §11's "a held speed control can lose its hold" and the CLAUDE.md
+   Known-quirks bullet "A HELD SPEED CONTROL CAN LOSE ITS HOLD … Never
+   change it without him" are retired (the bullet is a short "fixed in
+   D257" note now), and batch-37 open decision 1 (D256 §9 (1), "NO
+   change") is closed. WHAT: an ACCEL speed control that has reached its
+   target now holds it on every step until the flags release it — the
+   design solve and the real march alike. WHY: SpeedControl.snapCore
+   decided "the step crossed the target" by the sign of (vB − vt)(vA −
+   vt). After a snap the recorded speed is sqrt(E − loss) with loss +=
+   vA² − vt², i.e. the target ± one rounding — MEASURED over his 54
+   documents (SnapProbe, read-only): of the 102 ACCEL-governed samples
+   sitting at a target, 86 were exactly on it and 16 ONE ulp off (max |v
+   − vt| = 7.1e-15 m/s); the nearest genuinely off-target sample was
+   3.07e-3 m/s away. Whenever that one ulp fell on the drift's side the
+   product read positive, "not crossed", and the hold was dropped: a
+   strong control re-caught it in 1-3 samples (the 0.03 m/s dips), a
+   control weaker than the slope it held against never did. Six design +
+   six real leaks lived in his files: "B Shortcut not working
+   7.28.26.fvd" (3, the sample after the first leak 0.027 m/s off) and
+   "FULL TEST COASTER 7.30.26.fvd" (3, 0.083 m/s off). MECHANISM — the
+   one line, in snapCore's ACCEL branch: `boolean atTarget = Math.abs(vB
+   - vt) <= EPS;` then `boolean crossed = atTarget || (vB - vt) * (vA -
+   vt) <= 0;`. EPS = 1e-9 is the class's own band (driveCore's "at the
+   target"), six orders above the rounding and six below the first real
+   miss, so the drive and the snap now mean the same thing by "at the
+   target". Old and new differ ONLY where 0 < |vB − vt| ≤ 1e-9: at exact
+   equality the old product was already 0 ≤ 0, beyond the band both read
+   the sign test. The SPEED branch is untouched (no sign test there),
+   tied / untied magnitudes never enter the snap, a non-positive or
+   coasting magnitude still governs only the approach (the documented
+   contract: "at the target the control holds it exactly until the flags
+   release it"), min-only / max-only keep their floor / ceiling
+   semantics (an at-target step whose drift violates no flag still runs
+   free — 55l), both flags off never holds, a stalled train is never at
+   a target above 0.5 (the floored 0.5 == 0.5 case was already crossed),
+   and every caller takes it through the one function: FVDIntegrator
+   (time + distance), GeoIntegrator (time + distance), ScIntegrator (per
+   leg), TrackCompiler.passD (snapRow) and the convert re-time march
+   (Coaster.fitLanes' srcCtl.snap) — design and real now flip no coin at
+   all, so inside conflicted, tilted or blended stretches the two
+   marches agree where they used to disagree by up to 1 m/s
+   (unconflicted track already recorded the design's side under D255's
+   clean-span rule). The enumeration (25 states) is in the batch-39
+   scratchpad's snap-fix-enumeration.md. MEASURED ON HIS FILES
+   (gates/probes/cleanspan-2026-09-30, CleanProbe2 + compare3.py, old =
+   the recorded batch-38 dump byte for byte, md5
+   480e44f5d035815050b8f5ab601a44da; new = THE RECORDED DUMP FROM NOW
+   ON, md5 8cbcaaa492250cf4a54a36da14df7bc4): 54 documents, 2 moved,
+   everything else bitwise — including the 18 synthetic fixtures and the
+   two documents whose ACCEL controls never reach their target
+   ("Multiple Strict Seam Testing 9.22.26.fvd", "UVD AI made coaster
+   10.10.26.uvd"). "B Shortcut not working 7.28.26.fvd": max geometry
+   shift 1.471e-3 m (the end 1.471e-3), vDesign ×2 — piece 0 section 1
+   (geo) 40.195592 → 40.195689 (+9.7e-5), section 2 (force) 31.039580 →
+   31.039798 (+2.2e-4). "FULL TEST COASTER 7.30.26.fvd" (his main test
+   coaster, the one he wrote off): max shift 1.380e+3 m (the end
+   1.362e+3), samples 7423 → 7398, track 1217.5 → 2491.1 m, the geometry
+   diverging at sample 1514 (129.8 m of arc — inside its first held
+   control, span 4), vDesign ×9 on piece 0: s5 17.278904 → 17.653984, s6
+   12.242617 → 12.763686, s7 12.397273 → 12.908361, s8 14.348110 →
+   14.790329, s9 18.119970 → 18.551638, s10 18.737818 → 20.975766, s11
+   14.527390 → 17.210115, s12 22.178156 → 19.048021, s13 14.964333 →
+   11.004509 (piece 1 untouched); the real march behind them moves by up
+   to 1e2 m/s (spans 13-16) — the batch-37 note's "1.4 km" and "1.5 mm"
+   confirmed. After the fix the probe finds ZERO leaks (held samples 26
+   → 29 and 76 → 143; the at-target residual still 0-1 ulp, max
+   3.6e-15). COST: a document with held ACCEL controls re-settles ONCE
+   on first open (its saved vDesign values were anchored on the leaky
+   solve): DetermGate197 reports 14 reconcile passes on the main coaster
+   where it reported 0, still "well under the cap", and every
+   determinism check stays green; files without held ACCEL controls open
+   bitwise. THE PIN: Phase3Gate 55k — a geo DIVE (pitch −50 °/s for 1 s,
+   then straight at ~55°; 90 m start, 10 m/s) with an ACCEL control
+   (target 20, 0.5 g tied, both flags) from 1.5 s to the 5 s end — the
+   natural gain g·sin 55° ≈ 0.82 g beats the 0.5 g brake, so a dropped
+   hold can never be regained. On the OLD build: snapped at sample 166
+   (t = 1.66 s), then 312 of the 333 governed samples off target, worst
+   9.8 m/s, end 29.845 instead of 20 (target 22 leaked 155 samples / 4.9
+   m/s; target 25 happened to hold — the coin). On the fixed build: 0 of
+   334 off target in BOTH the design samples and the real trueV, 47 held
+   samples one ulp ABOVE the target (the very steps the old sign test
+   called "not crossed" — the knife edge is present in the fixture's own
+   numbers) and 287 exactly on it, end 20.000000000. 55l: the same
+   fixture min-only reaches 20 and runs free to 46.831 (design == real)
+   — no phantom hold from the fix. RE-BASELINE (the only gate whose
+   recorded expectation moved): Nl2ElemProbe reads "FULL TEST COASTER
+   7.30.26.fvd", whose far end now runs 1.3 km out. The .nl2elem
+   writer's "%e" carries 7 significant digits, so its element-local
+   coordinates can agree with the CSV only to that FORMAT FLOOR: q =
+   1e-5 m under the old 99 m extent (worst 1.5e-5, chords 1.2e-5 — the
+   recorded 5e-4 bound was never a design value), q = 1e-3 m at the new
+   1283 m (worst 5.4e-4, dy 5.0e-4, chords 8.9e-4 — the old bound failed
+   by a hair on seven checks). The three position checks now take tol =
+   2q + 1e-5 at the measured extent (3.0e-5 on the old geometry, 2.0e-3
+   on the new; the unit-vector checks keep 5e-4). The D202 jitter pin
+   was content-dominated as well: after the fix the 367 m bank-node kink
+   the probe's own comment already called "real authored content" reads
+   1.2 rad/m (was 0.15) because every speed past 130 m moved, lifting
+   the whole-track rms to 0.0134 (0.0131 with the %e rounding taken out)
+   with the exporter untouched — every other 100 m bucket of the new
+   track reads ≤ 0.0012. The pin now reads the SHARED resample through
+   the CSV's %.6f text (the %e quantum alone adds 0.003 rms at 1.3 km)
+   and takes the 1 %-TRIMMED rms — sparse authored kinks drop out,
+   broad-band chord-sag aliasing stays in: Hermite 0.00021 on the old
+   geometry / 0.00013 on the new against a LERP twin of the same samples
+   at 0.00430 / 0.00504 (ratios 0.048 / 0.027; bounds 0.001 and a
+   quarter of the lerp's), the user's 935 m witness from the same
+   resample 0.00035 / 0.00006 (bound 0.002 kept). The re-pinned probe
+   passes 22/22 on BOTH builds. Nothing else moved: 35 members identical
+   PASS/FAIL counts, printed numbers only in DetermGate197 (14 passes,
+   rigid 1.2e-13 m), DetermGate200 (timings) and LoadGate196 (7422
+   samples, was 7423). FILES: SpeedControl.java (snapCore's ACCEL
+   branch: `atTarget` + the comment; the class doc's PHYSICS bullet),
+   TrackCompiler.java (COMMENT ONLY, the review's should-fix: passD's
+   clean-span doc comment reads "held speed controls, before D257, lost
+   their hold at different samples" — it said "lose", a closed knife
+   edge read as live), gates/Phase3Gate.java (55k + 55l + the shared
+   diveFixture helper, 86 → 88 PASS lines), gates/Nl2ElemProbe.java
+   (re-pinned, 22 checks: format-floor tolerances on the three position
+   checks, the trimmed-rms jitter pin, hfNoise / trimmedRms). STANDING:
+   gates/probes/cleanspan-2026-09-30's recorded dump is batch 39's
+   new.txt from here on (the scratch snapfix/ folder holds old.txt,
+   new.txt, compare3.txt, secdelta.txt, the probes and the frozen class
+   copies). DEVIATIONS: none from the request (the fix is the one line
+   he named).
+
+6. THE BATTERY (wiped classes, every rc 0). 36 members since D256, none
+   added: SmoothRealGate 24 (was 77 — section d = d1 the recorded
+   closure checksums + d2 the make-real round trip), LabelGate 182 (was
+   190 — section 17 = 13 checks), Phase3Gate "ALL PHASE-3 GATES PASS"
+   (88 PASS lines, was 86 — 55k/55l), Nl2ElemProbe re-pinned (22 checks,
+   count unchanged); uvd.ConflictGate 87, DetermGate197/198/199/200
+   6/4/10/7 (DetermGate197 now reports 14 reconcile passes on the main
+   coaster), LoadGate196 7 (7422 samples, was 7423), uvd.SeamShapeGate
+   31, CopyGate 73, MirrorGate 100, RangeResolveGate 115,
+   MultiCoasterGate 15, PlacementGate 41, uvd.KeyRouteGate 103,
+   TypedMarkGate 42, InsertGate 40, ReanchorGate 3, GestureGate 180,
+   Phase2Gate 162, MergeGate 23, InflSplitGate 22 unchanged. In-JVM
+   hooks on the same build: -Dfvd.smoothprobe=<conflict.uvd> fails=0 (28
+   checks), -Dfvd.initspeedprobe=<conflict.uvd> fails=0 (39 checks),
+   -Dfvd.bridgeringprobe=1 fails=0 (41 PASS lines), -Dfvd.pickprobe=1
+   fails=0 (unchanged), -Dfvd.winshot the three "WINSHOT povrow" lines
+   (1127.3 / 1197.3 / 1197.3 px, "design hidden / hidden / shown", every
+   one "fits", no MISSING line) + "trackpiece rows identical=true pixels
+   equal=true" + the window PNGs byte-identical to batch 38's,
+   -Dfvd.povprobe=3 146 pulses clean. The clean-span dump:
+   byte-identical over 54 documents after §3, then §5's two moved files
+   (new.txt is the recorded dump). The docs integrator's belt on the
+   merged tree: LabelGate, uvd.ConflictGate and SmoothRealGate re-run on
+   wiped classes (TESTING #174 carries the lines).
+
+## D258 (v19.29) — Batch 39, round 2: the seam band stays white under a slight "~v", and the init-speed readout is sized for three digits
+
+The last two changes of the 2026-10-13 session, both user spec, both
+UI-only (no compile / reconcile / IO path touched; DetermGates not
+implicated).
+
+1. THE SMOOTHING BAND TINTS RED ONLY FOR A FULL "≠v". His words: "Only
+   make smoothing window turn red if a speed conflict large enough to
+   have a 'not equals' sign is present [still white if just a '~v']".
+   Batch 38 (D256 §1) had keyed GraphEditor.smoothingCausedDrift on the
+   three-state's level ≥ 1 so the red band and the badge's D141 hint
+   agreed with the drawn glyph — which made every slightly-conflicted
+   smoothed follower's band red. Now: the pre-check reads
+   driftLevel(p, 0) == 2 (a full ≠v only — a " ~v" follower keeps a
+   white band and its resolve submenu offers the ops like any other
+   "~v"), and the window-at-zero test is the historic one again
+   (SectionNames.speedLevel(split) < 2: a residual that would still
+   read "≠v" with the window at zero is the seam's own, anything less
+   counts as caused by the smoothing — exactly the pre-batch-38 ≤ 0.2
+   rule). The D141 hint line and the init-speed window's smoothing
+   sentence follow the same predicate (unchanged code paths).
+   Consequence stated in CLAUDE.md: a smoothed seam whose suspended
+   residual is itself a slight (0.005-0.2) gap is "caused by smoothing"
+   again, as it was before batch 38.
+
+2. THE INIT-SPEED READOUT IS SIZED FOR "real 999.99". His words: "the
+   button for the real readout appears to stick out too far to the
+   right. If this is to compensate for if the value gets very large, it
+   really should only compensate for up to three digits + two decimals
+   [if it were to go beyond that, aka 1000 m/s it'd be okay if the text
+   spilled out beyond the button or got cut off as that's extreme]".
+   The fixed slot (D254's Readout width rule, kept while shown since
+   D257 §2) was measured on Gestures.realSpeedText(INIT_SPEED_MAX) =
+   "real 10000.00"; it now measures realSpeedText(999.99). A real speed
+   of 1000 m/s or more is ellipsized inside the slot (the Label's max
+   width stays fixed) — accepted, nobody rides that. Measured on the
+   batch-38 fixture (-Dfvd.initspeedprobe): the window is 276 px wide
+   without a conflict and 352 px with one (was 365.3), Cancel's right
+   edge 262.0 == the box's right edge in the narrow state, every one
+   of the probe's 39 checks green; the three WINSHOT povrow lines
+   unchanged (1127.3 / 1197.3 / 1197.3 px, all "fits").
+
+Verification: wiped rebuild rc 0, gates javac rc 0; LabelGate 182,
+uvd.ConflictGate 87; -Dfvd.initspeedprobe fails=0 (39), -Dfvd.winshot
+the three povrow lines "fits" + "trackpiece rows identical=true".
+Committed together with D252-D257 (the first commit since v19.22).

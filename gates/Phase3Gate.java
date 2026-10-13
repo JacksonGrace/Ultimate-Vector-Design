@@ -1965,6 +1965,106 @@ public class Phase3Gate {
                     + "stalls, with the lift design/true never drop "
                     + "below %.2f / %.2f m/s (floor 8)", worstD, worstT));
         }
+
+        // 55k (v19.27, D257 — the snapCore HOLD KNIFE EDGE): a held
+        // ACCEL control (both flags, target 20, 0.5 g tied) from 1.5 s
+        // to the end of a STEEP DIVE (geo: pitch −50 °/s for 1 s, then a
+        // straight ~55° drop) — the natural gain g·sin 55° ≈ 0.82 g beats
+        // the 0.5 g brake, so a dropped hold could never be regained.
+        // Before the fix the post-snap rounding (0-1 ulp, either side)
+        // decided "crossed" per step and this fixture leaked 312 of the
+        // 333 governed samples after the snap (worst 9.8 m/s, end 29.85
+        // instead of 20). Pinned: from the first at-target sample to the
+        // control's last governed sample every DESIGN and every REAL
+        // sample sits within EPS (1e-9) of the target, the section ends
+        // ON it, and at least one held sample sits ABOVE the target by
+        // ≥ 1 ulp — the step where the bare sign test read "not crossed"
+        // (the knife edge is present in the fixed build's own numbers).
+        {
+            double vt = 20;
+            Coaster co = diveFixture(vt, true);
+            TrackCompiler.Result r = TrackCompiler.compile(co, dt);
+            List<FVDIntegrator.Sample> s = r.samples();
+            int first = -1, gov = 0;
+            int offD = 0, offR = 0, heldAbove = 0, heldExact = 0;
+            double worstD = 0, worstR = 0;
+            for (int i = 0; i < s.size(); i++) {
+                double t = s.get(i).t();
+                if (t < 1.5 - 1e-9 || t >= 5.0 - 1e-9) continue;
+                double vD = s.get(i).v(), vR = r.trueV()[i];
+                if (first < 0 && Math.abs(vD - vt) <= 1e-9) first = i;
+                if (first < 0) continue;
+                gov++;
+                if (Math.abs(vD - vt) > 1e-9) {
+                    offD++; worstD = Math.max(worstD, Math.abs(vD - vt));
+                } else if (vD > vt) {
+                    heldAbove++;
+                } else if (vD == vt) {
+                    heldExact++;
+                }
+                if (Math.abs(vR - vt) > 1e-9) {
+                    offR++; worstR = Math.max(worstR, Math.abs(vR - vt));
+                }
+            }
+            double vEnd = s.get(s.size() - 1).v();
+            double dive = Math.toDegrees(Math.asin(
+                -s.get(s.size() - 1).T().y()));
+            check(first > 0 && gov > 300 && offD == 0 && offR == 0
+                && heldAbove > 0 && Math.abs(vEnd - vt) <= 1e-9
+                && dive > 50,
+                String.format("55k held ACCEL control on a %.0f° dive "
+                    + "(brake 0.5 g < slope): snapped at sample %d, %d "
+                    + "governed samples after it, design off-target %d "
+                    + "(worst %.1e) real off-target %d (worst %.1e), "
+                    + "held above target %d / exactly on it %d, end "
+                    + "%.9f (target %.0f)", dive, first, gov, offD,
+                    worstD, offR, worstR, heldAbove, heldExact, vEnd, vt));
+        }
+
+        // 55l (D257): the same fixture MIN-ONLY (a floor) — at the
+        // target with the drift UP no flag is violated, so the fix must
+        // add no hold: the train runs away above the target.
+        {
+            double vt = 20;
+            Coaster co = diveFixture(vt, false);
+            TrackCompiler.Result r = TrackCompiler.compile(co, dt);
+            List<FVDIntegrator.Sample> s = r.samples();
+            double vEnd = s.get(s.size() - 1).v();
+            double tEnd = r.trueV()[s.size() - 1];
+            boolean reached = false;
+            for (FVDIntegrator.Sample sm : s) {
+                if (Math.abs(sm.v() - vt) <= 1e-9) { reached = true; break; }
+            }
+            check(reached && vEnd > vt + 1 && tEnd > vt + 1,
+                String.format("55l min-only floor on the dive: reaches "
+                    + "%.0f then runs free — end design %.3f / real %.3f "
+                    + "(> %.0f, no phantom hold)", vt, vEnd, tEnd, vt + 1));
+        }
+    }
+
+    /** 55k/55l fixture: a geo DIVE (pitch −50 °/s for 1 s, then straight)
+     *  from 90 m at 10 m/s with an ACCEL control (target vt, 0.5 g tied,
+     *  min on, max per `maxOn`) from 1.5 s to the 5 s end. */
+    static Coaster diveFixture(double vt, boolean maxOn) {
+        Coaster co = new Coaster();
+        co.v0 = 10;
+        TrackPiece p = new TrackPiece(0, 90, 0, 0);
+        List<List<BezierBaker.Node>> lanes = new ArrayList<>();
+        lanes.add(nodes(new double[][]{
+            {0, -50}, {1, -50}, {1.2, 0}, {5, 0} }));
+        lanes.add(nodes(new double[][]{ {0, 0}, {5, 0} }));
+        lanes.add(nodes(new double[][]{ {0, 0}, {5, 0} }));
+        GeoSection gs = new GeoSection(lanes, 10);
+        SpeedControl c = new SpeedControl(1.5, 3.5);
+        c.type = SpeedControl.ACCEL;
+        c.speed = vt;
+        c.accel = 0.5;
+        c.decel = 0.5;
+        c.maxLimit = maxOn;
+        gs.speedCtls.add(c);
+        p.sections.add(gs);
+        co.pieces.add(p);
+        return co;
     }
 
     static double vAtT(List<FVDIntegrator.Sample> s, double t) {

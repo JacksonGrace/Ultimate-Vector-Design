@@ -455,6 +455,15 @@ public class Coaster {
         for (Section s : piece.sections) {
             if (s instanceof BridgeSection) return false;
         }
+        mirrorPieceCore(piece);
+        return true;
+    }
+
+    /** mirrorPiece's body behind its refusals (batch 37 — shared with
+     *  mirrorRun, which mirrors bridge-ending pieces too: a bridge
+     *  section has no graphs to negate, it re-solves onto the
+     *  mirrored pieces). The arithmetic is mirrorPiece's, verbatim. */
+    private static void mirrorPieceCore(TrackPiece piece) {
         for (Section s : piece.sections) {
             if (s instanceof LaneSection ls) {
                 negateLane(ls.lanes.get(1));
@@ -489,6 +498,142 @@ public class Coaster {
         piece.rollDeg = -piece.rollDeg;
         piece.designRollDeg = -piece.designRollDeg;
         piece.sRollDeg = -piece.sRollDeg;   // held seam bank mirrors
+    }
+
+    /** Why mirrorRun(head) would refuse, null = it runs (batch 37 —
+     *  the Track Piece window's Mirror gray reason; the UI prefixes
+     *  "Mirror refused — ", so the sentences are lower-case
+     *  fragments). An ORPHAN bridge at the run's tail refuses: its
+     *  frozen target-side solve inputs (poses, curvature/jerk
+     *  vectors, roll rates) would all need reflecting — a LIVE
+     *  bridge re-captures them every compile. */
+    public String mirrorRunWhy(int head) {
+        if (head < 0 || head >= pieces.size()
+                || runStartOf(head) != head) {
+            return "that piece is not the start of its track piece.";
+        }
+        int re = runEndOf(head);
+        for (int q = head; q <= re; q++) {
+            if (pieces.get(q).sections.isEmpty()) {
+                return "the track piece holds an empty piece.";
+            }
+        }
+        if (endsWithBridge(re)) {
+            return "delete or convert the orphaned bridge at the end"
+                + " first.";
+        }
+        return null;
+    }
+
+    /** MIRROR A WHOLE RUN (batch 37 — RUN AS PIECE, the Track Piece
+     *  window's "Mirror"): flip pieces [head..runEndOf(head)]
+     *  horizontally about the vertical plane through the ANCHOR's —
+     *  the head's — entry heading. Every piece takes mirrorPiece's
+     *  graph negation + own-heading conjugation (mirrorPieceCore);
+     *  the pieces AFTER the head additionally reflect their STORED
+     *  placement about the head's plane: heading psi → 2·psi0 − psi
+     *  (the canonical pair stays exact — only its psi moves), the
+     *  yaw delta negates, x/z reflect, and the held seam heading —
+     *  an absolute WORLD heading (strictEntry / eulerOf) — reflects
+     *  too, wrapped to ±180. Mirror-invariant and therefore
+     *  untouched: locks, sPitchDeg, sSmoothLen, the pitch tiers,
+     *  bridge mode/locks/lengths/lastOptDist/optLen. Bridges get
+     *  optSig := null — FIRST SIGHT is record-only in
+     *  autoReoptimizeBridges (the copySection rule), so the target
+     *  stays ON its reflected placement instead of being re-marched
+     *  — and the manual-mode noneStash (D97) is REFLECTED with the
+     *  target it records (review round: nulling it sent the round
+     *  trip back to an optimize mode down the fresh-bridge branch —
+     *  Optimize length forced on, the user's length replaced by the
+     *  knee): a stash that read UNTOUCHED before the mirror is
+     *  re-written from the target's mirrored fields, so it reads
+     *  untouched bit for bit; a hand-moved one reflects by the same
+     *  arithmetic and stays hand-moved by the same distance. The
+     *  head itself takes mirrorPieceCore alone, so a
+     *  run of ONE is field-for-field and compile-bitwise mirrorPiece
+     *  (MirrorGate j); multi-piece runs land on the reflection to
+     *  float dust (≤ 2e-11 m measured), mirror twice returns to
+     *  dust, not bits. Other runs are never touched. False = refused
+     *  (mirrorRunWhy), nothing written. */
+    public boolean mirrorRun(int head) {
+        if (mirrorRunWhy(head) != null) return false;
+        int re = runEndOf(head);
+        TrackPiece h = pieces.get(head);
+        double x0 = h.x, z0 = h.z;
+        // the mirror plane's heading: canonical psi + the yaw delta
+        double psi0 = TrackCompiler.pieceCanon(h,
+            new Vec3(h.x, h.y, h.z)).psiDeg();
+        // the manual-mode stashes, judged against the placement they
+        // recorded BEFORE it reflects (GraphEditor.setBridgeOptMode's
+        // untouched test, verbatim)
+        List<BridgeSection> stashed = new ArrayList<>();
+        List<Boolean> stashClean = new ArrayList<>();
+        for (int q = head; q < re; q++) {
+            for (Section s : pieces.get(q).sections) {
+                if (s instanceof BridgeSection bs && bs.noneStash != null
+                        && bs.noneStash.length >= 7) {
+                    TrackPiece t = pieces.get(q + 1);
+                    double[] st = bs.noneStash;
+                    stashed.add(bs);
+                    stashClean.add(Math.abs(t.x - st[1]) < 1e-9
+                        && Math.abs(t.y - st[2]) < 1e-9
+                        && Math.abs(t.z - st[3]) < 1e-9
+                        && Math.abs(t.yawDeg - st[4]) < 1e-9
+                        && Math.abs(t.pitchDeg - st[5]) < 1e-9
+                        && Math.abs(t.rollDeg - st[6]) < 1e-9);
+                }
+            }
+        }
+        for (int q = head; q <= re; q++) {
+            mirrorPieceCore(pieces.get(q));
+        }
+        // heading direction (cos, 0, −sin) ⇒ horizontal plane normal
+        double rad = Math.toRadians(psi0);
+        double nx = Math.sin(rad), nz = Math.cos(rad);
+        for (int q = head + 1; q <= re; q++) {
+            TrackPiece p = pieces.get(q);
+            if (p.canonOrient != null) {
+                p.canonPsiDeg = 2 * psi0 - p.canonPsiDeg;
+                p.baseOrient = Quat.aboutY(p.canonPsiDeg)
+                    .mul(p.canonOrient);
+            } else {
+                double psiB = TrackCompiler.headingDeg(p.baseOrient);
+                p.baseOrient = Quat.aboutY(2 * psi0 - psiB).mul(
+                    Quat.aboutY(-psiB).mul(p.baseOrient));
+            }
+            p.yawDeg = -p.yawDeg;
+            double d = (p.x - x0) * nx + (p.z - z0) * nz;
+            p.x -= 2 * d * nx;
+            p.z -= 2 * d * nz;
+            // the held heading is an absolute world heading
+            p.sYawDeg = TrackPiece.wrap180(2 * psi0 - p.sYawDeg);
+        }
+        for (int q = head; q <= re; q++) {
+            for (Section s : pieces.get(q).sections) {
+                if (s instanceof BridgeSection bs) {
+                    bs.optSig = null;
+                    int k = stashed.indexOf(bs);
+                    if (k < 0 || q + 1 > re) {
+                        bs.noneStash = null;
+                        continue;
+                    }
+                    TrackPiece t = pieces.get(q + 1);
+                    double[] st = bs.noneStash.clone();
+                    if (stashClean.get(k)) {
+                        st[1] = t.x; st[2] = t.y; st[3] = t.z;
+                        st[4] = t.yawDeg; st[5] = t.pitchDeg;
+                        st[6] = t.rollDeg;
+                    } else {
+                        double d = (st[1] - x0) * nx + (st[3] - z0) * nz;
+                        st[1] -= 2 * d * nx;
+                        st[3] -= 2 * d * nz;
+                        st[4] = -st[4];
+                        st[6] = -st[6];
+                    }
+                    bs.noneStash = st;
+                }
+            }
+        }
         return true;
     }
 
@@ -569,6 +714,7 @@ public class Coaster {
             StraightCurveSection out = new StraightCurveSection(els, sc.vDesign);
             out.reversed = sc.reversed;
             out.vPinned = sc.vPinned;
+            out.vRealAnchored = sc.vRealAnchored;   // D256: same entry seam
             out.viewOtherDomain = false;
             out.speedCtls.addAll(SpeedControl.copyList(sc.speedCtls));
             out.speedMarks.addAll(sc.speedMarks);
@@ -580,6 +726,7 @@ public class Coaster {
             : new ForceSection(copyLanes(ls.lanes), ls.vDesign);
         out.reversed = ls.reversed;
         out.vPinned = ls.vPinned;
+        out.vRealAnchored = ls.vRealAnchored;   // D256: same entry seam
         out.domain = ls.domain;
         out.viewOtherDomain = false;
         out.viewOtherRate = false;
@@ -742,6 +889,17 @@ public class Coaster {
         return p;
     }
 
+    /** A junction of EITHER kind follows piece p inside its run (batch
+     *  36, D254 — the "Affect Subsequent Strict Seams" row shows only
+     *  then): a LIVE trailing bridge (target present) or a strict
+     *  follower right after p. An orphan bridge / a run tail = false.
+     *  == p < runEndOf(p). Bridges count because the flag's own
+     *  contract carries bridge targets (carryDownstream) and the app
+     *  names a bridge exit "Strict Seam n (bridge)". */
+    public boolean hasSubsequentJunction(int p) {
+        return p >= 0 && p < pieces.size() && runEndOf(p) > p;
+    }
+
     /** The run HEADS in list order — one entry per run (v19.19, D248
      *  — RUN AS PIECE: the toolbar selector, the '+' attach/bridge
      *  lists and the export picker enumerate these). Empty list on
@@ -831,6 +989,49 @@ public class Coaster {
         pieces.addAll(t + 1, block);
         block.get(0).followPrev = false;
         return t + 1;
+    }
+
+    /** MOVE A WHOLE RUN TO ANOTHER COASTER (batch 37 — RUN AS PIECE,
+     *  the Track Piece window's "Switch Coaster…"): the contiguous
+     *  block head..runEndOf(head) leaves this coaster and lands, in
+     *  order, at the END of dest's piece list. Every link is
+     *  index-relative INSIDE the block, so followers keep following
+     *  their predecessors and internal bridges keep targeting the
+     *  next block element; the compile reads only pieces + friction,
+     *  so with EQUAL friction the run compiles BITWISE there (RunGate
+     *  k). No TrackPiece field is touched EXCEPT the head's
+     *  followPrev, normalized to false (the copyRun/moveRun rule — an
+     *  inert orphaned-follower flag must not go live behind dest's
+     *  last piece); the source's successor takes deleteRun's belt.
+     *  REFUSES (−1, both lists untouched): a null/same destination, a
+     *  non-head, DIFFERENT friction, and a destination whose last
+     *  piece ends in an ORPHAN bridge (it would seize the moved head
+     *  as its target — the copyRun refusal). A run that itself ends
+     *  in an orphan bridge MAY move: it lands last and stays orphan.
+     *  The source may go empty (D239). v0 of either coaster is the
+     *  CALLER's (the deleteRun precedent). Returns the moved head's
+     *  index in dest. */
+    public int moveRunTo(Coaster dest, int head) {
+        if (dest == null || dest == this || head < 0
+                || head >= pieces.size() || runStartOf(head) != head) {
+            return -1;
+        }
+        if (dest.fricRoll != fricRoll || dest.fricAir != fricAir) return -1;
+        if (dest.listEndsInOrphanBridge()) return -1;
+        int re = runEndOf(head);
+        List<TrackPiece> block = new ArrayList<>(pieces.subList(head, re + 1));
+        pieces.subList(head, re + 1).clear();
+        block.get(0).followPrev = false;
+        if (head < pieces.size()) {
+            TrackPiece succ = pieces.get(head);
+            if (succ.followPrev
+                    && (head == 0 || endsWithBridge(head - 1))) {
+                succ.followPrev = false;   // deleteRun's belt
+            }
+        }
+        int nh = dest.pieces.size();
+        dest.pieces.addAll(block);
+        return nh;
     }
 
     /** connectStrict for a WHOLE RUN (D248): moveRun the run headed
@@ -1714,6 +1915,7 @@ public class Coaster {
         prevLeft.rollAbsolute = lPrev.rollAbsolute;
         prevLeft.ypAbsolute = lPrev.ypAbsolute;
         prevLeft.vPinned = lPrev.vPinned;
+        prevLeft.vRealAnchored = lPrev.vRealAnchored;   // D256: keeps the entry
         System.arraycopy(lPrev.endFollows, 0, prevLeft.endFollows, 0, 3);
         List<List<BezierBaker.Node>> rightLanes =
             splitLanes(lNext.lanes, cutB, true);
@@ -2681,8 +2883,49 @@ public class Coaster {
      *  the septic FALLBACK's sweep for when a later manual move
      *  breaks the landing). Deterministic — same geometry + same
      *  dist = the one same bridge. */
+    /** Re-capture the bridge's TARGET-side solve inputs off the target
+     *  piece AS IT IS NOW (2026-09-25, the user's slow-bridge-spinner
+     *  report): the UI's explicit re-place runs BEFORE any compile has
+     *  seen the edit it follows (a typed pitch/roll, a lock flip), so
+     *  the march and the stamped signature were built on the PREVIOUS
+     *  compile's head — the stamp then never matched the next capture
+     *  and the auto pass re-marched the bridge again (one wasted
+     *  march + knee + compile per click, doubling under Optimize
+     *  length whose knee runs per march). Exactly what
+     *  TrackCompiler.compile captures for this bridge, so the explicit
+     *  place lands on the fixed point the loop reached before —
+     *  bitwise the same end state, fewer passes. Model-only callers
+     *  (the gates, fresh bridges) keep calling optimizeBridge as
+     *  before. */
+    public void captureBridgeTarget(BridgeSection bs, int targetIdx) {
+        if (bs == null || targetIdx < 0 || targetIdx >= pieces.size()) return;
+        TrackCompiler.captureTargetHead(bs, pieces.get(targetIdx),
+            INTEGRATE_DT, fric());
+    }
+
     public void optimizeBridge(BridgeSection bs, int targetIdx,
                                double dist, boolean alignYaw) {
+        optimizeBridge(bs, targetIdx, dist, alignYaw, false);
+    }
+
+    /** holdKnee = a LIVE gesture event re-placing an "Optimize length"
+     *  bridge at its LAST knee (D253; the parameter since the D254
+     *  review): the settle's own re-knee below is skipped too — it
+     *  ran the full ladder per mouse event for a LOCKSTEP target.
+     *  The caller leaves BridgeSection.kneePending set, so the first
+     *  at-rest pass re-knees with holdKnee = false (this method's
+     *  historic body, bitwise). */
+    public void optimizeBridge(BridgeSection bs, int targetIdx,
+                               double dist, boolean alignYaw,
+                               boolean holdKnee) {
+        long profT = Prof.t();
+        try { optimizeBridgeBody(bs, targetIdx, dist, alignYaw, holdKnee); }
+        finally { Prof.add("optimizeBridge", profT); }
+    }
+
+    private void optimizeBridgeBody(BridgeSection bs, int targetIdx,
+                                    double dist, boolean alignYaw,
+                                    boolean holdKnee) {
         bs.lastOptDist = dist;   // the auto-reoptimize path re-applies
                                  // at this length (v13.10, D84), and
                                  // the march spine reproduces from it
@@ -2701,7 +2944,7 @@ public class Coaster {
         // settled seams: a contracting knee converges in one; a
         // still-moving knee keeps the second answer (bounded by
         // design — never a loop; the rest guarantee re-captures).
-        if (settled && bs.optLen) {
+        if (settled && bs.optLen && !holdKnee) {
             double d2 = optimalBridgeLength(bs, alignYaw);
             if (Math.abs(d2 - dist) > 1e-9) {
                 dist = d2;
@@ -2748,6 +2991,26 @@ public class Coaster {
      *  ONE extra compile settles — no feedback loop. Returns true
      *  when the caller must recompile. */
     public boolean autoReoptimizeBridges(TrackCompiler.Result r) {
+        return autoReoptimizeBridges(r, false);
+    }
+
+    /** live = a LIVE GESTURE event (the shell's gestureHot — a node,
+     *  handle, gizmo or strip drag; v19.24, D253, the user's second
+     *  slow-bridge file): an "Optimize length" bridge re-marches at
+     *  its LAST length instead of re-running the knee ladder
+     *  (optimalBridgeLength — 8 candidates + 3 bisections, each a
+     *  virtual march + a probe integration: 300-550 ms on a banked
+     *  crest, per mouse event, 90 % of a 520-600 ms drag event),
+     *  keeps the PROPER signature stamp (a never-matching one would
+     *  run every live rebuild to its pass cap) and sets
+     *  BridgeSection.kneePending, which the FIRST at-rest rebuild
+     *  (the release's settleIfPending) reads as "re-knee even though
+     *  the stamp matches" — the settled
+     *  document is the same pure function of the graphs as before
+     *  (gated: settled placements old vs new to dust), only the
+     *  mid-drag frames show the bridge at the previous knee. At rest
+     *  (live = false) bitwise the historic pass. */
+    public boolean autoReoptimizeBridges(TrackCompiler.Result r, boolean live) {
         boolean changed = false;
         int spanIdx = 0;
         for (int p = 0; p < pieces.size(); p++) {
@@ -2768,14 +3031,24 @@ public class Coaster {
                     bs.optSig = sig;
                     continue;
                 }
-                if (sigEq(sig, bs.optSig)) continue;
+                // a PENDING KNEE (D253): a live event marched this
+                // bridge at its last length — the first rest pass
+                // re-knees even though the stamp matches
+                boolean kneeDue = !live && bs.optLen && bs.kneePending;
+                if (sigEq(sig, bs.optSig) && !kneeDue) continue;
                 boolean py = bs.optMode == BridgeSection.OPT_POS_YAW;
-                double dist = bs.optLen
+                // a LIVE event keeps the last knee (D253); the stamp
+                // stays PROPER so the loop still converges in one
+                // extra pass (a never-matching stamp would run every
+                // live rebuild to its 12-pass cap)
+                boolean holdKnee = live && bs.optLen && bs.lastOptDist > 0;
+                double dist = bs.optLen && !holdKnee
                     ? optimalBridgeLength(bs, py)
                     : bs.lastOptDist > 0 ? bs.lastOptDist
                     : Math.max(1, spanIdx < r.spans().size()
                         ? r.spans().get(spanIdx).sLen() : 1);
-                optimizeBridge(bs, p + 1, dist, py);
+                optimizeBridge(bs, p + 1, dist, py, holdKnee);
+                bs.kneePending = holdKnee;
                 changed = true;
             }
         }
@@ -2817,6 +3090,7 @@ public class Coaster {
 
     private boolean makeGraphsRealBody(int pieceIdx, int secIdx, double dt,
                                        double spacing, double adaptTol) {
+        resolveRefusedWhy = null;
         TrackPiece piece = pieces.get(pieceIdx);
         Section sec = piece.sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
@@ -2852,9 +3126,19 @@ public class Coaster {
         // compares and writes at (v19.8, D237: the ops used to read
         // one dt INSIDE, so a fresh resolve moved by ~mm/s dust on
         // the next rebuild; the boundary read makes it a bitwise
-        // fixed point). No previous span = the run entry: keep i0.
-        int ipTrue = spanIdx > 0 ? r.spans().get(spanIdx - 1).i1()
-                                 : sp.i0();
+        // fixed point). No UPSTREAM = the run entry: keep i0 — keyed
+        // on the run topology since batch 37 (hasUpstream): the old
+        // flattened `spanIdx > 0` test read the PREVIOUS piece's last
+        // sample, another run, for a detached head at piece index > 0.
+        int ipTrue = hasUpstream(pieceIdx, secIdx)
+            ? r.spans().get(spanIdx - 1).i1()
+            : sp.i0();
+        // a bridged-in first section the train stalls before or
+        // crawls into: a fit at that speed re-solves the head at a
+        // curvature the bridge cannot absorb (review round 4)
+        resolveRefusedWhy = secIdx == 0 && bridgedInto(pieceIdx)
+            ? SectionNames.bridgeCrawlWhy(r.trueV()[ipTrue]) : null;
+        if (resolveRefusedWhy != null) return false;
         double vTrue = Math.max(0.5, r.trueV()[ipTrue]);
         // TILTED piece (v16.1, D106 — the refreezeSpeed rationale):
         // the fit below reads the REAL (tilted) samples, so the tilt
@@ -2873,6 +3157,7 @@ public class Coaster {
         if (sec instanceof StraightCurveSection) {
             sec.vDesign(vTrue);
             sec.vPinned(false);   // resolved: re-join the speed flow
+            sec.vRealAnchored(true);   // and keep following the real speed (D256)
             return true;
         }
         LaneSection realFit = fitLanes(
@@ -2911,6 +3196,10 @@ public class Coaster {
             carrySpeedCtls(sec, sp, r.samples(), realFit, 0,
                 Double.POSITIVE_INFINITY);
         }
+        // the fitted section is REAL-ANCHORED (v19.27, D256): fitted at
+        // the true entry speed, it keeps landing there under upstream
+        // edits (fitLanes leaves vPinned false)
+        realFit.vRealAnchored = true;
         piece.sections.set(secIdx, realFit);
         return true;
     }
@@ -3186,15 +3475,154 @@ public class Coaster {
         return refreezeSpeedOnly(pieceIdx, secIdx, dt);
     }
 
+    /** Does piece p's section k ENTER from compiled track of its own
+     *  RUN (batch 37)? A continuation (k > 0), a strict-seam
+     *  follower's first section or a bridged-in piece's first section
+     *  does; a RUN HEAD's first section does not — its real entry
+     *  speed IS its design speed (Pass D seeds every run at its first
+     *  section's vDesign), so it has no seam sample to read. The
+     *  speed resolve ops key their anchor read on this, never on the
+     *  FLATTENED span index: that read the PREVIOUS piece's last
+     *  sample — another run — for a detached head at piece index
+     *  > 0. */
+    public boolean hasUpstream(int p, int k) {
+        return k > 0 || followsPrev(p) || bridgedInto(p);
+    }
+
+    /** Does any strict seam of the document SMOOTH (review round,
+     *  E1)? Only then can the displayed compile and the resolve ops'
+     *  read (compileForFit — every seam's smoothing suspended)
+     *  disagree about a seam speed. */
+    public boolean anySmoothing() {
+        for (TrackPiece p : pieces) if (p.sSmoothLen > 0.01) return true;
+        return false;
+    }
+
+    /** What refreezeSpeedOnly WRITES into a piece-FIRST section (a
+     *  strict follower's or a bridged-in piece's — review round, E1):
+     *  the real seam speed with every seam's SMOOTHING SUSPENDED, the
+     *  op's own read, floored like its write. The initial-speed
+     *  window's dry run read the DISPLAYED compile instead; behind a
+     *  smoothed seam the two differ by centimetres per second, so the
+     *  button never grayed and every click after the first rolled the
+     *  document back. A difference the smoothing alone opens is the
+     *  window's to close (D141), never the design speed's. NaN = no
+     *  such section / nothing compiled. ONE compile — callers cache
+     *  per displayed compile and ask only while anySmoothing(). */
+    public double firstSectionSettle(int pieceIdx, double dt) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()
+                || pieces.get(pieceIdx).sections.isEmpty()
+                || !hasUpstream(pieceIdx, 0)) return Double.NaN;
+        Section sec = pieces.get(pieceIdx).sections.get(0);
+        if (sec.reversed() || sec instanceof BridgeSection) {
+            return Double.NaN;
+        }
+        TrackCompiler.Result r = compileForFit(dt);
+        int spanIdx = 0;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        if (spanIdx < 1 || spanIdx > r.spans().size()) return Double.NaN;
+        int ip = r.spans().get(spanIdx - 1).i1();
+        if (ip < 0 || ip >= r.trueV().length) return Double.NaN;
+        return Math.max(0.5, r.trueV()[ip]);
+    }
+
+    /** DRY RUN of "Set Design to Real" (batch 37 — the initial-speed
+     *  window's readout + gray rule): {the REAL seam speed — Pass D's
+     *  true speed at the previous span's last sample, honest, may be
+     *  0 —, the vDesign the op SETTLES at once the exact reconcile
+     *  has run}; null = the section has no real entry distinct from
+     *  its design speed (bad index, a bridge, a legacy reversed
+     *  section, a run head, nothing compiled). Reads the arrays it is
+     *  given — the DISPLAYED compile — and writes nothing. A piece's
+     *  FIRST section is never reconciled, so it settles on the op's
+     *  own write max(0.5, real); a continuation settles where
+     *  reconcileChainedSpeeds lands a REAL-ANCHORED section (v19.27,
+     *  D256 — the op flags it, Section.vRealAnchored): max(0.1, the
+     *  real seam speed), the reconcile's own floor — KEEP THE TWO IN
+     *  STEP. (Until D256 this copied the D237 proximity gate and
+     *  predicted the previous section's DESIGN end for every sub-0.2
+     *  gap — correctly, since the reconcile then snapped the write
+     *  back: the user's unresolvable 0.078 m/s conflict.) The op
+     *  writes max(0.5, …) off its smoothing-suspended read; the exact
+     *  settle corrects both to the displayed bits predicted here. */
+    public double[] realEntrySpeed(int pieceIdx, int secIdx,
+            List<FVDIntegrator.Sample> samples, double[] trueV,
+            List<TrackCompiler.Span> spans) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return null;
+        List<Section> ss = pieces.get(pieceIdx).sections;
+        if (secIdx < 0 || secIdx >= ss.size()) return null;
+        Section sec = ss.get(secIdx);
+        if (sec instanceof BridgeSection || sec.reversed()
+                || !hasUpstream(pieceIdx, secIdx)) return null;
+        if (samples == null || trueV == null || spans == null) return null;
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        if (spanIdx < 1 || spanIdx >= spans.size()) return null;
+        int ip = spans.get(spanIdx - 1).i1();
+        if (ip < 0 || ip >= trueV.length || ip >= samples.size()) return null;
+        double vReal = trueV[ip];
+        double vWrite = Math.max(0.5, vReal);   // refreezeSpeedOnly's write
+        if (secIdx == 0) return new double[]{ vReal, vWrite };
+        // a continuation: the flagged landing (reconcileChainedSpeeds)
+        return new double[]{ vReal, Math.max(0.1, vReal) };
+    }
+
     /** The SPEED HALF of the resolve op alone (v19.13, D242 — user
      *  spec for the initial-speed dialog's "Set Design to Real":
      *  "purely adjust the starting speed"): vDesign := the true seam
      *  speed + un-pin so it follows naturally — an orientation
      *  conflict (tilt / follow) is left EXACTLY as it stands. With
-     *  no such conflict this IS the whole resolve op. */
+     *  no such conflict this IS the whole resolve op. A RUN HEAD
+     *  (no upstream, batch 37) writes NOTHING and just un-pins: its
+     *  design speed already is its real entry speed. */
+    /** Why the last refreezeSpeedOnly / makeGraphsReal REFUSED on a
+     *  bridged-in first section (review round 4), null otherwise — the
+     *  op's own read decides (the smoothing-suspended compile), so the
+     *  UI posts the reason the model had, not one re-derived from the
+     *  displayed compile. Transient. */
+    public String resolveRefusedWhy;
+
+    /** DRY RUN of the bridged-in refusal (review round 4): the sentence
+     *  the resolve ops would refuse piece p's FIRST section with, off
+     *  the arrays given (the displayed compile), or null. The train
+     *  must arrive off the bridge at a usable speed
+     *  (SectionNames.bridgeCrawlWhy) — writing a crawl re-solves the
+     *  piece's head at a curvature the bridge's septic then absorbs
+     *  into hundreds of kilometres of track. Cheap: no compile. */
+    public String bridgeCrawlWhy(int pieceIdx, int secIdx,
+                                 List<FVDIntegrator.Sample> samples,
+                                 double[] trueV,
+                                 List<TrackCompiler.Span> spans) {
+        if (secIdx != 0 || !bridgedInto(pieceIdx)) return null;
+        double[] re = realEntrySpeed(pieceIdx, secIdx, samples, trueV,
+            spans);
+        return re == null ? null : SectionNames.bridgeCrawlWhy(re[0]);
+    }
+
+    /** Bridge arc growth past which a bridged-in write is a BLOW-UP
+     *  (review round 4): a slower crossing keeps the bridge's arc (the
+     *  sample count grows, the track does not); a head the bridge
+     *  cannot absorb multiplies it — 8× at 3 m/s, 30,000× at 0.55. */
+    static final double BRIDGE_BLOWUP_MUL = 3, BRIDGE_BLOWUP_ADD = 30;
+
     public boolean refreezeSpeedOnly(int pieceIdx, int secIdx, double dt) {
+        resolveRefusedWhy = null;
         Section sec = pieces.get(pieceIdx).sections.get(secIdx);
         if (sec.reversed() || sec instanceof BridgeSection) return false;
+        if (!hasUpstream(pieceIdx, secIdx)) {
+            // a RUN HEAD's real entry speed IS its design speed (Pass
+            // D's run entry): nothing to write. The flattened read
+            // below used to take the PREVIOUS piece's last sample —
+            // another run — for a detached head at piece index > 0
+            // (17.0 became 12.48 on the probe; refreezeRange on a
+            // tilted detached head inherited it)
+            sec.vPinned(false);
+            return true;
+        }
         TrackCompiler.Result r = compileForFit(dt);
         int spanIdx = secIdx;
         for (int p = 0; p < pieceIdx; p++) {
@@ -3202,12 +3630,113 @@ public class Coaster {
         }
         // the SEAM sample — the reconcile's own anchor read (D237,
         // see makeGraphsReal)
-        sec.vDesign(Math.max(0.5, r.trueV()[spanIdx > 0
+        double real = r.trueV()[spanIdx > 0
             ? r.spans().get(spanIdx - 1).i1()
-            : r.spans().get(spanIdx).i0()]));
+            : r.spans().get(spanIdx).i0()];
+        boolean bridged = secIdx == 0 && bridgedInto(pieceIdx);
+        double arcWas = 0;
+        if (bridged) {
+            // the train stalls on the bridge, or crawls off it:
+            // nothing usable to take. Writing the 0.5 floor re-blends
+            // the bridge onto it — half a million samples and a
+            // runaway end speed — and every later press flipped
+            // between the two (review round 2); a crawl of 0.55 m/s
+            // grew the bridge to 940 km and killed the renderer
+            // (round 4)
+            resolveRefusedWhy = SectionNames.bridgeCrawlWhy(real);
+            if (resolveRefusedWhy != null) return false;
+            // already there, to the seam's tolerance: write nothing,
+            // so a second press changes no bit
+            if (Math.abs(real - sec.vDesign())
+                    <= TrackCompiler.BRIDGE_ENTRY_TOL) {
+                sec.vPinned(false);
+                sec.vRealAnchored(true);   // resolved (D256; inert at k == 0)
+                return true;
+            }
+            arcWas = spanIdx >= 1 ? r.spans().get(spanIdx - 1).sLen() : 0;
+        }
+        double vWas = sec.vDesign();
+        boolean pinWas = sec.vPinned();
+        boolean anchWas = sec.vRealAnchored();
+        sec.vDesign(Math.max(0.5, real));
         sec.vPinned(false);   // re-join the speed flow
+        // the EXPLICIT real anchor (v19.27, D256): the reconcile keeps
+        // landing this section on its real seam speed from now on,
+        // whatever the gap's size — without it a sub-0.2 resolve was
+        // snapped back onto the design chain by the next rebuild
+        sec.vRealAnchored(true);
+        // FIXED POINT behind a BRIDGE (batch 37 — the bitwise ask): a
+        // bridged-in piece's first section is never reconciled, so
+        // this op owns its final bits — but the seam's real speed
+        // itself moves with the speed written (the bridge re-blends
+        // its design profile onto the target's speed, its time
+        // sampling follows, and friction is path-integrated): one
+        // write left 2.5e-3 m/s, a second press 1.9e-6, a third
+        // 1.4e-9. Re-read until the write reproduces itself — on
+        // some bridges the raw map has NO bit-level fixed point
+        // (review round 2: 2- and 3-cycles of adjacent doubles on two
+        // of the user's files ran every pass and ended a few ulp
+        // off). Pass D records the design speed AT the seam once the
+        // raw march is within TrackCompiler.BRIDGE_ENTRY_TOL of it,
+        // so the read comes back as the written bits and the loop
+        // ends there: that band IS the resting tolerance of a piece
+        // that copies (round 4 — REFREEZE_TOL only bounds a TILTED
+        // target's loop, whose seam never snaps). Belts: a value seen
+        // before ends the loop, so does a read on the 0.5 floor (the
+        // write stalled the bridge) — and a write that BLEW THE
+        // BRIDGE UP (its arc past BRIDGE_BLOWUP_MUL × the old one) is
+        // taken back with the reason, before anything renders it.
+        // Every other section reads a seam speed that does not
+        // depend on its own design speed (upstream geometry only)
+        // and needs no second look.
+        if (bridged) {
+            java.util.Set<Long> seen = new java.util.HashSet<>();
+            seen.add(Double.doubleToLongBits(sec.vDesign()));
+            for (int pass = 0; pass < REFREEZE_PASSES; pass++) {
+                TrackCompiler.Result r2 = compileForFit(dt);
+                if (spanIdx < 1 || spanIdx - 1 >= r2.spans().size()) break;
+                TrackCompiler.Span bsp = r2.spans().get(spanIdx - 1);
+                if (bsp.sLen() > BRIDGE_BLOWUP_MUL * arcWas
+                        + BRIDGE_BLOWUP_ADD) {
+                    double v = sec.vDesign();
+                    sec.vDesign(vWas);
+                    sec.vPinned(pinWas);
+                    sec.vRealAnchored(anchWas);
+                    // the blown-up compile re-captured the bridge's
+                    // stored solve inputs (bpose/bacc/bdyn): capture
+                    // them again at the restored state, so a refusal
+                    // leaves the document as the op's first read left
+                    // it (a save right after would otherwise carry the
+                    // blow-up's capture — orphan-only data, but data)
+                    compileForFit(dt);
+                    resolveRefusedWhy = SectionNames.bridgeBlowUpWhy(v,
+                        bsp.sLen(), arcWas);
+                    return false;
+                }
+                int ip = bsp.i1();
+                if (ip < 0 || ip >= r2.trueV().length) break;
+                double w = r2.trueV()[ip];
+                if (!(w > 0.5)
+                        || Math.abs(w - sec.vDesign()) <= REFREEZE_TOL
+                        || !seen.add(Double.doubleToLongBits(w))) {
+                    break;
+                }
+                sec.vDesign(w);
+            }
+        }
         return true;
     }
+
+    /** The bound of refreezeSpeedOnly's fixed-point re-read behind a
+     *  bridge (each pass gains ~3 digits: two to four in practice). */
+    static final int REFREEZE_PASSES = 12;
+
+    /** Where the re-read of a TILTED bridged-in target rests (m/s) —
+     *  its seam never snaps, so this is its only stop besides a
+     *  revisit; a copying target stops the moment its seam records
+     *  the design speed (TrackCompiler.BRIDGE_ENTRY_TOL, the same
+     *  size). Three orders above the widest cycle found (6.75e-14). */
+    static final double REFREEZE_TOL = 1e-11;
 
     // ---------- RANGE-SCOPED orientation resolve (v19.18, D247) ----------
     // An orientation conflict is a PIECE property (the design→true
@@ -3557,6 +4086,7 @@ public class Coaster {
             toDist ? Section.Domain.DISTANCE : Section.Domain.TIME,
             false, false, false, false, sec, sp);   // ctl-aware (D236)
         conv.vPinned = sec.vPinned();
+        conv.vRealAnchored = sec.vRealAnchored();   // D256: same entry seam
         // speed controls follow the domain flip (v18.0, D160)
         carrySpeedCtls(sec, sp, r.samples(), conv, 0,
             Double.POSITIVE_INFINITY);
@@ -3664,6 +4194,20 @@ public class Coaster {
                 // the user's resolution and snapped it back each
                 // rebuild — the unresolvable phantom. Flat sections
                 // (vMin ≈ vTrue) keep the historic test bitwise.
+                // EXPLICIT ANCHOR since v19.27 (D256 — the user's
+                // "last force section can't resolve its speed
+                // conflict" file): a section the resolve ops / the
+                // '+' real fork FLAGGED (Section.vRealAnchored) lands
+                // on the real seam speed UNCONDITIONALLY — the
+                // proximity gate below only ever recognized a
+                // resolution across a gap over 0.2 (amplified), so a
+                // 0.078 m/s resolve was rewritten onto the design chain
+                // on the next rebuild and the window rolled it back.
+                // The gate stays as the FALLBACK for sections nobody
+                // resolved (every existing document bitwise). KEEP IN
+                // STEP with realEntrySpeed (batch 37): the initial-
+                // speed window's dry run predicts where a resolve
+                // settles — the flagged landing, max(0.1, trueV).
                 if (ip < r.trueV().length) {
                     // floored where trueV was historically clamped
                     // (v18.6, D175 — the array records honest values)
@@ -3677,9 +4221,10 @@ public class Coaster {
                                 Math.max(0.1, r.trueV()[i]));
                         }
                     }
-                    if (Math.abs(vTrue - vIn) * (vTrue / vMin) > 0.2
-                            && Math.abs(sec.vDesign() - vTrue)
-                               < Math.abs(sec.vDesign() - vIn)) {
+                    if (sec.vRealAnchored()
+                            || (Math.abs(vTrue - vIn) * (vTrue / vMin) > 0.2
+                                && Math.abs(sec.vDesign() - vTrue)
+                                   < Math.abs(sec.vDesign() - vIn))) {
                         vIn = vTrue;
                     }
                 }
@@ -4600,6 +5145,7 @@ public class Coaster {
         preserveLanes(ls, conv, laneKeepMap(ls, ls instanceof GeoSection,
             ls.domain(), toRollG, toYpG, false, false, false));
         conv.vPinned = sec.vPinned();
+        conv.vRealAnchored = sec.vRealAnchored();   // D256: same entry seam
         // same domain + clock: speed controls carry verbatim (v18.0)
         carrySpeedCtls(sec, sp, r.samples(), conv, 0,
             Double.POSITIVE_INFINITY);
@@ -5506,6 +6052,11 @@ public class Coaster {
         // the second half is a no-op on the shared profile anyway)
         keep.vPinned(sec.vPinned());
         conv.vPinned = sec.vPinned();
+        // the REAL ANCHOR rides onto the half that keeps the ORIGINAL
+        // entry seam only (v19.27, D256): the other half's design
+        // speed is the profile at the cut — the design chain
+        keep.vRealAnchored(!left && sec.vRealAnchored());
+        conv.vRealAnchored = left && sec.vRealAnchored();
         // speed controls partition at the cut (v18.0, D160): each
         // half takes its share — the kept side exactly, the converted
         // side mapped when the output domain differs. cutNative = the
@@ -5590,6 +6141,10 @@ public class Coaster {
             // end, a 1-node right hold neither defines nor follows)
             System.arraycopy(ls.endFollows, 0, h.endFollows, 0, 3);
         }
+        // the REAL ANCHOR stays with the LEFT half (v19.27, D256 — it
+        // keeps the original entry seam); the right half's vDesign is
+        // the design profile at the cut, the D130 bitwise split
+        a.vRealAnchored = ls.vRealAnchored;
         if (ls.influenced()) {   // both halves stay influenced (D234;
                                  // hybrid-exact since D236 — the
                                  // deltas share the authoring axis)
@@ -5857,6 +6412,7 @@ public class Coaster {
         ms.rollAbsolute = a.rollAbsolute;
         ms.ypAbsolute = a.ypAbsolute;
         ms.vPinned(a.vPinned());
+        ms.vRealAnchored(a.vRealAnchored());   // D256: A's entry seam survives
         // speed controls: A's verbatim + B's shifted by A's extent
         // (v18.0, D160 — the split partition's exact inverse)
         ms.speedCtls.addAll(SpeedControl.copyList(a.speedCtls));
@@ -6151,6 +6707,7 @@ public class Coaster {
         // pin rides along, so the reconcile keeps leaving it alone and
         // the shape survives (vDesign already carries over above)
         conv.vPinned = sec.vPinned();
+        conv.vRealAnchored = sec.vRealAnchored();   // D256: same entry seam
         // speed controls carry (v18.0, D160 — mapped on domain flips)
         carrySpeedCtls(sec, sp, r.samples(), conv, 0,
             Double.POSITIVE_INFINITY);

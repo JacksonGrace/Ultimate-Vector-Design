@@ -99,11 +99,16 @@ public final class BridgeSection implements Section {
      *  two modes nothing aligns it, so it stays typeable (the value
      *  is de facto held). Locking captures the CURRENT angle (the
      *  held value IS the target piece's own field — nothing jumps).
-     *  The same padlocks show on the target's Track Piece window and
-     *  gate the bridge-end rig's rings (held axes only, manual and
-     *  position modes). Defaults (yaw unlocked, pitch + roll locked)
-     *  reproduce the old "optimize position and yaw" exactly — how
-     *  old files load (blen fields 6-8, missing = defaults). */
+     *  The bridge window's padlocks are the one surface (D254); the
+     *  bridge-end rig builds a ring per EDITABLE axis since v19.28
+     *  (D257, user spec — "only if the value in the box is grayed
+     *  out should you hide its respective gizmo": every axis under
+     *  manual and position modes, the held axes under optimize-
+     *  orientation; D249 built the held axes' rings only and none
+     *  under optimize-orientation). Defaults (yaw unlocked, pitch +
+     *  roll locked) reproduce the old "optimize position and yaw"
+     *  exactly — how old files load (blen fields 6-8, missing =
+     *  defaults). */
     public boolean lockYaw = false;
     public boolean lockPitch = true;
     public boolean lockRoll = true;
@@ -117,7 +122,8 @@ public final class BridgeSection implements Section {
      *  ring-drag this axis of the next piece? A held (locked) axis
      *  always; a free one only outside optimize-orientation, where
      *  the march aligns it (== !axisAligned). Every surface — the
-     *  bridge window, the target's Track Piece window, the rigs'
+     *  bridge window's boxes, the bridge-end rig's RING SET (D257 —
+     *  a ring exists exactly where the box is typeable), the rigs'
      *  write paths — reads this one predicate. */
     public boolean axisEditable(int axis) {
         return axisLocked(axis) || optMode != OPT_POS_YAW;
@@ -169,6 +175,12 @@ public final class BridgeSection implements Section {
      *  "first sight: record only" — file loads must never move
      *  pieces. */
     public static final double[] SIG_STALE = new double[0];
+
+    /** TRANSIENT (never saved, v19.24 D253): true after a LIVE-gesture
+     *  auto re-march kept the last "Optimize length" knee instead of
+     *  re-running the ladder — the first AT-REST auto pass re-knees
+     *  this bridge even though its stamp matches, then clears it. */
+    public boolean kneePending = false;
 
     /** The PLACEMENT-INVARIANT optimization inputs (v13.12, D86 —
      *  moved here so Coaster.optimizeBridge can STAMP it right after
@@ -239,6 +251,10 @@ public final class BridgeSection implements Section {
         b.lockPitch = lockPitch;
         b.lockRoll = lockRoll;
         b.noneStash = noneStash;
+        // an owed re-knee survives the copy (D254 review): a snapshot
+        // or Copy taken between a live march and its release settle
+        // would otherwise keep the held knee for good
+        b.kneePending = kneePending;
         return b;
     }
 

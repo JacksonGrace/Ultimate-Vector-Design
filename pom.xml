@@ -34,6 +34,17 @@
                main class gets the toolkit pre-initialized before its
                own main() runs, so the property would arrive too late -->
           <mainClass>uvd.Main</mainClass>
+          <!-- JDK 24+ (JEP 472) warns whenever a module loads a native
+               library without being granted native access; JavaFX's
+               graphics module loads its rendering DLLs at startup
+               (System::load in NativeLibLoader) — four WARNING lines
+               per launch, and a future JDK will BLOCK the load
+               instead. The flag grants it. "Apply and Restart"
+               re-launches with the same JVM arguments, so it carries
+               over. -->
+          <options>
+            <option>--enable-native-access=javafx.graphics</option>
+          </options>
         </configuration>
       </plugin>
     </plugins>

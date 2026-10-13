@@ -14,6 +14,20 @@ import java.util.*;
  *  c) elem-0 smoothIn: 0 == the historic 2 m ease BITWISE; 5 m
  *     stretches the entry bank ease; 0.5 m shortens it below the
  *     old floor.
+ *  d) THE SMOOTHING COMPILE'S REGRESSION PINS (batch 38, D256 — recorded
+ *     while the short-lived translational mode existed; kept in D257,
+ *     which removed that mode, as the smoothing's own regression belt;
+ *     on the (a) fixture):
+ *     d1 the settled compile's 64-bit sample checksum equals the value
+ *        recorded from the frozen pre-D256 snapshot (8 m
+ *        28808918c0612fbe / 20 m 0fc8182da8f4a418 over 1601 samples)
+ *        — the D140 closure, BITWISE; re-record on any deliberate
+ *        blend change;
+ *     d2 make-real on the smoothed compile (the D256 d5 round trip in
+ *        its closure form): applies, the structure of (a), the fresh
+ *        window-end seam has smoothing off, B's anchor == the smoothed
+ *        compile's window-end sample (1e-6), whole-track pathDev <
+ *        0.08, tail rigid.
  */
 public class SmoothRealGate {
 
@@ -277,10 +291,129 @@ public class SmoothRealGate {
             "c3 the ease IS the quintic (per-sample law, 5 m ease)",
             String.format("worst dev %.3f°", worstQ));
 
+        sectionD();
+
         System.out.println();
         System.out.println(fail == 0
             ? "ALL SMOOTH-REAL GATES PASS (" + pass + ")"
             : fail + " FAILURES (" + pass + " passed)");
         System.exit(fail == 0 ? 0 : 1);
+    }
+
+    // =================================================================
+    // (d) THE SMOOTHING COMPILE'S REGRESSION PINS (batch 38, D256;
+    //     reduced in D257 — the translational mode is gone)
+    // =================================================================
+
+    /** The (a) fixture, fresh: A [hill 6 s] | strict | B [turn 5 s,
+     *  hill 5 s], B's held pitch +6°, smoothing `len` m. */
+    static Coaster fixtureD(double len) {
+        Coaster c = new Coaster();
+        TrackPiece A = new TrackPiece(0, 21, 0, 0);
+        A.sections.add(new ForceSection(hillLanes(6), 26));
+        A.sections.add(new ForceSection(turnLanes(5), 26));
+        c.pieces.add(A);
+        int np = c.makeSeamStrict(0, 1, DT);
+        TrackPiece B = c.pieces.get(np);
+        B.sections.add(new ForceSection(hillLanes(5), 24));
+        B.sPitchDeg += 6;
+        B.sSmoothLen = len;
+        return c;
+    }
+
+    /** 64-bit checksum of every sample's pos/T/U/v/Gv/Gl/s/t bits —
+     *  the D256 design probe's checksum() verbatim (the recorded
+     *  reference values were produced by it on the frozen pre-D256
+     *  snapshot). */
+    static long checksum(List<FVDIntegrator.Sample> all) {
+        long h = 1469598103934665603L;
+        for (FVDIntegrator.Sample sm : all) {
+            double[] v = { sm.pos().x(), sm.pos().y(), sm.pos().z(),
+                sm.T().x(), sm.T().y(), sm.T().z(),
+                sm.U().x(), sm.U().y(), sm.U().z(), sm.v(), sm.Gv(), sm.Gl(),
+                sm.s(), sm.t() };
+            for (double d : v) {
+                h ^= Double.doubleToLongBits(d);
+                h *= 1099511628211L;
+            }
+        }
+        return h;
+    }
+
+    static void sectionD() throws Exception {
+        // ---- d1: the recorded checksums (the D140 closure, bitwise) ----
+        {
+            Coaster c = fixtureD(8);
+            TrackCompiler.Result r8 = rebuild(c);
+            long want8 = Long.parseUnsignedLong("28808918c0612fbe", 16);
+            check(r8.samples().size() == 1601 && checksum(r8.samples()) == want8,
+                "d1 the smoothing compile at 8 m == the recorded pre-D256 snapshot BITWISE",
+                String.format("%016x over %d samples (want 28808918c0612fbe / 1601)",
+                    checksum(r8.samples()), r8.samples().size()));
+            c.pieces.get(1).sSmoothLen = 20;
+            TrackCompiler.Result r20 = rebuild(c);
+            long want20 = Long.parseUnsignedLong("0fc8182da8f4a418", 16);
+            check(r20.samples().size() == 1601
+                    && checksum(r20.samples()) == want20,
+                "d1 the smoothing compile at 20 m == the snapshot's compile BITWISE",
+                String.format("%016x (want 0fc8182da8f4a418)",
+                    checksum(r20.samples())));
+            Coaster c2 = fixtureD(8);
+            TrackCompiler.Result rA = rebuild(c2);
+            check(checksum(rA.samples()) == want8,
+                "d1 a fresh fixture's settled compile repeats the checksum",
+                String.format("%016x", checksum(rA.samples())));
+        }
+        // ---- d2: make-real on the smoothed compile ----
+        {
+            Coaster c = fixtureD(8);
+            TrackPiece A = c.pieces.get(0), B = c.pieces.get(1);
+            TrackCompiler.Result r0 = rebuild(c);
+            int nA0 = A.sections.size(), nB0 = B.sections.size();
+            // the window-end arc the op cuts at (its own clamps); the
+            // seam sits between spans 0 (A's hill) and 1 (B's turn)
+            TrackCompiler.Span sa = r0.spans().get(0), sb = r0.spans().get(1);
+            double sSeam = r0.samples().get(sa.i1()).s();
+            double hDn = Math.min(B.sSmoothLen / 2, sb.sLen() * 0.5);
+            double arcB = sSeam + hDn;
+            java.util.function.BiFunction<List<FVDIntegrator.Sample>, Double, Vec3>
+                lerpAt = (ss, arc) -> {
+                    int lo = sb.i0(), hi = sb.i1();
+                    while (hi - lo > 1) {
+                        int mid = (lo + hi) >>> 1;
+                        if (ss.get(mid).s() <= arc) lo = mid; else hi = mid;
+                    }
+                    double u = (arc - ss.get(lo).s())
+                        / (ss.get(hi).s() - ss.get(lo).s());
+                    u = Math.max(0, Math.min(1, u));
+                    return ss.get(lo).pos().add(
+                        ss.get(hi).pos().sub(ss.get(lo).pos()).scale(u));
+                };
+            Vec3 cutT = lerpAt.apply(r0.samples(), arcB);
+            String why = c.makeSmoothingReal(1, DT, 0.02, 0);
+            check(why == null, "d2 makeSmoothingReal applies on the smoothed compile",
+                "why=" + why);
+            check(A.sections.size() == nA0 + 1 && B.sections.size() == nB0
+                    && A.sections.get(A.sections.size() - 1) instanceof ForceSection,
+                "d2 structure: the upstream gains the window section, the follower"
+                + " keeps its count", "");
+            check(B.followPrev && B.sSmoothLen == 0,
+                "d2 the fresh window-end seam: smoothing off", "");
+            Vec3 bPos = new Vec3(B.x, B.y, B.z);
+            check(bPos.sub(cutT).length() < 1e-6,
+                "d2 B re-anchors at the smoothed compile's window-end sample",
+                String.format("%.2e m", bPos.sub(cutT).length()));
+            TrackCompiler.Result r1 = rebuild(c);
+            double dev = pathDev(r0.samples(), r1.samples());
+            check(dev < 0.08, "d2 whole track holds through the conversion",
+                String.format("worst dev %.4f m", dev));
+            int t0a = r0.spans().get(2).i0(), t0b = r0.spans().get(2).i1();
+            int nsp = r1.spans().size();
+            double devT = pathDev(r0.samples().subList(t0a, t0b + 1),
+                r1.samples().subList(r1.spans().get(nsp - 1).i0(),
+                    r1.spans().get(nsp - 1).i1() + 1));
+            check(devT < 0.08, "d2 downstream tail rigid to the same class",
+                String.format("worst dev %.4f m", devT));
+        }
     }
 }

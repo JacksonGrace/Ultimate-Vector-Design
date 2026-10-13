@@ -22,6 +22,13 @@ import org.w3c.dom.*;
  *     and the flat station start reads up=(0,1,0), right=(1,0,0) —
  *     the handedness witness (facing -Z, right is +X);
  *   - both lines (spine/heartline) at two spacings.
+ *  RE-BASELINED v19.27 (D257, the snapCore hold fix): the fixture's held
+ *  ACCEL controls now hold, its far end runs 1.3 km out, and (a) the
+ *  position checks take the writer's %e format floor at the measured
+ *  extent as their tolerance (2q + 1e-5; q = 1e-5 under 100 m, 1e-3
+ *  past 1 km), (b) the D202 jitter pin reads the shared resample
+ *  through the CSV's %.6f text and takes the 1 %-trimmed rms against a
+ *  lerp twin — content-independent. 22 checks, unchanged count.
  */
 public class Nl2ElemProbe {
 
@@ -54,6 +61,40 @@ public class Nl2ElemProbe {
             compiled = TrackCompiler.compile(c, DT);
         }
         return new Object[]{ compiled };
+    }
+
+    /** The D202 metric per point: |κ_k − mean(κ_k±1, κ_k±2)| from the
+     *  polyline's turning angle per step (0 outside [3, n−3)). */
+    static double[] hfNoise(double[][] p, double step) {
+        int n = p.length;
+        double[] kap = new double[n];
+        for (int k = 1; k < n - 1; k++) {
+            double ax = p[k][0] - p[k - 1][0], ay = p[k][1] - p[k - 1][1],
+                   az = p[k][2] - p[k - 1][2];
+            double bx = p[k + 1][0] - p[k][0], by = p[k + 1][1] - p[k][1],
+                   bz = p[k + 1][2] - p[k][2];
+            double la = Math.sqrt(ax * ax + ay * ay + az * az);
+            double lb = Math.sqrt(bx * bx + by * by + bz * bz);
+            kap[k] = Math.acos(Math.min(1, Math.max(-1,
+                (ax * bx + ay * by + az * bz) / (la * lb)))) / step;
+        }
+        double[] nz = new double[n];
+        for (int k = 3; k < n - 3; k++) {
+            double mean = (kap[k - 2] + kap[k - 1] + kap[k + 1] + kap[k + 2]) / 4;
+            nz[k] = Math.abs(kap[k] - mean);
+        }
+        return nz;
+    }
+
+    /** rms over all but the largest 1 % of the noise samples (sparse
+     *  authored kinks drop out, broad-band aliasing stays in). */
+    static double trimmedRms(double[] nz, int n) {
+        double[] s = Arrays.copyOfRange(nz, 3, n - 3);
+        Arrays.sort(s);
+        int keep = (int) Math.floor(s.length * 0.99);
+        double acc = 0;
+        for (int k = 0; k < keep; k++) acc += s[k] * s[k];
+        return Math.sqrt(acc / keep);
     }
 
     static double[] tag(Element e, String name) {
@@ -134,14 +175,35 @@ public class Nl2ElemProbe {
             if (!st.equals(String.valueOf(expect))) strictOk = false;
         }
         Element v0 = (Element) verts.item(0);
+        // the writer's "%e" carries 7 significant digits, so the
+        // vertices can agree with the CSV only to that FORMAT FLOOR at
+        // the element-local extent: q = the last digit's weight at the
+        // largest |coordinate| (1e-5 m under 100 m, 1e-3 m past 1 km).
+        // Tolerance 2q + 1e-5 (three components of q/2 each, chords of
+        // two quantized points, the CSV's own %.6f). RE-BASELINED v19.27
+        // (D257): the fixture's held ACCEL controls now hold (the
+        // snapCore fix) and its far end runs 1.3 km out, lifting q from
+        // 1e-5 to 1e-3 — the recorded 5e-4 bound was the old floor's
+        // dust, never a design value (worst 1.5e-5 at q = 1e-5; 5.4e-4 /
+        // chords 8.9e-4 at q = 1e-3).
+        double maxAbs = 0;
+        for (int k = 0; k < r.points(); k++) {
+            Element v = (Element) verts.item(k);
+            maxAbs = Math.max(maxAbs, Math.max(Math.abs(tag(v, "x")[0]),
+                Math.max(Math.abs(tag(v, "y")[0]), Math.abs(tag(v, "z")[0]))));
+        }
+        double q = Math.pow(10, Math.floor(Math.log10(Math.max(1e-3, maxAbs))) - 6);
+        double tol = 2 * q + 1e-5;
         check(label + ": vertices = CSV under the rigid anchor transform",
-            worstV < 5e-4,
-            String.format(Locale.US, "worst %.2e", worstV));
+            worstV < tol,
+            String.format(Locale.US, "worst %.2e (format floor q %.0e at "
+                + "%.0f m extent, tol %.1e)", worstV, q, maxAbs, tol));
         check(label + ": heights preserved + chords rigid + origin start",
-            worstY < 5e-4 && worstC < 5e-4
+            worstY < tol && worstC < tol
                 && Math.abs(tag(v0, "x")[0]) + Math.abs(tag(v0, "y")[0])
                    + Math.abs(tag(v0, "z")[0]) < 1e-9,
-            String.format(Locale.US, "dy %.2e, chords %.2e", worstY, worstC));
+            String.format(Locale.US, "dy %.2e, chords %.2e (tol %.1e)",
+                worstY, worstC, tol));
         check(label + ": strict flags (endpoints only)", strictOk, "");
 
         double worstCoord = 0, worstUnit = 0, worstDot = 0, worstU = 0, worstR = 0;
@@ -206,49 +268,61 @@ public class Nl2ElemProbe {
         // regime (lerp aliasing measured rms 0.0053, worst 0.0051 at
         // the user's 935 m; the fix landed 0.0024 / 0.0008 — the
         // residual is real authored content like the 367 m bank-node
-        // kink)
+        // kink). RE-PINNED v19.27 (D257): the whole-track rms was
+        // content-dominated — after the snapCore fix the fixture's
+        // speeds past 130 m move and that 367 m kink reads 1.2 rad/m
+        // (was 0.15), lifting the rms to 0.013 with the exporter
+        // unchanged (every other 100 m bucket ≤ 0.0012). The pin now
+        // reads the SHARED resample through the CSV's %.6f text (the
+        // .nl2elem's %e quantum alone adds 0.003 rms at the 1.3 km
+        // extent) and takes the 1 %-TRIMMED rms — sparse authored kinks
+        // drop out, broad-band chord-sag aliasing stays in: Hermite
+        // 0.00021 (old geometry) / 0.00013 (new) against a LERP twin of
+        // the same samples at 0.0043 / 0.0050 — bound 0.001 and a
+        // quarter of the lerp's; @935 m from the same resample (0.00069
+        // old / 0.00028 new, bound 0.002 kept).
         {
-            Nl2ElemExporter.Result r02 =
-                Nl2ElemExporter.export(compiled.samples(), false, heart, 0.2);
-            Document d2 = DocumentBuilderFactory.newInstance()
-                .newDocumentBuilder().parse(new ByteArrayInputStream(
-                    r02.xml().getBytes(StandardCharsets.UTF_8)));
-            NodeList vs = d2.getElementsByTagName("vertex");
-            int n = vs.getLength();
+            Nl2CsvExporter.Result c02 =
+                Nl2CsvExporter.export(compiled.samples(), false, heart, 0.2);
+            String[] cl = c02.csv().split("\n");
+            int n = c02.points();
             double[][] p = new double[n][3];
             for (int i = 0; i < n; i++) {
-                Element v = (Element) vs.item(i);
-                p[i][0] = tag(v, "x")[0];
-                p[i][1] = tag(v, "y")[0];
-                p[i][2] = tag(v, "z")[0];
+                String[] f = cl[i + 1].split("\t");
+                p[i][0] = Double.parseDouble(f[1]);
+                p[i][1] = Double.parseDouble(f[2]);
+                p[i][2] = Double.parseDouble(f[3]);
             }
-            double step = r02.step();
-            double[] kap = new double[n];
-            for (int k = 1; k < n - 1; k++) {
-                double ax = p[k][0] - p[k - 1][0], ay = p[k][1] - p[k - 1][1],
-                       az = p[k][2] - p[k - 1][2];
-                double bx = p[k + 1][0] - p[k][0], by = p[k + 1][1] - p[k][1],
-                       bz = p[k + 1][2] - p[k][2];
-                double la = Math.sqrt(ax * ax + ay * ay + az * az);
-                double lb = Math.sqrt(bx * bx + by * by + bz * bz);
-                kap[k] = Math.acos(Math.min(1, Math.max(-1,
-                    (ax * bx + ay * by + az * bz) / (la * lb)))) / step;
+            List<FVDIntegrator.Sample> ss = compiled.samples();
+            double total = ss.get(ss.size() - 1).s() - ss.get(0).s();
+            double step = total / (n - 1);
+            // the LERP twin: the pre-D202 writer's construction — the
+            // offset spine interpolated linearly between samples
+            double[][] lp = new double[n][3];
+            int j = 0;
+            for (int k = 0; k < n; k++) {
+                double target = ss.get(0).s() + Math.min(total, k * step);
+                while (j + 1 < ss.size() - 1 && ss.get(j + 1).s() < target) j++;
+                FVDIntegrator.Sample a = ss.get(j);
+                FVDIntegrator.Sample b = ss.get(Math.min(j + 1, ss.size() - 1));
+                double ds = b.s() - a.s();
+                double u = ds > 0 ? Math.min(1, Math.max(0, (target - a.s()) / ds)) : 0;
+                Vec3 pa = a.pos().sub(a.U().scale(heart));
+                Vec3 pb = b.pos().sub(b.U().scale(heart));
+                Vec3 pt = pa.add(pb.sub(pa).scale(u));
+                lp[k][0] = pt.x(); lp[k][1] = pt.y(); lp[k][2] = -pt.z();
             }
-            double rms = 0, w935 = 0;
-            int cnt = 0;
+            double[] nzH = hfNoise(p, step), nzL = hfNoise(lp, step);
+            double w935 = 0;
             for (int k = 3; k < n - 3; k++) {
-                double mean = (kap[k - 2] + kap[k - 1] + kap[k + 1] + kap[k + 2]) / 4;
-                double nz = Math.abs(kap[k] - mean);
-                rms += nz * nz;
-                cnt++;
-                if (Math.abs(k * step - 935) < 15) w935 = Math.max(w935, nz);
+                if (Math.abs(k * step - 935) < 15) w935 = Math.max(w935, nzH[k]);
             }
-            rms = Math.sqrt(rms / cnt);
+            double trH = trimmedRms(nzH, n), trL = trimmedRms(nzL, n);
             check("0.2m jitter: hi-freq curvature noise in the Hermite regime",
-                rms < 0.0035 && w935 < 0.002,
+                trH < 0.001 && trH < 0.25 * trL && w935 < 0.002,
                 String.format(Locale.US,
-                    "rms %.5f (lerp was 0.0053), @935m %.5f (was 0.0051)",
-                    rms, w935));
+                    "trimmed rms %.5f (lerp twin %.5f, ratio %.3f), "
+                    + "@935m %.5f (lerp was 0.0051)", trH, trL, trH / trL, w935));
         }
 
         Nl2ElemExporter.Result def =

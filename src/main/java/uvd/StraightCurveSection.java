@@ -116,6 +116,9 @@ public final class StraightCurveSection implements Section {
     public double vDesign;
     public boolean reversed = false;
     public boolean vPinned = false;   // v14.5 D97: reconcile-exempt
+    /** v19.27 D256: the reconcile lands vDesign on the REAL seam speed
+     *  (see Section.vRealAnchored). */
+    public boolean vRealAnchored = false;
     public String name = "";
 
     /** Cross-domain view (v16.0, D103): true = the strip lays out on
@@ -174,6 +177,10 @@ public final class StraightCurveSection implements Section {
     @Override public boolean vPinned() { return vPinned; }
 
     @Override public void vPinned(boolean p) { vPinned = p; }
+
+    @Override public boolean vRealAnchored() { return vRealAnchored; }
+
+    @Override public void vRealAnchored(boolean a) { vRealAnchored = a; }
 
     @Override public List<SpeedControl> speedControls() { return speedCtls; }
 

@@ -41,7 +41,22 @@ import java.util.*;
  *     invariant (no bridge-ending piece before a head — the "bridge
  *     before it re-targets" sentence is unreachable), refusals (−2,
  *     list untouched), and the undo model (re-inserting the removed
- *     objects compiles bitwise the pre-delete document). */
+ *     objects compiles bitwise the pre-delete document);
+ *  k) Coaster.moveRunTo (batch 37 — the Track Piece window's Switch
+ *     Coaster… moves the WHOLE run): the block lands contiguous and in
+ *     order at the destination's end, every TrackPiece field + section
+ *     identity bitwise (the head's followPrev normalized), the run's
+ *     samples compile bitwise before vs after — lane spans and
+ *     bridged-in targets always, a whole plain run, and a smoothed +
+ *     bridged run whose clock/arc offsets stay put (an empty
+ *     destination); behind other pieces a SMOOTHED seam's window and a
+ *     BRIDGE's time resampling keep their known offset dust, bounded
+ *     1e-9 (measured 1.2e-11 m) —, the source remainder
+ *     and the destination's prior pieces bitwise, refusals (−1, both
+ *     lists untouched: non-head, out of range, null / same coaster,
+ *     different friction, a destination ending in an orphan bridge),
+ *     an orphan-bridge run moves and stays orphan, the source may go
+ *     empty, save→load→rebuild of both coasters bitwise. */
 public class RunGate {
 
     static final double DT = 0.01;
@@ -214,6 +229,52 @@ public class RunGate {
         bs.optMode = BridgeSection.OPT_NONE;
         o.sections.add(bs);
         return c;
+    }
+
+    /** A destination coaster for moveRunTo (batch 37): one run of two
+     *  — a head + its strict follower — zero friction like the other
+     *  fixtures. */
+    static Coaster destCoaster() {
+        Coaster c = new Coaster();
+        TrackPiece d = new TrackPiece(200, 25, -40, 70);
+        d.sections.add(new ForceSection(forceLanes(), 25));
+        d.sections.add(new ForceSection(shortLanes(1.3, 8), 22));
+        c.pieces.add(d);
+        int f = c.makeSeamStrict(0, 1, DT);
+        if (f != 1) throw new IllegalStateException("makeSeamStrict D " + f);
+        return c;
+    }
+
+    /** identical() + the TRUE speed array over the same ranges. */
+    static String identicalTrue(TrackCompiler.Result a, int i0,
+                                TrackCompiler.Result b, int j0, int n) {
+        String why = identical(a.samples(), i0, b.samples(), j0, n);
+        if (why != null) return why;
+        for (int i = 0; i < n; i++) {
+            if (!bits(a.trueV()[i0 + i], b.trueV()[j0 + i])) {
+                return "trueV " + i + " differs";
+            }
+        }
+        return null;
+    }
+
+    /** Worst deviation over the same ranges: position (m), T/U,
+     *  design speed, felt and true speed. */
+    static double maxDev(TrackCompiler.Result a, int i0,
+                         TrackCompiler.Result b, int j0, int n) {
+        double w = 0;
+        for (int i = 0; i < n; i++) {
+            FVDIntegrator.Sample sa = a.samples().get(i0 + i);
+            FVDIntegrator.Sample sb = b.samples().get(j0 + i);
+            w = Math.max(w, sa.pos().sub(sb.pos()).length());
+            w = Math.max(w, sa.T().sub(sb.T()).length());
+            w = Math.max(w, sa.U().sub(sb.U()).length());
+            w = Math.max(w, Math.abs(sa.v() - sb.v()));
+            w = Math.max(w, Math.abs(sa.Gv() - sb.Gv()));
+            w = Math.max(w, Math.abs(sa.Gl() - sb.Gl()));
+            w = Math.max(w, Math.abs(a.trueV()[i0 + i] - b.trueV()[j0 + i]));
+        }
+        return w;
     }
 
     // ---------------- helpers ----------------
@@ -714,6 +775,190 @@ public class RunGate {
             check(seq && z.pieces.isEmpty() && steps == 3,
                 "j10 deleting run after run: a head returned every time, run count −1 per delete, −1 when empty",
                 "steps " + steps);
+        }
+
+        // ---------------- k) moveRunTo (batch 37) ----------------
+        {
+            // k1 run A (strict follower + bridge + bridged-in target)
+            // moves to a coaster that already holds a run of two
+            Coaster src = threeRuns(), dst = destCoaster();
+            Map<TrackPiece, String> sn = name3(src);
+            TrackCompiler.Result s0 = rebuild(src), d0 = rebuild(dst);
+            List<TrackPiece> block = new ArrayList<>(src.pieces.subList(0, 3));
+            List<TrackPiece> dPrior = new ArrayList<>(dst.pieces);
+            long[][] fk = new long[6][];
+            for (int i = 0; i < 6; i++) fk[i] = fieldBits(src.pieces.get(i));
+            long[][] fd = new long[2][];
+            for (int i = 0; i < 2; i++) fd[i] = fieldBits(dst.pieces.get(i));
+            int[] sA = { pieceRange(src, s0, 0)[0], pieceRange(src, s0, 2)[1] };
+            int[] sT = pieceRange(src, s0, 2);   // A2, the bridged-in target
+            int[] sB = pieceRange(src, s0, 3);
+            int[] sC = { pieceRange(src, s0, 4)[0], pieceRange(src, s0, 5)[1] };
+            int[] dD = { pieceRange(dst, d0, 0)[0], pieceRange(dst, d0, 1)[1] };
+            int nhk = src.moveRunTo(dst, 0);
+            check(nhk == 2 && dst.pieces.size() == 5
+                    && dst.pieces.subList(0, 2).equals(dPrior)
+                    && dst.pieces.subList(2, 5).equals(block)
+                    && order(src, sn).equals("B C0 C1"),
+                "k1 moveRunTo: run A lands contiguous + in order at the destination's end",
+                "nh " + nhk + " / src " + order(src, sn));
+            boolean fOk = true;
+            for (int i = 0; i < 3; i++) fOk &= Arrays.equals(fk[i], fieldBits(dst.pieces.get(2 + i)));
+            for (int i = 0; i < 3; i++) fOk &= Arrays.equals(fk[3 + i], fieldBits(src.pieces.get(i)));
+            for (int i = 0; i < 2; i++) fOk &= Arrays.equals(fd[i], fieldBits(dst.pieces.get(i)));
+            check(fOk && !dst.pieces.get(2).followPrev,
+                "k2 every TrackPiece field + section identity bitwise (moved, source remainder, destination's prior)", "");
+            check(dst.runHeads().equals(List.of(0, 2)) && dst.runEndOf(2) == 4
+                    && dst.followsPrev(3) && dst.bridgedInto(4)
+                    && src.runHeads().equals(List.of(0, 1)) && src.followsPrev(2),
+                "k3 links intact on both sides (index-relative inside the block)",
+                dst.runHeads() + " / " + src.runHeads());
+            TrackCompiler.Result s1 = rebuild(src), d1 = rebuild(dst);
+            int[] mA = { pieceRange(dst, d1, 2)[0], pieceRange(dst, d1, 4)[1] };
+            // run A lands BEHIND the destination's own run, so its
+            // global clock / arc offsets change: the lane spans and the
+            // bridged-in target's GEOMETRY stay BITWISE (canonical
+            // generation), the SMOOTHED seam's window and the BRIDGE's
+            // time resampling keep their known offset dust (the
+            // CopyGate family) — measured 1.2e-11 m — and the TRUE
+            // speed past them carries it (Pass D marches the whole run)
+            int nA = sA[1] - sA[0] + 1;
+            boolean lenOk = mA[1] - mA[0] == sA[1] - sA[0];
+            TrackCompiler.Span h0 = s0.spans().get(0);        // A0's first section
+            String wHead = !lenOk ? "run length differs"
+                : identicalTrue(s0, h0.i0(), d1, mA[0] + (h0.i0() - sA[0]),
+                    h0.i1() - h0.i0() + 1);
+            String wTgt = !lenOk ? "run length differs"
+                : identical(s0.samples(), sT[0], d1.samples(),
+                    mA[0] + (sT[0] - sA[0]), sT[1] - sT[0] + 1);
+            double devA = lenOk ? maxDev(s0, sA[0], d1, mA[0], nA) : Double.NaN;
+            check(wHead == null && wTgt == null && devA <= 1e-9,
+                "k4 the moved run at the destination: the head's lane span + the bridged-in target's"
+                + " geometry BITWISE, the smoothed window + bridge (and the true speed past them) within 1e-9",
+                (wHead == null ? "" : "head: " + wHead + " ") + (wTgt == null ? "" : "target: " + wTgt + " ")
+                    + String.format(Locale.US, "%d samples, worst %.2e", nA, devA));
+            // k4b a run with NO smoothing window and NO bridge (run C:
+            // head + follower with a live design tier) is bitwise whole
+            {
+                Coaster s2c = threeRuns(), d2c = destCoaster();
+                TrackCompiler.Result cRun0 = rebuild(s2c);
+                rebuild(d2c);
+                int[] rc = { pieceRange(s2c, cRun0, 4)[0], pieceRange(s2c, cRun0, 5)[1] };
+                int nhc = s2c.moveRunTo(d2c, 4);
+                TrackCompiler.Result cRun1 = rebuild(d2c);
+                int m0 = nhc < 0 ? 0 : pieceRange(d2c, cRun1, nhc)[0];
+                String wc = nhc != 2 ? "refused " + nhc
+                    : identicalTrue(cRun0, rc[0], cRun1, m0, rc[1] - rc[0] + 1);
+                check(wc == null && d2c.followsPrev(3),
+                    "k4b a plain strict run (no smoothing, no bridge) compiles BITWISE at the destination",
+                    wc == null ? (rc[1] - rc[0] + 1) + " samples" : wc);
+            }
+            // k4c the SAME smoothed + bridged run A moved to an EMPTY
+            // coaster (its offsets stay 0) is bitwise whole — the dust
+            // above is the offsets', not the move's
+            {
+                Coaster s3 = threeRuns(), d3 = new Coaster();
+                TrackCompiler.Result e0r = rebuild(s3);
+                int[] ra = { pieceRange(s3, e0r, 0)[0], pieceRange(s3, e0r, 2)[1] };
+                int nhe = s3.moveRunTo(d3, 0);
+                TrackCompiler.Result e1r = rebuild(d3);
+                String we = nhe != 0 ? "refused " + nhe
+                    : identicalTrue(e0r, ra[0], e1r, 0, ra[1] - ra[0] + 1);
+                check(we == null && e1r.samples().size() == ra[1] - ra[0] + 1,
+                    "k4c the smoothed + bridged run moved to an EMPTY coaster compiles BITWISE whole",
+                    we == null ? (ra[1] - ra[0] + 1) + " samples" : we);
+            }
+            int[] nB = pieceRange(src, s1, 0);
+            int[] nC = { pieceRange(src, s1, 1)[0], pieceRange(src, s1, 2)[1] };
+            int[] nD = { pieceRange(dst, d1, 0)[0], pieceRange(dst, d1, 1)[1] };
+            String wB = identicalTrue(s0, sB[0], s1, nB[0], sB[1] - sB[0] + 1);
+            String wC = identicalTrue(s0, sC[0], s1, nC[0], sC[1] - sC[0] + 1);
+            String wD = identicalTrue(d0, dD[0], d1, nD[0], dD[1] - dD[0] + 1);
+            check(wB == null && wC == null && wD == null,
+                "k5 the source remainder and the destination's prior run compile bitwise",
+                (wB == null ? "" : "B: " + wB) + (wC == null ? "" : " C: " + wC)
+                    + (wD == null ? "" : " D: " + wD));
+            // k6 save→load→rebuild of BOTH coasters
+            TrackCompiler.Result s2 = rebuild(roundTrip(src)), d2 = rebuild(roundTrip(dst));
+            check(s2.samples().size() == s1.samples().size()
+                    && d2.samples().size() == d1.samples().size()
+                    && identicalTrue(s1, 0, s2, 0, s1.samples().size()) == null
+                    && identicalTrue(d1, 0, d2, 0, d1.samples().size()) == null,
+                "k6 save→load→rebuild of both coasters bitwise", "");
+        }
+        {
+            // k7 refusals: −1, both lists untouched
+            Coaster src = threeRuns(), dst = destCoaster();
+            List<TrackPiece> sBefore = new ArrayList<>(src.pieces);
+            List<TrackPiece> dBefore = new ArrayList<>(dst.pieces);
+            long[][] fs = new long[6][];
+            for (int i = 0; i < 6; i++) fs[i] = fieldBits(src.pieces.get(i));
+            boolean ref = src.moveRunTo(dst, 1) == -1      // a follower
+                && src.moveRunTo(dst, 2) == -1             // a bridged-in piece
+                && src.moveRunTo(dst, 5) == -1
+                && src.moveRunTo(dst, -1) == -1
+                && src.moveRunTo(dst, 6) == -1
+                && src.moveRunTo(null, 0) == -1
+                && src.moveRunTo(src, 0) == -1;
+            Coaster fric = destCoaster();
+            fric.fricRoll = 0.03;
+            List<TrackPiece> fBefore = new ArrayList<>(fric.pieces);
+            ref &= src.moveRunTo(fric, 0) == -1;
+            Coaster air = destCoaster();
+            air.fricAir = 1.0e-4;
+            ref &= src.moveRunTo(air, 0) == -1;
+            Coaster orph = orphanLast();
+            List<TrackPiece> oBefore = new ArrayList<>(orph.pieces);
+            ref &= src.moveRunTo(orph, 0) == -1;
+            boolean same = src.pieces.equals(sBefore) && dst.pieces.equals(dBefore)
+                && fric.pieces.equals(fBefore) && orph.pieces.equals(oBefore);
+            for (int i = 0; same && i < 6; i++) {
+                same = Arrays.equals(fs[i], fieldBits(src.pieces.get(i)));
+            }
+            check(ref && same,
+                "k7 moveRunTo refuses a non-head / out of range / null / the same coaster / different friction /"
+                + " a destination ending in an orphan bridge (−1) and touches nothing", "");
+            // k8 an ORPHAN-bridge run MAY move: it lands last, stays orphan
+            Coaster os = orphanLast(), od = destCoaster();
+            TrackPiece o = os.pieces.get(3);
+            int nho2 = os.moveRunTo(od, 3);
+            check(nho2 == 2 && od.pieces.get(2) == o && od.listEndsInOrphanBridge()
+                    && !os.listEndsInOrphanBridge() && os.pieces.size() == 3
+                    && od.runHeads().equals(List.of(0, 2)),
+                "k8 an orphan-bridge run moves, lands last and stays orphan",
+                "nh " + nho2 + " / " + od.runHeads());
+            // k9 the source may go EMPTY (D239); an empty destination takes it at 0
+            Coaster one = new Coaster(), none = new Coaster();
+            TrackPiece op = new TrackPiece(0, 21, 0, 0);
+            op.sections.add(new ForceSection(forceLanes(), 26));
+            one.pieces.add(op);
+            one.v0 = 26;
+            TrackCompiler.Result only0 = rebuild(one);
+            int nh9 = one.moveRunTo(none, 0);
+            TrackCompiler.Result only1 = rebuild(none);
+            check(nh9 == 0 && one.pieces.isEmpty() && none.pieces.size() == 1
+                    && none.pieces.get(0) == op && one.v0 == 26
+                    && only0.samples().size() == only1.samples().size()
+                    && identicalTrue(only0, 0, only1, 0, only0.samples().size()) == null,
+                "k9 the only run moves to an empty coaster: source empty, v0 the caller's, compile bitwise", "");
+            // k10 an INERT followPrev flag on the moved head (index 0)
+            // must not go live behind the destination's last piece; the
+            // source's successor takes deleteRun's belt
+            Coaster is = new Coaster(), id = destCoaster();
+            TrackPiece inert0 = new TrackPiece(0, 21, 0, 0);
+            inert0.sections.add(new ForceSection(forceLanes(), 26));
+            inert0.followPrev = true;                  // inert at index 0
+            is.pieces.add(inert0);
+            TrackPiece inert1 = new TrackPiece(40, 25, 10, 30);
+            inert1.sections.add(new ForceSection(shortLanes(1.4, 5), 24));
+            is.pieces.add(inert1);
+            boolean heads = is.runHeads().equals(List.of(0, 1));
+            int nh10 = is.moveRunTo(id, 0);
+            check(heads && nh10 == 2 && !id.pieces.get(2).followPrev
+                    && id.runStartOf(2) == 2 && id.runHeads().equals(List.of(0, 2))
+                    && is.pieces.size() == 1 && !is.pieces.get(0).followPrev,
+                "k10 the moved head's inert followPrev normalizes — it heads its own run at the destination",
+                "nh " + nh10 + " / " + id.runHeads());
         }
 
         System.out.println("RunGate: " + pass + " passed, " + fail + " failed");

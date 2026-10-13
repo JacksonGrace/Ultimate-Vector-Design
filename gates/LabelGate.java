@@ -32,11 +32,43 @@ import java.util.*;
  *      tags, no number: "Force", "Geo", "S/C", "Geo ·m", "Force ·m ◀
  *      fx", "Bridge", "Bridge !"
  *  10  (D249) the bridge's badge-menu item "Bridge settings…" and the
- *      window title "Bridge settings (Strict Seam n)" — n = the
+ *      window title "Bridge Settings (Strict Seam n)" — n = the
  *      bridge's exit junction, live and orphan alike, while the
  *      toolbar button keeps "Strict Seam n (bridge) ▴"
  *  11  (D249) the .nl2elem description carries the display name
- *      "Ultimate Vector Design Export" */
+ *      "Ultimate Vector Design Export"
+ *  12  (D254) File > Rename…'s name refusals (DesignIO.fileNameWhy)
+ *  13  (batch 37) the gray reasons that moved into SectionNames: the
+ *      resolve ops behind a bridge BY ITS MODE (bridgeResolveWhy —
+ *      null under "No optimization", the re-places / re-places and
+ *      re-aims sentences + BRIDGE_RESOLVE_HINT), MARCH_OWNS_RESOLVE /
+ *      MARCH_OWNS_R2D, and the run-scoped ops row's REVERSE_MULTI_WHY
+ *      / SWITCH_DEST_ORPHAN_WHY
+ *  14  (batch 37, review round 4) the bridged-in entry refusals of the
+ *      resolve ops BY THE REAL SPEED off the bridge (bridgeCrawlWhy —
+ *      stalled at or under Pass D's 0.1 floor, crawling under
+ *      BRIDGE_CRAWL_SPEED 1.0, null from 1.0 up) and the blow-up belt's
+ *      sentence with its numbers (bridgeBlowUpWhy)
+ *  15  (batch 38, D256) the badge's THREE-STATE speed glyph: the
+ *      constants SPEED_GLYPH " ≠v" / SLIGHT_SPEED_GLYPH " ~v" /
+ *      ORIENT_GLYPH " ≠o"; speedLevel / speedGlyph at 0, 0.005 (level
+ *      0, ""), 0.0050001 and 0.2 (level 1, " ~v"), 0.2000001 and 5.0
+ *      (level 2, " ≠v"), NaN (0, ""); Gestures.DRIFT_EPS == 0.2 (its
+ *      new home); the composed badge texts "Force ~v", "Geo ·m ~v ≠o",
+ *      "Force ·m ◀ fx ≠v", a bridge's bare "Bridge"
+ *  16  (batch 38, D256) Reverse's gray sentences: the four new
+ *      REVERSE_* constants verbatim and reverseWhy over all eight
+ *      (multi, orphanTail, controls) combinations — null for none,
+ *      multi beats orphan, controls appended to both
+ *  17  (batch 38, D256; shrunk in D257 — the translational check,
+ *      its tooltip, the mode-aware sentence twins and their choosers
+ *      went with the translational mode) the SMOOTHING OPTIONS
+ *      window's strings: the title word, the seam menu's two items,
+ *      the length label, the two buttons, the teardown reason, the
+ *      D141 sentences at both sites (badge line / initial-speed
+ *      window — the D255 text verbatim), and smoothWindowTitle on a
+ *      plain strict seam ("Smoothing Options (Strict Seam 1)"), past
+ *      a bridge (junction 2), at a run head and out of range */
 public class LabelGate {
 
     static final double DT = 0.01;
@@ -450,13 +482,13 @@ public class LabelGate {
             eq("Bridge settings…", SectionNames.BRIDGE_SETTINGS_ITEM,
                 "10a the bridge's badge-menu owner item");
             Coaster c = bridgeFixture(List.of(force(24), geo(24)));
-            eq("Bridge settings (Strict Seam 1)",
+            eq("Bridge Settings (Strict Seam 1)",
                 SectionNames.bridgeWindowTitle(c, 0),
                 "10b live bridge window title = its exit junction");
             eq("Strict Seam 1 (bridge) ▴", SectionNames.ownerButtonLabel(c, 0, 1),
                 "10b … while the toolbar button keeps the junction form");
             Coaster o = orphanFixture();
-            eq("Bridge settings (Strict Seam 1)",
+            eq("Bridge Settings (Strict Seam 1)",
                 SectionNames.bridgeWindowTitle(o, 0),
                 "10c orphan: the would-be exit's number (same as the button)");
             // a bridge→strict chain: the SECOND bridge would read n+1 —
@@ -464,7 +496,7 @@ public class LabelGate {
             // bridge AFTER piece 1 would be junction 2
             int f = c.makeSeamStrict(1, 1, DT);
             check(f == 2, "10d chain fixture built", "got " + f);
-            eq("Bridge settings (Strict Seam 2)",
+            eq("Bridge Settings (Strict Seam 2)",
                 SectionNames.bridgeWindowTitle(c, 1),
                 "10d a bridge after the bridged-in piece = junction 2");
         }
@@ -484,6 +516,269 @@ public class LabelGate {
                 "");
             check(!x.xml().contains("FVD Coaster Designer"),
                 "11b the old product name is gone from the export", "");
+        }
+
+        // ---------- 12: File > Rename…'s name refusals (D254 review) ----------
+        {
+            eq("Type a name.", DesignIO.fileNameWhy("   "),
+                "12a a blank name refuses");
+            eq("Just a file name — no folders or drive letters.",
+                DesignIO.fileNameWhy("sub/ride"),
+                "12b a path-like name refuses");
+            eq("Just a file name — no folders or drive letters.",
+                DesignIO.fileNameWhy("sub" + (char) 92 + "ride"),
+                "12b' … backslash too");
+            eq("A file name can't contain * ? \" < > | or control characters.",
+                DesignIO.fileNameWhy("ride?2"),
+                "12c an illegal character refuses (was an uncaught InvalidPathException)");
+            eq("A file name can't contain * ? \" < > | or control characters.",
+                DesignIO.fileNameWhy("ride" + (char) 9 + "b"),
+                "12d a control character refuses");
+            eq("NUL is a reserved Windows name — pick another.",
+                DesignIO.fileNameWhy("nul.uvd"),
+                "12e a Windows device name refuses, extension or not");
+            check(DesignIO.fileNameWhy("My Ride 2 (final).uvd") == null,
+                "12f an ordinary name passes", "");
+            check(DesignIO.fileNameWhy("console") == null,
+                "12g a name merely STARTING like a device name passes", "");
+        }
+
+        // ---------- 13: gray reasons homed in SectionNames (batch 37) ----------
+        {
+            eq(" — convert the bridge first or set it to \"No optimization.\"",
+                SectionNames.BRIDGE_RESOLVE_HINT,
+                "13a the hint closing every optimizing-bridge reason (user wording)");
+            check(SectionNames.bridgeResolveWhy(BridgeSection.OPT_NONE) == null,
+                "13b \"No optimization\": the resolve ops run behind the bridge (null)",
+                "got \"" + SectionNames.bridgeResolveWhy(BridgeSection.OPT_NONE) + "\"");
+            eq("The bridge before this section re-places this piece after any"
+                + " resolution — convert the bridge first or set it to"
+                + " \"No optimization.\"",
+                SectionNames.bridgeResolveWhy(BridgeSection.OPT_POS),
+                "13c \"Optimize position\": the re-places sentence");
+            eq("The bridge before this section re-places and re-aims this piece"
+                + " after any resolution — convert the bridge first or set it"
+                + " to \"No optimization.\"",
+                SectionNames.bridgeResolveWhy(BridgeSection.OPT_POS_YAW),
+                "13d \"Optimize position and orientation\": the re-places and re-aims sentence");
+            check(SectionNames.bridgeResolveWhy(BridgeSection.OPT_POS)
+                    .endsWith(SectionNames.BRIDGE_RESOLVE_HINT)
+                && SectionNames.bridgeResolveWhy(BridgeSection.OPT_POS_YAW)
+                    .endsWith(SectionNames.BRIDGE_RESOLVE_HINT)
+                && !SectionNames.bridgeResolveWhy(BridgeSection.OPT_POS).equals(
+                    SectionNames.bridgeResolveWhy(BridgeSection.OPT_POS_YAW)),
+                "13e both optimize sentences end with the hint and differ by mode", "");
+            eq("The optimize-orientation bridge owns this piece's pitch/roll"
+                + " — convert the bridge first or set it to \"Optimize position\""
+                + " or \"No optimization.\"",
+                SectionNames.MARCH_OWNS_RESOLVE,
+                "13f a later section behind an optimize-orientation bridge");
+            eq("The optimize-orientation bridge owns this piece's pitch/roll"
+                + " — set the bridge to \"Optimize position\" or"
+                + " \"No optimization.\"",
+                SectionNames.MARCH_OWNS_R2D,
+                "13g Real → Design's gray reason in the windows");
+            eq("Reverse works on a track piece without strict seams or bridges"
+                + " — un-strict its seams and convert its bridges first.",
+                SectionNames.REVERSE_MULTI_WHY,
+                "13h Reverse on a run of several pieces");
+            eq("That coaster's last track piece ends in an orphaned bridge"
+                + " — delete or convert it first.",
+                SectionNames.SWITCH_DEST_ORPHAN_WHY,
+                "13i Switch Coaster: a destination ending in an orphan bridge");
+        }
+
+        // ---------- 14: the bridged-in entry refusals (batch 37, round 4) ----------
+        {
+            check(SectionNames.BRIDGE_CRAWL_SPEED == 1.0,
+                "14a the crawl threshold is 1 m/s",
+                "got " + SectionNames.BRIDGE_CRAWL_SPEED);
+            String stall = "The train stalls on the bridge before this track"
+                + " piece — there is no real entry speed to take.";
+            eq(stall, SectionNames.bridgeCrawlWhy(0.0),
+                "14b a real speed of 0 at the bridge's end: the stall sentence");
+            eq(stall, SectionNames.bridgeCrawlWhy(0.1),
+                "14c exactly the 0.1 stall floor still stalls");
+            eq("The train crawls off the bridge at 0.45 m/s — re-solving"
+                + " this track piece at that speed would blow the bridge up;"
+                + " raise the bridge or the entry speed first.",
+                SectionNames.bridgeCrawlWhy(0.45),
+                "14d 0.45 m/s (the train does cross): the crawl sentence with the number");
+            eq("The train crawls off the bridge at 0.55 m/s — re-solving"
+                + " this track piece at that speed would blow the bridge up;"
+                + " raise the bridge or the entry speed first.",
+                SectionNames.bridgeCrawlWhy(0.55),
+                "14e 0.55 m/s (the 940 km case) crawls");
+            check(SectionNames.bridgeCrawlWhy(0.9999).startsWith("The train crawls"),
+                "14f just under 1 m/s crawls", "");
+            check(SectionNames.bridgeCrawlWhy(1.0) == null,
+                "14g exactly 1 m/s is usable (null)",
+                "got \"" + SectionNames.bridgeCrawlWhy(1.0) + "\"");
+            check(SectionNames.bridgeCrawlWhy(18.0) == null,
+                "14h 18 m/s is usable (null)", "");
+            eq("at 2.00 m/s the bridge re-solves to 2038 m of track (it was"
+                + " 38 m) — raise the bridge or the entry speed first.",
+                SectionNames.bridgeBlowUpWhy(2.0, 2037.6, 38.4),
+                "14i the blow-up belt's sentence carries speed and both arcs");
+        }
+
+        // ---------- 15: the badge's THREE-STATE speed glyph (batch 38, D256) ----------
+        {
+            eq(" ≠v", SectionNames.SPEED_GLYPH, "15a the speed-conflict glyph");
+            eq(" ~v", SectionNames.SLIGHT_SPEED_GLYPH, "15a the SLIGHT speed glyph");
+            eq(" ≠o", SectionNames.ORIENT_GLYPH, "15a the orientation glyph");
+            check(Gestures.DRIFT_EPS == 0.2,
+                "15b Gestures.DRIFT_EPS is the 0.2 conflict threshold (its new home)",
+                "got " + Gestures.DRIFT_EPS);
+            check(Gestures.INIT_SPEED_SHOW_EPS == 0.005,
+                "15b the lower threshold is the init-speed box's 0.005", "");
+            eq(0, SectionNames.speedLevel(0.0), "15c gap 0 = level 0");
+            eq("", SectionNames.speedGlyph(0.0), "15c … no glyph");
+            eq(0, SectionNames.speedLevel(0.005),
+                "15d exactly 0.005 = level 0 (the box cannot show it)");
+            eq("", SectionNames.speedGlyph(0.005), "15d … no glyph");
+            eq(1, SectionNames.speedLevel(0.0050001),
+                "15e just over 0.005 = level 1 (slight)");
+            eq(" ~v", SectionNames.speedGlyph(0.0050001), "15e … \" ~v\"");
+            eq(1, SectionNames.speedLevel(0.2),
+                "15f exactly 0.2 = level 1 (the historic > test keeps it slight)");
+            eq(" ~v", SectionNames.speedGlyph(0.2), "15f … \" ~v\"");
+            eq(2, SectionNames.speedLevel(0.2000001),
+                "15g just over 0.2 = level 2 (the conflict)");
+            eq(" ≠v", SectionNames.speedGlyph(0.2000001), "15g … \" ≠v\"");
+            eq(2, SectionNames.speedLevel(5.0), "15h 5 m/s = level 2");
+            eq(" ≠v", SectionNames.speedGlyph(5.0), "15h … \" ≠v\"");
+            eq(0, SectionNames.speedLevel(Double.NaN),
+                "15i NaN (no compile / a bridge) = level 0");
+            eq("", SectionNames.speedGlyph(Double.NaN), "15i … no glyph");
+            // the composed badge texts (GraphEditor: badgeLabel +
+            // driftGlyph + ORIENT_GLYPH)
+            TrackPiece p = new TrackPiece(0, 21, 0, 0);
+            ForceSection f = force(26);
+            p.sections.add(f);
+            GeoSection gd = geo(24);
+            gd.domain(Section.Domain.DISTANCE);
+            p.sections.add(gd);
+            ForceSection all = force(24);
+            all.domain(Section.Domain.DISTANCE);
+            Coaster.enterInfluence(all, 6);
+            all.reversed(true);
+            p.sections.add(all);
+            eq("Force ~v", SectionNames.badgeLabel(f, false)
+                    + SectionNames.speedGlyph(0.1),
+                "15j a slight conflict on a plain force badge");
+            eq("Geo ·m ~v ≠o", SectionNames.badgeLabel(gd, false)
+                    + SectionNames.speedGlyph(0.05) + SectionNames.ORIENT_GLYPH,
+                "15k slight speed + orientation: speed glyph first, as today");
+            eq("Force ·m ◀ fx ≠v", SectionNames.badgeLabel(all, false)
+                    + SectionNames.speedGlyph(1.0),
+                "15l the full conflict after every tag");
+            Coaster bc = bridgeFixture(List.of(force(24), geo(24)));
+            eq("Bridge", SectionNames.badgeLabel(bc.pieces.get(0).sections.get(1),
+                    false) + SectionNames.speedGlyph(Double.NaN),
+                "15m a bridge never wears a speed glyph (the editor hands NaN)");
+        }
+
+        // ---------- 16: Reverse's gray sentences (batch 38, D256) ----------
+        {
+            eq("Reverse works on a track piece without speed controls —"
+                + " remove its speed controls first.",
+                SectionNames.REVERSE_CONTROLS_WHY,
+                "16a a single piece with speed controls");
+            eq("Reverse works on a track piece without strict seams, bridges,"
+                + " or speed controls — un-strict its seams, convert its bridges"
+                + " and remove its speed controls first.",
+                SectionNames.REVERSE_MULTI_CONTROLS_WHY,
+                "16b a run of several pieces that also carries speed controls");
+            eq("Reverse works on a track piece without bridges — delete or"
+                + " convert its bridge first.",
+                SectionNames.REVERSE_BRIDGE_WHY,
+                "16c a single piece ending in an orphan bridge");
+            eq("Reverse works on a track piece without bridges or speed"
+                + " controls — delete or convert its bridge and remove its"
+                + " speed controls first.",
+                SectionNames.REVERSE_BRIDGE_CONTROLS_WHY,
+                "16d … that also carries speed controls");
+            check(SectionNames.reverseWhy(false, false, false) == null,
+                "16e nothing in the way: null (Reverse enabled)",
+                "got \"" + SectionNames.reverseWhy(false, false, false) + "\"");
+            eq(SectionNames.REVERSE_CONTROLS_WHY,
+                SectionNames.reverseWhy(false, false, true),
+                "16f controls only");
+            eq(SectionNames.REVERSE_BRIDGE_WHY,
+                SectionNames.reverseWhy(false, true, false),
+                "16g orphan tail only");
+            eq(SectionNames.REVERSE_BRIDGE_CONTROLS_WHY,
+                SectionNames.reverseWhy(false, true, true),
+                "16h orphan tail + controls: controls appended");
+            eq(SectionNames.REVERSE_MULTI_WHY,
+                SectionNames.reverseWhy(true, false, false),
+                "16i multi only (13h's sentence, unchanged)");
+            eq(SectionNames.REVERSE_MULTI_CONTROLS_WHY,
+                SectionNames.reverseWhy(true, false, true),
+                "16j multi + controls: controls appended");
+            eq(SectionNames.REVERSE_MULTI_WHY,
+                SectionNames.reverseWhy(true, true, false),
+                "16k multi + orphan tail: multi wins (\"bridges\" covers the tail)");
+            eq(SectionNames.REVERSE_MULTI_CONTROLS_WHY,
+                SectionNames.reverseWhy(true, true, true),
+                "16l all three: the multi + controls sentence");
+            for (String w : new String[]{ SectionNames.REVERSE_MULTI_WHY,
+                    SectionNames.REVERSE_CONTROLS_WHY,
+                    SectionNames.REVERSE_MULTI_CONTROLS_WHY,
+                    SectionNames.REVERSE_BRIDGE_WHY,
+                    SectionNames.REVERSE_BRIDGE_CONTROLS_WHY }) {
+                check(w.startsWith("Reverse works on a track piece without ")
+                        && w.endsWith(" first."),
+                    "16m every sentence takes the \"Reverse works on …\" form"
+                        + " (the stats-bar belt lowercases the first letter)",
+                    w);
+            }
+        }
+
+        // ---------- 17: the SMOOTHING OPTIONS window's strings (batch 38, D256) ----------
+        {
+            eq("Smoothing Options", SectionNames.SMOOTH_TITLE,
+                "17a the window's title word (title case like Bridge Settings)");
+            eq("Smoothing options…", SectionNames.SMOOTH_OPTIONS_ITEM,
+                "17b the seam menu's item while the seam smooths");
+            eq("Enable smoothing (10 m)", SectionNames.ENABLE_SMOOTHING_ITEM,
+                "17c the seam menu's item while it does not (the D141 label)");
+            eq("Smoothing length (m)", SectionNames.SMOOTH_LEN_LABEL,
+                "17d the length row's label");
+            eq("Make smoothing real…", SectionNames.SMOOTH_REAL_BUTTON,
+                "17g the Make-real button = the former menu item's label");
+            eq("Disable smoothing", SectionNames.SMOOTH_DISABLE_BUTTON,
+                "17h the Disable button = the former menu item's label");
+            eq("The smoothing options window closed — its seam no longer smooths.",
+                SectionNames.SMOOTH_WINDOW_CLOSED,
+                "17i the window's self-teardown reason");
+            // the D141 sentences at the two sites (the D255 text verbatim;
+            // the D256 mode-aware twins and choosers are gone, D257)
+            eq("Speed conflict caused by seam smoothing — shrink the ◇ window instead",
+                SectionNames.SMOOTH_SHRINK_WHY,
+                "17j the badge's D141 line (the historic text, no period)");
+            eq("Seam smoothing opens this speed difference — shrink the ◇ window instead.",
+                SectionNames.INIT_SMOOTH_SHRINK_WHY,
+                "17m the initial-speed window's smoothing-opened sentence (historic)");
+            // the window title on the section-3 fixtures: a plain strict
+            // seam and the bridge → strict chain, plus the run head
+            Coaster c = new Coaster();
+            TrackPiece p = new TrackPiece(0, 21, 0, 0);
+            p.sections.add(force(26));
+            p.sections.add(force(23));
+            c.pieces.add(p);
+            int f = c.makeSeamStrict(0, 1, DT);
+            eq("Smoothing Options (Strict Seam 1)", SectionNames.smoothWindowTitle(c, f),
+                "17p the title on a plain strict seam");
+            eq("Smoothing Options", SectionNames.smoothWindowTitle(c, 0),
+                "17q a run head has no junction: the bare title (never shown there)");
+            Coaster cc = bridgeFixture(List.of(force(24), geo(24)));
+            int f2 = cc.makeSeamStrict(1, 1, DT);
+            eq("Smoothing Options (Strict Seam 2)", SectionNames.smoothWindowTitle(cc, f2),
+                "17r the title past a bridge counts the bridge exit (junction 2)");
+            eq("Smoothing Options", SectionNames.smoothWindowTitle(cc, 9),
+                "17s out of range: the bare title (guard)");
         }
 
         System.out.println();
