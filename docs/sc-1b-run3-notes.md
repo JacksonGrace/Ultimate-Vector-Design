@@ -236,3 +236,339 @@ null, a 0.8 m s/c neighbor → the short-section sentence). LabelGate 202 →
 s/c piece (allowed — `reverseWhy(false, …)` null) · the forward align on an
 automatic (refuse), a locked (write) and a vertical (refuse) seam · the
 seam ball's position (model accessor).
+
+## 6. Item 6 — `gates/ScSeamGate.java` (35 checks) + the §10.2 rows
+
+Fixtures (built in code): base = one piece [force hill 5 s at 26 m/s];
+F1 = base → `appendSectionWithInvariant(0, straight 10 m at the compiled
+end speed)` = [force] | automatic [sc]; F2 = F1 → a 1 s force hold of the
+compiled end state through the same append; F3 = F1 frozen + yaw locked;
+F4 = F1 smoothed at 4 m; F5 = [sc 10 m + R20 60°] | automatic [sc 8 m].
+The twins = the same sections by direct `sections.add` in one piece.
+
+Measured worst values (the battery run on the final head):
+
+| row | bound | measured |
+|---|---|---|
+| a0 | L3's fields on the created seam | sAuto, locks off, smoothing 0, LOCKSTEP, section 0 real-anchored, L1 holds |
+| a1 F1 vs the in-piece twin | bitwise samples + trueV | bitwise, 560 samples, both settle |
+| a2 F2 vs its twin | bitwise | bitwise, 660 samples |
+| b1 head x+50 y+7 z−3 yaw+37 on both | bitwise | bitwise |
+| b2 moved vs unmoved F1 | v / Gv / Gl / trueV / T.y / U.y bitwise, pos the rigid image ≤ 1e-9 | bitwise / ≤ 1e-9 (D199) |
+| c1 upstream Gv node 2.2 → 2.6 on both | bitwise | bitwise |
+| c2 head LOCKSTEP pitch +5° on both | bitwise; seamConflictTilt == IDENTITY | bitwise, the IDENTITY object |
+| c3 F3 (yaw locked) under the upstream edit | held heading ≤ 1e-9°, local end ≤ 1e-9 m, the twin re-aims | held −120.513813° kept (twin −171.538216°), local end dev 1.10e-14 m |
+| e1 F4 | upstream outside the window bitwise vs F1; s fields bitwise vs the same doc unsmoothed; stretch ≤ 5 %; downstream = the closure residual ≤ 0.02 m | window samples 488..512 of 560; stretch 0.0000; inside 1.12e-3 m; downstream 4.8e-8 m; settled |
+| e2 `smoothEngages == (smoothStrictSeam != null)` | 0 mismatches over 200 (len 0.05-60 m, v 5-40 m/s) | 0 mismatches, 171 of 200 engage |
+| e3 smoothEngagesWhy | 10 m null, 0.3 m too short, an uncovered seam too short | exact |
+| f1a F1 at rest | vDesign == trueV[seam] bitwise, design == real across the span, realEntrySpeed predicts it, a second rebuild no-op | bitwise, 15.689745687288 |
+| f1b … with friction 0.03 / 1e-4 | same | bitwise, 15.256622431366 |
+| f3 a typed 30 m/s pins | stays 30, the dry run predicts max(0.1, real) | real 15.689746, stays 30 |
+| f4 Set Design to Real on the follower's k == 0 | lands bitwise == the dry run, un-pinned + flagged | bitwise |
+| f2 F4's follower entry gap | level ≤ 1 (" ~v" or nothing), the suspended compile level 0 | gap 1.65e-4 m/s = level 0 (suspended 5.1e-5, level 0) — see deviation 8 |
+| g1-g3 unstrictSeam / absorbFollower on F1, F2 (convert sentence) and F5 (connect sentence) | refuse, nothing moves | exact |
+| g4 attachPiece across an s/c edge under ASSERT_SC_INVARIANT | throws | throws |
+| g5 detachStrictSeam on the automatic follower | a run head, zero deltas, samples bitwise where they were (+ its entry sample) | bitwise |
+| h a '+' s/c | ONE compile for the cut, ≤ 2 in the rebuild (Prof, -Dfvd.timing) | cut 1, rebuild 1 |
+| h2 a lane after a lane | no cut, no compile | 0 compiles |
+| i*1-i*4 the forward align's model op (Stage-5 row i proper SKIPPED) | FOLLOWS on an automatic seam; a locked yaw lands bitwise on eulerOf(exit); roll skipped under an absolute element-0 lane; VERTICAL on a 90°-pitched geo exit | exact, T.y 1.000000000 on the vertical fixture |
+| k lock ON after an upstream edit | the freeze writes the contract (pos, baseOrient, the span's exact pair, tiers 0); samples before / after bitwise | bitwise (the stored pose moved from (62.701, 42.915, 35.354)) |
+| j unlock-all | the next compile == the never-frozen F1 bitwise | bitwise |
+| k2 freeze on a hand-made follower / a run head | false, nothing written | exact |
+| l seamWorldPos | == the upstream exit position bitwise; one dropped dt before the first sample | bitwise; 0.1571 m past the seam (v·dt 0.1569) |
+| n the §3.10 strings | 13 constants verbatim | exact (LabelGate section 20 is the pin) |
+| o1 copy / PlacementSnapshot carry sAuto | exact | exact |
+| o2 copyRun of F1 | frames / v / felt / trueV bitwise, positions +5 z ≤ 1e-9 | 0.00e+00 m |
+| o3 mirrorRun on F1 | the follower stays automatic, the z-reflection ≤ 1e-9 | 0.00e+00 m |
+| d, i, m | SKIPPED | Stage 4 / Stage 5 (model smoke as i*) / the 54-document dump needs the owner's files — RE-RUN LOCALLY |
+
+The §10.2 rows: InsertGate d3 re-pinned + d7 generalized + d8 (a NO-lock s/c
+insert at a plain boundary = [s0] | automatic [sc] | automatic [s1 s2], both
+first sections real-anchored, the settle terminates, arc == len, bitwise the
+in-piece twin — 1336 samples) + d9 (a force hold appended after an s/c tail
+gets its own automatic seam) → 40 → 45; uvd.ConflictGate m1/m2 (an s/c
+appended through the invariant under friction: vDesign == the real seam
+speed bitwise 40.870866633, the span clean, 0 exact rewrites, a second
+rebuild no-op; the same seam smoothed at 6 m: lands on the DISPLAYED seam
+speed bitwise, the follower's span is the march (29 unequal), the upstream
+still copies up to its window, level 0, 2 exact rewrites then 0) → 87 → 90;
+RunGate l1-l4 (an automatic follower is a run member; moveRun / deleteRun
+through the orphan-guard overloads keep it automatic and bitwise;
+freezeAutoFollower false on a run head, the contract on the follower) →
+78 → 82; CopyGate k1 (copyRun carries the automatic seam, 0.00e+00 m) →
+73 → 74; SmoothRealGate b1 on the constant (21, count unchanged). The
+MirrorGate growth lives in ScSeamGate o3 instead (MirrorGate untouched).
+
+§10.6 cells pinned here: every "seams (§3)" cell except the four JavaFX
+ones (POV crossing the seam, ties across the seam, the seam window's
+button, the menu grays) — listed under "For the local session".
+
+## 7. Deviations from §3 (each with its reason)
+
+1. **A1 behind a TILTED upstream span uses `canonOf(eff)`**, not the
+   span's (psi, canon) pair. The pair is the DESIGN chain; when the upstream
+   span carries a conflict tilt or a locked follower's re-aim, the world
+   exit the follow contract reads is not that chain, and generating at the
+   design canon with the IDENTITY tilt would kink the seam in the world.
+   The untilted upstream (every fixture in §3.11 a-c) takes the pair
+   bitwise; the tilted case decomposes the world pose — D199 dust under a
+   yaw move there, the documented tilted-piece limit. (Continuing the design
+   chain exactly would need the upstream's UNTILTED exit position on the
+   Span — open question 2.)
+2. **`firstSectionSettle` returns NaN for a strict follower** (§3.5 A5 said
+   `max(0.1, real)`). The op's smoothing-suspended write is not the
+   follower's final value any more — the at-rest EXACT reconcile lands it on
+   the DISPLAYED seam speed, which `realEntrySpeed` predicts off the
+   displayed arrays (bitwise, ConflictGate i7 / ScSeamGate f4); the init-speed
+   window's supplier already keeps that prediction when this read is NaN,
+   so no JavaFX change is needed for it. Only a bridged-in first section is
+   finalized by the op's own write and keeps the suspended read.
+3. **`pieceHead` has no auto-follower mirror** — vacuous: a bridge target is
+   bridged-in, never a follower; the javadoc says so.
+4. **`ensureScFollower` refuses when the section before the cut is a
+   bridge** (my reading of §3.3's "the previous piece does not end in a
+   bridge"); a bridge is a trailing section, so the branch is a belt.
+5. **The load pass counts into a NEW `LoadResult.scSeamsCut`** (a sixth
+   record component; the 5-arg constructor kept) and `legacyNote()` returns
+   SC_LEGACY_CONVERTED when EITHER count is > 0 — the one load sentence,
+   §10.4 — instead of adding the cuts to `legacyScSections` (which keeps
+   meaning "converted sections", ScElemGate g pins 2 + 1).
+6. **REVERSE_MULTI_WHY / REVERSE_MULTI_CONTROLS_WHY were rewritten IN PLACE**
+   (the brief's parallel-work rule says never rewrite existing SectionNames
+   / LabelGate lines; the brief also mandates the new texts). The four
+   touched lines: the two constants, LabelGate 13h / 16b's expected strings
+   and 16m's suffix test (admits "… not available yet."). The local session
+   merges them.
+7. **The orphan-guard overloads take `List<TrackCompiler.Span>`** (the
+   shell holds `sectionSpans`, not a Result); the `Result` forms delegate.
+8. **ScSeamGate f2 measured level 0, not the expected " ~v"**: on F4 (a
+   10 m STRAIGHT follower behind a 4 m window) the smoothing changes the
+   entry gap by 1.65e-4 m/s — under the 0.005 glyph threshold; the
+   smoothing-suspended compile reads 5.1e-5. The mechanism (the record is
+   the march behind a smoothed seam, the suspended compile reads no gap)
+   is pinned; the row asserts level ≤ 1 and reports the level. A curved
+   follower with a kinked seam would read ~v (ConflictGate i7's 8° fixture
+   moves the seam speed 7e-4 m/s). Open question 1.
+9. **`seamConflictTilt` returns the IDENTITY object for an automatic
+   follower** (not stated in §3): the compile applies the IDENTITY tilt
+   there, and the ≠o predicate (GraphEditor.orientConflictAt,
+   FvdDesigner.povConflictTilt) must read the same object while the stored
+   design pose is inert and stale (ScSeamGate c2).
+10. **`bakeFollow` on an automatic follower IS the freeze** (keeps the
+    upstream span's exact pair instead of nulling it — generation stays
+    bitwise the A1 branch), and **`detachStrictSeam` runs the freeze first**
+    (A3 lists both as prologue sites; being model methods they do it
+    themselves — ScSeamGate g5).
+11. **Row i (the forward align) runs as model smoke rows i*1-i*4** besides
+    the brief's SKIPPED line — an unverified op landed in item 5 would be
+    worse; row n duplicates section 20's literals (LabelGate is the pin);
+    row l's ties half is SKIPPED (JavaFX).
+12. **The MirrorGate growth is ScSeamGate o3** (mirrorRun on F1 keeps the
+    automatic seam, the z-reflection 0.00e+00 m); MirrorGate itself is
+    untouched.
+13. **`Prof.count("compile")`** stamps every `TrackCompiler.compile`
+    (guarded no-op off); the gate parses `Prof.report()` so Prof.java is
+    untouched.
+14. **The six outside-whitelist gate re-pins** of item 3 (DetermGate198 d,
+    ScRollLaneGate m, Phase2Gate scRoundTrip, ScElemGate g / k,
+    PlacementGate c1, OrientModeGate c1) — each a fixture builder or an
+    expected `porient` string; the loader's §3.2 pass and the 6th field
+    forced them.
+15. **`absorbFollowerWhy(prev, fi)`** reads null unless `fi == prev + 1`
+    (the pair must be adjacent to be an absorb at all).
+16. **`isolateRange` needs nothing**: with L1 an s/c piece is one section
+    (k = m = 0 = last), so a range never cuts INSIDE an s/c piece; on a
+    legacy in-piece [force, sc] document `makeSeamStrict(p, 1)` is exactly
+    the seam the invariant wants.
+
+## 8. For the local session (the JavaFX half of §3 — file, method, call)
+
+1. **`GraphEditor.addSection(mode, real)` (~7520 `secs.add(added)`) and
+   `addLaneSection` (~8172)**: replace the bare `secs.add(added)` with
+   `hideJunctionWindows();` (a cut inserts pieces — index-shifting) then
+   `int[] at = app.coaster.appendSectionWithInvariant(activePiece, added,
+   FvdDesigner.INTEGRATE_DT);` and set `activePiece = at[0]; activeSection
+   = at[1];` instead of `activeSection = sections().size() − 1` (after a
+   cut the new section is section 0 of piece at[0]); keep the rest of the
+   refresh (`app.lanes = lanesFor(added)`, `defaultLane()`, `elSel`,
+   `viewT0/viewT1`, `syncLaneButtons()`, `app.rebuildTrack()`,
+   `refreshOffset()`, `redraw()`) and add the Insert path's
+   `app.updatePieceButton(); app.syncPlacementSpinners();`. A lane after a
+   lane is bitwise the old append (no compile, no cut).
+2. **The Insert dialog (~8110)**: `insertSectionAtSeam` already returns the
+   section's new home and the caller already activates `at[0] / at[1]`;
+   add `hideJunctionWindows();` before the call (the cuts shift indices).
+   The strict-seam branch's `secIdx = sections().size()` of the upstream
+   piece stays. Lock OFF on an s/c now yields [upstream] | auto [sc] |
+   auto [downstream]; Lock ON [upstream] | auto [sc] | locked [downstream].
+3. **`GraphEditor.seamEdit(fi, write)` (~828)**: inside the `placementEdit`
+   lambda, before `write.run()`, call
+   `app.coaster.freezeAutoFollower(fi, app.sectionSpans);` (a no-op on a
+   non-automatic follower). Same first line in `seamEditDesign(fi, axis,
+   deg)` (~888, before `Coaster.seamDesignSet`), in the seam window's MODE
+   ROW writer (orientMode / affectSubsequentSeams on a follower), in
+   `GraphEditor.seamRealToDesign(fi)` (~1182, before the model call), and
+   in the padlock-ON handlers if they bypass seamEdit (they should not).
+   `bakeFollow` and `detachStrictSeam` freeze inside the model already.
+4. **The orphan guard's one JavaFX site — `GraphEditor.deleteSection(k)`
+   (~7385)**: when deleting a piece's LAST section removes the piece p, call
+   `app.coaster.freezeAutoFollower(p + 1, app.sectionSpans)` BEFORE the
+   removal (the next piece loses its predecessor; a stale stored pose would
+   otherwise be its fallback). The run ops: pass `sectionSpans` —
+   `coaster.deleteRun(head, sectionSpans)` (the Delete… button),
+   `coaster.moveRunTo(dest, head, sectionSpans)` (Switch Coaster…),
+   `coaster.copyRun(start, end, Coaster.COPY_DZ, sectionSpans)` (Copy);
+   `connectStrictRun` calls the plain `moveRun` on a run head (never
+   automatic) — no change.
+5. **The seam menu's "Un-strict seam" (~590)**: `String why =
+   app.coaster.unstrictSeamWhy(fp)` → `grayItem("Un-strict seam", why)`
+   when non-null; the refusal branch posts `why` when the model returns
+   false (it refuses on an s/c edge now).
+6. **SM1 — delete `GraphEditor.seamScEdge` (8766-8780) and its three
+   sites**: the menu gray (563-572 — the "Enable smoothing" item is grayed
+   instead with `TrackCompiler.smoothEngagesWhy(app.lastSamples,
+   app.sectionSpans, <the follower's first span index>, 10)` when non-null),
+   `hitSeamDiamond` (8750-8754) and `drawSeamDiamond` (9076). SM3: the
+   hollow diamond's hover tooltip and the Smoothing Options window's
+   `grayNote` show `smoothEngagesWhy(…, the box value)` live; a diamond
+   drag through a non-engaging length posts the sentence once on release.
+   The D232 sentence "Smoothing cannot be enabled on a straight/curve edge
+   — the s/c entry ease owns that seam." retires (it has no LabelGate row).
+7. **`GraphEditor.seamWorldPos(fi)` (760-765)**: `return
+   app.coaster.seamWorldPos(fi, app.sectionSpans);` — the UPSTREAM span's
+   exit position (today the follower's first sample, one dropped dt
+   inside). Viewport3D's rig anchor, junction ball and
+   `junctionBallCoversNode0` read it already.
+8. **The seam window**: a row under the three orient rows —
+   `Button(SectionNames.ALIGN_BUTTON + " (" + settings.shortcut("smooth")
+   + ")")`, tooltip `SectionNames.ALIGN_TIP`, `grayHint(() ->
+   app.coaster.alignSeamWhy(fi, app.sectionSpans))`, action
+   `pushUndoSnapshot(); seamEdit(fi, () -> app.coaster.alignSeamToUpstream
+   (fi, app.sectionSpans)); app.markDirty(); app.rebuildTrack(); redraw();`
+   (`seamSync` refreshes its enable state). B / Shift+B: a
+   `highlightedSeam()` helper (the revealed seam rig = `Reveal(p, 1)` on a
+   follower, keyViewport first then any pane, else the open seam window's
+   follower, else −1); in `toggleSmooth` and `matchBoundaryAll` before `if
+   (selIdx < 0) return;`: `selIdx < 0 && highlightedSeam() >= 0` → the
+   same align call; nothing → `app.statsLabel.setText(SectionNames.
+   B_NO_TARGET_WHY)` (today's silent return goes). The roll row under
+   `app.coaster.seamRollOwnedByLane(fi)`: `grayHint(SectionNames.
+   SEAM_ROLL_ABS_WHY)` on the padlock / spinner / ↺ and no roll ring on the
+   seam rig. For an AUTOMATIC follower the window's rows show the live
+   follow-contract angles (followerEuler) — they do already; a padlock ON
+   holds the current angle through seamEdit (the freeze runs first).
+9. **`FvdDesigner.PieceState` (~312 / 472 / 634)**: a `boolean sAuto` slot
+   — capture `piece.sAuto`, restore `piece.sAuto = pst.sAuto()` (a restored
+   follower without it would fall back to its stale stored placement).
+10. **The init-speed window (~16050)**: `if (k == 0)` → `if (k == 0 &&
+    !app.coaster.followsPrev(piece))` so a strict follower's first section
+    takes the k ≥ 1 sentences (`noConflict` / `noConflictNone` /
+    `noConflictFree`), never `noConflictFirstPin`; "This track piece starts
+    here — a click sets nothing." stays for run heads. The `realNow`
+    supplier needs no change (firstSectionSettle reads NaN for a follower,
+    so realEntrySpeed's flagged landing stands). Re-run
+    `-Dfvd.initspeedprobe`.
+11. **`FvdDesigner.loadDesign` (~10443)**: `r.legacyNote()` now also posts
+    for the load pass's cuts (`r.scSeamsCut() > 0`) — make sure the document
+    is marked dirty whenever the note is non-null.
+12. **Viewport3D (§3.8)**: the POV piece-follow (817-823) and the ride-
+    restart test (1405-1411) key on `app.coaster.runStartOf(pc)` — crossing
+    an invariant seam activates nothing, entering another RUN activates its
+    head (lever `POV_FOLLOW_RUN`); the tie grid phase, the comb loop and the
+    heartline strand anchor per RUN (the run head's first sample arc,
+    `Coaster.runStartOf` / `spanBase`) — ScSeamGate l's ties half is yours.
+13. **`GraphEditor.rangeResolveWhy` (~3467)**: carry
+    `app.coaster.absorbFollowerWhy(prev, fi)` for a seam the chain would
+    absorb (a belt — unreachable under L1); the badge menu's "Reverse…"
+    gray already reads the new `reverseWhy` texts (no edit).
+14. Already automatic through the model: `orientConflictAt` /
+    `povConflictTilt` read `seamConflictTilt` (IDENTITY on an automatic
+    follower); the junction ordinals / window titles count the new seams;
+    `reverseWhy`'s texts.
+
+## 9. Open questions
+
+1. ScSeamGate f2: the design expected a " ~v caused by smoothing" at F4;
+   the straight follower reads level 0 (1.65e-4 m/s). Keep the row at
+   "level ≤ 1" (the mechanism is pinned), or make the fixture a curved
+   follower with a kinked seam so the glyph itself shows?
+2. Deviation 1: accept `canonOf(eff)` behind a tilted upstream span (D199
+   dust under a yaw move there), or carry the upstream's UNTILTED design-
+   chain exit position on `TrackCompiler.Span` so an automatic follower can
+   continue the design chain bitwise even behind a conflict tilt?
+3. `LoadResult.scSeamsCut` as a separate component (deviation 5) — keep, or
+   fold into `legacyScSections`?
+4. An s/c-first FLOATING piece attached start→end (`connectStrictRun(…,
+   false, true, true)`): §3.4 says sAuto false; should its first section
+   be real-anchored like the invariant's seams, or keep D135's honest ≠v?
+5. The orphan guard's JavaFX site (deleteSection's piece removal, item 8.4)
+   — should the model own a `Coaster.deleteSection` so the freeze cannot
+   be forgotten?
+6. The four file-bound gates (DetermGate197/200, LoadGate196, Nl2ElemProbe)
+   and ScSeamGate m (the clean-span dump) need a run on the owner's machine
+   before the branch merges; the dump's follower-generation change (A1 +
+   A4) is exactly the §10.7 rule-7 trigger.
+
+## 10. Full battery (wiped `target/classes`, JDK 26.0.2, the final head)
+
+`rm -rf target/classes/uvd && mvn -q compile` rc 0 (142 class files, the
+whole project incl. the JavaFX files); `javac -encoding UTF-8 -cp
+target/classes -d gates/out gates/*.java` rc 0.
+
+| gate | result |
+|---|---|
+| uvd.ScElemGate | 122 passed, 0 failed |
+| uvd.ScRollLaneGate | 63 passed, 0 failed |
+| **uvd.ScSeamGate (NEW)** | **35 passed, 0 failed** (d / i / m SKIPPED with reasons) |
+| DetermGate197 | NOT RUNNABLE (owner's file) — RE-RUN LOCALLY |
+| DetermGate198 | 6 passed, 0 failed |
+| DetermGate199 | 10 passed, 0 failed |
+| DetermGate200 | NOT RUNNABLE (owner's file) — RE-RUN LOCALLY |
+| LoadGate196 | NOT RUNNABLE (owner's file) — RE-RUN LOCALLY |
+| OrientGate | 23 |
+| OrientGate2 | 18 |
+| Phase2Gate | ALL GATES PASS (162 PASS lines) |
+| DomainGate | ALL DOMAIN/AXIS GATES PASS |
+| Phase3Gate | ALL PHASE-3 GATES PASS (88) |
+| MultiCoasterGate | 15 |
+| SmoothRealGate | 21 (d1 `28808918c0612fbe` over 1601 samples, 20 m `0fc8182da8f4a418` — UNCHANGED) |
+| uvd.KeyRouteGate | 103 passed, 0 failed |
+| TypedMarkGate | 42 checks, 0 failures |
+| InflSplitGate | 22 |
+| ReanchorGate | 3 |
+| MirrorGate | 100 |
+| YpAbsGate | 22 |
+| uvd.SeamShapeGate | 31 — its recorded pre-D247 checksums UNTOUCHED |
+| RangeResolveGate | 115 |
+| CopyGate | 74 (73 + k1) |
+| MergeGate | 23 |
+| InsertGate | 45 (40 + d8/d8b/d8c/d9/d9b; d3/d7 re-pinned) |
+| LabelGate | 227 passed, 0 failed (202 + section 20's 25) |
+| uvd.PulseClockGate | 30 passed, 0 failed |
+| RunGate | 82 passed, 0 failed (78 + l1-l4) |
+| PlacementGate | 41 (c1 re-pinned to the 6-field porient line) |
+| OrientModeGate | 51 (c1 re-pinned to the 6-field porient line) |
+| GestureGate | 180 passed, 0 failed |
+| EndFollowGate | 73 passed, 0 failed |
+| FloorGate | 34 passed, 0 failed |
+| StripGate | 49 passed, 0 failed |
+| uvd.ConflictGate | ALL CONFLICT GATES PASS (90) (87 + m1/m1b/m2; i7 + l14a re-pinned) |
+| Nl2ElemProbe | NOT RUNNABLE (owner's file) — RE-RUN LOCALLY |
+
+The clean-span dump (gates/probes/cleanspan-2026-09-30, CleanProbe2 +
+compare3.py — ScSeamGate m) needs the owner's 54 documents: RE-RUN LOCALLY
+(§10.7 rule 7: follower generation and the k == 0 reconcile changed, so
+documents holding a strict follower whose first section is real-anchored
+re-settle once).
+
+Commits on `sc-1b-seams` (one per item; `main` untouched):
+
+| commit | item |
+|---|---|
+| 336f305 | 1 — sAuto, ensureScFollower, makeSeamStrict delegating, autoFollower, scInvariantHolds + the gate-build assert, L4 refusals |
+| b681b66 | 2 — the automatic-follower compile branch, freezeAutoFollower + the orphan-guard overloads, the k == 0 real anchor, the A5 javadocs, ConflictGate i7 re-pinned |
+| f7741bd | 3 — the belts: insertSectionAtSeam / appendSectionWithInvariant / the partial-convert seams / absorbFollower's refusal / the load pass; the round-trip fixtures re-pinned |
+| 4c033b2 | 4 — smoothEngages / smoothEngagesWhy, SMOOTH_* sentences, SMOOTH_REAL_SC_WHY |
+| 976e38c | 5 — alignSeamToUpstream / alignSeamWhy / seamWorldPos, the Reverse texts, the §3.10 block, LabelGate section 20 |
+| 8a7bca2 | 6 — uvd.ScSeamGate + the InsertGate / ConflictGate / RunGate / CopyGate rows; seamConflictTilt IDENTITY on an automatic follower, the bakeFollow / detachStrictSeam prologue, the Prof compile count |
+| (this commit) | the notes' battery + the final sections |
