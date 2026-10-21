@@ -1554,6 +1554,14 @@ public class Coaster {
             entryPsiInternal(target) - entryPsiInternal(floating));
         target.sections.addAll(floating.sections);
         pieces.remove(floatingIdx);
+        // the straight/curve invariant's L1 assert (v20.1, D259 §3.2):
+        // every caller's dry run refuses an s/c edge first
+        // (unstrictSeamWhy / absorbFollowerWhy), so a merge that
+        // breaks L1 is a bug — gate builds throw, production never
+        if (ASSERT_SC_INVARIANT && !scInvariantHolds()) {
+            throw new IllegalStateException("D259 §3 L1 broken by attachPiece("
+                + targetIdx + ", " + floatingIdx + ")");
+        }
     }
 
     /** Move a piece to a new list position (v13.1, D73): bridging to
@@ -1578,23 +1586,150 @@ public class Coaster {
      *  design speeds stay independent (honest ≠v instead of a
      *  reshape). Returns the follower's piece index, −1 refused. */
     public int makeSeamStrict(int pieceIdx, int secIdx, double dt) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return -1;
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (secIdx <= 0 || secIdx >= piece.sections.size()) return -1;
+        // = ensureScFollower(p, k, dt, true, true, true, 0) BITWISE
+        // except the real-anchor flag (v20.1, D259 §3.3): on a LANE
+        // section's seam the flag stays as it was — a hand-made
+        // follower keeps D135's honest ≠v unless a resolve op already
+        // flagged its first section; an s/c EDGE is the invariant's
+        // seam and takes the flag like every seam the invariant makes
+        Section first = piece.sections.get(secIdx);
+        boolean scEdge = first instanceof StraightCurveSection
+            || piece.sections.get(secIdx - 1) instanceof StraightCurveSection;
+        boolean anchoredWas = first.vRealAnchored();
+        int np = ensureScFollower(pieceIdx, secIdx, dt, true, true, true, 0);
+        if (np >= 0 && !scEdge) first.vRealAnchored(anchoredWas);
+        return np;
+    }
+
+    // ---- THE STRAIGHT/CURVE SEAM INVARIANT (v20.1, D259 §3 — D5/D31):
+    // L1 a StraightCurveSection is ALWAYS a piece's section 0, and the
+    // section AFTER an s/c is ALWAYS section 0 of the next piece (a
+    // trailing BRIDGE excepted — L1 reads "non-bridge section"); the
+    // two pieces are joined by a STRICT seam unless the follower is a
+    // run head (detached) or bridged-in (L2). L3 every seam the
+    // invariant creates is AUTOMATIC: sAuto, all three locks off,
+    // smoothing 0 (D9), the follower's section 0 REAL-ANCHORED (D5),
+    // LOCKSTEP. L4 unstrictSeam refuses on such a seam ("Split track
+    // at seam" stays allowed). ----
+
+    /** MAKE THE SEAM AT (pieceIdx, secIdx) STRICT with the given lock
+     *  triple and smoothing length (v20.1, D259 §3.3): makeSeamStrict's
+     *  body with the locks as parameters, plus `sAuto = all three
+     *  off` and `sections[0].vRealAnchored(true)` on EVERY seam it
+     *  creates — automatic AND locked — because the flag, never the
+     *  lock state, decides the k == 0 reconcile (§3.5 A4). The split
+     *  reads a compile of its own; the Result overload reads one
+     *  already in hand. Preconditions: 0 < secIdx < size and the
+     *  section before the cut is not a bridge (a bridge is a piece's
+     *  trailing section — unreachable, a belt). Returns the follower's
+     *  piece index, −1 refused (nothing mutated). */
+    public int ensureScFollower(int pieceIdx, int secIdx, double dt,
+                                boolean lockYaw, boolean lockPitch,
+                                boolean lockRoll, double smoothLen) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return -1;
         TrackPiece piece = pieces.get(pieceIdx);
         if (secIdx <= 0 || secIdx >= piece.sections.size()) return -1;
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
-        int spanIdx = secIdx - 1;
-        for (int p = 0; p < pieceIdx; p++) {
-            spanIdx += pieces.get(p).sections.size();
-        }
+        return ensureScFollower(pieceIdx, secIdx, r, lockYaw, lockPitch,
+            lockRoll, smoothLen);
+    }
+
+    /** The compile-in-hand form (D259 §3.3): the '+' and Insert paths
+     *  compile once after their append, the loader once per coaster
+     *  — `splitPiece` reads only the boundary Span, so no compile of
+     *  its own is needed. The Result must describe THIS piece list
+     *  (walked from the end when several cuts share one compile — a
+     *  cut only inserts pieces AFTER pieceIdx, so earlier boundaries'
+     *  flattened span indices hold). */
+    public int ensureScFollower(int pieceIdx, int secIdx,
+                                TrackCompiler.Result r,
+                                boolean lockYaw, boolean lockPitch,
+                                boolean lockRoll, double smoothLen) {
+        if (r == null || pieceIdx < 0 || pieceIdx >= pieces.size()) return -1;
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (secIdx <= 0 || secIdx >= piece.sections.size()) return -1;
+        if (piece.sections.get(secIdx - 1) instanceof BridgeSection) return -1;
+        int spanIdx = spanBase(this, pieceIdx) + secIdx - 1;
         if (spanIdx >= r.spans().size()) return -1;
         int np = splitPiece(pieceIdx, secIdx, r.spans().get(spanIdx));
         if (np < 0) return -1;
         TrackPiece f = pieces.get(np);
         f.followPrev = true;
-        f.sLockYaw = true;       // ALL THREE locked at creation (v19.6,
-        f.sLockPitch = true;     // D235 — user spec; the seeds are the
-        f.sLockRoll = true;      // current angles, so nothing moves)
-        seedStrictValues(f, f.entryPose().orient());
+        f.sLockYaw = lockYaw;      // the lock triple is the creator's
+        f.sLockPitch = lockPitch;  // (§3.4: automatic = all off; Make
+        f.sLockRoll = lockRoll;    // seam strict / border split = all on)
+        seedStrictValues(f, f.entryPose().orient());   // D235: nothing moves
+        f.sSmoothLen = smoothLen;
+        f.sAuto = !lockYaw && !lockPitch && !lockRoll;
+        // the explicit real anchor (D256) on EVERY seam the invariant
+        // makes: the follower's first section is reconciled at k == 0
+        // onto the real seam speed (§3.5 A4) — no phantom ≠v at a seam
+        // the user never asked for
+        f.sections.get(0).vRealAnchored(true);
         return np;
+    }
+
+    /** Is piece p an AUTOMATIC follower this compile (D259 §3.5): an
+     *  active D135 follower that carries the invariant's flag with all
+     *  three locks off and a zero design tier? Then TrackCompiler
+     *  generates it AT the follow contract (branch A1) and its stored
+     *  placement is inert. */
+    public boolean autoFollower(int p) {
+        if (!followsPrev(p)) return false;
+        TrackPiece f = pieces.get(p);
+        return f.sAuto && !f.sLockYaw && !f.sLockPitch && !f.sLockRoll
+            && f.designPitchDeg == 0 && f.designRollDeg == 0;
+    }
+
+    /** Does L1 hold on every piece — no straight/curve section at
+     *  k > 0, and nothing but a bridge after an s/c inside one piece?
+     *  (The seam half of L1 cannot be asserted structurally: a
+     *  detached run head is L2's legal exception.) The gates assert
+     *  it; attachPiece asserts it in a gate build (ASSERT_SC_INVARIANT). */
+    public boolean scInvariantHolds() {
+        for (TrackPiece p : pieces) {
+            List<Section> s = p.sections;
+            for (int k = 1; k < s.size(); k++) {
+                if (s.get(k) instanceof StraightCurveSection) return false;
+                if (s.get(k - 1) instanceof StraightCurveSection
+                        && !(s.get(k) instanceof BridgeSection)) return false;
+            }
+        }
+        return true;
+    }
+
+    /** GATE BUILDS set this: attachPiece then throws
+     *  IllegalStateException when a merge breaks L1 (D259 §3.2 —
+     *  every caller's dry run refuses first, so a throw is a bug).
+     *  Never set in production. */
+    public static boolean ASSERT_SC_INVARIANT = false;
+
+    /** Which side(s) of the seam INTO follower fi are straight/curve
+     *  sections: 0 neither, 1 one side (the follower's section 0 OR the
+     *  previous piece's last non-bridge section), 2 both. −1 = not a
+     *  seam index. */
+    int scEdgeKind(int fi) {
+        if (fi <= 0 || fi >= pieces.size()) return -1;
+        List<Section> b = pieces.get(fi).sections;
+        boolean first = !b.isEmpty()
+            && b.get(0) instanceof StraightCurveSection;
+        int lk = lastNonBridge(fi - 1);
+        boolean tail = lk >= 0
+            && pieces.get(fi - 1).sections.get(lk) instanceof StraightCurveSection;
+        return (first ? 1 : 0) + (tail ? 1 : 0);
+    }
+
+    /** L4's gray reason for un-stricting / absorbing the seam INTO
+     *  follower fi (D259 §3.1, §3.7): UNSTRICT_SC_WHY on an s/c‖s/c
+     *  seam, UNSTRICT_CONVERT_WHY with an s/c on one side, null when
+     *  the seam may go. */
+    public String unstrictSeamWhy(int fi) {
+        int k = scEdgeKind(fi);
+        return k >= 2 ? SectionNames.UNSTRICT_SC_WHY
+            : k == 1 ? SectionNames.UNSTRICT_CONVERT_WHY : null;
     }
 
     /** INSERT A SECTION AT A SEAM (v19.18, D247 — the seam menu's
@@ -2049,6 +2184,9 @@ public class Coaster {
                 .get(prev.sections.size() - 1) instanceof BridgeSection) {
             return false;
         }
+        // L4 (v20.1, D259 §3.1): a straight/curve edge is ALWAYS a
+        // strict seam — the UI grays the item with unstrictSeamWhy
+        if (unstrictSeamWhy(followerIdx) != null) return false;
         Section first = f.sections.isEmpty() ? null : f.sections.get(0);
         f.followPrev = false;
         attachPiece(followerIdx - 1, followerIdx);

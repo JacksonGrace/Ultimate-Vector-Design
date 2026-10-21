@@ -285,12 +285,18 @@ public final class DesignIO {
             // authority when present. Missing line = LOCKSTEP + (0,0)
             // + no carry (the compile reads none of them, so the
             // track stays bitwise). Old readers ignore unknown lines
-            // and extra fields (D50).
-            out.printf(Locale.US, "porient %d %s %s %d %d%n",
+            // and extra fields (D50). Field 6 (v20.1, D259 §3.5) =
+            // the AUTOMATIC-seam flag `auto` (0|1; missing = false):
+            // the follower the straight/curve invariant created —
+            // generated AT the follow contract while its locks are
+            // off; the `piece` line's fields 19-23 are conditional, so
+            // a trailing piece field would be unsafe.
+            out.printf(Locale.US, "porient %d %s %s %d %d %d%n",
                 piece.shapeLocked() ? 1 : 0,
                 d(piece.designPitchDeg), d(piece.designRollDeg),
                 piece.affectSubsequentSeams ? 1 : 0,
-                piece.orientMode.ordinal());
+                piece.orientMode.ordinal(),
+                piece.sAuto ? 1 : 0);
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // bridge (v13.0): the FROZEN solve inputs — poses
@@ -725,6 +731,10 @@ public final class DesignIO {
                         if (parts.length > 5) {
                             curPiece.affectSubsequentSeams =
                                 !parts[4].equals("0");
+                            // field 6 (v20.1, D259 §3.5): the
+                            // AUTOMATIC-seam flag; missing = false
+                            curPiece.sAuto = parts.length > 6
+                                && parts[6].equals("1");
                             try {
                                 int m = Integer.parseInt(parts[5]);
                                 if (m >= 0 && m < TrackPiece.OrientMode

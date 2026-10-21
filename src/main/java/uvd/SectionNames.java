@@ -445,4 +445,15 @@ public final class SectionNames {
         String jt = junctionTitle(c, p);
         return jt == null ? TRACK_PIECE_BUTTON : jt + OWNER_ARROW;
     }
+
+    // ---- the seam invariant (v20.1, D259 §3.10 — LabelGate section 20) ----
+    /** Un-strict / absorb refused on an s/c‖s/c seam (L4). */
+    public static final String UNSTRICT_SC_WHY =
+        "A straight/curve section always begins and ends at a strict seam"
+        + " — connect the sections instead.";
+    /** Un-strict / absorb refused on a seam with a straight/curve
+     *  section on ONE side (L4). */
+    public static final String UNSTRICT_CONVERT_WHY =
+        "A straight/curve section always begins and ends at a strict seam"
+        + " — convert it first.";
 }

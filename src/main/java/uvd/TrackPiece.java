@@ -211,6 +211,23 @@ public final class TrackPiece {
      *  (bitwise-historic). Persisted as `piece` field 18. */
     public double sSmoothLen;
 
+    /** AUTOMATIC seam (v20.1, D259 §3.5 — D5/D31, the straight/curve
+     *  invariant): true on every follower the invariant CREATED
+     *  (Coaster.ensureScFollower with all three locks off). While it
+     *  holds AND the three locks are off AND the design tier is zero
+     *  (Coaster.autoFollower), the compiler GENERATES this piece AT the
+     *  follow contract — the previous span's exact exit pose and its
+     *  canonical (psi, canon) pair, exactly like an in-piece
+     *  continuation — and reads none of x/y/z/yaw/baseOrient/the
+     *  canonical pair/the design tier; a lock turned on or a design
+     *  delta makes it a classic D135/D247 follower (stored pose + rigid
+     *  tilt) until all three are off again. A persisted FLAG, not
+     *  derived from "all unlocked": a hand-unlocked Make-seam-strict
+     *  follower keeps D135. Persisted as the `porient` line's 6th
+     *  field (missing = false); copy carries it; PlacementSnapshot
+     *  records it. */
+    public boolean sAuto = false;
+
     // (the v17.8 sSeenSettings first-open flag is GONE, v19.6 D235 —
     // locking an axis always holds the CURRENT angle now)
 
@@ -257,6 +274,7 @@ public final class TrackPiece {
         c.sPitchDeg = sPitchDeg;
         c.sRollDeg = sRollDeg;
         c.sSmoothLen = sSmoothLen;
+        c.sAuto = sAuto;                                   // D259 §3.5
         for (Section s : sections) c.sections.add(Coaster.copySection(s, dz));
         return c;
     }
