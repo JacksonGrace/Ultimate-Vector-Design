@@ -936,16 +936,24 @@ public final class ScElemGate {
             check(false, "ScElemGate g old elem lines load", ex.toString());
             return;
         }
-        List<Section> secs = lr.coaster().pieces.get(0).sections;
-        check(secs.size() == 2 && lr.warnings() == 0,
-            "ScElemGate g old elem lines load (two s/c sections, no damaged line)",
-            secs.size() + " sections, warnings " + lr.warnings());
-        check(lr.legacyScSections() == 2
+        // RE-PINNED v20.1 (D259 §3.2 "Load", §10.4): two s/c sections inside
+        // ONE piece load as TWO pieces joined by an AUTOMATIC strict seam
+        // (the loader's invariant pass — all axes follow, smoothing 0, the
+        // follower's section 0 real-anchored); the cut is counted as
+        // scSeamsCut, the converted sections as before, ONE load sentence
+        Coaster lc = lr.coaster();
+        check(lc.pieces.size() == 2 && lc.pieces.get(0).sections.size() == 1
+                && lc.pieces.get(1).sections.size() == 1 && lc.autoFollower(1)
+                && lc.scInvariantHolds() && lr.warnings() == 0,
+            "ScElemGate g old elem lines load (two s/c sections → two pieces behind an automatic seam, the D259 §3.2 load pass; no damaged line)",
+            lc.pieces.size() + " pieces, auto " + lc.autoFollower(1) + ", warnings " + lr.warnings());
+        check(lr.legacyScSections() == 2 && lr.scSeamsCut() == 1
                 && SectionNames.SC_LEGACY_CONVERTED.equals(lr.legacyNote()),
-            "ScElemGate g one legacy count per section (2) + legacyNote == SC_LEGACY_CONVERTED",
-            "legacyScSections " + lr.legacyScSections() + ", note \"" + lr.legacyNote() + "\"");
-        StraightCurveSection s0 = (StraightCurveSection) secs.get(0);
-        StraightCurveSection s1 = (StraightCurveSection) secs.get(1);
+            "ScElemGate g one legacy count per section (2) + one seam cut + legacyNote == SC_LEGACY_CONVERTED",
+            "legacyScSections " + lr.legacyScSections() + ", seams cut " + lr.scSeamsCut()
+                + ", note \"" + lr.legacyNote() + "\"");
+        StraightCurveSection s0 = (StraightCurveSection) lc.pieces.get(0).sections.get(0);
+        StraightCurveSection s1 = (StraightCurveSection) lc.pieces.get(1).sections.get(0);
         StraightCurveSection.Element e0 = s0.elements.get(0), e1 = s0.elements.get(1);
         // the loaded planar vs Element.curve(20, 90, 0, 2) (the κ-form)
         StraightCurveSection ref = scOf(rate0(StraightCurveSection.Element.straight(12, 0)),
@@ -1236,9 +1244,14 @@ public final class ScElemGate {
         e5.locks = StraightCurveSection.Element.LOCK_ELEV;
         els.add(e5);
         p.sections.add(new StraightCurveSection(els, 26));
-        // a continuation the reconcile re-freezes (design 20 m/s → real)
-        p.sections.add(StraightCurveSection.straight(10, 20));
         c.pieces.add(p);
+        // a continuation the reconcile re-freezes (design 20 m/s → real) —
+        // RE-PINNED v20.1 (D259 §3): an s/c after an s/c is its own piece
+        // behind an AUTOMATIC strict seam (the model append cuts it; the
+        // follower's first section is real-anchored, so the k == 0
+        // reconcile re-freezes it); an in-piece pair would be split by the
+        // loader's §3.2 pass and could not round-trip byte-identically
+        c.appendSectionWithInvariant(0, StraightCurveSection.straight(10, 20), DT);
         return c;
     }
 

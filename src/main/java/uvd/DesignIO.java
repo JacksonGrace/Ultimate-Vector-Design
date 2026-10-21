@@ -79,17 +79,26 @@ public final class DesignIO {
      *  legacyNote() is the load report's sentence for it. */
     public record LoadResult(List<Coaster> coasters, List<Cosmetics> looks,
                              double[] camera, int warnings,
-                             int legacyScSections) {
+                             int legacyScSections, int scSeamsCut) {
         public LoadResult(Coaster coaster, Cosmetics cosmetics, int warnings) {
             this(new ArrayList<>(List.of(coaster)),
                 new ArrayList<>(List.of(cosmetics)), cosmetics.camera(),
-                warnings, 0);
+                warnings, 0, 0);
+        }
+        /** The pre-v20.1 shape (no seam count). */
+        public LoadResult(List<Coaster> coasters, List<Cosmetics> looks,
+                          double[] camera, int warnings, int legacyScSections) {
+            this(coasters, looks, camera, warnings, legacyScSections, 0);
         }
         /** The load report's converted-elements sentence
          *  (SectionNames.SC_LEGACY_CONVERTED) when any s/c section
-         *  loaded from old `elem` lines, else null. */
+         *  loaded from old `elem` lines — or when the straight/curve
+         *  invariant's load pass cut a strict seam (scSeamsCut, v20.1
+         *  D259 §3.2 / §10.4: the ONE load sentence, no second line;
+         *  the caller marks the document dirty) —, else null. */
         public String legacyNote() {
-            return legacyScSections > 0 ? SectionNames.SC_LEGACY_CONVERTED : null;
+            return legacyScSections > 0 || scSeamsCut > 0
+                ? SectionNames.SC_LEGACY_CONVERTED : null;
         }
         public Coaster coaster() {
             return coasters.isEmpty() ? new Coaster() : coasters.get(0);
@@ -285,12 +294,18 @@ public final class DesignIO {
             // authority when present. Missing line = LOCKSTEP + (0,0)
             // + no carry (the compile reads none of them, so the
             // track stays bitwise). Old readers ignore unknown lines
-            // and extra fields (D50).
-            out.printf(Locale.US, "porient %d %s %s %d %d%n",
+            // and extra fields (D50). Field 6 (v20.1, D259 §3.5) =
+            // the AUTOMATIC-seam flag `auto` (0|1; missing = false):
+            // the follower the straight/curve invariant created —
+            // generated AT the follow contract while its locks are
+            // off; the `piece` line's fields 19-23 are conditional, so
+            // a trailing piece field would be unsafe.
+            out.printf(Locale.US, "porient %d %s %s %d %d %d%n",
                 piece.shapeLocked() ? 1 : 0,
                 d(piece.designPitchDeg), d(piece.designRollDeg),
                 piece.affectSubsequentSeams ? 1 : 0,
-                piece.orientMode.ordinal());
+                piece.orientMode.ordinal(),
+                piece.sAuto ? 1 : 0);
             for (Section section : piece.sections) {
                 if (section instanceof BridgeSection bs) {
                     // bridge (v13.0): the FROZEN solve inputs — poses
@@ -480,6 +495,7 @@ public final class DesignIO {
         // whole DOCUMENT's count, every coaster block; legacyScSec =
         // the section last counted, so each one counts once)
         int legacyScSections = 0;
+        int scSeamsCut = 0;   // the invariant's load pass (v20.1, D259 §3.2)
         StraightCurveSection legacyScSec = null;
         // lanes whose `lane` line carried the END-FOLLOW field (D248):
         // identity-keyed, so the flag of every OTHER lane is derived
@@ -552,8 +568,10 @@ public final class DesignIO {
                         }
                         c.v0 = v0;
                         int[] w = { 0 };
-                        finishCoaster(c, legacy1, w, explicitFollow);
+                        int[] lsc = { 0 };   // the invariant's load pass (D259 §3.2)
+                        finishCoaster(c, legacy1, w, explicitFollow, lsc);
                         warnings += w[0];
+                        scSeamsCut += lsc[0];
                         if (!c.pieces.isEmpty()) {
                             coasters.add(c);
                             looks.add(new Cosmetics(heart, gauge, tie, solid,
@@ -725,6 +743,10 @@ public final class DesignIO {
                         if (parts.length > 5) {
                             curPiece.affectSubsequentSeams =
                                 !parts[4].equals("0");
+                            // field 6 (v20.1, D259 §3.5): the
+                            // AUTOMATIC-seam flag; missing = false
+                            curPiece.sAuto = parts.length > 6
+                                && parts[6].equals("1");
                             try {
                                 int m = Integer.parseInt(parts[5]);
                                 if (m >= 0 && m < TrackPiece.OrientMode
@@ -1065,8 +1087,10 @@ public final class DesignIO {
         c.v0 = v0;
         {
             int[] w = { 0 };
-            finishCoaster(c, legacy1, w, explicitFollow);
+            int[] lsc = { 0 };   // the invariant's load pass (D259 §3.2)
+            finishCoaster(c, legacy1, w, explicitFollow, lsc);
             warnings += w[0];
+            scSeamsCut += lsc[0];
         }
         // the last block joins (an empty trailing block of a v4 file —
         // or an untouched one — is nothing); a v3 document with NOTHING
@@ -1082,7 +1106,7 @@ public final class DesignIO {
                 + (warnings > 0 ? " (" + warnings + " damaged lines)" : ""));
         }
         return new LoadResult(coasters, looks, camera, warnings,
-            legacyScSections);
+            legacyScSections, scSeamsCut);
     }
 
     /** FAIL-SOFT validation of one coaster (v18.44, D216 — was a
@@ -1108,6 +1132,15 @@ public final class DesignIO {
      *  neither define nor follow. */
     private static void finishCoaster(Coaster c, boolean legacy1, int[] warnings,
                                       java.util.Set<List<BezierBaker.Node>> explicitFollow) {
+        finishCoaster(c, legacy1, warnings, explicitFollow, new int[1]);
+    }
+
+    /** `legacySc[0]` += the seams the straight/curve invariant's load
+     *  pass cut (D259 §3.2 "Load" / §10.4 — counted into the single
+     *  SC_LEGACY_CONVERTED load sentence; the caller marks dirty). */
+    private static void finishCoaster(Coaster c, boolean legacy1, int[] warnings,
+                                      java.util.Set<List<BezierBaker.Node>> explicitFollow,
+                                      int[] legacySc) {
         for (TrackPiece piece : c.pieces) {
             // FAIL-SOFT validation (v18.44, D216 — was a whole-file
             // refusal): a truncated tail leaves an element-less s/c
@@ -1223,6 +1256,39 @@ public final class DesignIO {
         int before = c.pieces.size();
         c.pieces.removeIf(p -> p.sections.isEmpty());
         warnings[0] += before - c.pieces.size();
+        // THE STRAIGHT/CURVE INVARIANT's load pass (v20.1, D259 §3.2
+        // "Load", §10.4 — D7 best-effort): a pre-D259 file holds its
+        // s/c sections INSIDE a piece (an s/c at k > 0, a section after
+        // an s/c); every such boundary becomes an automatic strict seam
+        // — all axes follow, smoothing 0, the follower's first section
+        // real-anchored — cut last-to-first per piece off ONE compile
+        // (the Result serves every split when walked from the end).
+        // Nothing moves at creation (the split copies the compiled
+        // boundary pose — loads never move pieces, D88); the follower's
+        // real-anchored first section re-settles ONCE on the first
+        // rebuild (the k == 0 reconcile, §3.5 A4). A file with no such
+        // boundary is untouched — no compile, every bit as before.
+        legacySc[0] += scInvariantLoadPass(c);
+    }
+
+    /** The load pass itself (D259 §3.2): returns the seams cut. */
+    static int scInvariantLoadPass(Coaster c) {
+        if (c.scInvariantHolds()) return 0;
+        TrackCompiler.Result r = TrackCompiler.compile(c, Coaster.INTEGRATE_DT);
+        int cuts = 0;
+        for (int p = c.pieces.size() - 1; p >= 0; p--) {
+            List<Section> s = c.pieces.get(p).sections;
+            for (int k = s.size() - 1; k >= 1; k--) {
+                boolean scHere = s.get(k) instanceof StraightCurveSection;
+                boolean scBefore = s.get(k - 1) instanceof StraightCurveSection;
+                boolean bridgeHere = s.get(k) instanceof BridgeSection;
+                if (!(scHere || (scBefore && !bridgeHere))) continue;
+                if (c.ensureScFollower(p, k, r, false, false, false, 0) >= 0) {
+                    cuts++;
+                }
+            }
+        }
+        return cuts;
     }
 
     /** SPEED CONTROLS (v18.0, D160): one `sctl` line per control —

@@ -780,6 +780,22 @@ public class Coaster {
      *  spans are bitwise the source's (canonical generation), copied
      *  bridges are first-sight record-only. Returns the copied head's
      *  index. */
+    /** copyRun with the ORPHAN GUARD (v20.1, D259 §3.5 A3): a run
+     *  START that is an automatic follower (the UI passes run heads,
+     *  which never are — a belt) is frozen at its contract off the
+     *  compile in hand FIRST, so the copy's normalized head lands at
+     *  the pose the original really sits at, not a stale creation
+     *  pose. `spans` = the displayed compile's spans (FvdDesigner.
+     *  sectionSpans); null = the plain op. */
+    public int copyRun(int runStart, int runEnd, double dz,
+                       List<TrackCompiler.Span> spans) {
+        if (runStart >= 0 && runStart <= runEnd && runEnd < pieces.size()
+                && !listEndsInOrphanBridge()) {
+            freezeIfAuto(runStart, spans);
+        }
+        return copyRun(runStart, runEnd, dz);
+    }
+
     public int copyRun(int runStart, int runEnd, double dz) {
         if (runStart < 0 || runStart > runEnd || runEnd >= pieces.size()) {
             return -1;
@@ -867,6 +883,19 @@ public class Coaster {
      *  at `head`) when one exists, else the previous run's head;
      *  −1 when the coaster is empty now; −2 refused (bad index / not
      *  a run head — nothing touched). */
+    /** deleteRun with the ORPHAN GUARD (v20.1, D259 §3.5 A3): the piece
+     *  after the deleted block loses its predecessor — if it is an
+     *  automatic follower (by the run topology it is a run head and
+     *  never is — a belt) it is frozen at its contract off the compile
+     *  in hand first. `spans` = the displayed compile's spans; null =
+     *  the plain op. */
+    public int deleteRun(int head, List<TrackCompiler.Span> spans) {
+        if (head >= 0 && head < pieces.size() && runStartOf(head) == head) {
+            freezeIfAuto(runEndOf(head) + 1, spans);
+        }
+        return deleteRun(head);
+    }
+
     public int deleteRun(int head) {
         if (head < 0 || head >= pieces.size()
                 || runStartOf(head) != head) {
@@ -986,6 +1015,21 @@ public class Coaster {
      *  connectStrict's index arithmetic, bitwise (RunGate f). Returns
      *  the moved head's new index, or −1 (list untouched) when
      *  canMoveRun refuses. */
+    /** moveRun with the ORPHAN GUARD (v20.1, D259 §3.5 A3): the piece
+     *  after the block's OLD place loses its predecessor and the piece
+     *  after the destination gets a new one — an automatic follower in
+     *  either slot (by the run topology both are run heads and never
+     *  are — a belt) is frozen at its contract off the compile in hand
+     *  first. `spans` = the displayed compile's spans; null = the plain
+     *  op. */
+    public int moveRun(int head, int afterIdx, List<TrackCompiler.Span> spans) {
+        if (canMoveRun(head, afterIdx)) {
+            freezeIfAuto(runEndOf(head) + 1, spans);
+            freezeIfAuto(afterIdx + 1, spans);
+        }
+        return moveRun(head, afterIdx);
+    }
+
     public int moveRun(int head, int afterIdx) {
         if (!canMoveRun(head, afterIdx)) return -1;
         int re = runEndOf(head);
@@ -1017,6 +1061,19 @@ public class Coaster {
      *  The source may go empty (D239). v0 of either coaster is the
      *  CALLER's (the deleteRun precedent). Returns the moved head's
      *  index in dest. */
+    /** moveRunTo with the ORPHAN GUARD (v20.1, D259 §3.5 A3): the
+     *  source's successor loses its predecessor — an automatic
+     *  follower there (a run head by topology — a belt) is frozen at
+     *  its contract off THIS coaster's compile in hand first. `spans`
+     *  = the displayed compile's spans; null = the plain op. */
+    public int moveRunTo(Coaster dest, int head, List<TrackCompiler.Span> spans) {
+        if (dest != null && dest != this && head >= 0 && head < pieces.size()
+                && runStartOf(head) == head) {
+            freezeIfAuto(runEndOf(head) + 1, spans);
+        }
+        return moveRunTo(dest, head);
+    }
+
     public int moveRunTo(Coaster dest, int head) {
         if (dest == null || dest == this || head < 0
                 || head >= pieces.size() || runStartOf(head) != head) {
@@ -1275,6 +1332,11 @@ public class Coaster {
      *  by. Pure-heading gaps live inside it too (see
      *  isSeamOrientConflict). */
     public Quat seamConflictTilt(int followerIdx, TrackPose prevExit) {
+        // an AUTOMATIC follower (v20.1, D259 §3.5 A1) generates AT the
+        // follow contract — the compile applies the IDENTITY tilt, so
+        // the predicate reads the same object: no conflict, ever, while
+        // its stored (inert) design pose may say anything
+        if (autoFollower(followerIdx)) return Quat.IDENTITY;
         TrackPiece f = pieces.get(followerIdx);
         return strictEntry(prevExit, f).orient()
             .mul(f.designPose().orient().conjugate());
@@ -1554,6 +1616,14 @@ public class Coaster {
             entryPsiInternal(target) - entryPsiInternal(floating));
         target.sections.addAll(floating.sections);
         pieces.remove(floatingIdx);
+        // the straight/curve invariant's L1 assert (v20.1, D259 §3.2):
+        // every caller's dry run refuses an s/c edge first
+        // (unstrictSeamWhy / absorbFollowerWhy), so a merge that
+        // breaks L1 is a bug — gate builds throw, production never
+        if (ASSERT_SC_INVARIANT && !scInvariantHolds()) {
+            throw new IllegalStateException("D259 §3 L1 broken by attachPiece("
+                + targetIdx + ", " + floatingIdx + ")");
+        }
     }
 
     /** Move a piece to a new list position (v13.1, D73): bridging to
@@ -1578,23 +1648,298 @@ public class Coaster {
      *  design speeds stay independent (honest ≠v instead of a
      *  reshape). Returns the follower's piece index, −1 refused. */
     public int makeSeamStrict(int pieceIdx, int secIdx, double dt) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return -1;
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (secIdx <= 0 || secIdx >= piece.sections.size()) return -1;
+        // = ensureScFollower(p, k, dt, true, true, true, 0) BITWISE
+        // except the real-anchor flag (v20.1, D259 §3.3): on a LANE
+        // section's seam the flag stays as it was — a hand-made
+        // follower keeps D135's honest ≠v unless a resolve op already
+        // flagged its first section; an s/c EDGE is the invariant's
+        // seam and takes the flag like every seam the invariant makes
+        Section first = piece.sections.get(secIdx);
+        boolean scEdge = first instanceof StraightCurveSection
+            || piece.sections.get(secIdx - 1) instanceof StraightCurveSection;
+        boolean anchoredWas = first.vRealAnchored();
+        int np = ensureScFollower(pieceIdx, secIdx, dt, true, true, true, 0);
+        if (np >= 0 && !scEdge) first.vRealAnchored(anchoredWas);
+        return np;
+    }
+
+    // ---- THE STRAIGHT/CURVE SEAM INVARIANT (v20.1, D259 §3 — D5/D31):
+    // L1 a StraightCurveSection is ALWAYS a piece's section 0, and the
+    // section AFTER an s/c is ALWAYS section 0 of the next piece (a
+    // trailing BRIDGE excepted — L1 reads "non-bridge section"); the
+    // two pieces are joined by a STRICT seam unless the follower is a
+    // run head (detached) or bridged-in (L2). L3 every seam the
+    // invariant creates is AUTOMATIC: sAuto, all three locks off,
+    // smoothing 0 (D9), the follower's section 0 REAL-ANCHORED (D5),
+    // LOCKSTEP. L4 unstrictSeam refuses on such a seam ("Split track
+    // at seam" stays allowed). ----
+
+    /** MAKE THE SEAM AT (pieceIdx, secIdx) STRICT with the given lock
+     *  triple and smoothing length (v20.1, D259 §3.3): makeSeamStrict's
+     *  body with the locks as parameters, plus `sAuto = all three
+     *  off` and `sections[0].vRealAnchored(true)` on EVERY seam it
+     *  creates — automatic AND locked — because the flag, never the
+     *  lock state, decides the k == 0 reconcile (§3.5 A4). The split
+     *  reads a compile of its own; the Result overload reads one
+     *  already in hand. Preconditions: 0 < secIdx < size and the
+     *  section before the cut is not a bridge (a bridge is a piece's
+     *  trailing section — unreachable, a belt). Returns the follower's
+     *  piece index, −1 refused (nothing mutated). */
+    public int ensureScFollower(int pieceIdx, int secIdx, double dt,
+                                boolean lockYaw, boolean lockPitch,
+                                boolean lockRoll, double smoothLen) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return -1;
         TrackPiece piece = pieces.get(pieceIdx);
         if (secIdx <= 0 || secIdx >= piece.sections.size()) return -1;
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
-        int spanIdx = secIdx - 1;
-        for (int p = 0; p < pieceIdx; p++) {
-            spanIdx += pieces.get(p).sections.size();
-        }
+        return ensureScFollower(pieceIdx, secIdx, r, lockYaw, lockPitch,
+            lockRoll, smoothLen);
+    }
+
+    /** The compile-in-hand form (D259 §3.3): the '+' and Insert paths
+     *  compile once after their append, the loader once per coaster
+     *  — `splitPiece` reads only the boundary Span, so no compile of
+     *  its own is needed. The Result must describe THIS piece list
+     *  (walked from the end when several cuts share one compile — a
+     *  cut only inserts pieces AFTER pieceIdx, so earlier boundaries'
+     *  flattened span indices hold). */
+    public int ensureScFollower(int pieceIdx, int secIdx,
+                                TrackCompiler.Result r,
+                                boolean lockYaw, boolean lockPitch,
+                                boolean lockRoll, double smoothLen) {
+        if (r == null || pieceIdx < 0 || pieceIdx >= pieces.size()) return -1;
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (secIdx <= 0 || secIdx >= piece.sections.size()) return -1;
+        if (piece.sections.get(secIdx - 1) instanceof BridgeSection) return -1;
+        int spanIdx = spanBase(this, pieceIdx) + secIdx - 1;
         if (spanIdx >= r.spans().size()) return -1;
         int np = splitPiece(pieceIdx, secIdx, r.spans().get(spanIdx));
         if (np < 0) return -1;
         TrackPiece f = pieces.get(np);
         f.followPrev = true;
-        f.sLockYaw = true;       // ALL THREE locked at creation (v19.6,
-        f.sLockPitch = true;     // D235 — user spec; the seeds are the
-        f.sLockRoll = true;      // current angles, so nothing moves)
-        seedStrictValues(f, f.entryPose().orient());
+        f.sLockYaw = lockYaw;      // the lock triple is the creator's
+        f.sLockPitch = lockPitch;  // (§3.4: automatic = all off; Make
+        f.sLockRoll = lockRoll;    // seam strict / border split = all on)
+        seedStrictValues(f, f.entryPose().orient());   // D235: nothing moves
+        f.sSmoothLen = smoothLen;
+        f.sAuto = !lockYaw && !lockPitch && !lockRoll;
+        // the explicit real anchor (D256) on EVERY seam the invariant
+        // makes: the follower's first section is reconciled at k == 0
+        // onto the real seam speed (§3.5 A4) — no phantom ≠v at a seam
+        // the user never asked for
+        f.sections.get(0).vRealAnchored(true);
         return np;
+    }
+
+    /** Is piece p an AUTOMATIC follower this compile (D259 §3.5): an
+     *  active D135 follower that carries the invariant's flag with all
+     *  three locks off and a zero design tier? Then TrackCompiler
+     *  generates it AT the follow contract (branch A1) and its stored
+     *  placement is inert. */
+    public boolean autoFollower(int p) {
+        if (!followsPrev(p)) return false;
+        TrackPiece f = pieces.get(p);
+        return f.sAuto && !f.sLockYaw && !f.sLockPitch && !f.sLockRoll
+            && f.designPitchDeg == 0 && f.designRollDeg == 0;
+    }
+
+    /** FREEZE an automatic follower's stored placement at its CURRENT
+     *  follow contract (v20.1, D259 §3.5 A3 — the ONE prologue of
+     *  every write to a follower's placement, tiers, locks or mode:
+     *  the seam window's spinners / padlocks / ↺ / rings, the mode
+     *  row, Design ↔ Real, detachStrictSeam, bakeFollow, a connect
+     *  relock — and the orphan guard of deleteRun / moveRun /
+     *  moveRunTo / copyRun): x/y/z := the upstream span's exit
+     *  position, baseOrient := its exit orientation, the canonical
+     *  pair := that span's exact (psi, canon) (the D199 bits — null
+     *  behind a tilted upstream span, where the chain canon is not the
+     *  world frame), both tiers zero, the held angles seeded from the
+     *  contract (D235: the padlock's own hold of the current angle
+     *  then overwrites one axis). From there a lock turned on or a
+     *  design delta makes the piece a classic D135/D247 follower whose
+     *  generation reads these fields — bitwise the contract they were
+     *  frozen at (ScSeamGate k); with everything off again branch A1
+     *  resumes and they go inert (j). `spans` = the compile in hand
+     *  (the UI's displayed spans — never a recompile). Returns true
+     *  when it wrote; false for a non-automatic follower (its stored
+     *  pose already IS its contract) or without a covering compile. */
+    public boolean freezeAutoFollower(int fi, List<TrackCompiler.Span> spans) {
+        if (!autoFollower(fi) || spans == null) return false;
+        int upIdx = spanBase(this, fi) - 1;   // the upstream's last span
+        if (upIdx < 0 || upIdx >= spans.size()) return false;
+        TrackCompiler.Span up = spans.get(upIdx);
+        TrackPiece f = pieces.get(fi);
+        TrackPose eff = strictEntry(up.exit(), f);   // == up.exit() exactly
+        f.x = eff.pos().x();
+        f.y = eff.pos().y();
+        f.z = eff.pos().z();
+        f.baseOrient = eff.orient();
+        if (up.exitTilt() == Quat.IDENTITY && up.exitCanon() != null) {
+            f.canonPsiDeg = up.exitPsi();
+            f.canonOrient = up.exitCanon();
+        } else {
+            f.canonOrient = null;   // decompose baseOrient (D199 default)
+        }
+        f.yawDeg = 0;
+        f.pitchDeg = 0;
+        f.rollDeg = 0;
+        f.designPitchDeg = 0;
+        f.designRollDeg = 0;
+        seedStrictValues(f, eff.orient());
+        return true;
+    }
+
+    public boolean freezeAutoFollower(int fi, TrackCompiler.Result r) {
+        return r != null && freezeAutoFollower(fi, r.spans());
+    }
+
+    /** The ORPHAN GUARD's one helper (D259 §3.5 A3): freeze piece p if
+     *  it is an automatic follower about to lose (or change) its
+     *  predecessor, so its stored placement is the last compile's
+     *  contract and it falls back onto it like any orphaned follower
+     *  (D135; loads never move pieces, D88). Out-of-range / non-auto
+     *  = nothing. */
+    private void freezeIfAuto(int p, List<TrackCompiler.Span> spans) {
+        if (p >= 0 && p < pieces.size()) freezeAutoFollower(p, spans);
+    }
+
+    /** Does L1 hold on every piece — no straight/curve section at
+     *  k > 0, and nothing but a bridge after an s/c inside one piece?
+     *  (The seam half of L1 cannot be asserted structurally: a
+     *  detached run head is L2's legal exception.) The gates assert
+     *  it; attachPiece asserts it in a gate build (ASSERT_SC_INVARIANT). */
+    public boolean scInvariantHolds() {
+        for (TrackPiece p : pieces) {
+            List<Section> s = p.sections;
+            for (int k = 1; k < s.size(); k++) {
+                if (s.get(k) instanceof StraightCurveSection) return false;
+                if (s.get(k - 1) instanceof StraightCurveSection
+                        && !(s.get(k) instanceof BridgeSection)) return false;
+            }
+        }
+        return true;
+    }
+
+    /** GATE BUILDS set this: attachPiece then throws
+     *  IllegalStateException when a merge breaks L1 (D259 §3.2 —
+     *  every caller's dry run refuses first, so a throw is a bug).
+     *  Never set in production. */
+    public static boolean ASSERT_SC_INVARIANT = false;
+
+    /** Which side(s) of the seam INTO follower fi are straight/curve
+     *  sections: 0 neither, 1 one side (the follower's section 0 OR the
+     *  previous piece's last non-bridge section), 2 both. −1 = not a
+     *  seam index. */
+    int scEdgeKind(int fi) {
+        if (fi <= 0 || fi >= pieces.size()) return -1;
+        List<Section> b = pieces.get(fi).sections;
+        boolean first = !b.isEmpty()
+            && b.get(0) instanceof StraightCurveSection;
+        int lk = lastNonBridge(fi - 1);
+        boolean tail = lk >= 0
+            && pieces.get(fi - 1).sections.get(lk) instanceof StraightCurveSection;
+        return (first ? 1 : 0) + (tail ? 1 : 0);
+    }
+
+    /** L4's gray reason for un-stricting / absorbing the seam INTO
+     *  follower fi (D259 §3.1, §3.7): UNSTRICT_SC_WHY on an s/c‖s/c
+     *  seam, UNSTRICT_CONVERT_WHY with an s/c on one side, null when
+     *  the seam may go. */
+    public String unstrictSeamWhy(int fi) {
+        int k = scEdgeKind(fi);
+        return k >= 2 ? SectionNames.UNSTRICT_SC_WHY
+            : k == 1 ? SectionNames.UNSTRICT_CONVERT_WHY : null;
+    }
+
+    /** The UPSTREAM span's exit pose for follower fi off the spans in
+     *  hand — the seam's position AND the frame the follow contract
+     *  reads (strictEntry's input); null when fi is not an active
+     *  follower or the compile does not cover the seam. */
+    public TrackPose upstreamExit(int fi, List<TrackCompiler.Span> spans) {
+        if (!followerActive(fi) || spans == null) return null;
+        int up = spanBase(this, fi) - 1;
+        return up >= 0 && up < spans.size() ? spans.get(up).exit() : null;
+    }
+
+    /** The strict seam's WORLD position (v20.1, D259 §3.8 — the model
+     *  half of GraphEditor.seamWorldPos): the UPSTREAM span's exit
+     *  position — what seamEntryOrient already reads — not the
+     *  follower's first sample, which sits one dropped dt INSIDE the
+     *  follower (v·dt ≈ 0.26 m at 26 m/s). Null = no seam / no compile. */
+    public Vec3 seamWorldPos(int fi, List<TrackCompiler.Span> spans) {
+        TrackPose up = upstreamExit(fi, spans);
+        return up == null ? null : up.pos();
+    }
+
+    /** Does the follower's section 0 — a straight/curve section whose
+     *  ELEMENT 0's roll lane is ABSOLUTE — own the seam's bank itself
+     *  (D259 §3.9: that lane's node 0 sets the entry bank, D118/D121)?
+     *  The seam window's roll row grays then (SEAM_ROLL_ABS_WHY) and the
+     *  forward align skips roll. */
+    public boolean seamRollOwnedByLane(int fi) {
+        if (fi < 0 || fi >= pieces.size()) return false;
+        List<Section> s = pieces.get(fi).sections;
+        return !s.isEmpty() && s.get(0) instanceof StraightCurveSection sc
+            && !sc.elements.isEmpty()
+            && sc.elements.get(0).roll.rollAbsolute();
+    }
+
+    /** FORWARD ALIGN (v20.1, D259 §3.7 — the seam window's "Align to
+     *  previous end (B)" button and B / Shift+B with a seam
+     *  highlighted): for each LOCKED axis of follower fi the held angle
+     *  := that component of eulerOf(the upstream span's exit
+     *  orientation) — yaw in the INTERNAL sign (the seedStrictValues
+     *  convention); roll SKIPPED when the follower's section 0 is an s/c
+     *  with an absolute bank lane (§3.9); locks kept — a ONE-SHOT write
+     *  (the seam's ordinary follow keeps the pieces joined; a later
+     *  upstream edit may reopen a kink on the locked axes, the carets
+     *  show it). Refuses (alignSeamWhy): no locked axis to align, or
+     *  only a skipped roll → ALIGN_FOLLOWS_WHY; a vertical upstream
+     *  frame (eulerOf NaN on an axis to write) → ALIGN_VERTICAL_WHY. The
+     *  UI runs it inside GraphEditor.seamEdit (mode routing + the carry,
+     *  exactly as a typed box), one undo step; `spans` = the displayed
+     *  compile's. Returns true when it wrote. */
+    public boolean alignSeamToUpstream(int fi, List<TrackCompiler.Span> spans) {
+        if (alignSeamWhy(fi, spans) != null) return false;
+        TrackPiece f = pieces.get(fi);
+        double[] e = eulerOf(upstreamExit(fi, spans).orient());
+        if (f.sLockYaw) f.sYawDeg = e[0];
+        if (f.sLockPitch) f.sPitchDeg = e[1];
+        if (f.sLockRoll && !seamRollOwnedByLane(fi)) f.sRollDeg = e[2];
+        return true;
+    }
+
+    public boolean alignSeamToUpstream(int fi, TrackCompiler.Result r) {
+        return r != null && alignSeamToUpstream(fi, r.spans());
+    }
+
+    /** The forward align's DRY RUN (its gray reason): null = it would
+     *  write; see alignSeamToUpstream. A non-follower / an uncovered
+     *  seam reads ALIGN_FOLLOWS_WHY (nothing to align — unreachable
+     *  from the seam window, which exists only on an active follower
+     *  with a compile). */
+    public String alignSeamWhy(int fi, List<TrackCompiler.Span> spans) {
+        TrackPose up = upstreamExit(fi, spans);
+        if (up == null) return SectionNames.ALIGN_FOLLOWS_WHY;
+        TrackPiece f = pieces.get(fi);
+        boolean roll = f.sLockRoll && !seamRollOwnedByLane(fi);
+        if (!f.sLockYaw && !f.sLockPitch && !roll) {
+            return SectionNames.ALIGN_FOLLOWS_WHY;
+        }
+        double[] e = eulerOf(up.orient());
+        if ((f.sLockYaw && Double.isNaN(e[0]))
+                || (f.sLockPitch && Double.isNaN(e[1]))
+                || (roll && Double.isNaN(e[2]))) {
+            return SectionNames.ALIGN_VERTICAL_WHY;
+        }
+        return null;
+    }
+
+    public String alignSeamWhy(int fi, TrackCompiler.Result r) {
+        return alignSeamWhy(fi, r == null ? null : r.spans());
     }
 
     /** INSERT A SECTION AT A SEAM (v19.18, D247 — the seam menu's
@@ -1618,14 +1963,30 @@ public class Coaster {
      *  its exit frame — the '+'-style continuation semantics) and
      *  the reconcile re-freezes their design speeds on the next
      *  rebuild (interior k>0 sections; a follower's first section
-     *  is never re-frozen). The STRICT-seam case IS this branch:
+     *  is re-frozen only when it is real-anchored — every seam the
+     *  straight/curve invariant creates, D259 §3.5 A4; a hand-made
+     *  follower's keeps D135). The STRICT-seam case IS this branch:
      *  the caller passes the UPSTREAM piece and secIdx = its size —
      *  the existing follower's held angles hold, its position
      *  follows.</li></ul>
+     *  THE STRAIGHT/CURVE INVARIANT (v20.1, D259 §3.2 — D31: every
+     *  s/c edge is a strict seam) runs after either shape, off ONE
+     *  compile of the post-insert document (restoreScInvariant): an
+     *  inserted s/c gets an automatic seam AFTER it (when a non-bridge
+     *  section follows — downstream first, so the indices hold) and
+     *  BEFORE it; a force/geo inserted right after an s/c (the
+     *  strict-seam case with an s/c upstream tail, or before an s/c's
+     *  trailing bridge) gets one before it; Lock ON appends as today
+     *  and then cuts before the appended s/c, so it becomes a
+     *  one-section automatic follower between the upstream and the
+     *  all-locked follower. Each seam the invariant makes is
+     *  automatic (all axes follow, sAuto, smoothing 0, the follower's
+     *  first section real-anchored — §3.3/§3.4).
      *  Speed controls, marks and influence are per section OBJECT,
      *  so nothing of theirs moves. Returns {piece, section} of the
-     *  inserted section, or null (bad indices / the boundary isn't
-     *  compiled — nothing mutated then). */
+     *  inserted section — on the NEW piece when a seam was cut before
+     *  it —, or null (bad indices / the boundary isn't compiled —
+     *  nothing mutated then). */
     public int[] insertSectionAtSeam(int pieceIdx, int secIdx,
                                      Section added, boolean lockDownstream,
                                      double dt) {
@@ -1642,10 +2003,67 @@ public class Coaster {
             int np = makeSeamStrict(pieceIdx, secIdx, dt);
             if (np < 0) return null;
             piece.sections.add(added);
-            return new int[]{ pieceIdx, piece.sections.size() - 1 };
+            return restoreScInvariant(pieceIdx, piece.sections.size() - 1, dt);
         }
         piece.sections.add(secIdx, added);
-        return new int[]{ pieceIdx, secIdx };
+        return restoreScInvariant(pieceIdx, secIdx, dt);
+    }
+
+    /** APPEND a section to piece pieceIdx under the straight/curve
+     *  invariant (v20.1, D259 §3.2 — the '+' paths' ONE model call,
+     *  replacing their bare `sections.add`): the section lands at the
+     *  end, then restoreScInvariant cuts the automatic seam the
+     *  invariant wants before it — an appended s/c, or a force/geo
+     *  appended after an s/c tail. A lane after a lane adds nothing and
+     *  compiles nothing (bitwise the old append); a cut costs the ONE
+     *  compile the split reads, so a '+' costs that compile plus the
+     *  rebuild (ScSeamGate h). Returns {piece, section} where `added`
+     *  now lives (the new follower's section 0 after a cut), or null
+     *  (bad index / null section — nothing mutated). */
+    public int[] appendSectionWithInvariant(int pieceIdx, Section added,
+                                            double dt) {
+        if (added == null || pieceIdx < 0 || pieceIdx >= pieces.size()) {
+            return null;
+        }
+        TrackPiece piece = pieces.get(pieceIdx);
+        piece.sections.add(added);
+        return restoreScInvariant(pieceIdx, piece.sections.size() - 1, dt);
+    }
+
+    /** RESTORE L1 around section i of piece pieceIdx, just inserted
+     *  (D259 §3.2): cut an automatic seam AFTER it when it is an s/c
+     *  followed by a non-bridge section, and BEFORE it when it is an
+     *  s/c or follows an s/c (a bridge after an s/c is L1's trailing
+     *  exception; a bridge before the cut cannot occur — a bridge is a
+     *  trailing section). Downstream first so the indices hold; both
+     *  cuts read ONE compile of the current document (the Result
+     *  overload of ensureScFollower — a cut only inserts pieces after
+     *  pieceIdx, so the earlier boundary's flattened span index stays
+     *  valid). No cut needed = no compile. Returns {piece, section}
+     *  where section i lives afterwards. */
+    private int[] restoreScInvariant(int pieceIdx, int i, double dt) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        List<Section> s = piece.sections;
+        boolean scHere = s.get(i) instanceof StraightCurveSection;
+        boolean bridgeHere = s.get(i) instanceof BridgeSection;
+        boolean scBefore = i > 0
+            && s.get(i - 1) instanceof StraightCurveSection;
+        boolean bridgeBefore = i > 0
+            && s.get(i - 1) instanceof BridgeSection;
+        boolean cutAfter = scHere && i + 1 < s.size()
+            && !(s.get(i + 1) instanceof BridgeSection);
+        boolean cutBefore = i > 0 && !bridgeBefore
+            && (scHere || (scBefore && !bridgeHere));
+        if (!cutAfter && !cutBefore) return new int[]{ pieceIdx, i };
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        if (cutAfter) {
+            ensureScFollower(pieceIdx, i + 1, r, false, false, false, 0);
+        }
+        if (cutBefore) {
+            int np = ensureScFollower(pieceIdx, i, r, false, false, false, 0);
+            if (np >= 0) return new int[]{ np, 0 };
+        }
+        return new int[]{ pieceIdx, i };
     }
 
     /** Is piece p an ACTIVE follower (the compiler's guard)? */
@@ -1669,6 +2087,13 @@ public class Coaster {
      *  gravity in the stored frame. The follow itself stays ACTIVE
      *  (flags + discontinuous values untouched). */
     boolean bakeFollow(int followerIdx, TrackCompiler.Result r) {
+        // an AUTOMATIC follower's bake IS the freeze (v20.1, D259 §3.5
+        // A3 — the one prologue): the stored pose := the contract with
+        // the upstream span's exact canonical pair, so the generation
+        // that follows is bitwise the A1 branch (a nulled pair would
+        // decompose baseOrient — dust); the piece stays automatic until
+        // a lock or a design delta says otherwise
+        if (autoFollower(followerIdx)) return freezeAutoFollower(followerIdx, r);
         TrackPose eff = followContract(followerIdx, r);
         if (eff == null) return false;
         TrackPiece f = pieces.get(followerIdx);
@@ -1773,8 +2198,7 @@ public class Coaster {
         Section sNextS = B.sections.get(0);
         if (!(sPrevS instanceof LaneSection lPrev)
                 || !(sNextS instanceof LaneSection lNext)) {
-            return "smoothing conversion needs force/geo sections on "
-                + "both sides of the seam";
+            return SectionNames.SMOOTH_REAL_SC_WHY;   // §3.6 SM4 (D259)
         }
         // INFLUENCE on the seam sections is fine as long as the
         // deltas are ZERO across the window (v19.5, D234 — the
@@ -2049,6 +2473,9 @@ public class Coaster {
                 .get(prev.sections.size() - 1) instanceof BridgeSection) {
             return false;
         }
+        // L4 (v20.1, D259 §3.1): a straight/curve edge is ALWAYS a
+        // strict seam — the UI grays the item with unstrictSeamWhy
+        if (unstrictSeamWhy(followerIdx) != null) return false;
         Section first = f.sections.isEmpty() ? null : f.sections.get(0);
         f.followPrev = false;
         attachPiece(followerIdx - 1, followerIdx);
@@ -2077,6 +2504,11 @@ public class Coaster {
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
         TrackPose eff = followContract(followerIdx, r);
         if (eff == null) return false;
+        // the A3 prologue (v20.1, D259 §3.5): an AUTOMATIC follower's
+        // stored pose is inert — write the contract into it first, so
+        // the detached run head sits exactly where the seam had it
+        // (the decomposition below then reads zero deltas)
+        freezeAutoFollower(followerIdx, r);
         TrackPiece f = pieces.get(followerIdx);
         double[] d = TrackPiece.decomposeNear(f.baseOrient, eff.orient(),
             f.yawDeg, f.pitchDeg, f.rollDeg);
@@ -3674,7 +4106,12 @@ public class Coaster {
      *  speed resolve ops key their anchor read on this, never on the
      *  FLATTENED span index: that read the PREVIOUS piece's last
      *  sample — another run — for a detached head at piece index
-     *  > 0. */
+     *  > 0. A strict FOLLOWER's first section has an upstream AND,
+     *  since v20.1 (D259 §3.5 A4), is RECONCILED onto its real seam
+     *  speed whenever it is real-anchored (Section.vRealAnchored —
+     *  every seam the straight/curve invariant creates, or a resolve
+     *  op's flag); a bridged-in piece's first section stays the op's
+     *  own write. */
     public boolean hasUpstream(int p, int k) {
         return k > 0 || followsPrev(p) || bridgedInto(p);
     }
@@ -3703,6 +4140,15 @@ public class Coaster {
         if (pieceIdx < 0 || pieceIdx >= pieces.size()
                 || pieces.get(pieceIdx).sections.isEmpty()
                 || !hasUpstream(pieceIdx, 0)) return Double.NaN;
+        // a strict FOLLOWER's first section is RECONCILED since v20.1
+        // (D259 §3.5 A4): the op's smoothing-suspended write is not its
+        // final value — the at-rest EXACT reconcile lands it on the
+        // DISPLAYED seam speed like a continuation, which is exactly
+        // what realEntrySpeed predicts off the displayed arrays. NaN
+        // here keeps that prediction in force (the window's supplier
+        // takes this value only when it is a number); only a
+        // BRIDGED-IN first section is finalized by the op's own write.
+        if (followsPrev(pieceIdx)) return Double.NaN;
         Section sec = pieces.get(pieceIdx).sections.get(0);
         if (sec.reversed() || sec instanceof BridgeSection) {
             return Double.NaN;
@@ -3756,8 +4202,16 @@ public class Coaster {
         if (ip < 0 || ip >= trueV.length || ip >= samples.size()) return null;
         double vReal = trueV[ip];
         double vWrite = Math.max(0.5, vReal);   // refreezeSpeedOnly's write
-        if (secIdx == 0) return new double[]{ vReal, vWrite };
-        // a continuation: the flagged landing (reconcileChainedSpeeds)
+        // a BRIDGED-IN piece's first section is never reconciled — the
+        // op's own write is final there. A strict FOLLOWER's first
+        // section IS reconciled since v20.1 (D259 §3.5 A4 — the op
+        // flags it, the exact pass lands it on the displayed seam
+        // speed): the flagged landing, like a continuation
+        if (secIdx == 0 && !followsPrev(pieceIdx)) {
+            return new double[]{ vReal, vWrite };
+        }
+        // a continuation / a follower's first: the flagged landing
+        // (reconcileChainedSpeeds) — KEEP IN STEP with its flag branch
         return new double[]{ vReal, Math.max(0.1, vReal) };
     }
 
@@ -3840,7 +4294,9 @@ public class Coaster {
             if (Math.abs(real - sec.vDesign())
                     <= TrackCompiler.BRIDGE_ENTRY_TOL) {
                 sec.vPinned(false);
-                sec.vRealAnchored(true);   // resolved (D256; inert at k == 0)
+                sec.vRealAnchored(true);   // resolved (D256; inert at k == 0
+                    // of a BRIDGED-IN piece — a strict follower's first
+                    // section is reconciled on it since v20.1, D259 §3.5)
                 return true;
             }
             arcWas = spanIdx >= 1 ? r.spans().get(spanIdx - 1).sLen() : 0;
@@ -4036,9 +4492,25 @@ public class Coaster {
         if (followerIdx != prevIdx + 1 || !followerActive(followerIdx)) {
             return false;
         }
+        // never ACROSS a straight/curve edge (v20.1, D259 §3.2 — L1):
+        // the range flow's gray reason is absorbFollowerWhy
+        if (absorbFollowerWhy(prevIdx, followerIdx) != null) return false;
         pieces.get(followerIdx).followPrev = false;
         attachPiece(prevIdx, followerIdx);
         return true;
+    }
+
+    /** The straight/curve invariant's refusal for absorbing follower
+     *  followerIdx into prevIdx (D259 §3.2 — the chained "Convert Real
+     *  to Design" re-joins its range one section at a time; an s/c
+     *  edge never re-joins): UNSTRICT_SC_WHY on an s/c‖s/c seam,
+     *  UNSTRICT_CONVERT_WHY with an s/c on one side, null otherwise.
+     *  rangeResolveWhy carries it. (With L1 holding a range inside one
+     *  piece never meets an s/c — an s/c piece is one section — so
+     *  this is a belt.) */
+    public String absorbFollowerWhy(int prevIdx, int followerIdx) {
+        if (followerIdx != prevIdx + 1) return null;
+        return unstrictSeamWhy(followerIdx);
     }
 
     /** AUTHORED-axis map of one compiled span (v16.0, D103): ascending
@@ -4325,7 +4797,8 @@ public class Coaster {
                                           boolean exact) {
         boolean changed = false;
         int spanIdx = 0;
-        for (TrackPiece piece : pieces) {
+        for (int pi = 0; pi < pieces.size(); pi++) {
+            TrackPiece piece = pieces.get(pi);
             // CASCADE CARRY (v18.25, D197): when THIS pass just moved
             // a section's design speed, the stale compile's end sample
             // for it is one rewrite behind — prevEnd carries the move
@@ -4342,8 +4815,25 @@ public class Coaster {
                 double nextPrev = Double.NaN;
                 double carryIn = prevEnd;
                 prevEnd = Double.NaN;
-                if (k == 0 || spanIdx >= r.spans().size()) continue;
+                if (spanIdx >= r.spans().size()) continue;
                 Section sec = piece.sections.get(k);
+                // a PIECE-FIRST is never reconciled (D135's honest ≠v —
+                // a run head has no seam, a bridged-in piece's and a
+                // hand-made follower's first section keep their own
+                // design speed) — EXCEPT a strict follower whose first
+                // section is REAL-ANCHORED (v20.1, D259 §3.5 A4 — D5):
+                // the explicit D256 flag decides, never the lock state.
+                // ensureScFollower sets it on every seam the invariant
+                // creates, automatic and locked alike; a hand-made
+                // follower keeps D135 unless a resolve op already
+                // flagged its first section (Set Design to Real /
+                // Convert Real to Design, inert at k == 0 until now).
+                // The previous piece's last span is spans[spanIdx − 1]
+                // (the flattened index crosses pieces) and the anchor
+                // branch below lands vIn = vTrue; the EXACT pass + the
+                // fast-pass carry apply unchanged (the entry depends
+                // only on upstream — the triangular termination holds).
+                if (k == 0 && !(followsPrev(pi) && sec.vRealAnchored())) continue;
                 if (sec instanceof BridgeSection || sec.reversed()
                         || sec.vPinned()) continue;   // v14.5 D97: a
                         // pinned seam keeps its split deliberately
@@ -6053,6 +6543,17 @@ public class Coaster {
                     tp.sections.get(0).vPinned(true);
                 }
                 tp.sections.add(0, conv);
+                // THE STRAIGHT/CURVE INVARIANT (v20.1, D259 §3.2): with
+                // an s/c as the target's old section 0 the prepended
+                // lanes must not share its piece — an automatic strict
+                // seam between them, off a compile of the re-stitched
+                // document (the lanes stay the bridged-in piece, the
+                // s/c follows them; its D97 pin keeps the split)
+                if (tp.sections.size() > 1
+                        && tp.sections.get(1) instanceof StraightCurveSection) {
+                    TrackCompiler.Result rc = TrackCompiler.compile(this, dt);
+                    ensureScFollower(pieceIdx + 1, 1, rc, false, false, false, 0);
+                }
             } else {
                 // orphaned bridge: no target to join — the converted
                 // lanes ride a new piece at the cut (old behavior)
@@ -6278,6 +6779,18 @@ public class Coaster {
             cutNative, Double.POSITIVE_INFINITY);
         piece.sections.set(secIdx, left ? conv : keep);
         piece.sections.add(secIdx + 1, left ? keep : conv);
+        if (sec instanceof StraightCurveSection) {
+            // THE STRAIGHT/CURVE INVARIANT (v20.1, D259 §3.2): the kept
+            // s/c half and the converted lanes are two sections of one
+            // piece now — the cut boundary (the kept half's seam, on
+            // either side) becomes an automatic strict seam off a
+            // compile of the post-convert document; the pose IS that
+            // compile's boundary (D89's interpolated cut re-anchored
+            // through the chain). A pinned (conflicted) source leaves
+            // the pin on both halves, so the reconcile skips them.
+            TrackCompiler.Result rc = TrackCompiler.compile(this, dt);
+            ensureScFollower(pieceIdx, secIdx + 1, rc, false, false, false, 0);
+        }
         return true;
     }
 

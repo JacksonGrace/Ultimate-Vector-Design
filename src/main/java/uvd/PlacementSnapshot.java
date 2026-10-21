@@ -35,6 +35,7 @@ public final class PlacementSnapshot {
         final double canonPsi;
         final TrackPiece.OrientMode mode;
         final boolean affect, uiP, uiR, follow, lY, lP, lR;
+        final boolean auto;   // the automatic-seam flag (D259 §3.5)
         final double sYaw, sPitch, sRoll, sSmooth;
         // the trailing bridge (null = the piece ends in no bridge)
         final BridgeSection b;
@@ -56,6 +57,7 @@ public final class PlacementSnapshot {
             uiP = p.uiLockPitch; uiR = p.uiLockRoll;
             follow = p.followPrev;
             lY = p.sLockYaw; lP = p.sLockPitch; lR = p.sLockRoll;
+            auto = p.sAuto;
             sYaw = p.sYawDeg; sPitch = p.sPitchDeg; sRoll = p.sRollDeg;
             sSmooth = p.sSmoothLen;
             BridgeSection bs = trailing(p);
@@ -92,7 +94,7 @@ public final class PlacementSnapshot {
                     || p.uiLockPitch != uiP || p.uiLockRoll != uiR
                     || p.followPrev != follow
                     || p.sLockYaw != lY || p.sLockPitch != lP
-                    || p.sLockRoll != lR
+                    || p.sLockRoll != lR || p.sAuto != auto
                     || !bits(p.sYawDeg, sYaw) || !bits(p.sPitchDeg, sPitch)
                     || !bits(p.sRollDeg, sRoll)
                     || !bits(p.sSmoothLen, sSmooth)) {
@@ -121,6 +123,7 @@ public final class PlacementSnapshot {
             p.uiLockPitch = uiP; p.uiLockRoll = uiR;
             p.followPrev = follow;
             p.sLockYaw = lY; p.sLockPitch = lP; p.sLockRoll = lR;
+            p.sAuto = auto;
             p.sYawDeg = sYaw; p.sPitchDeg = sPitch; p.sRollDeg = sRoll;
             p.sSmoothLen = sSmooth;
             BridgeSection bs = trailing(p);

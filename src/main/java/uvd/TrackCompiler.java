@@ -242,6 +242,8 @@ public final class TrackCompiler {
     }
 
     public static Result compile(Coaster c, double dt) {
+        Prof.count("compile");   // -Dfvd.timing=1 only (ScSeamGate h
+                                 // counts the compiles a '+' costs)
         FVDIntegrator.Friction fric = c.fric();   // Phase 3 (v17.0)
         List<FVDIntegrator.Sample> all = new ArrayList<>();
         List<Span> spans = new ArrayList<>();
@@ -333,25 +335,61 @@ public final class TrackCompiler {
                 // Zero design deltas take genPose/pieceCanon BITWISE
                 // (the historic object state). The true tier stays
                 // dead here: the follow contract IS the real frame.
-                TrackPose eff = Coaster.strictEntry(
-                    spans.get(spans.size() - 1).exit(), piece);
-                Quat gen = designed ? piece.designPose().orient()
-                                    : piece.genPose().orient();
-                // the seam's CONFLICT TILT: real (follow contract) vs
-                // design — Coaster.seamConflictTilt reads the same
-                // product for the ≠o predicate (a pure heading
-                // difference inside it is rigid, not a conflict)
-                Quat tq = eff.orient().mul(gen.conjugate());
-                tilt = Math.abs(tq.w()) > 1 - 1e-14
-                    ? Quat.IDENTITY : tq;
-                pose = new TrackPose(eff.pos(), gen);
-                anchor = eff.pos();
-                // follower generation stays at the STORED design
-                // orientation (shape frozen); only the position comes
-                // from the upstream exit — placement-side, so upstream
-                // moves keep the follower's generation bits (D199)
-                cp = designed ? designCanon(piece, eff.pos())
-                              : pieceCanon(piece, eff.pos());
+                Span prevSpan = spans.get(spans.size() - 1);
+                TrackPose eff = Coaster.strictEntry(prevSpan.exit(), piece);
+                if (c.autoFollower(p)) {
+                    // AUTOMATIC FOLLOWER (v20.1, D259 §3.5 A1 — D5): the
+                    // seam the straight/curve invariant created, all
+                    // three locks off, design tier zero. The piece
+                    // GENERATES AT THE FOLLOW CONTRACT — eff IS the
+                    // previous span's exit (strictEntry's exact
+                    // all-unlocked frame) — exactly like an in-piece
+                    // continuation: the SAME CanonPose chainNext handed
+                    // the previous span (psi additive, canon = that
+                    // span's exit canon — the D199 bits, so head x/y/z
+                    // + yaw moves stay bitwise-rigid and the samples
+                    // equal the in-piece twin's bit for bit, ScSeamGate
+                    // a-c), and NO tilt (the IDENTITY object: the
+                    // clean-span rule and tiltLine see "untilted" — an
+                    // unsmoothed auto follower's design speed lands on
+                    // its real seam speed bitwise, A4). The piece's
+                    // x/y/z/yaw/baseOrient/canonical pair/design tier
+                    // are NOT read — inert until a lock or a design
+                    // delta turns it back into a D135/D247 follower
+                    // (Coaster.freezeAutoFollower writes the contract
+                    // into them first). Behind a TILTED upstream span (a
+                    // conflict tilt, a locked follower's re-aim) the
+                    // design chain's canon is not the world frame this
+                    // seam continues: the world pose is decomposed
+                    // instead (canonOf — D199 dust under a yaw move
+                    // there, the documented tilted-piece limit).
+                    tilt = Quat.IDENTITY;
+                    pose = eff;
+                    anchor = eff.pos();
+                    cp = prevSpan.exitTilt() == Quat.IDENTITY
+                            && prevSpan.exitCanon() != null
+                        ? new CanonPose(eff.pos(), prevSpan.exitPsi(),
+                            prevSpan.exitCanon())
+                        : canonOf(eff);
+                } else {
+                    Quat gen = designed ? piece.designPose().orient()
+                                        : piece.genPose().orient();
+                    // the seam's CONFLICT TILT: real (follow contract) vs
+                    // design — Coaster.seamConflictTilt reads the same
+                    // product for the ≠o predicate (a pure heading
+                    // difference inside it is rigid, not a conflict)
+                    Quat tq = eff.orient().mul(gen.conjugate());
+                    tilt = Math.abs(tq.w()) > 1 - 1e-14
+                        ? Quat.IDENTITY : tq;
+                    pose = new TrackPose(eff.pos(), gen);
+                    anchor = eff.pos();
+                    // follower generation stays at the STORED design
+                    // orientation (shape frozen); only the position comes
+                    // from the upstream exit — placement-side, so upstream
+                    // moves keep the follower's generation bits (D199)
+                    cp = designed ? designCanon(piece, eff.pos())
+                                  : pieceCanon(piece, eff.pos());
+                }
             }
             if (!piece.sections.isEmpty() && !bridgedIn && !followed) {
                 runs.add(new double[]{ pieceStart,
@@ -951,7 +989,13 @@ public final class TrackCompiler {
     /** A piece's FIRST section as it really starts — generation at the
      *  design orientation with the rigid tilt applied (the bridge
      *  target-head capture reads this; identity tilt = the historic
-     *  call bitwise). */
+     *  call bitwise). An AUTOMATIC follower (D259 §3.5 A1) has no
+     *  mirror here by construction: its head generates at the UPSTREAM
+     *  span's exit, which this piece-only read cannot see — and a
+     *  bridge target is bridged-in, never a follower, so no caller
+     *  reaches that case (the design doc's "pieceHead mirrors the
+     *  branch" is satisfied vacuously; a Coaster-level read would need
+     *  the upstream compile). */
     static List<FVDIntegrator.Sample> pieceHead(TrackPiece piece, double dt) {
         return pieceHead(piece, dt, FVDIntegrator.Friction.NONE);
     }
@@ -1010,6 +1054,67 @@ public final class TrackCompiler {
      *  samples (the D80 contract). Halves clamp to HALF of each
      *  adjacent section's arc, so windows never reach a second seam.
      *  Returns null (blend skipped) when the window is too tight. */
+    /** DRY RUN of the smoothing window (v20.1, D259 §3.6 SM2 — the
+     *  seam diamond's hover, the "Enable smoothing (10 m)" item and the
+     *  Smoothing Options window ask it for the length they would set):
+     *  would smoothStrictSeam ENGAGE at the seam INTO span spanB with
+     *  window length `len`? The IDENTICAL window arithmetic — hUp/hDn =
+     *  min(len/2, half the adjacent span's arc), the bounds iA/iB, the
+     *  2/3-samples-per-side test — on the compile's samples, nothing
+     *  written (gated: smoothEngages == (smoothStrictSeam != null) over
+     *  200 random (len, v) pairs, ScSeamGate e). Type-agnostic like the
+     *  blend itself: an s/c edge smooths exactly like a lane seam (D3 —
+     *  the D232 ban is lifted, the seam diamond is the one control). */
+    public static boolean smoothEngages(List<FVDIntegrator.Sample> all,
+                                        List<Span> spans, int spanB,
+                                        double len) {
+        return smoothEngagesWhy(all, spans, spanB, len) == null;
+    }
+
+    /** The LAST TWO spans' seam (smoothStrictSeam's own case). */
+    public static boolean smoothEngages(List<FVDIntegrator.Sample> all,
+                                        List<Span> spans, double len) {
+        return smoothEngages(all, spans, spans.size() - 1, len);
+    }
+
+    /** Why the window would NOT engage (D259 §3.6 SM2): null = it
+     *  engages; SMOOTH_SECTION_SHORT_WHY when the failing side's half
+     *  was CLAMPED by its own span's arc (a section beside the seam is
+     *  too short to hold the window), SMOOTH_TOO_SHORT_WHY when the
+     *  window simply holds too few samples (lengthen it). A seam the
+     *  compile does not cover reads TOO_SHORT. */
+    public static String smoothEngagesWhy(List<FVDIntegrator.Sample> all,
+                                          List<Span> spans, int spanB,
+                                          double len) {
+        if (all == null || spans == null || spanB < 1
+                || spanB >= spans.size() || !(len > 0)) {
+            return SectionNames.SMOOTH_TOO_SHORT_WHY;
+        }
+        Span sa = spans.get(spanB - 1);   // upstream piece's last section
+        Span sb = spans.get(spanB);       // the follower's first section
+        int iSeam = sa.i1();
+        if (iSeam < 0 || iSeam >= all.size() || sb.i1() >= all.size()) {
+            return SectionNames.SMOOTH_TOO_SHORT_WHY;
+        }
+        double sSeam = all.get(iSeam).s();
+        double hUp = Math.min(len / 2, sa.sLen() * 0.5);
+        double hDn = Math.min(len / 2, sb.sLen() * 0.5);
+        int iA = iSeam;
+        while (iA > sa.i0() + 1
+                && sSeam - all.get(iA - 1).s() <= hUp) iA--;
+        int iB = iSeam + 1;
+        while (iB < sb.i1() - 1
+                && all.get(iB + 1).s() - sSeam <= hDn) iB++;
+        boolean upShort = iSeam - iA < 2, dnShort = iB - iSeam < 3;
+        if (!upShort && !dnShort) return null;
+        boolean upClamped = sa.sLen() * 0.5 < len / 2;
+        boolean dnClamped = sb.sLen() * 0.5 < len / 2;
+        if ((upShort && upClamped) || (dnShort && dnClamped)) {
+            return SectionNames.SMOOTH_SECTION_SHORT_WHY;
+        }
+        return SectionNames.SMOOTH_TOO_SHORT_WHY;
+    }
+
     static Vec3 smoothStrictSeam(List<FVDIntegrator.Sample> all,
                                  List<Span> spans, double len,
                                  List<Double> hy) {

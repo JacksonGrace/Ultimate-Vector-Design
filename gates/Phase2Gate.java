@@ -968,7 +968,11 @@ public class Phase2Gate {
         sc.reversed = true;
         flatLane(sc.elements.get(1), 15, false, false, false);   // local °/s 15
         flatLane(sc.elements.get(2), -12.5, true, true, true);   // absolute bank −12.5°
-        c.pieces.get(0).sections.add(sc);
+        // RE-PINNED v20.1 (D259 §3 — the straight/curve invariant): the
+        // s/c is its own piece behind an AUTOMATIC strict seam (the model
+        // append cuts it; an in-piece s/c at k > 0 would be split by the
+        // loader's §3.2 pass and could not round-trip byte-identically)
+        c.appendSectionWithInvariant(0, sc, Coaster.INTEGRATE_DT);
         DesignIO.Cosmetics cos = DesignIO.Cosmetics.defaults();
 
         StringWriter w1 = new StringWriter();
@@ -979,7 +983,7 @@ public class Phase2Gate {
         check(w1.toString().equals(w2.toString()),
             "FVDD3 round-trip byte-identical with s/c section");
 
-        Section s3 = lr.coaster().pieces.get(0).sections.get(3);
+        Section s3 = lr.coaster().pieces.get(1).sections.get(0);   // the automatic follower's section 0 (D259 §3)
         check(s3 instanceof StraightCurveSection, "FVDD3: s/c mode survives");
         StraightCurveSection ls = (StraightCurveSection) s3;
         StraightCurveSection.Element e1 = ls.elements.get(1);

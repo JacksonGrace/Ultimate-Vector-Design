@@ -1525,21 +1525,42 @@ public class ConflictGate {
             s.vDesign(s.vDesign() + 2.5);
             TrackCompiler.Result r = rebuild(c);
             double live = r.trueV()[seam(c, r, f, 0)];
+            // RE-PINNED v20.1 (D259 §3.5 A4): a strict FOLLOWER's first
+            // section is RECONCILED once it is real-anchored — the op
+            // flags it, so its smoothing-suspended write is not final:
+            // the at-rest EXACT pass lands it on the DISPLAYED seam speed
+            // like a continuation, which is what realEntrySpeed predicts
+            // (max(0.1, the displayed real)). firstSectionSettle reads
+            // NaN for a follower (the window's supplier then keeps that
+            // prediction); a run head / bad index read NaN as before.
+            // Until D259 the follower kept the op's suspended write.
             double settle = c.firstSectionSettle(f, DT);
             boolean ok = c.refreezeSpeedOnly(f, 0, DT);
-            TrackCompiler.Result r2 = rebuild(c);
-            double v1 = fol.sections.get(0).vDesign();
-            double settle2 = c.firstSectionSettle(f, DT);
-            check(c.anySmoothing() && ok && speedDiffers(settle, live)
-                    && bits(v1, settle) && bits(settle2, v1)
+            Section s7 = fol.sections.get(0);
+            int[] n7 = { 0 };
+            TrackCompiler.Result r2 = rebuildCount(c, n7);
+            double v1 = s7.vDesign();
+            double live2 = r2.trueV()[seam(c, r2, f, 0)];
+            double[] re2 = dry(c, r2, f, 0);
+            long b1 = Double.doubleToLongBits(v1);
+            int[] n7b = { 0 };
+            TrackCompiler.Result r3 = rebuildCount(c, n7b);
+            check(c.anySmoothing() && ok && Double.isNaN(settle)
+                    && s7.vRealAnchored() && !s7.vPinned()
+                    && bits(v1, live2) && re2 != null && bits(re2[1], v1)
+                    && Double.doubleToLongBits(s7.vDesign()) == b1
+                    && n7b[0] == 0 && sumAll(r3) == sumAll(r2)
                     && Double.isNaN(c.firstSectionSettle(0, DT))
                     && Double.isNaN(c.firstSectionSettle(9, DT)),
-                "i7 behind a smoothed seam (8° kink, 10 m): the op"
-                + " writes the smoothing-suspended seam speed =="
-                + " firstSectionSettle BITWISE, and the dry run then"
-                + " reads no difference (run head / bad index NaN)",
-                String.format("live %.6f settle %.6f vDesign %.6f", live,
-                    settle, v1));
+                "i7 behind a smoothed seam (8° kink, 10 m): the strict"
+                + " follower's first section is RECONCILED (D259 §3.5 A4)"
+                + " — the op flags it, the rebuild lands vDesign on the"
+                + " DISPLAYED seam speed BITWISE, the dry run then reads"
+                + " no difference, firstSectionSettle reads NaN for a"
+                + " follower (run head / bad index NaN too), a second"
+                + " rebuild is a bitwise no-op",
+                String.format("live %.6f -> %.6f vDesign %.9f exact"
+                    + " rewrites %d then %d", live, live2, v1, n7[0], n7b[0]));
         }
     }
 
@@ -1915,6 +1936,53 @@ public class ConflictGate {
                                  : " time 0 " + slot + " ");
     }
 
+    /** D259 §3.5 A4 (v20.1): a straight/curve section appended through
+     *  the invariant is a FOLLOWER's first section, real-anchored and
+     *  reconciled at k == 0 — under friction, and behind a smoothed seam
+     *  (smoothing × clean-span × anchor). */
+    static void scSeamBlock() throws Exception {
+        // ---- m1: friction on, the s/c-first follower lands bitwise ----
+        Coaster c = chain(true);
+        TrackCompiler.Result r0 = rebuild(c);
+        double vEnd = r0.samples().get(r0.spans().get(r0.spans().size() - 1).i1()).v();
+        int[] at = c.appendSectionWithInvariant(0,
+            StraightCurveSection.straight(12, vEnd), DT);
+        int[] n1 = { 0 };
+        TrackCompiler.Result r1 = rebuildCount(c, n1);
+        Section sc = c.pieces.get(1).sections.get(0);
+        int ip = seam(c, r1, 1, 0);
+        int k1 = spanIdx(c, 1);
+        check(at != null && at[0] == 1 && c.autoFollower(1) && sc.vRealAnchored()
+                && !sc.vPinned() && bits(sc.vDesign(), r1.trueV()[ip])
+                && unequal(r1, k1) == 0 && entryLevel(c, r1, 1, 0) == 0,
+            "m1 an s/c appended through the invariant (friction on): an automatic follower"
+            + " whose first section is real-anchored — vDesign == the real seam speed BITWISE,"
+            + " its span copies the design speed (clean), no glyph",
+            String.format(Locale.US, "vDesign %.9f real %.9f exact rewrites %d",
+                sc.vDesign(), r1.trueV()[ip], n1[0]));
+        int[] n1b = { 0 };
+        TrackCompiler.Result r1b = rebuildCount(c, n1b);
+        check(n1b[0] == 0 && sumAll(r1b) == sumAll(r1),
+            "m1b a second rebuild is a bitwise no-op", "");
+        // ---- m2: smoothing × clean-span × anchor ----
+        c.pieces.get(1).sSmoothLen = 6;
+        int[] n2 = { 0 };
+        TrackCompiler.Result r2 = rebuildCount(c, n2);
+        int ip2 = seam(c, r2, 1, 0);
+        int[] n2b = { 0 };
+        TrackCompiler.Result r3 = rebuildCount(c, n2b);
+        int lv = entryLevel(c, r2, 1, 0);
+        check(bits(sc.vDesign(), r2.trueV()[ip2]) && n2b[0] == 0
+                && sumAll(r3) == sumAll(r2) && unequal(r2, k1) > 0 && lv <= 1
+                && unequal(r2, k1 - 1) < r2.spans().get(k1 - 1).i1() - r2.spans().get(k1 - 1).i0(),
+            "m2 the same seam smoothed at 6 m: the follower's vDesign lands on the DISPLAYED"
+            + " (blended) seam speed bitwise, its span is the march now (not clean), the"
+            + " upstream span still copies up to its window, at most the slight glyph, a"
+            + " second rebuild is a bitwise no-op",
+            String.format(Locale.US, "level %d, follower unequal %d, exact rewrites %d then %d",
+                lv, unequal(r2, k1), n2[0], n2b[0]));
+    }
+
     static void realAnchorBlock() throws Exception {
         // ---- l1: the user's bug reproduces ----
         Coaster c = loadB38();
@@ -2145,30 +2213,38 @@ public class ConflictGate {
         {
             Coaster sc = chain(true);
             TrackPiece tp = sc.pieces.get(0);
+            // RE-PINNED v20.1 (D259 §3 — the straight/curve invariant): an
+            // s/c is always its own piece behind an AUTOMATIC strict seam —
+            // the model append cuts it and sets the flag itself; the pinned
+            // twin keeps its pin (the pin wins on the line: it writes 1 and
+            // loads pinned + unflagged). An in-piece s/c at k > 0 would be
+            // split by the loader's §3.2 pass.
             StraightCurveSection st = StraightCurveSection.straight(10, 20);
-            st.vRealAnchored = true;
-            tp.sections.add(st);
+            sc.appendSectionWithInvariant(0, st, DT);
             StraightCurveSection pn = StraightCurveSection.straight(10, 20);
             pn.vPinned = true;
-            pn.vRealAnchored = true;   // a pin wins on the line too
-            tp.sections.add(pn);
+            sc.appendSectionWithInvariant(1, pn, DT);
             String t = saveText(sc);
             Coaster back = loadText(t);
-            Section b3 = back.pieces.get(0).sections.get(3);
-            Section b4 = back.pieces.get(0).sections.get(4);
+            Section b3 = back.pieces.get(1).sections.get(0);
+            Section b4 = back.pieces.get(2).sections.get(0);
             check(t.contains(secLine("sc", 20, 2)) && t.contains(secLine("sc", 20, 1))
+                    && st.vRealAnchored() && pn.vRealAnchored() && pn.vPinned()
                     && b3.vRealAnchored() && !b3.vPinned()
-                    && b4.vPinned() && !b4.vRealAnchored(),
+                    && b4.vPinned() && !b4.vRealAnchored()
+                    && back.pieces.size() == 3 && back.autoFollower(1)
+                    && back.autoFollower(2),
                 "l14a an s/c section writes 2 / loads anchored; a pinned one"
-                + " writes 1 and loads pinned, unflagged", "");
+                + " writes 1 and loads pinned, unflagged (both behind automatic"
+                + " seams, D259 §3)", "");
             Section cp = Coaster.copySection(st, 5);
             Section cp2 = Coaster.copySection(tp.sections.get(1), 5);
             tp.sections.get(1).vRealAnchored(true);
             Section cp3 = Coaster.copySection(tp.sections.get(1), 5);
             check(cp.vRealAnchored() && !cp2.vRealAnchored() && cp3.vRealAnchored(),
                 "l14b copySection carries the flag (s/c + lanes)", "");
-            tp.sections.remove(4);
-            tp.sections.remove(3);
+            sc.pieces.remove(2);   // back to the three lane sections alone
+            sc.pieces.remove(1);
             rebuild(sc);
             Section s1c = tp.sections.get(1);
             boolean split = sc.splitSectionAt(0, 1, 1.0, DT);
@@ -2297,6 +2373,9 @@ public class ConflictGate {
 
         // ---- (l) batch 38: the explicit real anchor (D256) ----
         realAnchorBlock();
+
+        // ---- (m) v20.1, D259 §3: an s/c-first AUTOMATIC follower at k == 0 ----
+        scSeamBlock();
 
         System.out.println();
         System.out.println(fail == 0

@@ -379,7 +379,8 @@ public class OrientModeGate {
                     TrackPiece q = c2.pieces.get(0);
                     String t2 = save(c2);
                     String want = "porient " + (m == RO ? 1 : 0) + " 3.25 -1.5 "
-                        + a + " " + m.ordinal();
+                        + a + " " + m.ordinal() + " 0";   // + field 6 = the
+                        // automatic-seam flag (v20.1, D259 §3.5; 0 on a free piece)
                     boolean ok = q.orientMode == m && q.affectSubsequentSeams == (a == 1)
                         && q.designPitchDeg == 3.25 && q.designRollDeg == -1.5
                         && q.pitchDeg == 8 && t1.equals(t2)
@@ -388,8 +389,8 @@ public class OrientModeGate {
                     if (!ok) detail += " " + m + "/" + a;
                 }
             }
-            check(all, "c1 porient 5-field line: every mode × carry round-trips"
-                + " byte-identically, field 1 == (mode == REAL_ONLY)",
+            check(all, "c1 porient 6-field line (D249 + D259's auto flag): every"
+                + " mode × carry round-trips byte-identically, field 1 == (mode == REAL_ONLY)",
                 detail.isEmpty() ? "6 combos" : "failed" + detail);
             Coaster c = new Coaster();
             TrackPiece p = new TrackPiece(0, 21, 0, 0);

@@ -181,8 +181,14 @@ public class DetermGate198 {
             s2.roll.setFlags(true, true, true);     // absolute bank 25°
             els.add(s2);
             p.sections.add(new StraightCurveSection(els, 22));
-            p.sections.add(StraightCurveSection.straight(10, 20));   // a continuation the reconcile re-freezes
             c.pieces.add(p);
+            // RE-PINNED v20.1 (D259 §3 — the straight/curve invariant): an
+            // s/c after an s/c is its own piece behind an AUTOMATIC strict
+            // seam (the model append cuts it); the follower's first section
+            // is real-anchored, so the k == 0 reconcile re-freezes it like
+            // the old in-piece continuation did. An in-piece pair would be
+            // split by the loader's §3.2 pass — not a round trip any more.
+            c.appendSectionWithInvariant(0, StraightCurveSection.straight(10, 20), DT);
             rebuild(c);
             TrackCompiler.Result session = (TrackCompiler.Result) rebuild(c)[0];
             String s1 = save(c);

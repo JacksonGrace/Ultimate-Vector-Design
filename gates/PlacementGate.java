@@ -330,12 +330,14 @@ public class PlacementGate {
                 boolean line = t1.lines().anyMatch(l -> l.equals("porient "
                     + (p.shapeLocked() ? 1 : 0) + " 3.25 -1.5 "
                     + (p.affectSubsequentSeams ? 1 : 0) + " "
-                    + p.orientMode.ordinal()));   // D249: 5 fields
+                    + p.orientMode.ordinal() + " 0"));   // D249: 5 fields
+                    // + field 6 = the automatic-seam flag (v20.1, D259 §3.5;
+                    // 0 on a free piece)
                 all &= ok && line;
                 if (!(ok && line)) detail += " combo" + combo;
             }
-            check(all, "c1 porient 5-field line (D249): every flag combination"
-                + " round-trips byte-identically", detail.isEmpty()
+            check(all, "c1 porient 6-field line (D249 + D259's auto flag): every"
+                + " flag combination round-trips byte-identically", detail.isEmpty()
                 ? "4 combos" : "failed" + detail);
             // c3: a 3-field line (v19.0-v19.18) keeps field 1 and
             // defaults Only-Affect true
