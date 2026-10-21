@@ -498,4 +498,145 @@ public final class SectionNames {
      *  an ABSOLUTE bank lane (§3.9). */
     public static final String SEAM_ROLL_ABS_WHY =
         "The bank lane sets the bank at this seam — edit its first node.";
+
+    // ---- ScSolve's refusal REGISTER (v20.2, D259 §4.14 — LabelGate
+    // section 21; every straight/curve surface uses these; HELIX_VERTICAL_WHY,
+    // DIR_INHERITED_WHY and HELIX_ELEV_WHY are the section-18 constants
+    // above). Appended as ONE block (the parallel-work rule) ----
+    /** "<Element n>" — the element's name in every §4.14 sentence (1-based). */
+    public static String elementName(int i) {
+        return "Element " + (i + 1);
+    }
+    /** The lock row's label for an X / Y / Z lock in the list-op sentences. */
+    public static final String LOCK_POS_QUANTITY = "end position";
+    /** The typed-box labels by ScSolve.Box ordinal (X, Y, Z, KAPPA, TURN,
+     *  DIR, HEADING, ELEVATION, LEN, K1, B1) — the "<Heading>" of
+     *  unreachableWhy. */
+    private static final String[] BOX_LABELS = { "X", "Y", "Z", "Curvature",
+        "Turn", "Direction", "Heading", "Elevation", "Arc length",
+        "End curvature", "End elevation" };
+    public static String boxLabel(int boxOrdinal) {
+        return boxOrdinal < 0 || boxOrdinal >= BOX_LABELS.length ? "" : BOX_LABELS[boxOrdinal];
+    }
+    public static final String ALL_LOCKED_WHY =
+        "Every value of this element is locked.";
+    public static final String POS_LOCKED_WHY =
+        "End position is locked — unlock x, y or z.";
+    public static final String SEAM_OWNS_WHY =
+        "The strict seam owns this orientation — edit it there.";
+    /** Keyed on !hasUpstream — a run-head s/c. */
+    public static final String ANCHOR_OWNS_WHY =
+        "The track piece's anchor owns this orientation — edit it in the"
+        + " Track Piece window.";
+    public static final String NO_CURVE_BEFORE_WHY =
+        "Only the length of this straight can change — there is no curve"
+        + " before it in this section.";
+    public static final String STRAIGHT_ALL_LOCKED_WHY =
+        "The previous curve and this straight's length are locked.";
+    /** The first upstream curve fully locked, the straight's length free
+     *  (§6.2 row 4). */
+    public static final String PREV_CURVE_LOCKED_WHY =
+        "The element before this straight is fully locked — unlock a value"
+        + " there.";
+    public static final String INSIDE_CIRCLE_WHY =
+        "The point is inside the previous curve — unlock its curvature.";
+    public static final String SPHERE_WHY =
+        "That point is within the straight's own length of the curve's"
+        + " start — unlock the straight's length.";
+    public static final String REACH_RAY_WHY =
+        "The end node cannot sit behind the start on its own line.";
+    public static final String PARALLEL_WHY =
+        "A curve can only end parallel to its start by completing a full"
+        + " turn.";
+    public static final String VERTICAL_WHY = "No heading on vertical track.";
+    public static final String FULLY_CONSTRAINED_WHY =
+        "Fully constrained — unlock another value first.";
+    public static final String MIXED_LOCK_WHY =
+        "These locks together leave one free value — drag the ring or arrow"
+        + " instead.";
+    public static final String ORTHO_LOCK_WHY =
+        "In this view the locked curve cannot reach the point — unlock it or"
+        + " use the orbit view.";
+    public static final String RAMP_SOLVE_WHY =
+        "The unlinked element's solve did not converge — type its end values"
+        + " or re-link it.";
+    public static final String HELIX_STRAIGHT_WHY =
+        "After a pitched helix only the straight's length can follow the"
+        + " mouse — edit the helix directly.";
+    /** "<Element n> and later rotated — its locks kept it from absorbing
+     *  the whole turn." */
+    public static String absorbResidualWhy(String elementName) {
+        return elementName + " and later rotated — its locks kept it from"
+            + " absorbing the whole turn.";
+    }
+    /** "<Element n>'s end position is locked and would have to move." */
+    public static String downstreamLockWhy(String elementName) {
+        return elementName + "'s end position is locked and would have to move.";
+    }
+    /** "No length of the new element lets <Element n> reach its locked
+     *  end — unlock it first." */
+    public static String insertLockWhy(String elementName) {
+        return "No length of the new element lets " + elementName
+            + " reach its locked end — unlock it first.";
+    }
+    /** §7.2's refusal and gray. */
+    public static String insertBlockedWhy(String name, String quantity) {
+        return "Can't insert here — " + name + "'s " + quantity
+            + " is locked and would have to change.";
+    }
+    /** §7.3's refusal. */
+    public static String deleteLockWhy(String name, String quantity, String name2) {
+        return "Deleting " + name + " would move the locked " + quantity
+            + " of " + name2 + ".";
+    }
+    /** "<Element n>: <Heading> <45.0°> is unreachable with the current
+     *  locks." — box = the box label, value = the typed value with its unit. */
+    public static String unreachableWhy(String elementName, String box, String value) {
+        return elementName + ": " + box + " " + value
+            + " is unreachable with the current locks.";
+    }
+    /** "Landed <3> mm off the typed value — the blend at this border moves
+     *  the node." */
+    public static String predictorOffWhy(int mm) {
+        return "Landed " + mm + " mm off the typed value — the blend at this"
+            + " border moves the node.";
+    }
+    public static final String TWO_CURVES_WHY =
+        "Aligning needs two free curves at the end of the previous section —"
+        + " unlock or insert one.";
+    public static final String SCS_PLANE_WHY =
+        "A straight–curve–straight can meet the seam only within the seam's"
+        + " plane — use two curves.";
+    /** §3.10's two align refusals (defined there, landing here with the
+     *  backward align, Stage 2a). */
+    public static final String ALIGN_NO_CURVE_WHY =
+        "Add a curve before the end — a straight cannot change direction.";
+    public static final String ALIGN_LOCKED_WHY =
+        "A locked value on the last element prevents the alignment — unlock"
+        + " it first.";
+    public static final String TAIL_KIND_WHY =
+        "A helical or unlinked element at the end cannot be aligned — change"
+        + " it to a planar curve or re-link it.";
+    public static final String BIARC_FALLBACK_WHY =
+        "Both curvatures changed to meet the seam — the kept-curvature"
+        + " solution does not exist here.";
+    public static final String SNAP_ONE_WHY =
+        "One curve can't meet both a position and a direction — it takes a"
+        + " curve and a straight, or two curves.";
+    public static final String LONE_STRAIGHT_WHY =
+        "A single straight cannot reach that point — add a curve before the"
+        + " end.";
+    public static final String NOTHING_TO_MOVE_WHY =
+        "The connected end leaves this node nothing to move — insert a curve"
+        + " before the end or break the loop.";
+    public static final String HEAD_VERTICAL_WHY =
+        "The start points straight up or down — it has no heading to match.";
+    /** §4.10's B on any element node but the last. */
+    public static final String B_ELEMENT_WHY =
+        "B aligns the section's last node — select it, or a roll node.";
+    /** The ONE legacy-reversed sentence of every s/c op (§3.7, §5.4, §7,
+     *  §8.2). */
+    public static final String REVERSED_WHY =
+        "A legacy reversed section is read-only here — Reverse… rebuilds it"
+        + " forward.";
 }

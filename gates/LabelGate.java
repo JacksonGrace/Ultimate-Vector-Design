@@ -826,6 +826,7 @@ public class LabelGate {
         }
 
         section20();
+        section21();
 
         System.out.println();
         System.out.println("LabelGate: " + pass + " passed, " + fail
@@ -917,5 +918,108 @@ public class LabelGate {
                 TrackCompiler.smoothEngagesWhy(rs.samples(), rs.spans(), 1, 10),
                 "20y smoothEngagesWhy: a 0.8 m s/c beside the seam clamps a 10 m window → the short-section sentence");
         }
+    }
+
+    // ---------- 21: ScSolve's refusal REGISTER (v20.2, D259 §4.14 — Stage 2a run 1) ----------
+    // Appended as ONE method (the parallel-work rule): every §4.14 sentence
+    // verbatim, one row per constant / function, plus the element name, the
+    // lock-row quantity, the box labels and ScSolve's typed-value texts.
+    // HELIX_VERTICAL_WHY / DIR_INHERITED_WHY / HELIX_ELEV_WHY stay section 18's.
+    static void section21() throws Exception {
+        eq("Element 1", SectionNames.elementName(0), "21a elementName(0) — 1-based");
+        eq("Element 12", SectionNames.elementName(11), "21a2 elementName(11)");
+        eq("end position", SectionNames.LOCK_POS_QUANTITY, "21b the X/Y/Z lock row's quantity");
+        eq("X", SectionNames.boxLabel(0), "21c boxLabel X");
+        eq("Y", SectionNames.boxLabel(1), "21c2 boxLabel Y");
+        eq("Z", SectionNames.boxLabel(2), "21c3 boxLabel Z");
+        eq("Curvature", SectionNames.boxLabel(3), "21c4 boxLabel Curvature");
+        eq("Turn", SectionNames.boxLabel(4), "21c5 boxLabel Turn");
+        eq("Direction", SectionNames.boxLabel(5), "21c6 boxLabel Direction");
+        eq("Heading", SectionNames.boxLabel(6), "21c7 boxLabel Heading");
+        eq("Elevation", SectionNames.boxLabel(7), "21c8 boxLabel Elevation");
+        eq("Arc length", SectionNames.boxLabel(8), "21c9 boxLabel Arc length");
+        eq("End curvature", SectionNames.boxLabel(9), "21c10 boxLabel End curvature");
+        eq("End elevation", SectionNames.boxLabel(10), "21c11 boxLabel End elevation");
+        eq("", SectionNames.boxLabel(11), "21c12 boxLabel out of range is empty");
+        eq("Every value of this element is locked.", SectionNames.ALL_LOCKED_WHY, "21d ALL_LOCKED_WHY");
+        eq("End position is locked — unlock x, y or z.", SectionNames.POS_LOCKED_WHY, "21e POS_LOCKED_WHY");
+        eq("The strict seam owns this orientation — edit it there.", SectionNames.SEAM_OWNS_WHY, "21f SEAM_OWNS_WHY");
+        eq("The track piece's anchor owns this orientation — edit it in the Track Piece window.",
+            SectionNames.ANCHOR_OWNS_WHY, "21g ANCHOR_OWNS_WHY");
+        eq("Only the length of this straight can change — there is no curve before it in this section.",
+            SectionNames.NO_CURVE_BEFORE_WHY, "21h NO_CURVE_BEFORE_WHY");
+        eq("The previous curve and this straight's length are locked.",
+            SectionNames.STRAIGHT_ALL_LOCKED_WHY, "21i STRAIGHT_ALL_LOCKED_WHY");
+        eq("The element before this straight is fully locked — unlock a value there.",
+            SectionNames.PREV_CURVE_LOCKED_WHY, "21j PREV_CURVE_LOCKED_WHY");
+        eq("The point is inside the previous curve — unlock its curvature.",
+            SectionNames.INSIDE_CIRCLE_WHY, "21k INSIDE_CIRCLE_WHY");
+        eq("That point is within the straight's own length of the curve's start — unlock the straight's length.",
+            SectionNames.SPHERE_WHY, "21l SPHERE_WHY");
+        eq("The end node cannot sit behind the start on its own line.",
+            SectionNames.REACH_RAY_WHY, "21m REACH_RAY_WHY");
+        eq("A curve can only end parallel to its start by completing a full turn.",
+            SectionNames.PARALLEL_WHY, "21n PARALLEL_WHY");
+        eq("No heading on vertical track.", SectionNames.VERTICAL_WHY, "21o VERTICAL_WHY");
+        eq("A helix can't start on vertical track — add a curve first.",
+            SectionNames.HELIX_VERTICAL_WHY, "21p HELIX_VERTICAL_WHY (section 18's constant, cross-pinned)");
+        eq("This element starts on vertical track — its plane is inherited from the element before it.",
+            SectionNames.DIR_INHERITED_WHY, "21q DIR_INHERITED_WHY (section 18's, cross-pinned)");
+        eq("A helix's end elevation must stay under 90° — use a planar pull-up for a loop.",
+            SectionNames.HELIX_ELEV_WHY, "21r HELIX_ELEV_WHY (section 18's, cross-pinned)");
+        eq("Fully constrained — unlock another value first.",
+            SectionNames.FULLY_CONSTRAINED_WHY, "21s FULLY_CONSTRAINED_WHY");
+        eq("These locks together leave one free value — drag the ring or arrow instead.",
+            SectionNames.MIXED_LOCK_WHY, "21t MIXED_LOCK_WHY");
+        eq("In this view the locked curve cannot reach the point — unlock it or use the orbit view.",
+            SectionNames.ORTHO_LOCK_WHY, "21u ORTHO_LOCK_WHY");
+        eq("The unlinked element's solve did not converge — type its end values or re-link it.",
+            SectionNames.RAMP_SOLVE_WHY, "21v RAMP_SOLVE_WHY");
+        eq("After a pitched helix only the straight's length can follow the mouse — edit the helix directly.",
+            SectionNames.HELIX_STRAIGHT_WHY, "21w HELIX_STRAIGHT_WHY");
+        eq("Element 2 and later rotated — its locks kept it from absorbing the whole turn.",
+            SectionNames.absorbResidualWhy(SectionNames.elementName(1)), "21x absorbResidualWhy(c)");
+        eq("Element 3's end position is locked and would have to move.",
+            SectionNames.downstreamLockWhy(SectionNames.elementName(2)), "21y downstreamLockWhy(e)");
+        eq("No length of the new element lets Element 2 reach its locked end — unlock it first.",
+            SectionNames.insertLockWhy(SectionNames.elementName(1)), "21z insertLockWhy(e)");
+        eq("Can't insert here — Element 4's end position is locked and would have to change.",
+            SectionNames.insertBlockedWhy(SectionNames.elementName(3), SectionNames.LOCK_POS_QUANTITY),
+            "21aa insertBlockedWhy(e, q)");
+        eq("Deleting Element 2 would move the locked end position of Element 4.",
+            SectionNames.deleteLockWhy(SectionNames.elementName(1), SectionNames.LOCK_POS_QUANTITY,
+                SectionNames.elementName(3)), "21ab deleteLockWhy(e, q, e2)");
+        eq("Element 1: Heading 45.0° is unreachable with the current locks.",
+            SectionNames.unreachableWhy(SectionNames.elementName(0), SectionNames.boxLabel(6),
+                ScSolve.boxValueText(ScSolve.Box.HEADING, 45)), "21ac unreachableWhy(e, box, v)");
+        eq("45.0°", ScSolve.boxValueText(ScSolve.Box.HEADING, 45), "21ac2 the angle value text");
+        eq("1.50 m", ScSolve.boxValueText(ScSolve.Box.X, 1.5), "21ac3 the length value text");
+        eq("0.0500 /m", ScSolve.boxValueText(ScSolve.Box.KAPPA, 0.05), "21ac4 the curvature value text");
+        eq("Landed 3 mm off the typed value — the blend at this border moves the node.",
+            SectionNames.predictorOffWhy(3), "21ad predictorOffWhy(mm)");
+        eq("Aligning needs two free curves at the end of the previous section — unlock or insert one.",
+            SectionNames.TWO_CURVES_WHY, "21ae TWO_CURVES_WHY");
+        eq("A straight–curve–straight can meet the seam only within the seam's plane — use two curves.",
+            SectionNames.SCS_PLANE_WHY, "21af SCS_PLANE_WHY");
+        eq("Add a curve before the end — a straight cannot change direction.",
+            SectionNames.ALIGN_NO_CURVE_WHY, "21ag ALIGN_NO_CURVE_WHY (§3.10's text)");
+        eq("A locked value on the last element prevents the alignment — unlock it first.",
+            SectionNames.ALIGN_LOCKED_WHY, "21ah ALIGN_LOCKED_WHY (§3.10's text)");
+        eq("A helical or unlinked element at the end cannot be aligned — change it to a planar curve or re-link it.",
+            SectionNames.TAIL_KIND_WHY, "21ai TAIL_KIND_WHY");
+        eq("Both curvatures changed to meet the seam — the kept-curvature solution does not exist here.",
+            SectionNames.BIARC_FALLBACK_WHY, "21aj BIARC_FALLBACK_WHY");
+        eq("One curve can't meet both a position and a direction — it takes a curve and a straight, or two curves.",
+            SectionNames.SNAP_ONE_WHY, "21ak SNAP_ONE_WHY");
+        eq("A single straight cannot reach that point — add a curve before the end.",
+            SectionNames.LONE_STRAIGHT_WHY, "21al LONE_STRAIGHT_WHY");
+        eq("The connected end leaves this node nothing to move — insert a curve before the end or break the loop.",
+            SectionNames.NOTHING_TO_MOVE_WHY, "21am NOTHING_TO_MOVE_WHY");
+        eq("The start points straight up or down — it has no heading to match.",
+            SectionNames.HEAD_VERTICAL_WHY, "21an HEAD_VERTICAL_WHY");
+        eq("B aligns the section's last node — select it, or a roll node.",
+            SectionNames.B_ELEMENT_WHY, "21ao B_ELEMENT_WHY");
+        eq("A legacy reversed section is read-only here — Reverse… rebuilds it forward.",
+            SectionNames.REVERSED_WHY, "21ap REVERSED_WHY");
     }
 }
