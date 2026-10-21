@@ -1296,8 +1296,10 @@ public final class TrackCompiler {
      *  DIFFERENTIATES an absolute lane's values, and the fill made
      *  the resulting roll rate wobble cell to cell (the user's
      *  "jitter"/stair-stepping, with bankHermite's C1 read the
-     *  other half of the fix). */
-    private static List<FVDIntegrator.Keyframe> exactRoll(
+     *  other half of the fix). PACKAGE-VISIBLE since v20.1 (D259
+     *  §2.3.1): ScIntegrator applies it to an ABSOLUTE s/c element's
+     *  own lane keyframes — the same read, never a second copy. */
+    static List<FVDIntegrator.Keyframe> exactRoll(
             List<FVDIntegrator.Keyframe> kfs, List<BezierBaker.Node> lane) {
         List<FVDIntegrator.Keyframe> out = new ArrayList<>(kfs.size());
         for (FVDIntegrator.Keyframe k : kfs) {
