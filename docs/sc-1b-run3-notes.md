@@ -200,3 +200,39 @@ the constant). The §3.6 SM1 deletion of `GraphEditor.seamScEdge` and its
 three sites, and SM3's tooltips / grays, are JavaFX → "For the local
 session". ScSeamGate e pins `smoothEngages == (smoothStrictSeam != null)`
 over 200 random (len, v) pairs (item 6).
+
+## 5. Item 5 — seam ops + sentences (§3.7 forward align, §3.8's model rows, §3.10)
+
+`Coaster.alignSeamToUpstream(fi, spans)` (+ `Result`): for each LOCKED axis
+the held angle := that component of `eulerOf(the upstream span's exit
+orientation)` — yaw internal-sign, the `seedStrictValues` convention; roll
+skipped when `seamRollOwnedByLane(fi)` (the follower's section 0 is an s/c
+whose element 0's lane is absolute, §3.9); locks kept, one-shot.
+`alignSeamWhy(fi, spans)`: ALIGN_FOLLOWS_WHY with no locked axis (or only a
+skipped roll; also a non-follower / no compile — unreachable from the seam
+window), ALIGN_VERTICAL_WHY when `eulerOf` is NaN on an axis to write, else
+null. `upstreamExit(fi, spans)` / `seamWorldPos(fi, spans)` = the model
+half of §3.8's seam-ball rule (the UPSTREAM span's exit position, not the
+follower's first sample one dt inside). REVERSE_MULTI_WHY /
+REVERSE_MULTI_CONTROLS_WHY REWRITTEN in place to §3.10's texts (the one
+deliberate edit of existing SectionNames lines — L4 forbids the old
+"un-strict its seams" advice; LabelGate 13h / 16b / 16m's suffix test
+updated accordingly — 16m now admits "… not available yet." beside
+"… first."). The §3.10 block at the end of SectionNames now holds
+UNSTRICT_SC_WHY, UNSTRICT_CONVERT_WHY, SMOOTH_TOO_SHORT_WHY,
+SMOOTH_SECTION_SHORT_WHY, SMOOTH_REAL_SC_WHY, ALIGN_FOLLOWS_WHY,
+ALIGN_VERTICAL_WHY, B_NO_TARGET_WHY, ALIGN_BUTTON, ALIGN_TIP,
+SEAM_ROLL_ABS_WHY (COMBINE_*, ALIGN_PREV_*, ALIGN_NO_CURVE_WHY,
+ALIGN_LOCKED_WHY are Stages 4/5's; REVERSED_WHY stays 2a's). LabelGate
+`section20()` appended and called last: 25 checks — the strings verbatim,
+`reverseWhy`'s routing, and the model choosers on fixtures
+(`unstrictSeamWhy` force|s/c → convert, s/c|s/c → connect, lane seam →
+null; `absorbFollowerWhy`; `alignSeamWhy` all-unlocked → follows /
+all-locked lane seam → null; `smoothEngagesWhy` 0.3 m → too short, 10 m →
+null, a 0.8 m s/c neighbor → the short-section sentence). LabelGate 202 →
+227.
+
+§10.6 cells: Reverse on a multi-piece run (gray, the new text) vs a lone
+s/c piece (allowed — `reverseWhy(false, …)` null) · the forward align on an
+automatic (refuse), a locked (write) and a vertical (refuse) seam · the
+seam ball's position (model accessor).

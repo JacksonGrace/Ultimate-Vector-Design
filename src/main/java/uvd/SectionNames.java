@@ -125,9 +125,10 @@ public final class SectionNames {
     // ---- the Track Piece ops row, scoped to the RUN (batch 37) ----
     /** Reverse's gray reason on a run of more than one piece. */
     public static final String REVERSE_MULTI_WHY =
-        "Reverse works on a track piece without strict seams or"
-        + " bridges — un-strict its seams and convert its bridges"
-        + " first.";
+        "Reverse works on a track piece without strict seams or bridges —"
+        + " reversing a whole track piece is not available yet.";
+        // (v20.1, D259 §3.10 — the old "un-strict its seams" advice is
+        // forbidden by L4: a straight/curve edge is always a strict seam)
     /** Reverse's gray reason on a single piece with speed controls
      *  (batch 38, D256 — replaces the literal "Remove the speed
      *  controls first."). */
@@ -138,9 +139,9 @@ public final class SectionNames {
      *  (batch 38 — the user's combined wording: the sentence names
      *  both). */
     public static final String REVERSE_MULTI_CONTROLS_WHY =
-        "Reverse works on a track piece without strict seams, bridges,"
-        + " or speed controls — un-strict its seams, convert its"
-        + " bridges and remove its speed controls first.";
+        "Reverse works on a track piece without strict seams, bridges or"
+        + " speed controls — reversing a whole track piece is not available"
+        + " yet.";   // (v20.1, D259 §3.10 — see REVERSE_MULTI_WHY)
     /** A single piece ending in an ORPHAN bridge (batch 38 — the
      *  "Reverse works on …" form of "Delete or convert the bridge
      *  first."). */
@@ -468,4 +469,25 @@ public final class SectionNames {
     public static final String SMOOTH_REAL_SC_WHY =
         "smoothing conversion needs force/geo sections on both sides of"
         + " the seam";
+    /** The forward align with no locked axis to write (§3.7). */
+    public static final String ALIGN_FOLLOWS_WHY =
+        "This seam already follows the previous section.";
+    /** The forward align on a vertical upstream frame (§3.7). */
+    public static final String ALIGN_VERTICAL_WHY =
+        "The track is vertical at this seam — there is no heading or bank"
+        + " to align.";
+    /** B / Shift+B with neither a selected node nor a highlighted strict
+     *  seam (§3.7 — today's silent return goes). */
+    public static final String B_NO_TARGET_WHY =
+        "B needs a selected node or a highlighted strict seam.";
+    /** The seam window's align button caption (the live "(B)" shortcut
+     *  tag is appended by the window). */
+    public static final String ALIGN_BUTTON = "Align to previous end";
+    /** Its tooltip (one sentence). */
+    public static final String ALIGN_TIP =
+        "Sets the locked angles to the previous section's end orientation.";
+    /** The seam window's roll row under an s/c whose element 0 carries
+     *  an ABSOLUTE bank lane (§3.9). */
+    public static final String SEAM_ROLL_ABS_WHY =
+        "The bank lane sets the bank at this seam — edit its first node.";
 }

@@ -1849,6 +1849,94 @@ public class Coaster {
             : k == 1 ? SectionNames.UNSTRICT_CONVERT_WHY : null;
     }
 
+    /** The UPSTREAM span's exit pose for follower fi off the spans in
+     *  hand — the seam's position AND the frame the follow contract
+     *  reads (strictEntry's input); null when fi is not an active
+     *  follower or the compile does not cover the seam. */
+    public TrackPose upstreamExit(int fi, List<TrackCompiler.Span> spans) {
+        if (!followerActive(fi) || spans == null) return null;
+        int up = spanBase(this, fi) - 1;
+        return up >= 0 && up < spans.size() ? spans.get(up).exit() : null;
+    }
+
+    /** The strict seam's WORLD position (v20.1, D259 §3.8 — the model
+     *  half of GraphEditor.seamWorldPos): the UPSTREAM span's exit
+     *  position — what seamEntryOrient already reads — not the
+     *  follower's first sample, which sits one dropped dt INSIDE the
+     *  follower (v·dt ≈ 0.26 m at 26 m/s). Null = no seam / no compile. */
+    public Vec3 seamWorldPos(int fi, List<TrackCompiler.Span> spans) {
+        TrackPose up = upstreamExit(fi, spans);
+        return up == null ? null : up.pos();
+    }
+
+    /** Does the follower's section 0 — a straight/curve section whose
+     *  ELEMENT 0's roll lane is ABSOLUTE — own the seam's bank itself
+     *  (D259 §3.9: that lane's node 0 sets the entry bank, D118/D121)?
+     *  The seam window's roll row grays then (SEAM_ROLL_ABS_WHY) and the
+     *  forward align skips roll. */
+    public boolean seamRollOwnedByLane(int fi) {
+        if (fi < 0 || fi >= pieces.size()) return false;
+        List<Section> s = pieces.get(fi).sections;
+        return !s.isEmpty() && s.get(0) instanceof StraightCurveSection sc
+            && !sc.elements.isEmpty()
+            && sc.elements.get(0).roll.rollAbsolute();
+    }
+
+    /** FORWARD ALIGN (v20.1, D259 §3.7 — the seam window's "Align to
+     *  previous end (B)" button and B / Shift+B with a seam
+     *  highlighted): for each LOCKED axis of follower fi the held angle
+     *  := that component of eulerOf(the upstream span's exit
+     *  orientation) — yaw in the INTERNAL sign (the seedStrictValues
+     *  convention); roll SKIPPED when the follower's section 0 is an s/c
+     *  with an absolute bank lane (§3.9); locks kept — a ONE-SHOT write
+     *  (the seam's ordinary follow keeps the pieces joined; a later
+     *  upstream edit may reopen a kink on the locked axes, the carets
+     *  show it). Refuses (alignSeamWhy): no locked axis to align, or
+     *  only a skipped roll → ALIGN_FOLLOWS_WHY; a vertical upstream
+     *  frame (eulerOf NaN on an axis to write) → ALIGN_VERTICAL_WHY. The
+     *  UI runs it inside GraphEditor.seamEdit (mode routing + the carry,
+     *  exactly as a typed box), one undo step; `spans` = the displayed
+     *  compile's. Returns true when it wrote. */
+    public boolean alignSeamToUpstream(int fi, List<TrackCompiler.Span> spans) {
+        if (alignSeamWhy(fi, spans) != null) return false;
+        TrackPiece f = pieces.get(fi);
+        double[] e = eulerOf(upstreamExit(fi, spans).orient());
+        if (f.sLockYaw) f.sYawDeg = e[0];
+        if (f.sLockPitch) f.sPitchDeg = e[1];
+        if (f.sLockRoll && !seamRollOwnedByLane(fi)) f.sRollDeg = e[2];
+        return true;
+    }
+
+    public boolean alignSeamToUpstream(int fi, TrackCompiler.Result r) {
+        return r != null && alignSeamToUpstream(fi, r.spans());
+    }
+
+    /** The forward align's DRY RUN (its gray reason): null = it would
+     *  write; see alignSeamToUpstream. A non-follower / an uncovered
+     *  seam reads ALIGN_FOLLOWS_WHY (nothing to align — unreachable
+     *  from the seam window, which exists only on an active follower
+     *  with a compile). */
+    public String alignSeamWhy(int fi, List<TrackCompiler.Span> spans) {
+        TrackPose up = upstreamExit(fi, spans);
+        if (up == null) return SectionNames.ALIGN_FOLLOWS_WHY;
+        TrackPiece f = pieces.get(fi);
+        boolean roll = f.sLockRoll && !seamRollOwnedByLane(fi);
+        if (!f.sLockYaw && !f.sLockPitch && !roll) {
+            return SectionNames.ALIGN_FOLLOWS_WHY;
+        }
+        double[] e = eulerOf(up.orient());
+        if ((f.sLockYaw && Double.isNaN(e[0]))
+                || (f.sLockPitch && Double.isNaN(e[1]))
+                || (roll && Double.isNaN(e[2]))) {
+            return SectionNames.ALIGN_VERTICAL_WHY;
+        }
+        return null;
+    }
+
+    public String alignSeamWhy(int fi, TrackCompiler.Result r) {
+        return alignSeamWhy(fi, r == null ? null : r.spans());
+    }
+
     /** INSERT A SECTION AT A SEAM (v19.18, D247 — the seam menu's
      *  "Insert section…"): `added` lands INSIDE piece pieceIdx at
      *  list index secIdx (secIdx == size = append). The STRUCTURAL

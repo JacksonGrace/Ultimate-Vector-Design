@@ -575,9 +575,9 @@ public class LabelGate {
                 SectionNames.MARCH_OWNS_R2D,
                 "13g Real → Design's gray reason in the windows");
             eq("Reverse works on a track piece without strict seams or bridges"
-                + " — un-strict its seams and convert its bridges first.",
+                + " — reversing a whole track piece is not available yet.",
                 SectionNames.REVERSE_MULTI_WHY,
-                "13h Reverse on a run of several pieces");
+                "13h Reverse on a run of several pieces (v20.1 D259 §3.10 text)");
             eq("That coaster's last track piece ends in an orphaned bridge"
                 + " — delete or convert it first.",
                 SectionNames.SWITCH_DEST_ORPHAN_WHY,
@@ -681,11 +681,11 @@ public class LabelGate {
                 + " remove its speed controls first.",
                 SectionNames.REVERSE_CONTROLS_WHY,
                 "16a a single piece with speed controls");
-            eq("Reverse works on a track piece without strict seams, bridges,"
-                + " or speed controls — un-strict its seams, convert its bridges"
-                + " and remove its speed controls first.",
+            eq("Reverse works on a track piece without strict seams, bridges or"
+                + " speed controls — reversing a whole track piece is not available"
+                + " yet.",
                 SectionNames.REVERSE_MULTI_CONTROLS_WHY,
-                "16b a run of several pieces that also carries speed controls");
+                "16b a run of several pieces that also carries speed controls (v20.1 D259 §3.10 text)");
             eq("Reverse works on a track piece without bridges — delete or"
                 + " convert its bridge first.",
                 SectionNames.REVERSE_BRIDGE_WHY,
@@ -725,7 +725,9 @@ public class LabelGate {
                     SectionNames.REVERSE_BRIDGE_WHY,
                     SectionNames.REVERSE_BRIDGE_CONTROLS_WHY }) {
                 check(w.startsWith("Reverse works on a track piece without ")
-                        && w.endsWith(" first."),
+                        && (w.endsWith(" first.")
+                            || w.endsWith(" not available yet.")),   // v20.1 D259 §3.10:
+                            // the multi sentences name no "do X first" (L4)
                     "16m every sentence takes the \"Reverse works on …\" form"
                         + " (the stats-bar belt lowercases the first letter)",
                     w);
@@ -819,9 +821,100 @@ public class LabelGate {
                 SectionNames.SC_TRACK_DBLCLICK_WHY, "19j the track double-click's lane switch");
         }
 
+        section20();
+
         System.out.println();
         System.out.println("LabelGate: " + pass + " passed, " + fail
             + " failed");
         if (fail > 0) System.exit(1);
+    }
+
+    // ---------- 20: the SEAM INVARIANT's sentences (v20.1, D259 §3.10 — run 3) ----------
+    // Appended as ONE method (the parallel-work rule): every §3.10 string
+    // except the Stage-4/5 ones (COMBINE_*, ALIGN_PREV_*, ALIGN_NO_CURVE_WHY,
+    // ALIGN_LOCKED_WHY) and REVERSED_WHY (Stage 2a's register), plus the
+    // model choosers that hand them out.
+    static void section20() throws Exception {
+        eq("A straight/curve section always begins and ends at a strict seam"
+            + " — connect the sections instead.",
+            SectionNames.UNSTRICT_SC_WHY, "20a un-strict / absorb on an s/c‖s/c seam (L4)");
+        eq("A straight/curve section always begins and ends at a strict seam"
+            + " — convert it first.",
+            SectionNames.UNSTRICT_CONVERT_WHY, "20b un-strict / absorb with an s/c on one side (L4)");
+        eq("This seam already follows the previous section.",
+            SectionNames.ALIGN_FOLLOWS_WHY, "20c the forward align with no locked axis");
+        eq("The track is vertical at this seam — there is no heading or bank to align.",
+            SectionNames.ALIGN_VERTICAL_WHY, "20d the forward align on a vertical frame");
+        eq("B needs a selected node or a highlighted strict seam.",
+            SectionNames.B_NO_TARGET_WHY, "20e B with nothing to act on");
+        eq("Align to previous end", SectionNames.ALIGN_BUTTON, "20f the seam window's align button");
+        eq("Sets the locked angles to the previous section's end orientation.",
+            SectionNames.ALIGN_TIP, "20g its tooltip (one sentence)");
+        eq("The smoothing window holds too few samples to engage — lengthen it.",
+            SectionNames.SMOOTH_TOO_SHORT_WHY, "20h smoothEngagesWhy: too few samples");
+        eq("A section beside this seam is too short to smooth.",
+            SectionNames.SMOOTH_SECTION_SHORT_WHY, "20i smoothEngagesWhy: a clamped half");
+        eq("smoothing conversion needs force/geo sections on both sides of the seam",
+            SectionNames.SMOOTH_REAL_SC_WHY, "20j make-real next to an s/c (promoted verbatim)");
+        eq("The bank lane sets the bank at this seam — edit its first node.",
+            SectionNames.SEAM_ROLL_ABS_WHY, "20k the seam window's roll row under an absolute s/c lane");
+        eq("Reverse works on a track piece without strict seams or bridges —"
+            + " reversing a whole track piece is not available yet.",
+            SectionNames.REVERSE_MULTI_WHY, "20l Reverse on a multi-piece run (the L4-safe text)");
+        eq("Reverse works on a track piece without strict seams, bridges or"
+            + " speed controls — reversing a whole track piece is not available yet.",
+            SectionNames.REVERSE_MULTI_CONTROLS_WHY, "20m … that also carries speed controls");
+        eq(SectionNames.REVERSE_MULTI_WHY, SectionNames.reverseWhy(true, false, false),
+            "20n reverseWhy(multi) → the rewritten sentence");
+        eq(SectionNames.REVERSE_MULTI_CONTROLS_WHY, SectionNames.reverseWhy(true, true, true),
+            "20o reverseWhy(multi + controls) → the rewritten sentence");
+        eq(null, SectionNames.reverseWhy(false, false, false),
+            "20p a lone piece (an s/c piece included) stays reversible (D32)");
+        // the model choosers on fixtures: [force] | [sc] (one side), [sc] |
+        // [sc] (both), [force] | [force] (a lane seam: null) — through
+        // ensureScFollower / appendSectionWithInvariant
+        {
+            Coaster c = new Coaster();
+            TrackPiece p = new TrackPiece(0, 21, 0, 0);
+            p.sections.add(force(26));
+            c.pieces.add(p);
+            c.appendSectionWithInvariant(0, StraightCurveSection.straight(10, 24), DT);
+            c.appendSectionWithInvariant(1, StraightCurveSection.straight(8, 24), DT);
+            eq(SectionNames.UNSTRICT_CONVERT_WHY, c.unstrictSeamWhy(1),
+                "20q unstrictSeamWhy: force | s/c → the convert sentence");
+            eq(SectionNames.UNSTRICT_SC_WHY, c.unstrictSeamWhy(2),
+                "20r unstrictSeamWhy: s/c | s/c → the connect sentence");
+            eq(SectionNames.UNSTRICT_SC_WHY, c.absorbFollowerWhy(1, 2),
+                "20s absorbFollowerWhy mirrors it");
+            eq(SectionNames.ALIGN_FOLLOWS_WHY, c.alignSeamWhy(1, TrackCompiler.compile(c, DT)),
+                "20t alignSeamWhy on an all-unlocked (automatic) seam");
+            Coaster l = new Coaster();
+            TrackPiece q = new TrackPiece(0, 21, 0, 0);
+            q.sections.add(force(26));
+            q.sections.add(force(24));
+            l.pieces.add(q);
+            int f = l.makeSeamStrict(0, 1, DT);
+            TrackCompiler.Result rl = TrackCompiler.compile(l, DT);
+            eq(null, l.unstrictSeamWhy(f), "20u unstrictSeamWhy on a lane seam: null (may go)");
+            eq(null, l.alignSeamWhy(f, rl), "20v alignSeamWhy on an all-locked lane seam: null (would write)");
+            // smoothEngagesWhy: a 0.3 m window holds too few samples; a
+            // 60 m window beside a 6 s section is clamped by that section
+            // (the force section's arc ≈ 150 m, so 60 m engages — the
+            // clamp sentence needs a SHORT neighbor: a 0.8 m s/c)
+            eq(SectionNames.SMOOTH_TOO_SHORT_WHY,
+                TrackCompiler.smoothEngagesWhy(rl.samples(), rl.spans(), 1, 0.3),
+                "20w smoothEngagesWhy: a 0.3 m window → too few samples");
+            eq(null, TrackCompiler.smoothEngagesWhy(rl.samples(), rl.spans(), 1, 10),
+                "20x smoothEngagesWhy: a 10 m window engages (null)");
+            Coaster s = new Coaster();
+            TrackPiece sp = new TrackPiece(0, 21, 0, 0);
+            sp.sections.add(force(26));
+            s.pieces.add(sp);
+            s.appendSectionWithInvariant(0, StraightCurveSection.straight(0.8, 24), DT);
+            TrackCompiler.Result rs = TrackCompiler.compile(s, DT);
+            eq(SectionNames.SMOOTH_SECTION_SHORT_WHY,
+                TrackCompiler.smoothEngagesWhy(rs.samples(), rs.spans(), 1, 10),
+                "20y smoothEngagesWhy: a 0.8 m s/c beside the seam clamps a 10 m window → the short-section sentence");
+        }
     }
 }
