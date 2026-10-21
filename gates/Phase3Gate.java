@@ -1065,11 +1065,11 @@ public class Phase3Gate {
                 StraightCurveSection.Element.curve(20, 90, 30, 3);
             StraightCurveSection.Element e3 =
                 StraightCurveSection.Element.straight(15, 2);
+            // Stage 1b (v20.1): the roll LANE — global = the default
+            // global °/m 0 lane, rate = a local °/s 0 lane
             for (StraightCurveSection.Element e
                     : new StraightCurveSection.Element[]{ e1, e2, e3 }) {
-                e.rollMode = global ? StraightCurveSection.RollMode.GLOBAL
-                                    : StraightCurveSection.RollMode.RATE;
-                e.rollVal = 0;
+                e.roll.setFlags(global, global, false);
             }
             Coaster ca = new Coaster();
             TrackPiece pa = new TrackPiece(0, 21, 0, 0);
@@ -1087,9 +1087,9 @@ public class Phase3Gate {
                 - r1.samples().get(r1.samples().size() - 1).v();
             double bound = global ? 0.05 : 1e-6;
             check(dev < bound && vDrop > 0.3, String.format(
-                "48e s/c spine friction-invariant, %s roll (exit dev %.2e"
+                "48e s/c spine friction-invariant, %s roll lane (exit dev %.2e"
                 + " m < %.0e, design end speed drop %.2f m/s)",
-                global ? "GLOBAL-0" : "RATE-0", dev, bound, vDrop));
+                global ? "global °/m 0" : "local °/s 0", dev, bound, vDrop));
         }
     }
 

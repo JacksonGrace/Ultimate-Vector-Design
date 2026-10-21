@@ -356,14 +356,21 @@ public class Phase2Gate {
             "spans: last span ends at the ride end");
     }
 
-    // (m) roll (v11.1, D69): rate mode = the roll lane's semantics;
-    // global mode = bank held against the horizon
+    static void flatLane(StraightCurveSection.Element e, double v,
+                         boolean global, boolean perMeter, boolean abs) {
+        e.roll.installNodes(BezierBaker.holdLane(0, e.L, v));
+        e.roll.setFlags(global, perMeter, abs);
+    }
+
+    // (m) roll — the per-element roll LANE since v20.1 (D259 §2, Stage
+    // 1b): a local °/s lane = the roll lane's rate semantics; an
+    // ABSOLUTE bank lane = the bank held against the horizon (the v11.1
+    // RATE / GLOBAL pair is retired)
     static void scRoll() {
-        // RATE on a straight: exact body roll, path unbent
+        // a local °/s 40 lane on a straight: exact body roll, path unbent
         StraightCurveSection rate = scOf(15,
             StraightCurveSection.Element.straight(30, 0));
-        rate.elements.get(0).rollMode = StraightCurveSection.RollMode.RATE;
-        rate.elements.get(0).rollVal = 40;
+        flatLane(rate.elements.get(0), 40, false, false, false);
         ScIntegrator.Result r = ScIntegrator.integrate(
             rate, 0.01, 15, new Vec3(0, 21, 0), Quat.IDENTITY);
         FVDIntegrator.Sample last = lastOf(r.samples());
@@ -374,24 +381,26 @@ public class Phase2Gate {
                 && last.pos().sub(new Vec3(30, 21, 0)).length() < 1e-9,
             "s/c roll RATE: roll never bends the spine");
 
-        // GLOBAL 25 on a straight: bank eases in, holds exactly
+        // an ABSOLUTE 25° bank lane on a straight: snaps at the entry
+        // border, holds exactly (the entry ease is gone, Stage 1b)
         StraightCurveSection glob = scOf(26,
             StraightCurveSection.Element.straight(30, 0));
-        glob.elements.get(0).rollVal = 25;   // factory default is GLOBAL
+        flatLane(glob.elements.get(0), 25, true, true, true);
         r = ScIntegrator.integrate(
             glob, 0.01, 26, new Vec3(0, 21, 0), Quat.IDENTITY);
         last = lastOf(r.samples());
         check(Math.abs(angleDeg(last.U(), new Vec3(0, 1, 0)) - 25) < 1e-9,
-            String.format("s/c roll GLOBAL: 25° bank held exactly (got %.9f)",
+            String.format("s/c roll ABSOLUTE lane: 25° bank held exactly (got %.9f)",
                 angleDeg(last.U(), new Vec3(0, 1, 0))));
         check(last.pos().sub(new Vec3(30, 21, 0)).length() < 1e-9,
-            "s/c roll GLOBAL: the bank projection never moves the spine");
+            "s/c roll ABSOLUTE lane: the bank projection never moves the spine");
         // bank sign matches the roll lane: +roll about T moves U toward −R
         check(last.U().z() > 0,
-            "s/c roll GLOBAL: positive bank rolls the same way as +roll rate");
+            "s/c roll ABSOLUTE lane: positive bank rolls the same way as +roll rate");
 
-        // THE user scenario: slope down, then a flat turn — GLOBAL 0
-        // keeps the rails LEVEL (v11.0 rate-0 drifts into a cone bank)
+        // THE user scenario: slope down, then a flat turn — the DEFAULT
+        // lane (global °/m 0) keeps the rails LEVEL (a local °/s 0 lane
+        // drifts into a cone bank — the v11.0 rate-0 behavior)
         StraightCurveSection level = scOf(26,
             StraightCurveSection.Element.curve(30, -20, 90, 0),   // dip 20°
             StraightCurveSection.Element.straight(15, 4),
@@ -401,20 +410,21 @@ public class Phase2Gate {
             StraightCurveSection.Element.straight(15, 4),
             StraightCurveSection.Element.curve(20, 90, 0, 4));
         for (StraightCurveSection.Element e : drift.elements) {
-            e.rollMode = StraightCurveSection.RollMode.RATE;      // v11.0 behavior
+            e.roll.setFlags(false, false, false);      // local °/s 0: the v11.0 behavior
         }
         FVDIntegrator.Sample lv = lastOf(ScIntegrator.integrate(
             level, 0.01, 26, new Vec3(0, 40, 0), Quat.IDENTITY).samples());
         FVDIntegrator.Sample dr = lastOf(ScIntegrator.integrate(
             drift, 0.01, 26, new Vec3(0, 40, 0), Quat.IDENTITY).samples());
         check(Math.abs(lv.R().y()) < 1e-9,
-            String.format("s/c roll GLOBAL 0: slope+turn stays LEVEL (R.y %.2e)",
+            String.format("s/c roll default lane (global °/m 0): slope+turn stays LEVEL (R.y %.2e)",
                 lv.R().y()));
         check(Math.abs(dr.R().y()) > 0.01,
-            String.format("s/c roll RATE 0: same chain DRIFTS banked (R.y %.3f)"
+            String.format("s/c roll local °/s 0: same chain DRIFTS banked (R.y %.3f)"
                 + " — the option exists for a reason", dr.R().y()));
 
-        // v11.0-format elem lines (no roll fields) load as RATE 0
+        // v11.0-format elem lines (no roll fields) load with the DEFAULT
+        // lane (global °/m 0 — the roll fields are dropped, D259 §1.6 iii)
         String old = "FVDD3\npiece 0 21 0 0\nsection sc 26.0 distance 0\n"
             + "elem straight 12.0 0.0\nelem curve 20.0 90.0 0.0 2.0\n"
             + "endsection\nendpiece\n";
@@ -423,12 +433,14 @@ public class Phase2Gate {
                 new BufferedReader(new StringReader(old)));
             StraightCurveSection sc =
                 (StraightCurveSection) lr.coaster().pieces.get(0).sections.get(0);
-            boolean ok = true;
+            boolean ok = sc.elements.size() == 2;
             for (StraightCurveSection.Element e : sc.elements) {
-                ok &= e.rollMode == StraightCurveSection.RollMode.RATE
-                   && e.rollVal == 0;
+                RollLane rl = e.roll;
+                ok &= rl.rollGlobal() && rl.ratePerMeter() && !rl.rollAbsolute() && !rl.isCut()
+                   && rl.nodes.size() == 2 && rl.nodes.get(0).t == 0 && rl.nodes.get(0).val == 0
+                   && rl.nodes.get(1).t == e.L && rl.nodes.get(1).val == 0;
             }
-            check(ok, "FVDD3: v11.0 elem lines load as RATE 0 (geometry kept)");
+            check(ok, "FVDD3: v11.0 elem lines load with the default roll lane (geometry kept, roll fields dropped)");
         } catch (Exception ex) {
             check(false, "FVDD3: v11.0 elem lines load (" + ex + ")");
         }
@@ -865,8 +877,7 @@ public class Phase2Gate {
         e1.add(StraightCurveSection.Element.straight(10, 0));
         StraightCurveSection.Element rollStr =
             StraightCurveSection.Element.straight(15, 4);
-        rollStr.rollMode = StraightCurveSection.RollMode.RATE;
-        rollStr.rollVal = 15;   // rolling INTO the bridge at 15 °/s
+        flatLane(rollStr, 15, false, false, false);   // rolling INTO the bridge at 15 °/s (local °/s lane)
         e1.add(rollStr);
         p1.sections.add(new StraightCurveSection(e1, 26));
         c.pieces.add(p1);
@@ -955,9 +966,8 @@ public class Phase2Gate {
             StraightCurveSection.Element.curve(21.25, -75.5, 90, 3.75),
             StraightCurveSection.Element.straight(6, 2));
         sc.reversed = true;
-        sc.elements.get(1).rollMode = StraightCurveSection.RollMode.RATE;
-        sc.elements.get(1).rollVal = 15;      // rate rides the elem line
-        sc.elements.get(2).rollVal = -12.5;   // held global bank
+        flatLane(sc.elements.get(1), 15, false, false, false);   // local °/s 15
+        flatLane(sc.elements.get(2), -12.5, true, true, true);   // absolute bank −12.5°
         c.pieces.get(0).sections.add(sc);
         DesignIO.Cosmetics cos = DesignIO.Cosmetics.defaults();
 
@@ -982,11 +992,12 @@ public class Phase2Gate {
                 && Math.abs(e1.dirDeg - 90) < 1e-9
                 && Math.abs(e1.blendIn - 3.75) < 1e-9,
             "FVDD3: element kinds/params/smoothing survive");
-        check(e1.rollMode == StraightCurveSection.RollMode.RATE
-                && Math.abs(e1.rollVal - 15) < 1e-9
-                && ls.elements.get(2).rollMode == StraightCurveSection.RollMode.GLOBAL
-                && Math.abs(ls.elements.get(2).rollVal + 12.5) < 1e-9,
-            "FVDD3: roll mode/value survive");
+        RollLane r1 = e1.roll, r2 = ls.elements.get(2).roll;
+        check(!r1.rollGlobal() && !r1.ratePerMeter() && !r1.rollAbsolute()
+                && r1.nodes.size() == 2 && r1.nodes.get(0).val == 15 && r1.nodes.get(1).val == 15
+                && r2.rollGlobal() && r2.rollAbsolute()
+                && r2.nodes.size() == 2 && r2.nodes.get(0).val == -12.5 && r2.nodes.get(1).val == -12.5,
+            "FVDD3: the elements' roll lanes (flags + nodes) survive");
         check(lastOf(TrackCompiler.compile(lr.coaster(), 0.01).samples()).t() > 0,
             "FVDD3: loaded s/c document compiles");
     }

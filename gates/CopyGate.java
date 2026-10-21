@@ -31,6 +31,35 @@ public class CopyGate {
     static final double DT = 0.01;
     static int pass = 0, fail = 0;
 
+    /** The roll lanes agree bitwise: flags, nodes, shadow, fingerprint
+     *  (v20.1, D259 §2.1). */
+    static boolean laneSame(RollLane a, RollLane b) {
+        if (a.rollGlobal() != b.rollGlobal() || a.ratePerMeter() != b.ratePerMeter()
+                || a.rollAbsolute() != b.rollAbsolute()) return false;
+        if (!nodesSame(a.nodes, b.nodes)) return false;
+        if ((a.shadow() == null) != (b.shadow() == null)) return false;
+        if (a.shadow() != null) {
+            if (!nodesSame(a.shadow(), b.shadow())) return false;
+            RollLane.Cut x = a.cut(), y = b.cut();
+            if (x == null || y == null || x.inserted() != y.inserted() || !bits(x.t(), y.t())
+                    || !bits(x.val(), y.val()) || !bits(x.inSlope(), y.inSlope())
+                    || !bits(x.outSlope(), y.outSlope()) || x.smooth() != y.smooth()
+                    || !bits(x.prevOutSlope(), y.prevOutSlope())) return false;
+        }
+        return true;
+    }
+
+    static boolean nodesSame(List<BezierBaker.Node> a, List<BezierBaker.Node> b) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) {
+            BezierBaker.Node x = a.get(i), y = b.get(i);
+            if (!bits(x.t, y.t) || !bits(x.val, y.val) || !bits(x.outFrac, y.outFrac)
+                    || !bits(x.outDv, y.outDv) || !bits(x.inFrac, y.inFrac)
+                    || !bits(x.inDv, y.inDv) || x.smooth != y.smooth) return false;
+        }
+        return true;
+    }
+
     static void check(boolean ok, String name, String detail) {
         if (ok) { pass++; System.out.println("PASS  " + name
             + (detail.isEmpty() ? "" : "  (" + detail + ")")); }
@@ -248,13 +277,14 @@ public class CopyGate {
         StraightCurveSection sc = StraightCurveSection.straight(8, 24);
         StraightCurveSection.Element arc =
             StraightCurveSection.Element.curve(20, 75, 0, 3);   // R20 75° left (v20.0 κ-form)
-        arc.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        arc.rollVal = 28;
+        arc.roll.installNodes(BezierBaker.holdLane(0, arc.L, 28));   // absolute bank 28° (v20.1 lane)
+        arc.roll.setFlags(true, true, true);
         sc.elements.add(arc);
         StraightCurveSection.Element arc2 =
             StraightCurveSection.Element.curve(30, -40, 45, 2);
-        arc2.rollMode = StraightCurveSection.RollMode.RATE;
-        arc2.rollVal = 15;
+        arc2.roll.installNodes(BezierBaker.holdLane(0, arc2.L, 15));   // local °/s 15, CUT (a shadow)
+        arc2.roll.setFlags(false, false, false);
+        arc2.setLength(arc2.L * 0.6);   // the copy must carry the shadow + fingerprint
         sc.elements.add(arc2);
         p.sections.add(sc);
         c.pieces.add(p);
@@ -530,11 +560,11 @@ public class CopyGate {
         boolean scOk = s1 != s0 && s1.elements != s0.elements
             && s1.elements.size() == s0.elements.size();
         for (int i = 0; scOk && i < s0.elements.size(); i++) {
-            scOk = s1.elements.get(i) != s0.elements.get(i)
-                && bits(s1.elements.get(i).L, s0.elements.get(i).L)
-                && bits(s1.elements.get(i).rollVal, s0.elements.get(i).rollVal);
+            StraightCurveSection.Element a = s0.elements.get(i), b = s1.elements.get(i);
+            scOk = b != a && bits(b.L, a.L) && b.roll != a.roll && b.roll.nodes != a.roll.nodes
+                && laneSame(a.roll, b.roll);
         }
-        check(scOk, "h5 s/c copy: new element objects, values verbatim", "");
+        check(scOk, "h5 s/c copy: new element + lane objects, lane values, flags, shadow + fingerprint verbatim (element 1 in a cut state)", "");
 
         System.out.println();
         System.out.println(fail == 0

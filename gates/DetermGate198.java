@@ -155,6 +155,51 @@ public class DetermGate198 {
             check("save->load->save byte-identical (toString)", s1.equals(s2), "");
         }
 
+        // ---- d) s/c growth (v20.1, D259 §2.9 m): a straight/curve
+        // section with per-element roll lanes — a sloped local °/s lane
+        // in a CUT state (shadow + fingerprint), an absolute bank lane
+        // and the default — save -> load -> rebuild BITWISE, zero reload
+        // passes, save -> load -> save byte-identical ----
+        {
+            Coaster c = new Coaster();
+            TrackPiece p = new TrackPiece(0, 21, 0, 0);
+            List<StraightCurveSection.Element> els = new ArrayList<>();
+            els.add(StraightCurveSection.Element.straight(10));
+            StraightCurveSection.Element arc = StraightCurveSection.Element.curve(20, 90, 0, 0);
+            List<BezierBaker.Node> lane = new ArrayList<>();
+            for (double[] q : new double[][]{ {0, 0}, {7, 12}, {14, -5}, {22, 30}, {arc.L, 8} }) {
+                lane.add(new BezierBaker.Node(q[0], q[1]));
+            }
+            BezierBaker.applyDefaultHandles(lane);
+            lane.get(1).outDv = 3; lane.get(1).inDv = -3;
+            arc.roll.installNodes(lane);
+            arc.roll.setFlags(false, false, false);
+            arc.setLength(20);                      // cut: shadow + fingerprint persist
+            els.add(arc);
+            StraightCurveSection.Element s2 = StraightCurveSection.Element.straight(10);
+            s2.roll.installNodes(BezierBaker.holdLane(0, 10, 25));
+            s2.roll.setFlags(true, true, true);     // absolute bank 25°
+            els.add(s2);
+            p.sections.add(new StraightCurveSection(els, 22));
+            p.sections.add(StraightCurveSection.straight(10, 20));   // a continuation the reconcile re-freezes
+            c.pieces.add(p);
+            rebuild(c);
+            TrackCompiler.Result session = (TrackCompiler.Result) rebuild(c)[0];
+            String s1 = save(c);
+            Coaster c2 = load(s1);
+            Object[] rb = rebuild(c2);
+            StraightCurveSection sc2 = (StraightCurveSection) c2.pieces.get(0).sections.get(0);
+            boolean cutKept = sc2.elements.get(1).roll.isCut()
+                && sc2.elements.get(1).roll.cut().t() == 20.0
+                && sc2.elements.get(1).roll.shadow().size() == 5;
+            check("s/c roll lanes (a cut sloped lane + an absolute lane): save->load->rebuild is BITWISE",
+                bitEqual(session, (TrackCompiler.Result) rb[0]) && (Integer) rb[1] == 0 && cutKept,
+                "reload passes=" + rb[1] + ", cut kept " + cutKept);
+            String s2b = save(load(s1));
+            check("s/c roll lanes: save->load->save byte-identical (rn / rsh / rcut lines)",
+                s1.equals(s2b) && s1.contains("\nrsh ") && s1.contains("\nrcut "), "");
+        }
+
         System.out.println("----");
         System.out.println(pass + " passed, " + fail + " failed");
         if (fail > 0) System.exit(1);

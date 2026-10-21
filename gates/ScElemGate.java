@@ -14,8 +14,9 @@ import java.util.*;
  *      the integrator's last sample — each kind × dir {0,30,45,90,210}
  *      × entry {level, pitched 20°, banked 30°} × k {−0.05, 0, 0.1}
  *      (helix: c_h × (β0, β1) {(0,20), (20,−10), (0,0)}), plus a 450°
- *      lap per curved kind; blends off, interim roll RATE 0 (no
- *      projection runs, so the integrator's U IS the roll-free U).
+ *      lap per curved kind; blends off, a LOCAL rate-0 roll lane (no
+ *      twist, no projection, so the integrator's U IS the roll-free U —
+ *      Stage 1b: the lane replaced the interim RATE 0).
  *      Bounds: pos ≤ 1e-7 m, T and U ≤ 1e-6°, and for PLANAR the
  *      max distance of every sample from the ANALYTIC circle (centre
  *      p0 + N/k, N = T0 × a, the axis built here from the level frame
@@ -38,11 +39,16 @@ import java.util.*;
  *      last sample, landed vs sharp ≤ 1e-7 m, dt-independence, merged
  *      borders vs the sharp chain and an un-merged twin's landing.
  *  f)  the `el` grammar round trip (every kind, both interps, links,
- *      locks 2047, blend 0/2, the interim rm/rv) + a clamp sweep.
- *  g)  old `elem` lines (v11.0 + an `elem curve 10 50 -20 4.213 1 0`).
- *  h)  the LEGACY switch — a FILE comparison (a gate cannot flip a
- *      static final): new-legacy-on.txt vs the recorded checksums,
- *      new-legacy-off.txt vs the cardinal level fixtures ≤ 1e-9 m.
+ *      locks 2047, blend 0/2, the per-element rollg/ratem/rollabs
+ *      fields + rn / rsh / rcut lines — Stage 1b; ScRollLaneGate m owns
+ *      the lane round trip proper) + a clamp sweep; element 0's blend
+ *      writes as 0 and loads 0.
+ *  g)  old `elem` lines (v11.0 + an `elem curve 10 50 -20 4.213 1 0`):
+ *      the default lane, element 0's blend 0 (Stage 1b: roll dropped).
+ *  h)  RE-PINNED in Stage 1b (the legacy switch is GONE): the level,
+ *      unbanked, cardinal fixtures of LegacyAxisProbe, built in-JVM,
+ *      match legacy-checksums.txt within 1e-9 m (the roll-free axis
+ *      equals the body axis exactly there).
  *  i)  vertical entry: an inherited plane, a finite compile, the helix
  *      refusal (changeKind false + HELIX_VERTICAL_WHY).
  *  j)  mirror: mirrorPiece's compile == the z-negated original bitwise.
@@ -91,10 +97,55 @@ public final class ScElemGate {
         return q;
     }
 
+    /** A LOCAL °/s rate-0 roll lane (Stage 1b): no twist, no
+     *  projection — the roll-free frame verbatim (the former interim
+     *  RATE 0). */
     static StraightCurveSection.Element rate0(StraightCurveSection.Element e) {
-        e.rollMode = StraightCurveSection.RollMode.RATE;
-        e.rollVal = 0;
+        e.roll.setFlags(false, false, false);
         return e;
+    }
+
+    /** A flat lane at v with the given settings (Stage 1b fixtures). */
+    static StraightCurveSection.Element lane(StraightCurveSection.Element e, double v,
+                                             boolean global, boolean perMeter, boolean abs) {
+        e.roll.installNodes(BezierBaker.holdLane(0, e.L, v));
+        e.roll.setFlags(global, perMeter, abs);
+        return e;
+    }
+
+    /** null = the two lanes agree bitwise (flags, nodes, shadow, cut). */
+    static String laneDiff(RollLane a, RollLane b) {
+        if (a.rollGlobal() != b.rollGlobal() || a.ratePerMeter() != b.ratePerMeter()
+                || a.rollAbsolute() != b.rollAbsolute()) return "roll flags";
+        String d = nodesDiff(a.nodes, b.nodes);
+        if (d != null) return "lane " + d;
+        if ((a.shadow() == null) != (b.shadow() == null)) return "shadow presence";
+        if (a.shadow() != null) {
+            d = nodesDiff(a.shadow(), b.shadow());
+            if (d != null) return "shadow " + d;
+            RollLane.Cut x = a.cut(), y = b.cut();
+            if (x == null || y == null) return "cut presence";
+            if (x.inserted() != y.inserted() || !bits(x.t(), y.t()) || !bits(x.val(), y.val())
+                    || !bits(x.inSlope(), y.inSlope()) || !bits(x.outSlope(), y.outSlope())
+                    || x.smooth() != y.smooth() || !bits(x.prevOutSlope(), y.prevOutSlope())) {
+                return "cut fingerprint";
+            }
+        }
+        return null;
+    }
+
+    static String nodesDiff(List<BezierBaker.Node> a, List<BezierBaker.Node> b) {
+        if (a.size() != b.size()) return "node counts " + a.size() + " vs " + b.size();
+        for (int i = 0; i < a.size(); i++) {
+            BezierBaker.Node x = a.get(i), y = b.get(i);
+            if (!bits(x.t, y.t) || !bits(x.val, y.val) || !bits(x.outFrac, y.outFrac)
+                    || !bits(x.outDv, y.outDv) || !bits(x.inFrac, y.inFrac)
+                    || !bits(x.inDv, y.inDv) || x.smooth != y.smooth
+                    || x.straightOut != y.straightOut || x.levelOut != y.levelOut) {
+                return "node " + i;
+            }
+        }
+        return null;
     }
 
     static StraightCurveSection scOf(StraightCurveSection.Element... els) {
@@ -276,8 +327,8 @@ public final class ScElemGate {
         if (a.bInterp != b.bInterp) return "bInterp";
         if (!bits(a.blendIn, b.blendIn)) return "blendIn " + a.blendIn + " vs " + b.blendIn;
         if (a.locks != b.locks) return "locks " + a.locks + " vs " + b.locks;
-        if (a.rollMode != b.rollMode) return "rollMode";
-        if (!bits(a.rollVal, b.rollVal)) return "rollVal " + a.rollVal + " vs " + b.rollVal;
+        String ld = laneDiff(a.roll, b.roll);
+        if (ld != null) return "roll " + ld;
         return null;
     }
 
@@ -611,9 +662,8 @@ public final class ScElemGate {
         StraightCurveSection.Element pl = rate0(StraightCurveSection.Element.curve(20, 90, 45, 0));
         splitCase("planar R20 90° dir 45, pitched 20° entry, cut 11.3 m", pl, 20, 0, 11.3, true);
         StraightCurveSection.Element plG = StraightCurveSection.Element.curve(20, 90, 45, 0);
-        plG.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        plG.rollVal = 0;
-        splitCase("planar R20 90° dir 45, pitched 20° entry, interim GLOBAL 0 roll, cut 11.3 m",
+        plG.roll.setFlags(true, true, false);   // the DEFAULT lane: global °/m 0
+        splitCase("planar R20 90° dir 45, pitched 20° entry, the default global °/m 0 lane, cut 11.3 m",
             plG, 20, 0, 11.3, true);
         StraightCurveSection.Element plB = rate0(StraightCurveSection.Element.curve(20, 90, 45, 0));
         splitCase("planar R20 90° dir 45, pitched 20° + banked 30° entry, cut 11.3 m", plB, 20, 30, 11.3, true);
@@ -648,11 +698,13 @@ public final class ScElemGate {
             (d == null ? "samples equal" : d) + (qe ? "" : "; qEnd differs")
                 + (b.landed() ? "; border record LANDED (not merged)" : ""));
         // e: the merged border's record vs the sharp chain and vs an
-        // UN-MERGED twin (second element's interim rate 1e-300 °/s: no
-        // merge, geometry unchanged to far below dust) that lands there
+        // UN-MERGED twin (the second element's roll flags differ — the
+        // default global °/m 0 lane against the fixtures' local 0: no
+        // merge, the same geometry on these level / flat-bank fixtures)
+        // that lands there
         double dSharp = b.pos().sub(b.sharpPos()).length();
         StraightCurveSection twin = scOf(two.elements.get(0), two.elements.get(1));
-        twin.elements.get(1).rollVal = 1e-300;
+        twin.elements.get(1).roll.setFlags(true, true, false);
         ScIntegrator.Result rt = integ(twin, P0, q0);
         ScIntegrator.Bound bt = rt.bounds().get(1);
         double dTwin = b.pos().sub(bt.pos()).length();
@@ -731,22 +783,31 @@ public final class ScElemGate {
         Coaster c = new Coaster();
         TrackPiece p = new TrackPiece(0, 21, 0, 0);
         List<StraightCurveSection.Element> els = new ArrayList<>();
-        StraightCurveSection.Element e0 = StraightCurveSection.Element.straight(7.25, 2);
-        e0.rollMode = StraightCurveSection.RollMode.RATE;
-        e0.rollVal = 0;
+        StraightCurveSection.Element e0 = StraightCurveSection.Element.straight(7.25);
+        e0.roll.setFlags(false, false, false);
         e0.locks = StraightCurveSection.Element.LOCK_LEN | StraightCurveSection.Element.LOCK_Y;
         els.add(e0);
         StraightCurveSection.Element e1 = StraightCurveSection.Element.curve(20, 60, 30, 0);
-        e1.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        e1.rollVal = 12.5;
+        lane(e1, 12.5, true, true, true);   // ABSOLUTE bank 12.5°
         els.add(e1);
         StraightCurveSection.Element e2 = StraightCurveSection.Element.planar(18.3, 0.02, 210, 2);
         e2.kLink = false;
         e2.k1 = -0.03;
         e2.kInterp = StraightCurveSection.Interp.SINUSOIDAL;
         e2.locks = StraightCurveSection.Element.LOCK_MASK;   // 2047: every bit
-        e2.rollMode = StraightCurveSection.RollMode.RATE;
-        e2.rollVal = -7.25;
+        // a SLOPED local °/s lane with a CUT state (shadow + fingerprint)
+        List<BezierBaker.Node> sl = new ArrayList<>();
+        for (double[] pt : new double[][] { {0, -7.25}, {6, 4}, {12, -2.5}, {18.3, 9} }) {
+            sl.add(new BezierBaker.Node(pt[0], pt[1]));
+        }
+        BezierBaker.applyDefaultHandles(sl);
+        sl.get(1).outDv = 1.5;
+        sl.get(1).inDv = -1.5;
+        e2.roll.installNodes(sl);
+        e2.roll.setFlags(false, false, false);
+        e2.setLength(9.7);    // cut → shadow + rcut
+        e2.setLength(18.3);   // grown back: bitwise the original, uncut
+        e2.setLength(14.2);   // cut again (the saved state)
         els.add(e2);
         StraightCurveSection.Element e3 = StraightCurveSection.Element.helical(22.5, 0.03, 0.0);
         e3.kLink = false;
@@ -756,20 +817,16 @@ public final class ScElemGate {
         e3.bInterp = StraightCurveSection.Interp.SINUSOIDAL;
         e3.blendIn = 2;
         e3.locks = StraightCurveSection.Element.LOCK_B1 | StraightCurveSection.Element.LOCK_HEAD;
-        e3.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        e3.rollVal = -15;
+        lane(e3, -15, true, false, false);   // global °/s −15
         els.add(e3);
         StraightCurveSection.Element e4 = StraightCurveSection.Element.helical(15, -1 / 30.0, 0.0);
         e4.setBLink(true, 3.0);
         e4.locks = StraightCurveSection.Element.LOCK_X | StraightCurveSection.Element.LOCK_Z;
-        e4.rollMode = StraightCurveSection.RollMode.RATE;
-        e4.rollVal = 4.75;
+        lane(e4, 4.75, false, true, false);   // local °/m 4.75
         els.add(e4);
         StraightCurveSection.Element e5 = StraightCurveSection.Element.planar(9.0, 1 / 7.0, -33.3333);
         e5.blendIn = 0;
-        e5.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        e5.rollVal = 0;
-        els.add(e5);
+        els.add(e5);   // the default lane (global °/m 0)
         p.sections.add(new StraightCurveSection(els, 24.5));
         c.pieces.add(p);
         return c;
@@ -797,7 +854,7 @@ public final class ScElemGate {
         els.add(d);
         StraightCurveSection.Element e = StraightCurveSection.Element.helical(1, 4.9e-324, 0.0);
         e.b1Deg = -bM;
-        e.rollVal = -1e6;
+        lane(e, -1e6, true, true, true);   // an absolute lane at −1e6°
         e.locks = 1;
         els.add(e);
         StraightCurveSection.Element g = StraightCurveSection.Element.planar(1e6, -Double.MIN_NORMAL, 0.1 + 0.2);
@@ -816,9 +873,17 @@ public final class ScElemGate {
         String t2 = save(c2);
         int elLines = 0;
         for (String ln : t1.split("\n")) if (ln.startsWith("el ")) elLines++;
-        check(t1.equals(t2) && elLines == 6,
-            "ScElemGate f save → load → save byte-identical (6 `el` lines: every kind, both interps, links, locks 2047, blend 0/2, rm/rv)",
-            elLines + " el lines, " + t1.length() + " bytes, warnings " + lr.warnings());
+        int rnLines = 0, rshLines = 0, rcutLines = 0;
+        for (String ln : t1.split("\n")) {
+            if (ln.startsWith("rn ")) rnLines++;
+            if (ln.startsWith("rsh ")) rshLines++;
+            if (ln.startsWith("rcut ")) rcutLines++;
+        }
+        check(t1.equals(t2) && elLines == 6 && rnLines >= 12 && rshLines == 4 && rcutLines == 1
+                && t1.contains("rollg=") && !t1.contains(" rm="),
+            "ScElemGate f save → load → save byte-identical (6 `el` lines: every kind, both interps, links, locks 2047, blend 0/2, rollg/ratem/rollabs + rn/rsh/rcut, no rm/rv)",
+            elLines + " el, " + rnLines + " rn, " + rshLines + " rsh, " + rcutLines + " rcut lines, "
+                + t1.length() + " bytes, warnings " + lr.warnings());
         String ed = docElemDiff(c, c2);
         check(ed == null && lr.warnings() == 0,
             "ScElemGate f every element field bitwise after the round trip (no loader clamp hit)",
@@ -831,6 +896,17 @@ public final class ScElemGate {
         String rd2 = resultDiff(rs, rl);
         check(rd2 == null, "ScElemGate f load → rebuild BITWISE == the session's rebuild",
             rd2 == null ? "" : rd2);
+        // element 0's blend is INERT and always 0 (Stage 1b, §1.1): a
+        // session value writes as 0, loads as 0, compiles identically
+        Coaster cb = fFixture();
+        ((StraightCurveSection) cb.pieces.get(0).sections.get(0)).elements.get(0).blendIn = 2;
+        String tb = save(cb);
+        Coaster cb2 = loadText(tb).coaster();
+        double b0 = ((StraightCurveSection) cb2.pieces.get(0).sections.get(0)).elements.get(0).blendIn;
+        String rdb = resultDiff(TrackCompiler.compile(cb, DT), r0);
+        check(tb.equals(t1) && bits(b0, 0.0) && rdb == null,
+            "ScElemGate f element 0's blendIn 2 in the session: writes `blend=0.0`, loads 0, compile bitwise the 0 case",
+            "loaded blend " + b0 + (rdb == null ? "" : ", " + rdb));
         // the clamp sweep
         Coaster k = clampFixture();
         String k1 = save(k);
@@ -881,20 +957,26 @@ public final class ScElemGate {
         check(w <= 1e-9 && planar,
             "ScElemGate g the migrated R20 90° planar == Element.curve(20, 90, 0, 2)'s integrate ≤ 1e-9 m",
             f("max pos diff %.2e m, k0 %s, L %s", w, e1.k0, e1.L));
-        check(bits(e0.blendIn, 0.0) && e0.rollMode == StraightCurveSection.RollMode.RATE
-                && bits(e0.rollVal, 0) && e1.rollMode == StraightCurveSection.RollMode.RATE
-                && bits(e1.rollVal, 0) && bits(e1.blendIn, 2.0),
-            "ScElemGate g section 1: element 0 blend 0.0 kept verbatim (Stage 1a), roll RATE 0 as written (v11.0 lines)",
-            "el0 blend " + e0.blendIn + " " + e0.rollMode + " " + e0.rollVal
-                + ", el1 blend " + e1.blendIn + " " + e1.rollMode + " " + e1.rollVal);
+        check(bits(e0.blendIn, 0.0) && isDefaultLane(e0) && isDefaultLane(e1)
+                && bits(e1.blendIn, 2.0),
+            "ScElemGate g section 1: element 0 blend 0, element 1 blend 2.0, both lanes the DEFAULT (global °/m 0 — the v11.0 roll fields dropped, Stage 1b)",
+            "el0 blend " + e0.blendIn + " default " + isDefaultLane(e0)
+                + ", el1 blend " + e1.blendIn + " default " + isDefaultLane(e1));
         StraightCurveSection.Element g = s1.elements.get(0);
         boolean gOk = s1.elements.size() == 1 && g.kind == StraightCurveSection.Kind.PLANAR
             && bits(g.k0, 1 / 10.0) && bits(g.k1, 1 / 10.0)
             && bits(g.L, Math.abs(Math.toRadians(50)) * 10) && bits(g.dirDeg, -20)
-            && bits(g.blendIn, 4.213) && g.rollMode == StraightCurveSection.RollMode.GLOBAL
-            && bits(g.rollVal, 0);
-        check(gOk, "ScElemGate g `elem curve 10 50 -20 4.213 1 0` → planar k 0.1, L = toRadians(50)·10, dir −20, element-0 blend 4.213 kept, GLOBAL 0",
-            f("k0 %s L %s dir %s blend %s %s %s", g.k0, g.L, g.dirDeg, g.blendIn, g.rollMode, g.rollVal));
+            && bits(g.blendIn, 0.0) && isDefaultLane(g);
+        check(gOk, "ScElemGate g `elem curve 10 50 -20 4.213 1 0` → planar k 0.1, L = toRadians(50)·10, dir −20, element-0 blend DROPPED to 0, the default lane (rm/rv dropped)",
+            f("k0 %s L %s dir %s blend %s default %s", g.k0, g.L, g.dirDeg, g.blendIn, isDefaultLane(g)));
+    }
+
+    /** The §2.1 default: global °/m, not absolute, nodes (0, 0), (L, 0)
+     *  with flat DEFAULT_FRAC handles, uncut. */
+    static boolean isDefaultLane(StraightCurveSection.Element e) {
+        RollLane r = e.roll;
+        return r.rollGlobal() && r.ratePerMeter() && !r.rollAbsolute() && !r.isCut()
+            && nodesDiff(r.nodes, BezierBaker.holdLane(0, e.L, 0)) == null;
     }
 
     // ---------------------------------------------------------------
@@ -924,84 +1006,64 @@ public final class ScElemGate {
         return m;
     }
 
+    /** The recorded fixtures' last positions, keyed "name|entry". */
+    static Map<String, double[]> recordedLastPos() throws IOException {
+        Path rec = Paths.get(LEGACY_DIR).resolve("legacy-checksums.txt");
+        if (!Files.exists(rec)) return null;
+        return lastPos(dataLines(rec));
+    }
+
+    /** LegacyAxisProbe's level cardinal fixtures, built in-JVM with the
+     *  Stage-1b lanes: RATE0 = a local °/s 0 lane, GLOBAL0 = the default
+     *  global °/m 0 lane (holds the arriving level bank). */
+    static Map<String, StraightCurveSection> cardinalFixtures() {
+        Map<String, StraightCurveSection> m = new LinkedHashMap<>();
+        for (boolean rate : new boolean[] { true, false }) {
+            String r = rate ? "RATE0" : "GLOBAL0";
+            m.put("straight50/" + r + "|level", cardinal(rate,
+                StraightCurveSection.Element.straight(50, 0)));
+            m.put("R20-90dir0/" + r + "|level", cardinal(rate,
+                StraightCurveSection.Element.curve(20, -90, 0, 0)));
+            m.put("R30+45dir90/" + r + "|level", cardinal(rate,
+                StraightCurveSection.Element.curve(30, 45, 90, 0)));
+            m.put("R20+90dir0/" + r + "|level", cardinal(rate,
+                StraightCurveSection.Element.curve(20, 90, 0, 0)));
+        }
+        return m;
+    }
+
+    static StraightCurveSection cardinal(boolean rate, StraightCurveSection.Element e) {
+        if (rate) e.roll.setFlags(false, false, false);
+        else e.roll.setFlags(true, true, false);
+        List<StraightCurveSection.Element> l = new ArrayList<>();
+        l.add(e);
+        return new StraightCurveSection(l, 26);
+    }
+
     static void rowH() throws Exception {
-        Path dir = Paths.get(LEGACY_DIR);
-        Path rec = dir.resolve("legacy-checksums.txt");
-        Path on = dir.resolve("new-legacy-on.txt");
-        Path off = dir.resolve("new-legacy-off.txt");
-        String how = "produce it with: java \"-Dfvd.sc.legacyAxis=1\" -cp \"target/classes;" + LEGACY_DIR
-            + "/out\" LegacyAxisProbe > " + LEGACY_DIR + "/new-legacy-on.txt (and without the -D for -off)";
-        if (!Files.exists(rec)) {
-            System.out.println("SKIP  ScElemGate h legacy switch — " + rec + " missing");
+        Map<String, double[]> mr = recordedLastPos();
+        if (mr == null) {
+            System.out.println("SKIP  ScElemGate h legacy record — " + LEGACY_DIR
+                + "/legacy-checksums.txt missing");
             return;
         }
-        List<String> recL = dataLines(rec);
-        if (!Files.exists(on)) {
-            System.out.println("SKIP  ScElemGate h legacy switch ON — " + on + " missing; " + how);
-        } else {
-            List<String> onL = dataLines(on);
-            int mism = 0;
-            String first = null;
-            int n = Math.max(recL.size(), onL.size());
-            for (int i = 0; i < n; i++) {
-                String a = i < recL.size() ? recL.get(i) : "<none>";
-                String b = i < onL.size() ? onL.get(i) : "<none>";
-                if (!a.equals(b)) {
-                    mism++;
-                    if (first == null) {
-                        String[] fa = a.split("\\s*\\|\\s*"), fb = b.split("\\s*\\|\\s*");
-                        first = (fa.length > 3 && fb.length > 3)
-                            ? fa[0] + " " + fa[1] + ": checksum " + fa[3] + " vs " + fb[3]
-                            : "line " + i;
-                    }
-                }
-            }
-            String note = "";
-            if (mism > 0 && Files.exists(off) && dataLines(off).equals(onL)) {
-                note = "; new-legacy-on.txt is IDENTICAL to new-legacy-off.txt — the switch was not"
-                    + " engaged when it was written (check the -D flag reached the JVM: PowerShell"
-                    + " needs it quoted, \"-Dfvd.sc.legacyAxis=1\")";
-            }
-            check(mism == 0 && recL.size() == onL.size(),
-                "ScElemGate h legacy switch ON reproduces the recorded checksums",
-                mism == 0 ? recL.size() + " lines bitwise"
-                    : mism + " of " + recL.size() + " lines differ, first " + first + note);
-        }
-        if (!Files.exists(off)) {
-            System.out.println("SKIP  ScElemGate h legacy switch OFF — " + off + " missing; " + how);
-            return;
-        }
-        Map<String, double[]> mr = lastPos(recL), mo = lastPos(dataLines(off));
-        String[] cardinal = { "straight50", "R20-90dir0", "R30+45dir90", "R20+90dir0" };
-        double worstCard = 0, worstOther = 0, worstOtherLevel = 0;
-        String worstOtherName = "", worstOtherLevelName = "";
-        int nCard = 0;
+        double worst = 0;
+        int n = 0;
         boolean missing = false;
-        for (Map.Entry<String, double[]> en : mr.entrySet()) {
-            double[] a = en.getValue(), b = mo.get(en.getKey());
-            if (b == null) { missing = true; continue; }
-            double d = Math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])
-                + (a[2] - b[2]) * (a[2] - b[2]));
-            String[] key = en.getKey().split("\\|");
-            String fx = key[0].substring(0, key[0].lastIndexOf('/'));
-            boolean level = key[1].equals("level");
-            if (level && Arrays.asList(cardinal).contains(fx)) {
-                nCard++;
-                worstCard = Math.max(worstCard, d);
-            } else if (level) {
-                if (d > worstOtherLevel) { worstOtherLevel = d; worstOtherLevelName = en.getKey(); }
-            } else if (d > worstOther) {
-                worstOther = d;
-                worstOtherName = en.getKey();
-            }
+        String worstName = "";
+        for (Map.Entry<String, StraightCurveSection> en : cardinalFixtures().entrySet()) {
+            double[] rec = mr.get(en.getKey());
+            if (rec == null) { missing = true; continue; }
+            ScIntegrator.Result r = ScIntegrator.integrate(en.getValue(), DT, 26, P0, Quat.IDENTITY);
+            Vec3 p = lastOf(r.samples()).pos();
+            double d = Math.sqrt((p.x() - rec[0]) * (p.x() - rec[0]) + (p.y() - rec[1]) * (p.y() - rec[1])
+                + (p.z() - rec[2]) * (p.z() - rec[2]));
+            n++;
+            if (d > worst) { worst = d; worstName = en.getKey(); }
         }
-        check(!missing && nCard == 8 && worstCard <= 1e-9,
-            "ScElemGate h legacy switch OFF: cardinal level fixtures (straight50, R20-90dir0, R30+45dir90, R20+90dir0 × RATE0/GLOBAL0) ≤ 1e-9 m of the recorded last pos",
-            f("%d fixtures, worst %.2e m%s", nCard, worstCard, missing ? "; some fixture missing" : ""));
-        info("ScElemGate h OFF vs recorded on the pitched/banked entries (the defect the new law fixes)",
-            f("max last-pos difference %.3f m (%s)", worstOther, worstOtherName));
-        info("ScElemGate h OFF vs recorded on the other level fixtures (dir 30, chains)",
-            f("max %.2e m (%s)", worstOtherLevel, worstOtherLevelName));
+        check(!missing && n == 8 && worst <= 1e-9,
+            "ScElemGate h the level, unbanked, cardinal fixtures of LegacyAxisProbe (straight50, R20-90dir0, R30+45dir90, R20+90dir0 × RATE0/GLOBAL0) match legacy-checksums.txt within 1e-9 m (the legacy switch is gone)",
+            f("%d fixtures, worst %.2e m (%s)%s", n, worst, worstName, missing ? "; some fixture missing" : ""));
     }
 
     // ---------------------------------------------------------------
@@ -1077,26 +1139,22 @@ public final class ScElemGate {
         List<StraightCurveSection.Element> els = new ArrayList<>();
         els.add(StraightCurveSection.Element.straight(6, 2));
         StraightCurveSection.Element a = StraightCurveSection.Element.curve(20, 60, 45, 0);
-        a.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        a.rollVal = 15;
+        lane(a, 15, true, true, true);   // absolute bank 15°
         els.add(a);
         StraightCurveSection.Element h = StraightCurveSection.Element.helical(20, 1 / 25.0, 0.0);
         h.b1Deg = 20;
-        h.rollMode = StraightCurveSection.RollMode.RATE;
-        h.rollVal = 0;
+        rate0(h);
         els.add(h);
         StraightCurveSection.Element rp = StraightCurveSection.Element.planar(18, 0.02, -30, 1);
         rp.kLink = false;
         rp.k1 = -0.04;
         rp.kInterp = StraightCurveSection.Interp.SINUSOIDAL;
-        rp.rollMode = StraightCurveSection.RollMode.RATE;
-        rp.rollVal = 10;
+        lane(rp, 10, false, false, false);   // local °/s 10
         els.add(rp);
         StraightCurveSection.Element h2 = StraightCurveSection.Element.helical(15, -0.03, 0.0);
         h2.setBLink(true, 0);
         h2.bInterp = StraightCurveSection.Interp.SINUSOIDAL;
-        h2.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        h2.rollVal = -10;
+        lane(h2, -10, true, true, true);   // absolute bank −10°
         els.add(h2);
         els.add(StraightCurveSection.Element.straight(5, 2));
         p.sections.add(new StraightCurveSection(els, 26));
@@ -1131,7 +1189,7 @@ public final class ScElemGate {
         boolean ok = c.mirrorPiece(0);
         TrackCompiler.Result rm = rebuild(c);
         String d = ok ? mirrorCompare(r0, rm) : "mirrorPiece refused";
-        check(d == null, "ScElemGate j mirrorPiece (every kind, planar dir 45, helix β1 20, ramps, both rolls): compile == the z-negated original BITWISE",
+        check(d == null, "ScElemGate j mirrorPiece (every kind, planar dir 45, helix β1 20, ramps, abs + local roll lanes): compile == the z-negated original BITWISE",
             d == null ? r0.samples().size() + " samples (pos/T/U z negated, x/y equal, Gl negated)" : d);
         boolean ok2 = c.mirrorPiece(0);
         TrackCompiler.Result r2 = rebuild(c);
@@ -1152,7 +1210,7 @@ public final class ScElemGate {
         els.add(e0);
         StraightCurveSection.Element e1 = StraightCurveSection.Element.curve(20, 60, 30, 0);
         e1.locks = StraightCurveSection.Element.LOCK_K0 | StraightCurveSection.Element.LOCK_DIR;
-        e1.rollVal = 20;
+        lane(e1, 20, true, true, true);   // absolute bank 20°
         els.add(e1);
         StraightCurveSection.Element e2 = StraightCurveSection.Element.helical(20, 1 / 25.0, 0.0);
         e2.b1Deg = 12;
@@ -1165,8 +1223,7 @@ public final class ScElemGate {
         e3.k1 = 0.06;
         e3.kInterp = StraightCurveSection.Interp.SINUSOIDAL;
         e3.locks = StraightCurveSection.Element.LOCK_MASK;
-        e3.rollMode = StraightCurveSection.RollMode.RATE;
-        e3.rollVal = 8;
+        lane(e3, 8, false, false, false);   // local °/s 8
         els.add(e3);
         StraightCurveSection.Element e4 = StraightCurveSection.Element.helical(15, -0.03, 0.0);
         e4.setBLink(true, 0);
@@ -1274,8 +1331,8 @@ public final class ScElemGate {
     // ---------------------------------------------------------------
 
     public static void main(String[] args) throws Exception {
-        System.out.println("ScElemGate — D259 §1.9 (s/c element model, Stage 1a); legacy switch in this JVM: "
-            + ScIntegrator.LEGACY_BODY_AXIS);
+        System.out.println("ScElemGate — D259 §1.9 (s/c element model, Stage 1a; re-pinned for the"
+            + " per-element roll lane in Stage 1b — the legacy-axis switch is gone)");
         rowA1E();
         rowA2();
         rowB();

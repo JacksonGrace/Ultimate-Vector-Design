@@ -156,13 +156,13 @@ public class MirrorGate {
         StraightCurveSection sc = StraightCurveSection.straight(8, 24);
         StraightCurveSection.Element arc =
             StraightCurveSection.Element.curve(20, 75, 0, 3);   // R20 75° left (v20.0 κ-form)
-        arc.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        arc.rollVal = 28;
+        arc.roll.installNodes(BezierBaker.holdLane(0, arc.L, 28));   // absolute bank 28° (v20.1 lane)
+        arc.roll.setFlags(true, true, true);
         sc.elements.add(arc);
         StraightCurveSection.Element arc2 =
             StraightCurveSection.Element.curve(30, -40, 45, 2);
-        arc2.rollMode = StraightCurveSection.RollMode.RATE;
-        arc2.rollVal = 15;
+        arc2.roll.installNodes(BezierBaker.holdLane(0, arc2.L, 15));   // local °/s 15
+        arc2.roll.setFlags(false, false, false);
         sc.elements.add(arc2);
         p.sections.add(sc);
         c.pieces.add(p);
@@ -334,8 +334,21 @@ public class MirrorGate {
                 } else if (s instanceof StraightCurveSection sc) {
                     for (StraightCurveSection.Element e : sc.elements) {
                         for (double v : new double[]{ e.k0, e.k1, e.L,
-                                e.dirDeg, e.rollVal }) {
+                                e.dirDeg }) {
                             out.add(Double.doubleToLongBits(v));
+                        }
+                        // the roll LANE (v20.1): every node + the shadow
+                        for (BezierBaker.Node n : e.roll.nodes) {
+                            for (double v : new double[]{ n.t, n.val,
+                                    n.outFrac, n.outDv, n.inFrac, n.inDv }) {
+                                out.add(Double.doubleToLongBits(v));
+                            }
+                        }
+                        if (e.roll.shadow() != null) {
+                            for (BezierBaker.Node n : e.roll.shadow()) {
+                                out.add(Double.doubleToLongBits(n.t));
+                                out.add(Double.doubleToLongBits(n.val));
+                            }
                         }
                     }
                 }
@@ -397,8 +410,8 @@ public class MirrorGate {
         StraightCurveSection sc = StraightCurveSection.straight(8, 24);
         StraightCurveSection.Element arc =
             StraightCurveSection.Element.curve(20, 55, 20, 3);   // v20.0 κ-form
-        arc.rollMode = StraightCurveSection.RollMode.GLOBAL;
-        arc.rollVal = 18;
+        arc.roll.installNodes(BezierBaker.holdLane(0, arc.L, 18));   // absolute bank 18° (v20.1 lane)
+        arc.roll.setFlags(true, true, true);
         sc.elements.add(arc);
         a.sections.add(sc);
         c.pieces.add(a);

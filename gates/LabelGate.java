@@ -777,6 +777,48 @@ public class LabelGate {
                 "17s out of range: the bare title (guard)");
         }
 
+        // ---------- 18: the STRAIGHT/CURVE OVERHAUL's element sentences (v20.0, D259 §1.8) ----------
+        {
+            eq("A helix can't start on vertical track — add a curve first.",
+                SectionNames.HELIX_VERTICAL_WHY, "18a the one helix-on-vertical refusal");
+            eq("This element starts on vertical track — its plane is inherited from the element before it.",
+                SectionNames.DIR_INHERITED_WHY, "18b the planar direction refusal after a vertical entry");
+            eq("A helix's end elevation must stay under 90° — use a planar pull-up for a loop.",
+                SectionNames.HELIX_ELEV_WHY, "18c the helix end-elevation cap");
+            eq("Old straight/curve elements were converted — their roll settings and entry ease were dropped.",
+                SectionNames.SC_LEGACY_CONVERTED,
+                "18d the load report's converted-elements sentence (the Stage-1b LONG form, §10.4)");
+            eq("∞", SectionNames.INFINITY_TWIN, "18e the radius twin under KAPPA_INF");
+            eq("Straight", SectionNames.kindWord(StraightCurveSection.Kind.STRAIGHT), "18f kind word");
+            eq("Planar", SectionNames.kindWord(StraightCurveSection.Kind.PLANAR), "18g kind word");
+            eq("Helical", SectionNames.kindWord(StraightCurveSection.Kind.HELICAL), "18h kind word");
+            eq("Linear", SectionNames.interpWord(StraightCurveSection.Interp.LINEAR), "18i interpolation word");
+            eq("Sinusoidal", SectionNames.interpWord(StraightCurveSection.Interp.SINUSOIDAL), "18j interpolation word");
+        }
+
+        // ---------- 19: the ROLL LANE per s/c element (v20.1, D259 §2.10) ----------
+        {
+            eq("Straight/curve sections author their shape as elements — only the roll lane exists.",
+                SectionNames.SC_LANES_WHY, "19a the yaw/pitch lane rows over an s/c");
+            eq("The roll lane ends at the element end — resize the element to extend it.",
+                SectionNames.ROLL_WALL_WHY, "19b the hard end wall");
+            eq("Straight/curve sections are always distance-based.",
+                SectionNames.SC_DISTANCE_WHY, "19c the Domain row over an s/c (D30)");
+            eq("Absolute bank holds a bank against the horizon — it needs the global roll axis.",
+                SectionNames.ABS_NEEDS_GLOBAL_WHY, "19d the Local radio under Absolute");
+            eq("Switch to These Settings (same graph, change bank)",
+                SectionNames.ROLL_SWITCH_BUTTON, "19e the Switch button");
+            eq("Bake These Settings (convert graph, keep bank)",
+                SectionNames.ROLL_BAKE_BUTTON, "19f the Bake button");
+            eq("Reinterprets this element's roll graph under the new settings.",
+                SectionNames.ROLL_SWITCH_TIP, "19g the Switch tooltip (one sentence)");
+            eq("Converts this element's roll graph so the bank stays the same.",
+                SectionNames.ROLL_BAKE_TIP, "19h the Bake tooltip (one sentence)");
+            eq("Roll", SectionNames.ROLL_BLOCK, "19i the Roll block's title");
+            eq("Switched the roll lane to this element — double-click again to insert a node.",
+                SectionNames.SC_TRACK_DBLCLICK_WHY, "19j the track double-click's lane switch");
+        }
+
         System.out.println();
         System.out.println("LabelGate: " + pass + " passed, " + fail
             + " failed");

@@ -11,9 +11,9 @@ import java.util.*;
  *  b) refusals: s/c neighbor, speed control on a neighbor —
  *     WINDOW-SCOPED for controls (D233) and INFLUENCE deltas
  *     (D234): outside the window carries, inside refuses.
- *  c) elem-0 blendIn: 0 == the historic 2 m ease BITWISE; 5 m
- *     stretches the entry bank ease; 0.5 m shortens it below the
- *     old floor.
+ *  c) DELETED in v20.1 (D259 §2.3.6): the s/c entry ease is gone —
+ *     the per-element roll lane holds the arriving bank (rows c1-c3
+ *     were the ease's 0 / 2 m / 5 m quintic law).
  *  d) THE SMOOTHING COMPILE'S REGRESSION PINS (batch 38, D256 — recorded
  *     while the short-lived translational mode existed; kept in D257,
  *     which removed that mode, as the smoothing's own regression belt;
@@ -234,62 +234,10 @@ public class SmoothRealGate {
         check(cf.makeSmoothingReal(np6, DT, 0.05, 0) != null,
             "b6 non-zero deltas INSIDE the window refuse");
 
-        // ---- (c) s/c entry roll ease (elem 0 blendIn) ----
-        // GLOBAL 40-degree bank on the first element: the entry ease
-        // blends the bank in from the incoming (flat) frame
-        java.util.function.DoubleFunction<Coaster> mk = ease -> {
-            Coaster cx = new Coaster();
-            TrackPiece p = new TrackPiece(0, 21, 0, 0);
-            StraightCurveSection sc = StraightCurveSection.straight(30, 24);
-            sc.elements.get(0).rollMode = StraightCurveSection.RollMode.GLOBAL;
-            sc.elements.get(0).rollVal = 40;
-            sc.elements.get(0).blendIn = ease;
-            p.sections.add(sc);
-            cx.pieces.add(p);
-            return cx;
-        };
-        java.util.function.DoubleFunction<double[]> bankAt = ease -> {
-            TrackCompiler.Result rr =
-                TrackCompiler.compile(mk.apply(ease), DT);
-            double[] out = new double[3];   // bank at 1 m, 3 m, 6 m
-            double[] at = { 1, 3, 6 };
-            for (int k = 0; k < 3; k++) {
-                for (FVDIntegrator.Sample sm : rr.samples()) {
-                    if (sm.s() >= at[k]) {
-                        double[] eu = Coaster.eulerOf(
-                            Quat.fromFrame(sm.T(), sm.U()));
-                        out[k] = eu[2];
-                        break;
-                    }
-                }
-            }
-            return out;
-        };
-        // D233 semantics: the value is VERBATIM (0 = sharp snap); the
-        // ease is the QUINTIC (rate tangent to zero at both ends)
-        double[] b0v = bankAt.apply(0);
-        check(Math.abs(Math.abs(b0v[0]) - 40) < 0.5,
-            "c1 ease 0 = SHARP: full bank immediately (D233)",
-            String.format("bank@1m %.1f", b0v[0]));
-        double[] b2v = bankAt.apply(2);
-        check(Math.abs(Math.abs(b2v[1]) - 40) < 0.5,
-            "c2 2 m ease (the new-section default): done by 3 m",
-            String.format("bank@3m %.1f", b2v[1]));
-        // per-sample law check on a 5 m ease: bank(s) must be the
-        // QUINTIC of u = s/5 at every sample's own arc (the projection
-        // stamps it exactly; a sine ease misses by up to 2° mid-ramp)
-        TrackCompiler.Result r5 = TrackCompiler.compile(mk.apply(5), DT);
-        double worstQ = 0;
-        for (FVDIntegrator.Sample sm : r5.samples()) {
-            if (sm.s() <= 0.01 || sm.s() >= 5) continue;
-            double u = sm.s() / 5;
-            double want = 40 * u * u * u * (u * (u * 6 - 15) + 10);
-            double[] eu = Coaster.eulerOf(Quat.fromFrame(sm.T(), sm.U()));
-            worstQ = Math.max(worstQ, Math.abs(Math.abs(eu[2]) - want));
-        }
-        check(worstQ < 0.2,
-            "c3 the ease IS the quintic (per-sample law, 5 m ease)",
-            String.format("worst dev %.3f°", worstQ));
+        // (c) the s/c ENTRY ROLL EASE rows c1-c3 are DELETED (v20.1, D259
+        // §2.3.6 / §10.2): element 0's blendIn is inert since Stage 1b —
+        // the per-element roll lane holds the arriving bank from the
+        // first leg and seam smoothing is the one entry control.
 
         sectionD();
 
