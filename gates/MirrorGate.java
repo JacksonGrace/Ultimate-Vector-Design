@@ -154,21 +154,13 @@ public class MirrorGate {
         Coaster c = new Coaster();
         TrackPiece p = new TrackPiece(0, 21, 0, 0);
         StraightCurveSection sc = StraightCurveSection.straight(8, 24);
-        StraightCurveSection.Element arc = new StraightCurveSection.Element();
-        arc.kind = StraightCurveSection.Kind.CURVE;
-        arc.radius = 20;
-        arc.angleDeg = 75;
-        arc.dirDeg = 0;
-        arc.smoothIn = 3;
+        StraightCurveSection.Element arc =
+            StraightCurveSection.Element.curve(20, 75, 0, 3);   // R20 75° left (v20.0 κ-form)
         arc.rollMode = StraightCurveSection.RollMode.GLOBAL;
         arc.rollVal = 28;
         sc.elements.add(arc);
-        StraightCurveSection.Element arc2 = new StraightCurveSection.Element();
-        arc2.kind = StraightCurveSection.Kind.CURVE;
-        arc2.radius = 30;
-        arc2.angleDeg = -40;
-        arc2.dirDeg = 45;
-        arc2.smoothIn = 2;
+        StraightCurveSection.Element arc2 =
+            StraightCurveSection.Element.curve(30, -40, 45, 2);
         arc2.rollMode = StraightCurveSection.RollMode.RATE;
         arc2.rollVal = 15;
         sc.elements.add(arc2);
@@ -341,7 +333,7 @@ public class MirrorGate {
                     }
                 } else if (s instanceof StraightCurveSection sc) {
                     for (StraightCurveSection.Element e : sc.elements) {
-                        for (double v : new double[]{ e.angleDeg,
+                        for (double v : new double[]{ e.k0, e.k1, e.L,
                                 e.dirDeg, e.rollVal }) {
                             out.add(Double.doubleToLongBits(v));
                         }
@@ -403,12 +395,8 @@ public class MirrorGate {
         a.sections.add(gs);
         a.sections.add(new ForceSection(shortLanes(1.6, 10), 23));
         StraightCurveSection sc = StraightCurveSection.straight(8, 24);
-        StraightCurveSection.Element arc = new StraightCurveSection.Element();
-        arc.kind = StraightCurveSection.Kind.CURVE;
-        arc.radius = 20;
-        arc.angleDeg = 55;
-        arc.dirDeg = 20;
-        arc.smoothIn = 3;
+        StraightCurveSection.Element arc =
+            StraightCurveSection.Element.curve(20, 55, 20, 3);   // v20.0 κ-form
         arc.rollMode = StraightCurveSection.RollMode.GLOBAL;
         arc.rollVal = 18;
         sc.elements.add(arc);

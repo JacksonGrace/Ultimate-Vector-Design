@@ -473,11 +473,14 @@ public class Coaster {
                 }
             } else if (s instanceof StraightCurveSection sc) {
                 for (StraightCurveSection.Element e : sc.elements) {
-                    // κ' components: cU/cT negate, cR kept ⇒ negate
-                    // BOTH the signed angle and the plane direction
-                    e.angleDeg = -e.angleDeg;
+                    // the z-reflection of the roll-free law (v20.0, D259
+                    // §1.1): PLANAR (k0, k1, L, dir) → (−k0, −k1, L, −dir),
+                    // HELICAL c_h → −c_h with β1 kept — the mirrored
+                    // element turns the other way in the mirrored plane
+                    e.k0 = -e.k0;
+                    e.k1 = -e.k1;
                     e.dirDeg = -e.dirDeg;
-                    e.rollVal = -e.rollVal;   // rate AND global bank
+                    e.rollVal = -e.rollVal;   // rate AND global bank (interim)
                 }
             }
         }
@@ -6020,7 +6023,26 @@ public class Coaster {
             if (cutArc < 0) return false;
             cs = sampleAtArc(s, sp.s0() + cutArc);
             vCut = cs.v();
-            keep = new StraightCurveSection(splitElements(sc, cutArc, left),
+            // the section's canonical ENTRY orientation = the previous
+            // span's exit canon (section 0: the piece's canonical
+            // orientation) — the right half's plane direction re-bases
+            // into the level frames of that chain (D259 §1.4.2)
+            Quat entryQ = secIdx > 0 ? r.spans().get(spanIdx - 1).exitCanon() : null;
+            if (entryQ == null && secIdx == 0) {
+                boolean designed = piece.designPitchDeg != 0 || piece.designRollDeg != 0;
+                Vec3 ap = piece.entryPose().pos();
+                entryQ = (designed ? TrackCompiler.designCanon(piece, ap)
+                                   : TrackCompiler.pieceCanon(piece, ap)).canon();
+            }
+            if (entryQ == null) {
+                // a tilted piece's later section (no chain canon stored):
+                // the first own sample's frame tilted back into the design
+                // chain — one dt inside the entry, accepted dust
+                Quat inv = sp.exitTilt().conjugate();
+                entryQ = Quat.fromFrame(inv.rotate(s.get(0).T()), inv.rotate(s.get(0).U()));
+            }
+            keep = new StraightCurveSection(
+                splitElements(sc, cutArc, left, entryQ),
                 left ? vCut : sc.vDesign);
         } else {
             return false;
@@ -6538,8 +6560,8 @@ public class Coaster {
     /** Clamp an s/c cut OUT of the regions where truncating the
      *  element list does not reproduce the original shape: the
      *  sine-blend windows around internal boundaries (half the next
-     *  element's smoothIn each side) and the global-roll ease window
-     *  at the start of GLOBAL-mode elements (max(smoothIn, 2 m) — the
+     *  element's blendIn each side) and the global-roll ease window
+     *  at the start of GLOBAL-mode elements (max(blendIn, 2 m) — the
      *  right half would re-ease from the cut bank). Shared with the
      *  UI's split line so what you see is where it cuts. Returns the
      *  clamped LOCAL arc, or −1 when no valid spot exists. */
@@ -6550,15 +6572,15 @@ public class Coaster {
         double at = 0;
         for (int i = 0; i < sc.elements.size(); i++) {
             StraightCurveSection.Element e = sc.elements.get(i);
-            if (i > 0 && e.smoothIn > 0) {
-                bad.add(new double[]{ at - e.smoothIn / 2 - 0.1,
-                                      at + e.smoothIn / 2 + 0.1 });
+            if (i > 0 && e.blendIn > 0) {
+                bad.add(new double[]{ at - e.blendIn / 2 - 0.1,
+                                      at + e.blendIn / 2 + 0.1 });
             }
             if (e.rollMode == StraightCurveSection.RollMode.GLOBAL) {
                 // the ease formula mirrors ScIntegrator (D232/D233:
-                // elem 0's smoothIn is the entry ease VERBATIM — 0 =
+                // elem 0's blendIn is the entry ease VERBATIM — 0 =
                 // sharp, nothing to protect)
-                double ease = i == 0 ? e.smoothIn : Math.max(e.smoothIn, 2);
+                double ease = i == 0 ? e.blendIn : Math.max(e.blendIn, 2);
                 if (ease > 1e-9) bad.add(new double[]{ at, at + ease });
             }
             at += e.arcLen();
@@ -6584,35 +6606,30 @@ public class Coaster {
     }
 
     /** Split an element list at LOCAL arc, returning the requested
-     *  side's elements (deep copies; straights split by length, arcs
-     *  by angle share; the right half's first element enters SHARP —
+     *  side's elements (deep copies; the cut element splits by ARC with
+     *  {@link #cutElement}; the right half's first element enters SHARP —
      *  its entry is the new section seam, and scCutClamp guarantees
-     *  the cut sits in constant-state interior). */
+     *  the cut sits in constant-state interior). entryQ = the section's
+     *  canonical ENTRY orientation (its pitch/bank set the level frames
+     *  the right half's plane direction is re-based into — D259 §1.4.2;
+     *  null = identity, the heading-stripped level entry). */
     private static List<StraightCurveSection.Element> splitElements(
-            StraightCurveSection sc, double arc, boolean keepRight) {
+            StraightCurveSection sc, double arc, boolean keepRight, Quat entryQ) {
         List<StraightCurveSection.Element> out = new ArrayList<>();
+        List<ElementChain.Pose> poses = ElementChain.poses(sc.elements,
+            Vec3.ZERO, entryQ == null ? Quat.IDENTITY : entryQ);
         double at = 0;
         for (int i = 0; i < sc.elements.size(); i++) {
             StraightCurveSection.Element e = sc.elements.get(i);
             double len = e.arcLen();
             if (arc > at + 1e-9 && arc < at + len - 1e-9) {
-                double u = (arc - at) / len;
-                StraightCurveSection.Element part = e.copy();
+                StraightCurveSection.Element[] halves =
+                    cutElement(e, arc - at, poses.get(i));
                 if (keepRight) {
-                    if (e.kind == StraightCurveSection.Kind.STRAIGHT) {
-                        part.length = len - (arc - at);
-                    } else {
-                        part.angleDeg = e.angleDeg * (1 - u);
-                    }
-                    part.smoothIn = 0;   // new section seam: sharp
-                    out.add(part);
+                    halves[1].blendIn = 0;   // new section seam: sharp
+                    out.add(halves[1]);
                 } else {
-                    if (e.kind == StraightCurveSection.Kind.STRAIGHT) {
-                        part.length = arc - at;
-                    } else {
-                        part.angleDeg = e.angleDeg * u;
-                    }
-                    out.add(part);
+                    out.add(halves[0]);
                 }
             } else if (keepRight ? at >= arc - 1e-9 : at + len <= arc + 1e-9) {
                 out.add(e.copy());
@@ -6620,6 +6637,61 @@ public class Coaster {
             at += len;
         }
         return out;
+    }
+
+    /** Cut one element at arc L1 from its start into two (D259 §1.4.2 /
+     *  §7.5): both copy kind, links and interps; a LINEAR or SINUSOIDAL
+     *  ramp restricts exactly (left k0 → k(u), right k(u) → k1 — the
+     *  SINUSOIDAL restriction is approximated by the LINEAR ramp of the
+     *  cut values, the §7.5 op refuses that case upstream); the helix's
+     *  elevation ramp likewise; the RIGHT half's dirDeg is RE-BASED into
+     *  its own entry level frame (always — dir 0 at a pitched entry
+     *  changes, the turn tilts the exit's level frame) so the
+     *  integrator's equal-axis merge fires; L1 is ulp-nudged toward L/2
+     *  (≤ 4 tries) until L1 + L2 == L bitwise (the ARC-SUM rule); the
+     *  left keeps blendIn, the right enters sharp. entry = the element's
+     *  entry pose on the chain. */
+    static StraightCurveSection.Element[] cutElement(
+            StraightCurveSection.Element e, double L1, ElementChain.Pose entry) {
+        double L = e.L;
+        double l1 = Math.max(1e-9, Math.min(L - 1e-9, L1));
+        double l2 = L - l1;
+        for (int tries = 0; tries < 4 && l1 + l2 != L; tries++) {
+            l1 = l1 < L / 2 ? Math.nextUp(l1) : Math.nextDown(l1);
+            l2 = L - l1;
+        }
+        double u = l1 / L;
+        StraightCurveSection.Element a = e.copy(), b = e.copy();
+        a.L = l1;
+        b.L = l2;
+        b.blendIn = 0;
+        b.locks = 0;   // the op decides which bits move (§7.5)
+        if (e.kind != StraightCurveSection.Kind.STRAIGHT) {
+            double kc = e.kappaAt(u);
+            a.k0 = e.k0; a.k1 = kc;
+            b.k0 = kc; b.k1 = e.k1;
+            a.kLink = e.kLink && a.k0 == a.k1;
+            b.kLink = e.kLink && b.k0 == b.k1;
+            if (e.kind == StraightCurveSection.Kind.HELICAL) {
+                double beta0 = ElementChain.elevDeg(entry);
+                double bc = e.betaDegAt(u, beta0);
+                a.b1Deg = e.bLink ? beta0 : bc;
+                b.b1Deg = e.bLink ? beta0 : e.b1Deg;
+                a.bLink = e.bLink;
+                b.bLink = e.bLink;
+            } else {
+                // re-base the plane direction into the right half's own
+                // entry level frame: the SAME world axis, read there
+                Vec3 axis = ElementChain.axisOf(e, entry);
+                ElementChain.Pose mid = ElementChain.advance(entry, a);
+                double dir2 = Math.toDegrees(Math.atan2(axis.dot(mid.rl()),
+                    axis.dot(mid.ul())));
+                // the representative nearest the parent's value
+                double k = Math.rint((e.dirDeg - dir2) / 360);
+                b.dirDeg = dir2 + 360 * k;
+            }
+        }
+        return new StraightCurveSection.Element[] { a, b };
     }
 
     /** FULL convert of a non-bridge section (v14.0, D90): the model

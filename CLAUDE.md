@@ -452,57 +452,138 @@ GeoIntegrator.java  GEO PHYSICS. Pure Java, no JavaFX. RK4 on (pos,
                     heading/elevation, omegaFor without roll) that
                     FVDIntegrator.deriv injects for force sections.
                     See PHYSICS.md §2b.
-StraightCurveSection.java  Phase 2 (v11.0, D68): the first NON-LANE
-                    section — an ELEMENT list: straight (length) | arc
-                    (radius, signed angle, direction: 0 = flat turn
-                    with +angle = rider-LEFT since v18.16 D187 (the
-                    profile negates the U component — the D185 yaw
-                    boundary; old flat-arc files mirror), 90 =
-                    pull-up unchanged), each with
-                    an ENTRY smoothing length (element 0's is the
-                    SECTION-ENTRY roll ease since v19.3 D232, VERBATIM
-                    since v19.4 D233 — 0 = an instant bank snap; old
-                    files stored 0 and now snap (accepted), NEW
-                    sections create elem 0 with an explicit 2 m; its
-                    own strip DIAMOND + band drags it absolutely,
-                    and the band's far EDGE drags too since v19.5
-                    (D234 — scEdgeHit 0, the strict-seam pattern;
-                    INTERIOR blend-band EDGES drag ONE-SIDED too since
-                    v19.19 D248 — Gestures.edgeWindowLen, off past the
-                    boundary and staying off; the diamond keeps |·|);
-                    the κ seam itself stays sharp) and a ROLL spec (v11.1, D69): RATE °/s
-                    (roll-lane semantics; 0 = bank drifts through
-                    pitched turns) or GLOBAL ° (bank HELD vs the
-                    horizon; 0 = rails stay level — NL2-classic).
-                    New elements default GLOBAL 0; the loader defaults
-                    old elem lines to RATE 0. Always DISTANCE domain:
-                    shape is speed-independent (except RATE roll,
-                    which is per-second by design). Elements mutable,
-                    editor-owned.
-ScIntegrator.java   S/C PHYSICS. Pure Java, no JavaFX. Curvature-vector
-                    profile over arc length (Ω/m = κ(cos·U − sin·R),
-                    sine-eased blends CENTERED on boundaries — total
-                    turn angle exactly preserved, halves clamped inside
-                    short elements; RATE roll joins Ω as ω_T = rate·T,
-                    blended with the QUINTIC smoothstep since v19.4
-                    D233 — roll rate tangent to zero at both blend
-                    ends, the strict-seam weight; κ keeps the sine so
-                    roll-less sections stay bitwise — and NOT
-                    v-scaled); RK4 on
-                    (pos, quat, s) in TIME with
-                    v algebraic; SUB-STEPS to land every RK4 leg
-                    exactly on profile breakpoints with side-capped
-                    lookups (stepping OVER a κ step costs ~0.1°/cross;
-                    k4 reads the far side) + Newton landing on the
-                    section end. GLOBAL roll = an algebraic PROJECTION
-                    after every leg (roll about T to the QUINTIC-eased
-                    bank target, v19.4 D233 — never bends the spine;
-                    ease from the measured entry bank over elem 0's
-                    verbatim smoothIn / interior max(smoothIn, 2 m);
-                    sub-1e-12 corrections skipped so planar runs stay
-                    bitwise; no-op near vertical track). Samples stay
-                    on the dt grid. Records
-                    felt Gv/Gl at design speed like GeoIntegrator.
+StraightCurveSection.java  Phase 2 (v11.0, D68); the PHASE 4 OVERHAUL
+                    from v20.0 (D259, docs/SC-OVERHAUL-DESIGN.md §1 —
+                    the contract; docs/SC-OVERHAUL-PLAN.md the analysis):
+                    the first NON-LANE section — an ELEMENT list.
+                    ELEMENTS ARE CURVATURE-DEFINED since v20.0 (D259.1a):
+                    Kind STRAIGHT | PLANAR | HELICAL, arc length L (m,
+                    ≥ MIN_ELEM_LEN 0.5), signed curvature k0 → k1 (1/m,
+                    reported-LEFT: +κ at dir 0 turns LEFT, D187; |k| ≤
+                    KAPPA_MAX 10 = the 0.1 m radius floor; k1 == k0 while
+                    kLink; kInterp LINEAR | SINUSOIDAL over the TRACK
+                    arc), dirDeg = the plane tilt about the entry
+                    tangent against the LEVEL frame (0 flat, 90 pull-up,
+                    180 flat right, 270 drop; stored verbatim), b1Deg = a
+                    helix's END elevation (|·| ≤ B1_MAX 89.9, never NaN —
+                    factories resolve b1 := β0 from the entry pose; while
+                    bLink the compile evaluates β1 := the chain's β0 and
+                    the field is inert), blendIn = the interior entry
+                    blend (m, half each side of the border; default 0 —
+                    D9 sharp; element 0's value is the Stage-1a INTERIM
+                    section-entry roll ease, D233, until the 1b lane),
+                    locks = the LOCK_* bit field (LEN 1 K0 2 K1 4 TURN 8
+                    DIR 16 HEAD 32 ELEV 64 X 128 Y 256 Z 512 B1 1024 —
+                    stored/copied/mirrored/saved only; semantics = the
+                    Stage-2a solver, design doc §4.7). Radius / turn are
+                    DERIVED twins (radius() = 1/|k0|, ∞ below KAPPA_INF
+                    1e-5; turnDeg() = toDegrees(L·(k0+k1)/2); the dialog's
+                    setRadiusAndTurn maps R + angle back). Factories keep
+                    the v11 compat form curve(radius, angleDeg, dir,
+                    blend) beside straight(L[, blend]) / planar(L, k, dir
+                    [, blend]) / helical(L, c_h, β0 | Pose). changeKind =
+                    D259 §1.7's field mapping (→ HELICAL refuses a
+                    vertical entry: SectionNames.HELIX_VERTICAL_WHY; a
+                    planar's own sharp end elevation becomes β1). Mirror
+                    = (k0, k1, dir) → (−k0, −k1, −dir), c_h → −c_h.
+                    HELIX_VERT_EPS 1e-6 (the vertical test on horiz2) and
+                    AXIS_MERGE_EPS 1e-12 live here too — every other
+                    class cites the names, never the numbers. The
+                    strip's blend DIAMONDS + band edges (D234/D248 drags)
+                    are unchanged. STAGE-1a INTERIM: the v11.1 per-element
+                    ROLL pair (RollMode RATE °/s | GLOBAL ° + rollVal)
+                    still rides each element and the dialog, acting
+                    about T only; D4 as REVISED 2026-10-21 replaces it in
+                    Stage 1b with a per-element roll LANE (its own axis
+                    [0, L], its own settings; a longer element holds the
+                    end node's value, a shorter one CUTS the lane with
+                    the insert-node math and keeps the cut-off part,
+                    which returns bitwise when the element grows again
+                    unless the cut node moved — design doc §2 RE-SPEC).
+                    Always DISTANCE domain: the SHAPE is speed-
+                    independent (except the interim RATE roll, per
+                    second by design) and — new in v20.0 — ROLL-FREE: a
+                    banked entry no longer tilts a turn's plane (today's
+                    R20/90°/30° banked turn dove 10.9 m); the shape IS
+                    gravity-referenced through the level frame of its
+                    entry, like a force section's (a baked pitch
+                    reshapes it — RangeResolveGate's g2 hinge became a
+                    geo section for that reason). Old `elem` lines load
+                    BEST-EFFORT (D7/D8: no bitwise promise, one
+                    SC_LEGACY_CONVERTED report sentence). Elements
+                    mutable, editor-owned.
+ScIntegrator.java   S/C PHYSICS. Pure Java, no JavaFX. The ROTATION-RATE
+                    VECTOR profile Ω/m(s) in WORLD coordinates on each
+                    element's ROLL-FREE AXIS (v20.0, D259 §1.2-§1.4 —
+                    D2): PLANAR Ω/m = −k(s)·a with a = cos d·ul + sin d·rl
+                    (ul = the level up at the element's ENTRY tangent,
+                    rl = ul × T — a world-fixed axis, so every constant-κ
+                    element is an exact circle whatever the body roll;
+                    the pre-v20 law read cos d·U + sin d·R off the ROLLED
+                    body frame per RK4 stage — kept verbatim behind the
+                    static final LEGACY_BODY_AXIS = `-Dfvd.sc.legacyAxis=1`
+                    for ONE stage (R2; chains holding a helix ignore it;
+                    ScElemGate h pins it bitwise against gates/probes/
+                    legacy-axis-2026-10-21/legacy-checksums.txt, recorded
+                    on bfc70fd); HELICAL Ω/m = −c_h(s)·cos β(s)·Y +
+                    β'(s)·h(T) (GeoIntegrator.omegaFor's global recipe,
+                    h → −R at a vertical T); STRAIGHT 0. Blends lerp the
+                    VECTORS with the sine ease CENTERED on borders (total
+                    turn preserved for straight↔arc; halves clamped
+                    inside short elements); the interim RATE roll cT
+                    blends with the QUINTIC (D233). LEG BOUNDARIES: EVERY
+                    non-MERGED border is a landing (its centre too, under
+                    a blend — the per-border Bound record), blend EDGES
+                    are landings, and the on-side lookup cap applies at
+                    KINKS only; a MERGED border (same kind, no blend,
+                    both constant, equal κ bitwise, PLANAR axes within
+                    AXIS_MERGE_EPS / HELICAL equal constant pitch, equal
+                    interim roll) is no break — the run uses its FIRST
+                    element's axis and κ and its end arc is start_first
+                    + (L_1 + L_2 + …), the ARC-SUM rule, so a split with
+                    L1 + L2 == L bitwise reproduces the parent's legs and
+                    bits (ScElemGate c); a merged run eases its GLOBAL
+                    bank once, at its leader. Result(samples, qEnd,
+                    bounds): Bound(idx, s, t, pos, q, v, loss, landed,
+                    sharpPos, sharpQ) per border (idx 0 the entry, n the
+                    exit; landed = the leg landed there; a merged border
+                    carries the closed-form advance of the run's last
+                    landed state, roll-free q; sharp* = ElementChain's
+                    pose) — TrackCompiler carries them as Span.scBounds
+                    (Centerline.scBounds). RK4 on (pos, quat, s) in TIME
+                    with v algebraic; legs land EXACTLY on every leg
+                    boundary (Newton-sized, 3 refinements) and on the
+                    section end. The interim GLOBAL roll = an algebraic
+                    T-roll PROJECTION after every leg to the quintic-eased
+                    bank target (never bends the spine; ease from the
+                    measured entry bank over elem 0's verbatim blendIn /
+                    interior max(blendIn, 2 m); sub-1e-12 corrections
+                    skipped; no-op near vertical). Felt Gv/Gl at design
+                    speed off the BODY components of Ω/m (Gv = −(Ω·R)v²/g
+                    + U.y, Gl = −((Ω·U)v²/g + R.y)). Profile(sc) (identity
+                    entry) stays for the strip's blend-half reads.
+ElementChain.java   FORWARD KINEMATICS of an element list WITHOUT RK4
+                    (v20.0, D259 §1.3/§1.5) — the ONE evaluator for the
+                    Profile's axes, entry elevations and sharp border
+                    poses, the solver (2a), the ghost (2b) and the gates.
+                    Pose(pos, roll-free q, ul, rl, s); entry(pos0, q0)
+                    builds the level frame (vertical T → the orientation's
+                    own U/R, so a PLANAR element INHERITS its plane there,
+                    §1.2); advance per kind: STRAIGHT p + T·L; PLANAR the
+                    exact arc p0 + L·[T·sinc Θ + N·(Θ/2)·sinc²(Θ/2)], N =
+                    T × a, q = aboutAxis(a, −Θ)·q0 (constant k) or a
+                    fixed composite 8-node Gauss–Legendre on ceil(L/0.5)
+                    panels of (cos θ(s), sin θ(s)) with θ = ∫k closed
+                    (ramped k — Fresnel class, no closed form); HELICAL
+                    the closed forms s_h = L·cos β̄·sinc(Δβ/2), Δy =
+                    L·sin β̄·sinc(Δβ/2), Δψ = c_h·s_h (constant c_h,
+                    linear β; a nested GL-8 for ramped c_h / sinusoidal β)
+                    with the bank vs the horizon PRESERVED (both rotations
+                    keep it) and the end frame from fromFrame. Also
+                    axisOf, elevDeg, turnDeg (the plan turn for a helix),
+                    chord, endElevDeg, trackRadiusEnd (D6's osculating
+                    readout). Deterministic, bitwise-stable — never a
+                    loop that converges.
 BridgeSection.java  Phase 2 (v13.0 D72; live-follow v13.1 D73; seam
                     smoothness v13.2 D74): connector — the last
                     section of a piece, joining
@@ -957,7 +1038,7 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     through its entry heading — a pure ONE-TO-ONE
                     GRAPH NEGATION, no refit (force Gl + roll lane
                     incl. abs bank, geo yaw, influence delta lane
-                    1, s/c angle+dir+roll, piece roll deltas, held
+                    1, s/c κ (k0, k1) + dir + interim roll, piece roll deltas, held
                     seam bank; orientation conjugates by
                     Quat.mirrorZ, the canonical pair kept exact) —
                     the compile is BITWISE the z-negated track in
@@ -2568,22 +2649,34 @@ source tree — they won't compile against the current time-domain API.
   forces (`Gv = ω_pitch·v/g + U.y`, at design speed). Validated: exact
   constant-rate angles + re-authoring the default layout's resulting
   rates as geo reproduces the force geometry to 2 mm over 407 m.
-- STRAIGHT/CURVE sections (v11.0) author geometry per METER: a
-  curvature-vector profile κ(s) with sine-eased transition blends
-  (centered on element boundaries — total turn angle preserved
-  exactly; blend halves clamp inside short elements). ScIntegrator
-  RK4s (pos, quat, s) in time at v-from-energy, sub-stepping so every
-  RK4 leg lands EXACTLY on profile breakpoints with lookups capped to
-  the leg's side — sharp element chains hit analytic headings to
-  1e-6° (naively stepping over a κ step cost ~0.1° per crossing).
-  Shape is fully speed-independent; vDesign only sets the time
-  mapping and the recorded felt G. Per-element ROLL (v11.1): RATE °/s
-  joins Ω about T (time-based, so it alone reintroduces a design-speed
-  dependence); GLOBAL ° holds the bank vs the HORIZON via a pure
-  T-roll projection after every leg (eased from the entry bank over
-  max(smoothIn, 2 m); never bends the spine; global 0 = rails level
-  through slopes and turns — rate 0 instead lets bank drift, the two
-  differ by 0.34 in R.y on the gated dip+turn chain).
+- STRAIGHT/CURVE sections (v11.0; the v20.0 OVERHAUL, D259) author
+  geometry per METER as a ROTATION-RATE VECTOR profile Ω/m(s) on each
+  element's ROLL-FREE AXIS (D2): PLANAR −k(s)·a with a = cos d·ul +
+  sin d·rl fixed at the element's ENTRY against the LEVEL frame (so a
+  banked entry never tilts the turn plane — every constant-κ element is
+  an exact circle whatever the roll; the pre-v20 body-frame law dove
+  10.9 m on a banked R20/90°/30° turn), HELICAL −c_h·cos β·Y +
+  β'·h(T) (a plan circle whose elevation runs β0 → β1 over the track
+  arc), STRAIGHT 0; sine-eased VECTOR blends centered on element
+  borders (total turn preserved for straight↔arc; halves clamp inside
+  short elements). ScIntegrator RK4s (pos, quat, s) in time at
+  v-from-energy, landing every RK4 leg EXACTLY on every non-merged
+  border (its centre too under a blend), on blend edges and on the
+  section end, with lookups capped to the leg's side at KINKS only —
+  sharp element chains hit analytic headings to 1e-6° (the clamped
+  blend fixture 3e-6° at dt 0.01 from the centre landing's step phase,
+  0 at dt ≤ 0.005); adjacent equal-κ sharp elements MERGE into one leg
+  run (the ARC-SUM rule makes a split bitwise). ElementChain is the
+  closed-form forward map of the same chain (the sharp border poses,
+  the Bound records). Shape is fully speed-independent; vDesign only
+  sets the time mapping and the recorded felt G — and it IS
+  gravity-referenced through the entry's level frame (a baked pitch
+  reshapes an s/c like a force section). STAGE-1a INTERIM roll
+  (v11.1, until the 1b per-element lane): RATE °/s joins Ω about T
+  (per second — the one design-speed dependence); GLOBAL ° holds the
+  bank vs the HORIZON via a pure T-roll projection after every leg
+  (eased from the entry bank over max(blendIn, 2 m); never bends the
+  spine; a merged run eases once).
 
 ## Key decisions and WHY (full log in docs/DECISIONS.md)
 
@@ -3035,9 +3128,17 @@ ORIENTATION glyph — "· true splits inside" is gone), and Re-freeze
 design speed BAKES a tilted piece's
 pitch/roll into its natural orientation (deltas read 0 after) so
 the whole design/real split closes — the D106 fix.
-STRAIGHT/CURVE STRIP WIDGET (v11.0, D68): an
-active s/c section replaces the lanes with element BANDS (straight
-slate / curve rose, labeled chips like "R20 90°→"), felt-G derived
+STRAIGHT/CURVE STRIP WIDGET (v11.0, D68; v20.0 D259.1a: the bands wear
+the KIND colors ScLook.KIND_RGB — straight blue (120,185,235), planar
+rose (235,130,180), helical violet (200,130,235) — through
+FvdDesigner.SC_KIND_COLOR, and the chip = the stroked kind ICON
+(ScLook.iconStroke/iconHead, FvdDesigner.strokeScKindIcon) + the arc
+length "12 m" — no radius/angle/roll suffix; SC_SMOOTH_DEFAULT is 0,
+D9 sharp; the element dialog still edits radius + angle + direction
+(mapped onto κ/L by Element.setRadiusAndTurn) + the interim roll rows
+until the Stage-3a window): an
+active s/c section replaces the lanes with element BANDS (labeled
+chips like "⌒ 31.4 m"), felt-G derived
 curves behind at 0.45 alpha, dashed separators, and a smoothing
 DIAMOND per internal boundary (filled = blending; shaded band = the
 blend zone). Drag a separator or the section end = resize the left
@@ -5566,7 +5667,7 @@ render ⊕/emoji glyphs — draw shapes, label with plain words.)
   friction shifts every candidate alike; the applied geometry is
   friction-aware). The two-coefficient model is the WHOLE friction
   story — a normal-force-scaled "Advanced Friction Model" was
-  designed and REJECTED by the user (v18.6, D175). An s/c GLOBAL-bank element's spine moves ~mm-cm
+  designed and REJECTED by the user (v18.6, D175). (RETIRED by D2, v20.0 — the roll-free axis takes the bank out of the spine entirely; the interim GLOBAL projection is a pure T-roll.) An s/c GLOBAL-bank element's spine moves ~mm-cm
   under friction (the bank projection's per-leg cadence is
   speed-dependent, O(dt²) — RATE-roll spines are exact, gated).
   Stalling designs (easier to hit with friction) still creep through
@@ -6119,7 +6220,12 @@ and the instant POV wrap (D194) ARE the final stall model — no
 rollback simulation. PHASE 3 IS COMPLETE.
 
 **Phase 4 — the s/c overhaul & content (user-approved order, D195):**
-1. STRAIGHT/CURVE OVERHAUL (the next arc): richer elements —
+1. STRAIGHT/CURVE OVERHAUL (the next arc; IN PROGRESS — D259:
+   docs/SC-OVERHAUL-PLAN.md the analysis, docs/SC-OVERHAUL-DESIGN.md
+   the contract; Stage 1a (v20.0) = the geometry core landed —
+   κ-form Straight/Planar/Helical elements on the roll-free axis,
+   ElementChain, the `el` grammar, ScElemGate; next 1b = the
+   per-element roll lane + the seam invariant): richer elements —
    planar vs 3D curves with editable beginning/ending SLOPES and
    RADII (advanced turns), FULL roll customization, end-to-start
    CLOSURE (line a piece's end up with its own start), and strong

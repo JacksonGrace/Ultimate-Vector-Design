@@ -88,69 +88,95 @@ re-authoring the default layout's RESULTING body rates as a geo section
 reproduces the force-built geometry to 2 mm over 407 m (end frame within
 0.001°) — the strongest cross-check of the sign conventions we have.
 
-## 2c. Straight/curve sections: curvature per meter (v11.0, `ScIntegrator.java`)
+## 2c. Straight/curve sections: rotation rate per meter on a roll-free axis (v11.0, `ScIntegrator.java`; v20.0 D259, `ElementChain.java`)
 
 STRAIGHT/CURVE sections author geometry in DISTANCE: an element list
-(straight length | arc radius + signed angle + direction) defines a
-curvature-vector profile over arc length —
+(STRAIGHT: arc length L | PLANAR: L, signed curvature k0 → k1, plane
+direction dir | HELICAL: L, plan curvature c_h, end elevation β1)
+defines a ROTATION-RATE VECTOR profile over arc length, in WORLD
+coordinates —
 
 ```
-Ω/m  = κ(s) · (cos(dir)·U − sin(dir)·R)    κ = sign(angle)/radius
-Ω    = v · Ω/m                             (rad/s at the design speed)
+PLANAR    Ω/m = −k(s) · a          a = cos(dir)·ul + sin(dir)·rl   (world-fixed per element)
+HELICAL   Ω/m = −c_h(s)·cos β(s) · Y  +  β'(s) · h(T)             h(T) = (−T.z, 0, T.x)/|T_xz|
+STRAIGHT  Ω/m = 0
+Ω    = v · Ω/m  (+ the interim roll term about T)       (rad/s at the design speed)
 q'   = ½ · (0, Ω) ⊗ q,   pos' = T·v,   s' = v
 ```
 
-The rotation axis is invariant under its own rotation (rotating U and R
-about `cos·U − sin·R` reproduces the same combination), so each element
-is an EXACT circle or line: dir 0 = flat turn, +angle = rider-right
-(matching +Gl and +yaw chirality); dir 90 = pull-up; negative angle
-mirrors. Since pos' and q' both scale by the same v, dq/ds is
+where ul = (Y − (Y·T)T)/|…| is the LEVEL up at the element's ENTRY
+tangent T and rl = ul × T (the project's R = U × T). The axis is read
+from the ENTRY frame once and stays fixed (D2, the ROLL-FREE axis): the
+body roll — the bank — never enters it, so a banked or pitched entry no
+longer tilts a turn's plane. (The v11.0 law read the axis off the
+ROLLED body frame per RK4 stage, cos·U − sin·R, which made a banked
+R20/90°/30° turn dive 10.9 m; it survives one stage behind
+`-Dfvd.sc.legacyAxis=1` for the gate that pins its bits.) Rotating about
+a fixed axis leaves the axis invariant, so each constant-κ element is an
+EXACT circle or line: dir 0 = flat turn, +κ = rider-LEFT (D187, matching
+the reported-left yaw); dir 90 = pull-up; a ramped k0 ≠ k1 (linear or
+sinusoidal over the track arc) is a Fresnel/Anger-class spiral the
+integrator handles like any Ω(s). The helix rotates about world Y at
+the plan rate c_h·cos β per track metre and about the horizontal right
+h(T) at the elevation rate β' — a circle of plan radius 1/|c_h| whose
+elevation runs β0 (the entry's) → β1; both rotations preserve the bank
+vs the horizon. Since pos' and q' both scale by the same v, dq/ds is
 speed-independent — the SHAPE cannot depend on the speed profile, only
-the time mapping does.
+the time mapping does. The shape IS gravity-referenced through the
+entry's level frame: a baked entry pitch reshapes an s/c exactly as it
+re-solves a force section.
 
-TRANSITION SMOOTHING blends the curvature COMPONENTS (cU, cR) with a
-sine ease `(1 − cos πu)/2` over the entry element's smoothing length,
-CENTERED on the boundary. The ease is symmetric, so the blend
-integrates to the mean curvature and an arc's TOTAL TURN ANGLE is
-preserved exactly through straight↔arc transitions (one fixed rotation
-axis; arc↔arc with different dir mixes axes — approximately preserved).
-Blend halves clamp proportionally when they'd overlap inside a short
-element (still boundary-centered ⇒ still angle-preserving).
+ELEMENTCHAIN is the closed-form forward map of the same chain (no RK4):
+STRAIGHT p0 + T·L; PLANAR p0 + L·[T·sinc Θ + N·(Θ/2)·sinc²(Θ/2)] with
+N = T × a, Θ = ∫k, q = aboutAxis(a, −Θ)·q0 (a fixed composite 8-node
+Gauss–Legendre on 0.5 m panels of (cos θ(s), sin θ(s)) for a ramped k,
+θ(s) closed); HELICAL s_h = L·cos β̄·sinc(Δβ/2), Δy = L·sin β̄·sinc(Δβ/2),
+Δψ = c_h·s_h (constant c_h, linear β; a nested GL-8 otherwise). It
+supplies the integrator's axes and entry elevations, the SHARP border
+poses of the per-border `Bound` record, and (from Stage 2a) the solver
+and the append ghost — the ONE evaluator.
+
+TRANSITION SMOOTHING blends the Ω/m VECTORS of the two neighbours with
+a sine ease `(1 − cos πu)/2` over the entry element's blend length,
+CENTERED on the border. The ease is symmetric, so the blend integrates
+to the mean rotation and a turn's TOTAL ANGLE is preserved exactly
+through straight↔arc transitions (one fixed axis; arc↔arc with
+different dir mixes axes — approximately preserved). Blend halves clamp
+proportionally when they'd overlap inside a short element.
 
 INTEGRATION ACCURACY: RK4 loses two orders stepping OVER a curvature
-step — the k4 stage evaluates at the step's far side (~0.02–0.13° of
-heading per sharp crossing at dt = 0.01). ScIntegrator therefore
-SUB-STEPS: every RK4 leg lands exactly on the next profile breakpoint
-(element boundary, blend edge, section end) via Newton-sized leg
-lengths, and each stage's profile lookup is capped to the leg's own
-side. Samples still land on the uniform dt grid (downstream indexes
-ride time). Validated (TESTING #14): exact line/circle/direction, sharp
-chains analytic to 1e-6°, smoothing preserves the turn to 1e-6°,
-smoothIn 0 bitwise equal to sharp.
+step. ScIntegrator SUB-STEPS: every RK4 leg lands exactly on the next
+leg boundary — EVERY non-merged element border (its centre too under a
+blend), every blend edge and the section end — via Newton-sized leg
+lengths, and the profile lookup of each stage is capped to the leg's
+own side at KINKS (sharp borders). Adjacent SHARP elements of equal
+constant κ, equal axis (within 1e-12) and equal interim roll MERGE into
+one leg run whose end arc is start + (L₁ + L₂ + …), so a split that
+keeps L₁ + L₂ == L bitwise reproduces the parent's bits. Samples still
+land on the uniform dt grid. Validated (TESTING #14 + #176/1a): exact
+line/circle/helix against ElementChain to 1e-7 m on level, pitched and
+banked entries, sharp chains analytic to 1e-6°, the clamped blend
+fixture to 3e-6° at dt 0.01 (exactly 0 at dt ≤ 0.005 — a step phase of
+the centre landing), blendIn 0 bitwise equal to sharp.
 
-ROLL (v11.1, D69) is per element, two modes:
+ROLL — STAGE-1a INTERIM (v11.1, D69; Stage 1b replaces it with a roll
+LANE per element, D4 as revised 2026-10-21): per element, two modes.
 
 - RATE (°/s): ω_T = rate·T joins Ω — a TIME rate exactly like the roll
-  lane, deliberately NOT v-scaled (cU/cR are per-meter, cT per-second),
-  blended across boundaries with the same sine ease. Rate 0 leaves the
-  frame purely curvature-driven, so the bank vs the horizon DRIFTS
-  through pitched turns (rotating about a tilted U traces a cone).
+  lane, deliberately NOT v-scaled, blended across borders with the
+  quintic smoothstep (D233). Rate 0 leaves the frame purely
+  rotation-driven: with the roll-free axis the bank vs the horizon no
+  longer drifts through a flat turn, only through a pitched one.
 - GLOBAL (°): the value is the BANK ANGLE VS THE HORIZON, held by an
-  algebraic projection after every integration leg: measure the bank
-  as the angle of U against the level up at T (the T-perpendicular
-  direction nearest world Y), about T — positive matches the roll
-  lane — then roll the quaternion about T by the difference. A pure
-  T-roll moves neither pos nor T, so the projection CANNOT bend the
-  spine (gated bitwise). The target eases from the element's measured
-  ENTRY bank over max(smoothIn, 2 m) with the house sine ease, so bank
-  is always continuous; corrections < 1e-12 rad are skipped (planar
-  zero-bank runs stay bit-identical to v11.0); near-vertical track
-  (1 − T.y² < 1e-6) has no defined bank and is left untouched.
-
-Validated (TESTING #14g): exact rate twist on a straight, 25° global
-bank held to 1e-9, spine unbent in both modes, and the motivating
-case — a 20° dip into a 90° flat turn — dead level under GLOBAL 0
-(R.y ~1e-17) vs R.y = 0.342 of drift under RATE 0.
+  algebraic projection after every integration leg: measure the bank as
+  the angle of U against the level up at T, about T — positive matches
+  the roll lane — then roll the quaternion about T by the difference. A
+  pure T-roll moves neither pos nor T, so the projection CANNOT bend the
+  spine. The target eases from the element's measured ENTRY bank over
+  max(blendIn, 2 m) (element 0: its blendIn verbatim — the interim
+  section-entry ease) with the quintic; corrections < 1e-12 rad are
+  skipped; near-vertical track (1 − T.y² < 1e-6) is left untouched; a
+  merged run eases once, at its leader.
 
 ## 3. Speed: energy minus path-integrated friction (Phase 3, v17.0 D133)
 

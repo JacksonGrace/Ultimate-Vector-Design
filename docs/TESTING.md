@@ -165,7 +165,8 @@
     roll rate is traversal-INVARIANT (T and the bank rate both flip
     and cancel; felt Gl flips instead). All passed 2026-07-06.
 
-14. **Straight/curve gates (v11.0, D68 — same scratch Phase2Gate).**
+14. **Straight/curve gates (v11.0, D68 — same scratch Phase2Gate; RE-PINNED by #176/1a, D259 — the
+    curvature-defined elements on the roll-free axis: the clamped-blend heading bound is 1e-5° now, the rest holds).**
     (a) Analytic elements: a 50 m straight lands EXACTLY (0 error, s
     bitwise == total length — the Newton landing); an R20 90° dir-0
     curve is an exact circle (max radial error < 1e-7, endpoint and
@@ -5509,6 +5510,51 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     "A-open sceneW=276.0 cancelR=262.0 spinR=262.0"); -Dfvd.winshot
     "WINSHOT povrow pref=1127.3 … fits" / "-worst 1197.3 … fits" /
     "-conflict 1197.3 … design shown … fits".
+
+176. v20.0 (D259.1a): the STRAIGHT/CURVE OVERHAUL, Stage 1a — the geometry
+    core (docs/SC-OVERHAUL-DESIGN.md §1): curvature-defined Straight /
+    Planar / Helical elements rotating about a ROLL-FREE axis fixed at
+    each element's entry against the level frame, ElementChain (the
+    closed-form forward map), the `el` file grammar, the per-border Bound
+    records. No new user control yet — Help is unchanged in 1a; the
+    element dialog still edits radius / angle / direction (mapped onto
+    κ and L) and the interim per-element roll rows. BY HAND then Headless.
+    1a — (a) Open any file with a straight/curve section: every element
+        band wears its kind color (straight blue, planar rose) and its
+        chip shows the stroked kind icon + the arc length ("31.4 m") —
+        no radius / angle / roll suffix any more.
+        (b) New doc, '+' > Add straight/curve, edit the element to an R20
+        90° curve, then give the track piece a 30° roll (Track Piece ▴ >
+        Anchor roll): the turn stays a flat circle at the entry height —
+        the old build dove ~10.9 m (the turn plane followed the banked
+        body frame).
+        (c) Set the curve's direction to 30° from a level entry: the
+        track is a circle tilted 30° about the entry tangent (the old
+        build was 2.08 m off a circle).
+        (d) Open a pre-v20 file holding straight/curve sections: it opens,
+        the stats bar's load report ends with "Old straight/curve elements
+        were converted." and the document is dirty; the geometry is the
+        same track to the eye (D7/D8: no bitwise promise).
+        (e) Save it as .uvd and reopen: identical (the `el` lines round
+        trip byte-identically; the report sentence is gone).
+    Headless (2026-10-21, wiped classes, rc 0 everywhere): uvd.ScElemGate
+    122 passed (a1 68 — worst circle deviation 9.1e-9 m, worst exit pos
+    1.04e-8 m / T 3.4e-8° / U 2.8e-8°; h 56 legacy-switch lines bitwise;
+    the one O3 finding — a linked helix's re-derived β0 one ulp off the
+    stored β1 broke the merge on pitched entries — fixed by the ulp band
+    in Profile.mergeable before the final run); DetermGate197-200
+    6/4/10/7, LoadGate196 7, OrientGate 23, OrientGate2 18, Phase2Gate
+    rc 0 (the clamped-blend bound 1e-5°, 2.96e-6° measured),DomainGate,
+    Phase3Gate 88, MultiCoasterGate 15, SmoothRealGate 24 (d1 checksum
+    28808918c0612fbe unchanged), uvd.KeyRouteGate 103, TypedMarkGate 42,
+    InflSplitGate 22, ReanchorGate 3, MirrorGate 100, YpAbsGate 22,
+    uvd.SeamShapeGate 31, RangeResolveGate 115 (g2 hinge = a DISTANCE °/m
+    geo section, g2c 2e-4), CopyGate 73, MergeGate 23, InsertGate 40,
+    LabelGate 182, uvd.PulseClockGate 30, RunGate 78, PlacementGate 41,
+    OrientModeGate 51, GestureGate 180, EndFollowGate 73, FloorGate 34,
+    StripGate 49, uvd.ConflictGate 87, Nl2ElemProbe 22. The legacy probe
+    pair: gates/probes/legacy-axis-2026-10-21 (LegacyAxisProbe +
+    BlendTurnProbe, the recorded legacy-checksums.txt).
 
 ## Debugging heuristics learned the hard way
 

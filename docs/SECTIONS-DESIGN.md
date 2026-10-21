@@ -149,21 +149,29 @@ DISPLAY/readout convention only — never a second math path.
   IMPLEMENTED v10.0 (D58) in TIME domain (deg/s; DISTANCE arrives with
   the domain toggle): GeoIntegrator, quaternion-native, felt-G recorded
   at design speed; PHYSICS.md §2b has the equations.
-- **Straight/curve:** analytic; IMPLEMENTED v11.0 (D68). Element list
-  of straights (length) and arcs (radius + signed angle + direction:
-  0 = flat turn with +angle = rider-right, 90 = pull-up); per-element
-  ENTRY smoothing length — a sine curvature blend centered on the
-  boundary (total turn angle preserved exactly for straight↔arc;
-  halves clamp inside short elements). Always DISTANCE domain; shape
-  fully speed-independent. Authoring is the ELEMENT STRIP WIDGET in
-  the graph (user pick over dialog-first/viewport-first — the original
-  "node editing in the viewport" idea can still join with the
-  placement-gizmo work). ScIntegrator sub-steps at profile breakpoints
-  so sharp chains are analytic, not just per-element circles.
-  Per-element ROLL since v11.1 (D69): RATE °/s (roll-lane semantics)
-  or GLOBAL bank ° held against the horizon via a spine-preserving
-  T-roll projection (NL2-classic banking; global 0 = level rails
-  through anything — the station/brake default for new elements).
+- **Straight/curve:** analytic; IMPLEMENTED v11.0 (D68); OVERHAULED from
+  v20.0 (D259 — docs/SC-OVERHAUL-DESIGN.md is the contract). Element list
+  of STRAIGHT (arc length L), PLANAR (L, signed curvature k0 → k1, plane
+  direction: 0 = flat turn with +κ = rider-LEFT, 90 = pull-up) and
+  HELICAL (L, plan curvature c_h, end elevation β1) elements, each
+  rotating about a ROLL-FREE AXIS fixed at its entry against the level
+  frame (D2 — the body roll never bends the shape; radius and turn are
+  derived twins); per-element ENTRY blend — a sine blend of the
+  rotation-rate vectors centered on the border (total turn angle
+  preserved exactly for straight↔arc; halves clamp inside short
+  elements; sharp by default, D9). Always DISTANCE domain; shape fully
+  speed-independent and gravity-referenced through the entry's level
+  frame. Authoring is the ELEMENT STRIP WIDGET in the graph (bands in
+  the kind colors, chip = kind icon + length) — the Stage-2b Append
+  Element mode, the 3a element window and end-node rigs and the 2a
+  kinematic solver follow per the design doc. ScIntegrator lands every
+  RK4 leg on every element border, blend edge and section end, merging
+  equal-κ sharp neighbours into one leg run (splits are bitwise);
+  ElementChain is the closed-form forward map (sharp border poses, the
+  per-border Bound record on the Span). ROLL: the v11.1 per-element
+  RATE °/s | GLOBAL bank ° pair is the Stage-1a INTERIM; Stage 1b gives
+  every element its own roll LANE (D4 as revised 2026-10-21) and makes
+  every s/c edge a strict seam (D31).
 - **Bridge (§4)** and **External:** produce/carry fixed geometry.
 
 **Reversal:** a geometry-level transform (run the centerline backward,

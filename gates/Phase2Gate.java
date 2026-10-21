@@ -229,7 +229,7 @@ public class Phase2Gate {
         check(es.pos().sub(em.pos()).length() > 0.05,
             "s/c smoothing: the path itself DOES change (eased corner)");
 
-        // smoothIn 0 == sharp bitwise (the blend machinery must add
+        // blendIn 0 == sharp bitwise (the blend machinery must add
         // zero arithmetic when it's off)
         StraightCurveSection zero = scOf(26,
             StraightCurveSection.Element.straight(15, 0),
@@ -241,7 +241,7 @@ public class Phase2Gate {
         for (int i = 0; bitEq && i < rz.samples().size(); i++) {
             bitEq = vecBitsEq(rz.samples().get(i).pos(), rs.samples().get(i).pos());
         }
-        check(bitEq, "s/c smoothing: smoothIn 0 is bitwise sharp");
+        check(bitEq, "s/c smoothing: blendIn 0 is bitwise sharp");
 
         // overflowing blends clamp inside a short middle element and
         // STILL preserve the turn (each blend stays boundary-centered)
@@ -253,7 +253,13 @@ public class Phase2Gate {
             clamped, 0.01, 26, new Vec3(0, 21, 0), Quat.IDENTITY).samples());
         Vec3 exp20 = new Vec3(Math.cos(Math.toRadians(20)), 0,
             -Math.sin(Math.toRadians(20)));
-        check(angleDeg(ec.T(), exp20) < 1e-6,
+        // v20.0 (D259.1a): every element border is a leg LANDING now — a
+        // blended border lands at its centre too — so the step phases
+        // inside this 1.745 m middle element changed; the RK4 residual is
+        // 2.96e-6° at dt 0.01 and exactly 0 at dt ≤ 0.005 (BlendTurnProbe),
+        // a discretization phase, not a law defect: the bound re-baselined
+        // from 1e-6° to 1e-5° (the legacy switch keeps today's 0).
+        check(angleDeg(ec.T(), exp20) < 1e-5,
             String.format("s/c smoothing: clamped blends keep the turn (off %.2e°)",
                 angleDeg(ec.T(), exp20)));
     }
@@ -586,7 +592,7 @@ public class Phase2Gate {
         TrackCompiler.Result rv = TrackCompiler.compile(c, 0.01);
         check(rv.samples().get(0).pos().sub(fwLast).length() < 1e-9,
             "reverse piece: starts exactly at the old exit");
-        // the sharp R20 element entry (smoothIn 0) rounds into the
+        // the sharp R20 element entry (blendIn 0) rounds into the
         // lane carpet — the honest fit residual on this fixture
         double endDev = lastOf(rv.samples()).pos().sub(fwFirst).length();
         check(endDev < 0.6, String.format(
@@ -969,12 +975,12 @@ public class Phase2Gate {
         StraightCurveSection.Element e1 = ls.elements.get(1);
         check(ls.reversed && ls.vDesign == 19 && ls.elements.size() == 3
                 && ls.elements.get(0).kind == StraightCurveSection.Kind.STRAIGHT
-                && Math.abs(ls.elements.get(0).length - 12.5) < 1e-9
-                && e1.kind == StraightCurveSection.Kind.CURVE
-                && Math.abs(e1.radius - 21.25) < 1e-9
-                && Math.abs(e1.angleDeg + 75.5) < 1e-9
+                && Math.abs(ls.elements.get(0).L - 12.5) < 1e-9
+                && e1.kind == StraightCurveSection.Kind.PLANAR
+                && Math.abs(e1.radius() - 21.25) < 1e-9
+                && Math.abs(e1.turnDeg() + 75.5) < 1e-9
                 && Math.abs(e1.dirDeg - 90) < 1e-9
-                && Math.abs(e1.smoothIn - 3.75) < 1e-9,
+                && Math.abs(e1.blendIn - 3.75) < 1e-9,
             "FVDD3: element kinds/params/smoothing survive");
         check(e1.rollMode == StraightCurveSection.RollMode.RATE
                 && Math.abs(e1.rollVal - 15) < 1e-9

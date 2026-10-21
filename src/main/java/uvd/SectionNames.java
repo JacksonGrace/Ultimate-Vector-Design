@@ -251,6 +251,49 @@ public final class SectionNames {
             : SMOOTH_TITLE + " (" + STRICT_SEAM + n + ")";
     }
 
+    // ---- the STRAIGHT/CURVE OVERHAUL (v20.0, D259 §1.8 — LabelGate
+    // section 18) ----
+    /** The ONE helix-on-vertical refusal (D259 §1.1): creation, insert,
+     *  change type, the ghost, the "Helical (3)" pick. */
+    public static final String HELIX_VERTICAL_WHY =
+        "A helix can't start on vertical track — add a curve first.";
+    /** A planar element's direction refusal after a VERTICAL entry
+     *  (D259 §1.2 / §1.8): no level frame there, so its plane is the
+     *  previous element's roll-free end frame. */
+    public static final String DIR_INHERITED_WHY =
+        "This element starts on vertical track — its plane is inherited"
+        + " from the element before it.";
+    /** A helix's end elevation past B1_MAX (D6's < 90°; D259 §4.14's
+     *  register). */
+    public static final String HELIX_ELEV_WHY =
+        "A helix's end elevation must stay under 90° — use a planar"
+        + " pull-up for a loop.";
+    /** The load report's line when old `elem` lines were converted
+     *  (D259 §1.8 / §10.4 — the Stage-1a SHORT form: the interim roll
+     *  pair and element 0's entry ease still load; Stage 1b appends
+     *  the dropped-roll clause). */
+    public static final String SC_LEGACY_CONVERTED =
+        "Old straight/curve elements were converted.";
+    /** The radius twin of a curvature under KAPPA_INF (ρ > 100 km). */
+    public static final String INFINITY_TWIN = "∞";
+
+    /** An element kind's word (D259 §1.8): Straight / Planar / Helical. */
+    public static String kindWord(StraightCurveSection.Kind k) {
+        return switch (k) {
+            case STRAIGHT -> "Straight";
+            case PLANAR -> "Planar";
+            case HELICAL -> "Helical";
+        };
+    }
+
+    /** An interpolation's word (D259 §1.8): Linear / Sinusoidal. */
+    public static String interpWord(StraightCurveSection.Interp i) {
+        return switch (i) {
+            case LINEAR -> "Linear";
+            case SINUSOIDAL -> "Sinusoidal";
+        };
+    }
+
     /** The full type word: Force / Geometric / S/C / Bridge. */
     public static String typeWord(Section s) {
         return s instanceof GeoSection ? "Geometric"

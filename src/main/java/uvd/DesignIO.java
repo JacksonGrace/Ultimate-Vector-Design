@@ -73,12 +73,23 @@ public final class DesignIO {
      *  writes a clean file. MULTI-COASTER since v19.2 (D230): every
      *  coaster in the file with its own look; the legacy accessors
      *  coaster()/cosmetics() return the FIRST (or an empty coaster +
-     *  defaults for an empty document — FVDD4 files may hold none). */
+     *  defaults for an empty document — FVDD4 files may hold none).
+     *  legacyScSections (v20.0, D259 §10.4) = how many straight/curve
+     *  sections loaded from OLD `elem` lines (converted best-effort);
+     *  legacyNote() is the load report's sentence for it. */
     public record LoadResult(List<Coaster> coasters, List<Cosmetics> looks,
-                             double[] camera, int warnings) {
+                             double[] camera, int warnings,
+                             int legacyScSections) {
         public LoadResult(Coaster coaster, Cosmetics cosmetics, int warnings) {
             this(new ArrayList<>(List.of(coaster)),
-                new ArrayList<>(List.of(cosmetics)), cosmetics.camera(), warnings);
+                new ArrayList<>(List.of(cosmetics)), cosmetics.camera(),
+                warnings, 0);
+        }
+        /** The load report's converted-elements sentence
+         *  (SectionNames.SC_LEGACY_CONVERTED) when any s/c section
+         *  loaded from old `elem` lines, else null. */
+        public String legacyNote() {
+            return legacyScSections > 0 ? SectionNames.SC_LEGACY_CONVERTED : null;
         }
         public Coaster coaster() {
             return coasters.isEmpty() ? new Coaster() : coasters.get(0);
@@ -337,9 +348,11 @@ public final class DesignIO {
                 if (section instanceof StraightCurveSection sc) {
                     // straight/curve (v11.0): element lines instead of
                     // lanes — same unknown-line forgiveness both ways.
-                    // Trailing roll fields (v11.1): mode 0 = rate °/s,
-                    // 1 = global bank °; readers default MISSING fields
-                    // to rate 0 so v11.0 saves keep their geometry.
+                    // The `el` grammar since v20.0 (D259 §1.6): one
+                    // positional KIND word, every other token
+                    // name=value in a fixed order (writeElement) — the
+                    // pre-D259 `elem` lines are READ only (best-effort,
+                    // counted, D259 §10.4).
                     // 5th field: pinned design speed (v14.5 D97;
                     // missing = off — old readers ignore it); a
                     // TRI-STATE since v19.27 (D256): 2 = REAL-ANCHORED
@@ -349,17 +362,7 @@ public final class DesignIO {
                         d(sc.vDesign), sc.reversed ? 1 : 0,
                         sc.vPinned ? 1 : sc.vRealAnchored ? 2 : 0);
                     for (StraightCurveSection.Element e : sc.elements) {
-                        int rm = e.rollMode == StraightCurveSection.RollMode.GLOBAL
-                            ? 1 : 0;
-                        if (e.kind == StraightCurveSection.Kind.STRAIGHT) {
-                            out.printf(Locale.US, "elem straight %s %s %d %s%n",
-                                d(e.length), d(e.smoothIn), rm, d(e.rollVal));
-                        } else {
-                            out.printf(Locale.US,
-                                "elem curve %s %s %s %s %d %s%n",
-                                d(e.radius), d(e.angleDeg), d(e.dirDeg),
-                                d(e.smoothIn), rm, d(e.rollVal));
-                        }
+                        writeElement(out, e);
                     }
                     writeSpeedCtls(out, sc.speedCtls, sc.speedMarks);
                     out.println("endsection");
@@ -473,6 +476,11 @@ public final class DesignIO {
         double[] start = { 0, 21, 0 };   // legacy `start` line (FVDD2/1)
         double[] camera = null;          // v18.38: missing = view stays
         int warnings = 0;                // fail-soft skips/heals (D216)
+        // s/c sections that loaded OLD `elem` lines (D259 §10.4 — the
+        // whole DOCUMENT's count, every coaster block; legacyScSec =
+        // the section last counted, so each one counts once)
+        int legacyScSections = 0;
+        StraightCurveSection legacyScSec = null;
         // lanes whose `lane` line carried the END-FOLLOW field (D248):
         // identity-keyed, so the flag of every OTHER lane is derived
         // from its loaded shape in finishCoaster
@@ -955,6 +963,19 @@ public final class DesignIO {
                         bs.rollAccB = Double.parseDouble(parts[11]);
                     }
                 }
+                // straight/curve elements (v20.0, D259 §1.6): the
+                // named-token `el` grammar — parseElement owns it
+                case "el" -> {
+                    if (!(curSection instanceof StraightCurveSection sc))
+                        throw new IOException("el outside straight/curve section");
+                    sc.elements.add(parseElement(parts));
+                }
+                // the PRE-D259 `elem` lines (v11.0-v19.29): best-effort,
+                // today's conversion kept exactly through Stage 1a
+                // (D259 §1.6 iii / §10.4 — the interim roll pair and
+                // element 0's entry ease still ride); each s/c section
+                // that carried any counts ONCE into legacyScSections
+                // (the load report's converted-elements sentence)
                 case "elem" -> {
                     if (!(curSection instanceof StraightCurveSection sc))
                         throw new IOException("elem outside straight/curve section");
@@ -979,6 +1000,10 @@ public final class DesignIO {
                     e.rollVal = parts.length > ri + 1
                         ? Double.parseDouble(parts[ri + 1]) : 0;
                     sc.elements.add(e);
+                    if (sc != legacyScSec) {   // the section's first converted line
+                        legacyScSec = sc;
+                        legacyScSections++;
+                    }
                 }
                 default -> { /* unknown lines ignored: forward compatibility */ }
             }
@@ -1013,7 +1038,8 @@ public final class DesignIO {
             throw new IOException("no track data in file"
                 + (warnings > 0 ? " (" + warnings + " damaged lines)" : ""));
         }
-        return new LoadResult(coasters, looks, camera, warnings);
+        return new LoadResult(coasters, looks, camera, warnings,
+            legacyScSections);
     }
 
     /** FAIL-SOFT validation of one coaster (v18.44, D216 — was a
@@ -1170,6 +1196,109 @@ public final class DesignIO {
         for (double m : marks) {
             out.printf(Locale.US, "smark %s%n", d(m));
         }
+    }
+
+    /** ONE straight/curve element as an `el` line (v20.0, D259 §1.6):
+     *  the KIND word is the one positional token, every other token is
+     *  name=value in this FIXED order (byte-canonical round trips) and
+     *  every double goes through d(). STRAIGHT carries no curvature
+     *  fields (κ ≡ 0), PLANAR no elevation fields, HELICAL no dir.
+     *  kint/bint: 0 = LINEAR, 1 = SINUSOIDAL. The trailing rm/rv pair
+     *  is the Stage-1a INTERIM roll (§1.6 vi — rm 1 = GLOBAL bank °,
+     *  0 = RATE °/s); the 1b loader ignores it. Old readers see `el`
+     *  as an unknown line and drop the element-less section (§1.6 v). */
+    private static void writeElement(PrintWriter out,
+                                     StraightCurveSection.Element e) {
+        int rm = e.rollMode == StraightCurveSection.RollMode.GLOBAL ? 1 : 0;
+        int kint = e.kInterp == StraightCurveSection.Interp.SINUSOIDAL ? 1 : 0;
+        switch (e.kind) {
+            case STRAIGHT -> out.printf(Locale.US,
+                "el straight L=%s blend=%s locks=%d rm=%d rv=%s%n",
+                d(e.L), d(e.blendIn), e.locks, rm, d(e.rollVal));
+            case PLANAR -> out.printf(Locale.US,
+                "el planar L=%s k0=%s k1=%s klink=%d kint=%d dir=%s"
+                    + " blend=%s locks=%d rm=%d rv=%s%n",
+                d(e.L), d(e.k0), d(e.k1), e.kLink ? 1 : 0, kint,
+                d(e.dirDeg), d(e.blendIn), e.locks, rm, d(e.rollVal));
+            case HELICAL -> out.printf(Locale.US,
+                "el helical L=%s k0=%s k1=%s klink=%d kint=%d b1=%s"
+                    + " blink=%d bint=%d blend=%s locks=%d rm=%d rv=%s%n",
+                d(e.L), d(e.k0), d(e.k1), e.kLink ? 1 : 0, kint,
+                d(e.b1Deg), e.bLink ? 1 : 0,
+                e.bInterp == StraightCurveSection.Interp.SINUSOIDAL ? 1 : 0,
+                d(e.blendIn), e.locks, rm, d(e.rollVal));
+        }
+    }
+
+    /** An `el` line's element (v20.0, D259 §1.6 — writeElement's
+     *  dual). parts[1] = the kind word (unknown → IOException: a
+     *  damaged line under the D216 fail-soft); the kind's factory
+     *  supplies every default (L placeholder 0.01), then every
+     *  remaining token parses as name=value BY NAME, split at the
+     *  first '=': unknown names — and names the kind does not carry
+     *  (a straight keeps κ ≡ 0) — are ignored and a missing name keeps
+     *  the default, so the line can grow. The clamps ADMIT everything
+     *  the writer emits (D198): L ≥ 0.01, |k0|, |k1| ≤ KAPPA_MAX,
+     *  |b1| ≤ B1_MAX, blend ≥ 0, locks masked to the defined bits,
+     *  kint/bint/klink/blink/rm anything but "1" = the 0 meaning. A
+     *  NON-FINITE number is a damaged line (b1 per §1.6 ii; the others
+     *  too — clamp() lets NaN through, the D216 lesson). */
+    private static StraightCurveSection.Element parseElement(String[] parts)
+            throws IOException {
+        if (parts.length < 2) throw new IOException("el without a kind");
+        StraightCurveSection.Element e = switch (parts[1]) {
+            case "straight" -> StraightCurveSection.Element.straight(0.01);
+            case "planar" -> StraightCurveSection.Element.planar(0.01, 0, 0);
+            case "helical" -> StraightCurveSection.Element.helical(0.01, 0, 0.0);
+            default -> throw new IOException("unknown element kind: " + parts[1]);
+        };
+        boolean curved = e.kind != StraightCurveSection.Kind.STRAIGHT;
+        boolean planar = e.kind == StraightCurveSection.Kind.PLANAR;
+        boolean helix = e.kind == StraightCurveSection.Kind.HELICAL;
+        double kMax = StraightCurveSection.KAPPA_MAX;
+        double bMax = StraightCurveSection.B1_MAX;
+        for (int i = 2; i < parts.length; i++) {
+            int eq = parts[i].indexOf('=');
+            if (eq <= 0) continue;   // not name=value: ignored like an unknown name
+            String name = parts[i].substring(0, eq);
+            String v = parts[i].substring(eq + 1);
+            switch (name) {
+                case "L" -> e.L = Math.max(0.01, finiteNum(v));
+                case "k0" -> { if (curved) e.k0 = clamp(finiteNum(v), -kMax, kMax); }
+                case "k1" -> { if (curved) e.k1 = clamp(finiteNum(v), -kMax, kMax); }
+                case "klink" -> { if (curved) e.kLink = v.equals("1"); }
+                case "kint" -> {
+                    if (curved) e.kInterp = v.equals("1")
+                        ? StraightCurveSection.Interp.SINUSOIDAL
+                        : StraightCurveSection.Interp.LINEAR;
+                }
+                case "dir" -> { if (planar) e.dirDeg = finiteNum(v); }
+                case "b1" -> { if (helix) e.b1Deg = clamp(finiteNum(v), -bMax, bMax); }
+                case "blink" -> { if (helix) e.bLink = v.equals("1"); }
+                case "bint" -> {
+                    if (helix) e.bInterp = v.equals("1")
+                        ? StraightCurveSection.Interp.SINUSOIDAL
+                        : StraightCurveSection.Interp.LINEAR;
+                }
+                case "blend" -> e.blendIn = Math.max(0, finiteNum(v));
+                case "locks" -> e.locks = Integer.parseInt(v)
+                    & StraightCurveSection.Element.LOCK_MASK;
+                case "rm" -> e.rollMode = v.equals("1")
+                    ? StraightCurveSection.RollMode.GLOBAL
+                    : StraightCurveSection.RollMode.RATE;
+                case "rv" -> e.rollVal = finiteNum(v);
+                default -> { /* unknown names ignored: the line can grow */ }
+            }
+        }
+        return e;
+    }
+
+    /** A finite double of an `el` field, else IOException (a damaged
+     *  line — D216 counts it). */
+    private static double finiteNum(String v) throws IOException {
+        double x = Double.parseDouble(v);
+        if (!Double.isFinite(x)) throw new IOException("non-finite element field: " + v);
+        return x;
     }
 
     /** One node line in the shared `n`/`dn` grammar (9 fields; the

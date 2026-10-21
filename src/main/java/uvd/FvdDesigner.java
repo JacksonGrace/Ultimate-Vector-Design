@@ -4445,6 +4445,18 @@ public class FvdDesigner extends Application {
     // for lanes 0/1, worn by curves, buttons AND resulting overlays)
     static final Color ELEV_ABS_COLOR = Color.rgb(40, 150, 200);
     static final Color HEAD_ABS_COLOR = Color.rgb(180, 225, 45);
+    // STRAIGHT/CURVE element KIND colors (v20.0, D259 §9.5 — the owner
+    // is the pure uvd.ScLook.KIND_RGB, indexed by Kind.ordinal():
+    // straight blue, planar = the historic curve rose, helical violet)
+    // + the element bands' fill alphas (unselected / selected)
+    static final Color[] SC_KIND_COLOR = new Color[ScLook.KIND_RGB.length];
+    static {
+        for (int i = 0; i < SC_KIND_COLOR.length; i++) {
+            int[] c = ScLook.KIND_RGB[i];
+            SC_KIND_COLOR[i] = Color.rgb(c[0], c[1], c[2]);
+        }
+    }
+    static final double SC_BAND_ALPHA = 0.09, SC_BAND_ALPHA_SEL = 0.17;
 
 
     Stage stage;
@@ -5089,6 +5101,46 @@ public class FvdDesigner extends Application {
             new double[]{ py + ty * ah, py + ny * aw / 2, py - ny * aw / 2 },
             3);
         return c;
+    }
+
+    /** A straight/curve element KIND icon stroked onto a canvas (v20.0,
+     *  D259 §9.6 — the recipe is the pure ScLook.iconStroke/iconHead in
+     *  a 14×10 box): translate(x, y)·scale(s), the polyline at line
+     *  width 1.2 with round caps/joins, the arrowhead filled. The
+     *  context's state is saved and restored around it. */
+    static void strokeScKindIcon(GraphicsContext g, int kind, double x,
+            double y, double s, Color c) {
+        double[] p = ScLook.iconStroke(kind);
+        double[] h = ScLook.iconHead(kind);
+        int n = p.length / 2;
+        double[] xs = new double[n], ys = new double[n];
+        for (int i = 0; i < n; i++) {
+            xs[i] = p[2 * i];
+            ys[i] = p[2 * i + 1];
+        }
+        g.save();
+        g.translate(x, y);
+        g.scale(s, s);
+        g.setStroke(c);
+        g.setLineWidth(1.2);
+        g.setLineCap(javafx.scene.shape.StrokeLineCap.ROUND);
+        g.setLineJoin(javafx.scene.shape.StrokeLineJoin.ROUND);
+        g.setLineDashes((double[]) null);
+        g.strokePolyline(xs, ys, n);
+        g.setFill(c);
+        g.fillPolygon(new double[]{ h[0], h[2], h[4] },
+            new double[]{ h[1], h[3], h[5] }, 3);
+        g.restore();
+    }
+
+    /** The kind icon as its own Canvas, (⌈14s⌉+1)×(⌈10s⌉+1) — the
+     *  circleArrowIcon pattern (D259 §9.6: pick buttons s = 1.2, the
+     *  element window's type chooser s = 1.4). */
+    static Canvas scKindIcon(int kind, double s, Color c) {
+        Canvas cv = new Canvas(Math.ceil(ScLook.ICON_W * s) + 1,
+            Math.ceil(ScLook.ICON_H * s) + 1);
+        strokeScKindIcon(cv.getGraphicsContext2D(), kind, 0, 0, s, c);
+        return cv;
     }
 
     /** The standard dark-on-light reset icon most dialogs use. */
@@ -10386,6 +10438,10 @@ public class FvdDesigner extends Application {
                 viewports.get(0).applyCameraWorld(r.camera());
             }
             currentFile = f;
+            // old straight/curve elements migrated on load (v20.0,
+            // D259 §1.8 — one sentence, appended to the report)
+            String legacy = r.legacyNote();
+            String legacyTail = legacy == null ? "" : " " + legacy;
             // a FAIL-SOFT load (v18.44, D216) repaired the file:
             // say so and mark dirty — the next save writes it clean
             if (r.warnings() > 0) {
@@ -10393,11 +10449,12 @@ public class FvdDesigner extends Application {
                 updateTitle();
                 statsLabel.setText("Loaded " + f.getName() + " with "
                     + r.warnings() + " damaged line(s) skipped/healed — "
-                    + "check the layout; saving writes a clean file.");
+                    + "check the layout; saving writes a clean file."
+                    + legacyTail);
             } else {
                 dirty = false;
                 updateTitle();
-                statsLabel.setText("Loaded: " + f.getName());
+                statsLabel.setText("Loaded: " + f.getName() + legacyTail);
             }
             return true;
         } catch (Exception ex) {

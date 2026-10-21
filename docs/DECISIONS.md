@@ -15938,3 +15938,215 @@ Verification: wiped rebuild rc 0, gates javac rc 0; LabelGate 182,
 uvd.ConflictGate 87; -Dfvd.initspeedprobe fails=0 (39), -Dfvd.winshot
 the three povrow lines "fits" + "trackpiece rows identical=true".
 Committed together with D252-D257 (the first commit since v19.22).
+
+## D259 (v20.0–) — Phase 4 item 1: the straight/curve overhaul — curvature-defined Straight / Planar / Helical elements on a roll-free axis, roll as a graph lane, a strict seam at every s/c edge, element nodes + window + locks, Append Element mode, element interactions, attach and loop closure
+
+His spec of 2026-10-19, analysed in docs/SC-OVERHAUL-PLAN.md (the
+organized summary, the C1-C32 contradictions, the R1-R22
+recommendations, the eight-stage plan); his answers of 2026-10-20 to
+that document's §0 are recorded below and in the design contract
+docs/SC-OVERHAUL-DESIGN.md §0. One entry for the whole arc,
+sub-numbered per stage run (D259.0, .1a, .1b, .2a, .2b, .3a, .3b, .4,
+.5, .6, .7), each in the D257 shape: prose, his words quoted,
+BEFORE / NOW, accepted corners, Verification. Supersedes D68's
+body-frame curve axis, D69 (per-element roll), D232 §6 / D233 §6-8 /
+D234 (the section-entry roll ease) and D135's "a follower's first
+section is never reconciled" for every follower whose first section
+is real-anchored — the automatic and border-split seams the invariant
+creates, and a hand-made follower a resolve op had already flagged
+(design doc §3.5 A4). Old-file compatibility for s/c sections is NOT
+promised (his words: "Right now I don't care about the compatibility
+of any of my old files [or the old s/c features] at all … purely a
+placeholder … Do what you wish.") — old `elem` lines load best-effort
+with one warning; every other section kind stays bitwise.
+
+Decided (his §0 answers; "default" = the plan's stated default,
+quoted where he added words): D1 bounded, bracketed, hard-capped
+INTERNAL solves with an honest refusal on non-convergence are allowed
+anywhere — the USER never iterates, closed form first ("if there
+aren't issues with using iteration in the code for these features
+please go ahead with what you have in mind"). D2 the roll-free axis,
+fixed at each element's entry against the level frame (helix: world
+Y) — "yes, geometry independent of roll". D3 default roll = global
+rate 0 °/m; B as on force/geo lanes; an s/c start follows every seam
+axis by default, the strict seam lets the user misalign and/or add
+smoothing, which works force/geo → s/c, s/c → s/c and s/c → force/geo
+exactly as between two lane sections. D4 (REVISED 2026-10-21 on his notes) a roll lane PER ELEMENT on its
+own [0, L] axis with its own axis / units / behavior; a longer element
+holds the end node's value, a shorter one CUTS the lane with the
+insert-node math and keeps the cut-off part, which returns bitwise
+unless the cut node was moved (design doc §2, rewritten as Stage 1b's
+step 0). D5 automatic seams
+all-unlocked, the follower's first section real-anchored and
+reconciled at k == 0, generated AT the follow contract. D6 helix =
+plan radius + end elevation, LINEAR over track arc. D7/D8 old files
+best-effort, the file grammar free. D30 no roll domain (the time VIEW
+stays). D31 a strict seam at EVERY s/c edge — "Actually also include
+a strict seam at end too". D32 Reverse grays on multi-piece runs.
+D9 sharp by default — new elements and the invariant's seams start
+without smoothing; the diamonds add it. D10 no lap cap. D11 Append
+Element on any active s/c at the section end, Esc leaves it. D12
+Shift/Ctrl planes on the hover ghost only. D13 helix defaults R 20 m,
+90°, radii linked, pitch unlinked. D14 view-plane node drags. D15
+drags RESTRICT, typed values REFUSE only when unreachable ("values in
+other boxes that are not locked should be allowed to change
+naturally"). D16 active-chart padlocks + a bounded golden-section
+projection. D17 the third global number = arc length. D18 click
+activates, double-click opens the window. D19 a tangent arrow + an
+end-radius arrow, no translation arrows. D20 an element chart flag,
+default Local. D21 B / Shift+B on a roll node = the roll lane only;
+B on the last element's end node = the backward orientation solve;
+the strict-seam menu after an s/c carries "Align previous section to
+this seam". D22 loop OPEN re-measured per compile, Break the only
+deletion. D23 a closed-tail append opens the link with a sentence.
+D24 moot under the revised D4 (every element keeps its own lane; the
+flag-run stage is void). D25 the element
+blend law kept, feel-tested later — and NO roll-rate jolt at element
+blends (today's global-bank ease starts at the element start while
+the curvature blend is centered on the border, "it stays at zero roll
+rate for a split second"), gated. D26 change type in place keeping
+arc length; straight ↔ curve both ways ("straight -> curve makes the
+curve have zero curvature"). D27 passive END balls on run tails.
+D28 the loop target = the REAL drawn start, solved in the tail's
+design frame. D29 per-type Resulting pick sets (s/c: Gv + Gl on).
+D33 R15's attach labels. Deviation stated: the element window's
+blend, interpolation and link controls carry no padlock — they are
+not solved quantities (his spec asked for a lock on every option).
+Process: the session stays on Fable 5.1, Opus 5.5 subagents take the
+mechanical sub-tasks under exact briefs with a Fable review ("aim to
+reduce cost while maintaining same level of quality").
+
+D259.0 (Stage 0, no build) — the decisions above and the design
+contract. No code. docs/SC-OVERHAUL-DESIGN.md fixes the element model
+and file grammar (§1), the roll lane and its flag runs (§2), the seam
+invariant and its lock defaults (§3), the solver with its DOF/lock
+table and refusal register (§4), Append Element mode and the ghost
+(§5), the element window and rigs (§6), the list ops (§7), attach and
+loop closure (§8), the per-type Resulting sets, colors and Help (§9),
+the gate register, docs plan, reuse map and stage briefs (§10). The
+document was assembled from ten drafted sections and two consistency
+reviews (92 findings, every one resolved in a fix sheet — the owner
+of each duplicated rule named, every refusal sentence a single
+constant, one cross-section numbering). Verification: the battery
+baseline the stages re-run against is the one recorded at bfc70fd —
+DetermGate197-200 6/4/10/7, Phase2Gate 162, Phase3Gate 88,
+SmoothRealGate 24, MirrorGate 100, CopyGate 73, InsertGate 40,
+uvd.ConflictGate 87, LabelGate 182, GestureGate 180,
+uvd.SeamShapeGate 31, RunGate 78, RangeResolveGate 115,
+PlacementGate 41, uvd.KeyRouteGate 103, TypedMarkGate 42; Stage 1a
+re-records ScElemGate h's legacy-axis checksums on the unmodified
+build before its first edit.
+
+His notes of 2026-10-21 on the design doc (binding, folded into §0 /
+§2 / §6.5 / §8.1 / §8.5): D4 REVISED — roll is PER ELEMENT ("I think I
+want the element boundaries to behave the same way as simple section
+boundaries do for force/geo sections … if changes to the roll graphs or
+lengths of elements outside of a given element are made … the roll
+graphs within the element do not shift or change"), each element with
+its own lane and settings; a longer element leaves the end roll node in
+place and holds its value as the dotted continuation; a shorter one
+CUTS the lane at the new end with the insert-node math and keeps the
+cut-off part, which returns bitwise when the element grows again unless
+the cut node's position or slope changed meanwhile (the one-lane +
+flag-run model and D24's Combine refusal are void; §2 is rewritten as
+Stage 1b's step 0). The run tail's passive END marker is a CONE, not a
+white ball ("differentiate it from the start node"). The radial arrow
+points outward and its radius change follows mouse travel, never the
+arrow's length, with no oddity near 360°. A lone s/c track piece stays
+reversible. The speed across a loop boundary is independent by design
+("there would be possibilities of positive feedback loops"). Then:
+"please begin Stage 1a!"
+
+His second note of 2026-10-21, after Stage 1a landed: "The five Stage 1b recommendations
+stand." — the design doc's §2 was then REWRITTEN as Stage 1b's step 0 (the lane per
+element: uvd.RollLane with its own axis / units / behavior; the END NODE's cut / shadow
+rule E1-E6 — a shorter element cuts the lane by the exact de Casteljau split and keeps
+the cut-off part as a persisted shadow that returns bitwise while the cut node's position,
+value and handle slopes are untouched, interior edits surviving the return; the per-element
+bake on an element-anchored grid with the bank re-binding at every border; the merge rule's
+lane clause; the dialog's Roll block with Switch / Bake; B toward the neighbor element, or
+the neighbor section across the strict seam), D24 declared moot and Stage 7 (flag runs)
+void, the Resulting pick sets moved to Stage 3a, the Stage 1b brief + enumeration written
+into §10.6 and a cloud-session rule (§10.7 rule 8: pure-Java items with gate-row
+acceptance on a committed tree; UI, hand tests and commits stay local) added.
+
+D259.1a (v20.0) — STAGE 1a, THE GEOMETRY CORE (design doc §1; two
+Opus items O1 DesignIO + O4 editor/ScLook, an Opus-written ScElemGate
+O3, the integrator / ElementChain / Coaster / TrackCompiler by hand).
+BEFORE: an element was a straight (length) or an arc (radius, signed
+angle, direction) whose rotation axis was read off the ROLLED body
+frame per RK4 stage (cos d·U + sin d·R) — the shape followed the bank:
+a banked R20/90°/30° turn dove 10.9 m and GLOBAL-0 turns were exact only
+at dir 0/90 from a level entry (2.08 m off at dir 30, PLAN §0 item 2).
+NOW: Element = {kind STRAIGHT | PLANAR | HELICAL, L, k0 → k1 (kLink,
+kInterp LINEAR | SINUSOIDAL over the TRACK arc), dirDeg, b1Deg (bLink,
+bInterp), blendIn, locks} — radius and turn are DERIVED twins; every
+element rotates about a ROLL-FREE axis fixed at its ENTRY against the
+LEVEL frame (D2): PLANAR Ω/m = −k·a, a = cos d·ul + sin d·rl; HELICAL
+Ω/m = −c_h·cos β·Y + β'·h(T); the body roll never bends the shape, which
+is gravity-referenced through the entry's level frame like a force
+section's (a baked pitch reshapes it — RangeResolveGate's g2 hinge
+became a DISTANCE °/m geo section for that reason). ElementChain is the
+closed-form forward map (the exact arc; s_h = L·cos β̄·sinc(Δβ/2), Δy =
+L·sin β̄·sinc(Δβ/2) for the helix; a fixed GL-8 quadrature for ramped
+κ / sinusoidal pitch — the SINUSOIDAL-pitch helix goes through the
+quadrature too, the design doc's J0 series was not needed for the
+forward map). ScIntegrator lands every RK4 leg on EVERY non-merged
+border (its centre too under a blend — the per-border Bound record now
+on Span.scBounds), on blend edges and on the end, caps the on-side
+lookup at KINKS only, and MERGES adjacent sharp equal-κ equal-axis
+elements into one leg run with the ARC-SUM rule (start + (L1 + L2 + …))
+so a split that keeps L1 + L2 == L bitwise (Coaster.cutElement nudges L1
+by ulps, re-bases the right half's dir into its own entry level frame)
+compiles BITWISE the parent (ScElemGate c). The HELICAL merge test
+carries a 1e-12 rad band: O3 found a linked helix's re-derived entry
+elevation one ulp off its stored β1 at a 20° entry, which made every
+pitched split a kink. The pre-v20 law survives this ONE stage behind
+the static final -Dfvd.sc.legacyAxis=1 (the flag reads "1" or "true";
+Boolean.getBoolean would have read "=1" as false — O3 caught it), pinned
+BITWISE against gates/probes/legacy-axis-2026-10-21/legacy-checksums.txt
+(56 lines recorded on bfc70fd before the first edit); chains holding a
+helix ignore the switch. FILE: `el straight|planar|helical` named-token
+lines (every double through d(), one positional kind word, unknown names
+ignored, missing names default — the line can grow), the Stage-1a
+INTERIM rm=/rv= roll fields on each; old `elem` lines load BEST-EFFORT
+(D7/D8 — his "I don't care about the compatibility"): converted to the
+κ-form, counted once per section into LoadResult.legacyScSections, the
+load report gains SectionNames.SC_LEGACY_CONVERTED ("Old straight/curve
+elements were converted."), the document dirty; no bitwise promise (the
+migrated turn k·L vs toRadians(a) ~1e-13). EDITOR (O4): bands in the kind
+colors ScLook.KIND_RGB (straight (120,185,235), planar (235,130,180),
+helical (200,130,235) — FvdDesigner.SC_KIND_COLOR), the chip = the
+stroked kind icon (ScLook.iconStroke/iconHead per §9.6; the head tangent
+is the curve's exact end tangent, the chord missed §9.6's tips) + the arc
+length — no radius/angle/roll suffix; SC_SMOOTH_DEFAULT 0 (D9 sharp); the
+element dialog keeps its radius + angle + direction + entry smoothing +
+roll rows, mapped onto κ/L through Element.setRadiusAndTurn (a helical
+element shows as "Curve" there until the Stage-3a window — accepted).
+INTERIM, by the stage scope (§10.6): the v11.1 per-element RATE / GLOBAL
+roll pair still rides each element and element 0's blendIn is still the
+section-entry roll ease (D233); Stage 1b replaces both with the
+per-element roll LANE of D4 as revised 2026-10-21 and the seam invariant.
+Help: unchanged in 1a — no new user control (the chip's icon and the band
+colors are the only visible change). Accepted corners: the blended-border
+centre landing changes the RK4 step phases — Phase2Gate i's clamped-blend
+heading reads 2.96e-6° at dt 0.01 (exactly 0 at dt ≤ 0.005, BlendTurnProbe;
+the legacy switch keeps today's 0), bound re-pinned 1e-6° → 1e-5°; a
+partial convert of a TILTED piece's later s/c section re-bases the right
+half's dir off the first own sample tilted back (one dt inside the entry,
+dust); a merged border's Bound carries the roll-free closed-form advance
+(landed = false) — informational; ElementChain.turnDeg wraps a
+non-closed-form helix's plan turn to ±180 (D10 laps live in L).
+Verification: wiped `mvn compile` rc 0; `javac -encoding UTF-8 gates/*.java`
+rc 0; LegacyAxisProbe ON == recorded (0 differing lines), OFF differs on
+the 42 non-level/non-cardinal fixtures as expected; uvd.ScElemGate 122
+passed; the whole battery green on wiped classes 2026-10-21: DetermGate197-
+200 6/4/10/7, LoadGate196 7, OrientGate 23, OrientGate2 18, Phase2Gate rc 0,
+DomainGate rc 0, Phase3Gate 88, MultiCoasterGate 15, SmoothRealGate 24
+(d1 28808918c0612fbe unchanged), uvd.KeyRouteGate 103, TypedMarkGate 42,
+InflSplitGate 22, ReanchorGate 3, MirrorGate 100, YpAbsGate 22,
+uvd.SeamShapeGate 31, RangeResolveGate 115, CopyGate 73, MergeGate 23,
+InsertGate 40, LabelGate 182, uvd.PulseClockGate 30, RunGate 78,
+PlacementGate 41, OrientModeGate 51, GestureGate 180, EndFollowGate 73,
+FloorGate 34, StripGate 49, uvd.ConflictGate 87, Nl2ElemProbe 22 (TESTING
+#176/1a). Hand-tested by him: nothing yet.

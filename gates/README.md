@@ -15,10 +15,41 @@ three: LabelGate 190, uvd.ConflictGate 87, SmoothRealGate 77 — see their entri
 D255 (batch 37) added no member but grew seven: GestureGate 180, FloorGate 34, LabelGate 129, uvd.ConflictGate 51, RangeResolveGate 115,
 MirrorGate 100, RunGate 78 — see their entries; all green on wiped classes 2026-09-30. Compile the gates with `-encoding UTF-8`.
 (Nl2Check, a recovered pre-D184 script, is NOT a battery member: it fails 158 sign checks by design of the later lateral / yaw flips.)
-36 members since D256 (uvd.KeyRouteGate + TypedMarkGate new); 34 since D254 (uvd.PulseClockGate new — 30 checks, the POV/fly ride clock: the even-window median + bounded drift, hitches whole,
+37 members since D259.1a (uvd.ScElemGate new — v20.0, the s/c element model; Phase2Gate's
+clamped-blend bound RE-PINNED 1e-6° → 1e-5° (2.96e-6° at dt 0.01 from the new border-centre landing, 0 at dt ≤ 0.005
+— BlendTurnProbe) and RangeResolveGate's g2 hinge RE-PINNED to a DISTANCE °/m geo section with g2c at 2e-4 (an s/c is
+gravity-referenced under D2, no longer frame-independent); all 37 + Nl2ElemProbe green on wiped classes 2026-10-21);
+36 since D256 (uvd.KeyRouteGate + TypedMarkGate new); 34 since D254 (uvd.PulseClockGate new — 30 checks, the POV/fly ride clock: the even-window median + bounded drift, hitches whole,
 the hitch threshold's nominal floor, the drift surviving a hitch; GestureGate grew to 115 with section 10 = Gestures.slowDebt, the gizmo
 Shift law; LabelGate to 111 with section 12 = File > Rename…'s name refusals); 33 since D249
 (OrientModeGate new; 32 since D248: StripGate new, ConflictGate extended by item S3), all green on wiped classes 2026-09-29):
+  uvd.ScElemGate  (D259.1a, v20.0 — the STRAIGHT/CURVE ELEMENT MODEL: the
+                  curvature-defined Straight / Planar / Helical elements on the
+                  ROLL-FREE axis. a1 ElementChain.advance vs the integrator over
+                  kind × dir {0,30,45,90,210} × entry {level, pitched 20°, banked
+                  30°} × κ × helix pitch pairs + a 450° lap — pos ≤ 1e-7 m, T/U ≤
+                  1e-6°, every PLANAR sample on the analytic circle ≤ 1e-7 m
+                  (worst 9.1e-9; the old body-axis law dove 10.9 m on the banked
+                  R20/90°/30° turn); a2 κ = 0 == straight 1e-12; b helix closed
+                  forms vs a 64-panel GL-8 quadrature 1e-12 + the inverse identity;
+                  c constant-κ SPLIT BITWISE (Coaster.cutElement: L1 + L2 == L, the
+                  right half's dir re-based, the equal-axis merge) for planar,
+                  constant-pitch helix and straight, ramped 5.3e-13 m; d equal-κ
+                  merge bitwise / blend or differing dir = a landed kink; e Bound
+                  records (compile twice bitwise, exit == last sample, landed vs
+                  sharp 1e-7, dt-independence, merged vs an un-merged twin
+                  2.2e-10); f the `el` grammar round trip byte-identical + load →
+                  rebuild bitwise + a clamp sweep; g old `elem` lines best-effort
+                  (legacyScSections 2, SC_LEGACY_CONVERTED); h the LEGACY switch —
+                  a FILE comparison: gates/probes/legacy-axis-2026-10-21/
+                  new-legacy-on.txt (LegacyAxisProbe under -Dfvd.sc.legacyAxis=1)
+                  == legacy-checksums.txt recorded on bfc70fd, 56 lines BITWISE,
+                  new-legacy-off.txt within 1e-9 m on the level cardinal fixtures;
+                  i vertical entry (inherited plane, changeKind(HELICAL) refuses,
+                  HELIX_VERTICAL_WHY); j mirror == the z-negated samples bitwise,
+                  mirror² identity; k determinism (compile twice, rebuild no-op,
+                  x/y/z + yaw rigid, save → load → rebuild). 122 checks. RE-RUN the
+                  LegacyAxisProbe pair before it after any ScIntegrator edit.)
   DetermGate197 DetermGate198 DetermGate199 DetermGate200 LoadGate196
   OrientGate OrientGate2 Phase2Gate DomainGate
   Phase3Gate  (Phase 3 — friction + speed controls; + D257 55k/55l — the

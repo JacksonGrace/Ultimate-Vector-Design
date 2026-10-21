@@ -143,10 +143,34 @@ public class RangeResolveGate {
     }
 
     /** The tilted [s/c, force, force] piece for g2. */
+    /** The g2 equivalence HINGE: a section whose generation is
+     *  frame-independent, so baking the piece's tilt (today's
+     *  whole-piece op) does not reshape it and the seam stays. Until
+     *  v20.0 that was scSec() — the body-frame s/c law moved rigidly
+     *  with its entry. Under D259's ROLL-FREE axis (D2) a straight/curve
+     *  section is gravity-referenced like a force section (its turn
+     *  plane is read off the LEVEL frame at its entry, so a baked
+     *  pitch/bank reshapes it — the whole-piece op moved the seam
+     *  0.393 m on the old fixture, by design), so the hinge is a GEO
+     *  section in the DISTANCE domain with °/m rates: local body rates
+     *  rotate rigidly with ANY entry, and per-metre rates over an arc
+     *  axis make the shape speed-independent too (a TIME geo section
+     *  re-times under the baked heights — its seam moved 2.23 m). */
+    static GeoSection geoSec() {
+        List<List<BezierBaker.Node>> ls = new ArrayList<>();
+        ls.add(lane(new double[][]{ {0, 0}, {20, 0}, {21, 1.91}, {33, 1.91}, {34, 0}, {35, 0} }));
+        ls.add(lane(new double[][]{ {0, 0}, {35, 0} }));
+        ls.add(lane(new double[][]{ {0, 0}, {35, 0} }));
+        GeoSection gs = new GeoSection(ls, 26);
+        gs.domain(Section.Domain.DISTANCE);
+        gs.ratePerMeter = true;
+        return gs;
+    }
+
     static Coaster scForceForce() {
         Coaster c = new Coaster();
         TrackPiece p = new TrackPiece(0, 21, 0, 14);
-        p.sections.add(scSec());
+        p.sections.add(geoSec());   // v20.0: the frame-independent hinge (see geoSec)
         p.sections.add(new ForceSection(turnLanes(), 26));
         p.sections.add(new ForceSection(dipLanes(), 26));
         p.orientMode = TrackPiece.OrientMode.REAL_ONLY;      // D248: locked is explicit now
@@ -723,7 +747,12 @@ public class RangeResolveGate {
         // two flows therefore agree to the dust today's op itself
         // introduces at the seam (printed in the detail).
         TrackPose exA = r2a.spans().get(0).exit(), exB = r2b.spans().get(0).exit();
-        check(dev2s1 < 1e-6,
+        // v20.0 (D259.1a): the hinge is the DISTANCE °/m geo section
+        // (geoSec) — frame-independent, and speed-independent to the
+        // per-metre geo's own dt-stepping floor (0.08 mm, CLAUDE.md), so
+        // the baked frame re-times its seam by ~9e-5 m; the bound is
+        // 2e-4 now (was 1e-6 on the exactly speed-independent old s/c)
+        check(dev2s1 < 2e-4,
             "g2c refreezeRange [1..1] == today's op restricted to section 1",
             String.format("max dev %.2e; today's op moved the seam itself "
                 + "by %.2e m / %.2e rad; vDesign %.9f vs %.9f", dev2s1,

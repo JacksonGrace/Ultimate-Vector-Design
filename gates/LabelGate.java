@@ -123,12 +123,8 @@ public class LabelGate {
 
     static StraightCurveSection sc() {
         StraightCurveSection sc = StraightCurveSection.straight(8, 24);
-        StraightCurveSection.Element arc = new StraightCurveSection.Element();
-        arc.kind = StraightCurveSection.Kind.CURVE;
-        arc.radius = 20;
-        arc.angleDeg = 75;
-        arc.dirDeg = 0;
-        arc.smoothIn = 3;
+        StraightCurveSection.Element arc =
+            StraightCurveSection.Element.curve(20, 75, 0, 3);   // v20.0 κ-form
         sc.elements.add(arc);
         return sc;
     }

@@ -246,21 +246,13 @@ public class CopyGate {
         Coaster c = new Coaster();
         TrackPiece p = new TrackPiece(3, 18, -2, 25);
         StraightCurveSection sc = StraightCurveSection.straight(8, 24);
-        StraightCurveSection.Element arc = new StraightCurveSection.Element();
-        arc.kind = StraightCurveSection.Kind.CURVE;
-        arc.radius = 20;
-        arc.angleDeg = 75;
-        arc.dirDeg = 0;
-        arc.smoothIn = 3;
+        StraightCurveSection.Element arc =
+            StraightCurveSection.Element.curve(20, 75, 0, 3);   // R20 75° left (v20.0 κ-form)
         arc.rollMode = StraightCurveSection.RollMode.GLOBAL;
         arc.rollVal = 28;
         sc.elements.add(arc);
-        StraightCurveSection.Element arc2 = new StraightCurveSection.Element();
-        arc2.kind = StraightCurveSection.Kind.CURVE;
-        arc2.radius = 30;
-        arc2.angleDeg = -40;
-        arc2.dirDeg = 45;
-        arc2.smoothIn = 2;
+        StraightCurveSection.Element arc2 =
+            StraightCurveSection.Element.curve(30, -40, 45, 2);
         arc2.rollMode = StraightCurveSection.RollMode.RATE;
         arc2.rollVal = 15;
         sc.elements.add(arc2);
@@ -539,7 +531,7 @@ public class CopyGate {
             && s1.elements.size() == s0.elements.size();
         for (int i = 0; scOk && i < s0.elements.size(); i++) {
             scOk = s1.elements.get(i) != s0.elements.get(i)
-                && bits(s1.elements.get(i).length, s0.elements.get(i).length)
+                && bits(s1.elements.get(i).L, s0.elements.get(i).L)
                 && bits(s1.elements.get(i).rollVal, s0.elements.get(i).rollVal);
         }
         check(scOk, "h5 s/c copy: new element objects, values verbatim", "");

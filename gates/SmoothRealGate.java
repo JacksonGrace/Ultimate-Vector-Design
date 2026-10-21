@@ -11,7 +11,7 @@ import java.util.*;
  *  b) refusals: s/c neighbor, speed control on a neighbor —
  *     WINDOW-SCOPED for controls (D233) and INFLUENCE deltas
  *     (D234): outside the window carries, inside refuses.
- *  c) elem-0 smoothIn: 0 == the historic 2 m ease BITWISE; 5 m
+ *  c) elem-0 blendIn: 0 == the historic 2 m ease BITWISE; 5 m
  *     stretches the entry bank ease; 0.5 m shortens it below the
  *     old floor.
  *  d) THE SMOOTHING COMPILE'S REGRESSION PINS (batch 38, D256 — recorded
@@ -234,7 +234,7 @@ public class SmoothRealGate {
         check(cf.makeSmoothingReal(np6, DT, 0.05, 0) != null,
             "b6 non-zero deltas INSIDE the window refuse");
 
-        // ---- (c) s/c entry roll ease (elem 0 smoothIn) ----
+        // ---- (c) s/c entry roll ease (elem 0 blendIn) ----
         // GLOBAL 40-degree bank on the first element: the entry ease
         // blends the bank in from the incoming (flat) frame
         java.util.function.DoubleFunction<Coaster> mk = ease -> {
@@ -243,7 +243,7 @@ public class SmoothRealGate {
             StraightCurveSection sc = StraightCurveSection.straight(30, 24);
             sc.elements.get(0).rollMode = StraightCurveSection.RollMode.GLOBAL;
             sc.elements.get(0).rollVal = 40;
-            sc.elements.get(0).smoothIn = ease;
+            sc.elements.get(0).blendIn = ease;
             p.sections.add(sc);
             cx.pieces.add(p);
             return cx;

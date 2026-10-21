@@ -151,7 +151,7 @@ public class CascadeProbe_TargetHead {
                 return new StraightCurveSection(els, v); }
             case "sc-global-sharp": { List<StraightCurveSection.Element> els = new ArrayList<>();
                 StraightCurveSection.Element e0 = StraightCurveSection.Element.curve(30, 45, 0, 0);
-                els.add(e0);   // smoothIn 0 = instant bank snap at entry
+                els.add(e0);   // blendIn 0 = instant bank snap at entry
                 els.add(StraightCurveSection.Element.straight(10, 2));
                 return new StraightCurveSection(els, v); }
             case "force-dist": { ForceSection f = new ForceSection(lanes3(

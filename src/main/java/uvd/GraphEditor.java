@@ -8837,7 +8837,7 @@ class GraphEditor extends Region {
         // ease absolutely (the same elDragSmooth == 0 branch as the
         // entry diamond)
         if (!sc.elements.isEmpty()) {
-            double ease = Math.min(sc.elements.get(0).smoothIn,
+            double ease = Math.min(sc.elements.get(0).blendIn,
                 sc.elements.get(0).arcLen());
             if (ease > 1e-9
                     && Math.abs(x - tToX(scAxisAtS(sc, ease))) <= 4) {
@@ -10145,10 +10145,13 @@ class GraphEditor extends Region {
     private int rClickElem = -1;       // deferred right-click menu (pan-safe)
 
     private static final double SC_CURVE_ALPHA = 0.45;
-    static final double SC_SMOOTH_DEFAULT = 2;   // m, new elements' entry blend
-    private static final double MIN_ELEM_LEN = 0.5;   // m
-    private static final Color SC_STRAIGHT_COLOR = Color.rgb(150, 160, 185);
-    private static final Color SC_CURVE_COLOR = Color.rgb(235, 130, 180);
+    // m, new elements' entry blend — 0 since v20.0 (D259 D9: new
+    // elements are SHARP; smoothing is opt-in)
+    static final double SC_SMOOTH_DEFAULT = 0;
+    // m — the model's floor (D259 §1.1), one source
+    private static final double MIN_ELEM_LEN = StraightCurveSection.MIN_ELEM_LEN;
+    // element kind colors: FvdDesigner.SC_KIND_COLOR (D259 §9.5 — the
+    // SC_STRAIGHT_COLOR / SC_CURVE_COLOR pair is gone)
 
     /** Cumulative AUTHORED arc-length boundaries: [0, L0, L0+L1, …]. */
     private static double[] scBoundsS(StraightCurveSection sc) {
@@ -10286,19 +10289,11 @@ class GraphEditor extends Region {
         return -1;
     }
 
+    /** The element chip's text (v20.0, D259 §1.8): the arc length for
+     *  EVERY kind — the stroked kind icon replaces the old leading "—",
+     *  and no radius / angle / roll suffix rides along any more. */
     private static String elemLabel(StraightCurveSection.Element e) {
-        String base = e.kind == StraightCurveSection.Kind.STRAIGHT
-            ? "— " + fmtVal(e.length) + " m"
-            : "R" + fmtVal(e.radius) + " " + fmtVal(Math.abs(e.angleDeg)) + "°"
-                + dirArrow(e);
-        // non-default roll rides the chip: ∠ = held global bank,
-        // ↻ = body roll rate (global 0 — level — is the quiet norm)
-        if (Math.abs(e.rollVal) > 1e-9) {
-            base += e.rollMode == StraightCurveSection.RollMode.GLOBAL
-                ? " ∠" + fmtVal(e.rollVal) + "°"
-                : " ↻" + fmtVal(e.rollVal) + "°/s";
-        }
-        return base;
+        return fmtVal(e.L) + " m";
     }
 
     /** A tiny CLOCKWISE circle-arrow stroked straight onto a canvas
@@ -10327,7 +10322,7 @@ class GraphEditor extends Region {
      *  angle pulls LEFT; the vertical octants are unchanged). */
     private static String dirArrow(StraightCurveSection.Element e) {
         String[] arrows = { "←", "↖", "↑", "↗", "→", "↘", "↓", "↙" };
-        double eff = e.angleDeg >= 0 ? e.dirDeg : e.dirDeg + 180;
+        double eff = e.k0 >= 0 ? e.dirDeg : e.dirDeg + 180;
         int oct = (int) Math.round(((eff % 360) + 360) % 360 / 45.0) % 8;
         return arrows[oct];
     }
@@ -10356,9 +10351,9 @@ class GraphEditor extends Region {
             double xa = tToX(scAxisAtS(sc, b[i]));
             double xb = tToX(scAxisAtS(sc, b[i + 1]));
             double x0 = Math.min(xa, xb), x1 = Math.max(xa, xb);
-            Color col = e.kind == StraightCurveSection.Kind.STRAIGHT
-                ? SC_STRAIGHT_COLOR : SC_CURVE_COLOR;
-            gc.setFill(col.deriveColor(0, 1, 1, i == elSel ? 0.17 : 0.09));
+            Color col = FvdDesigner.SC_KIND_COLOR[e.kind.ordinal()];   // D259 §9.5
+            gc.setFill(col.deriveColor(0, 1, 1, i == elSel
+                ? FvdDesigner.SC_BAND_ALPHA_SEL : FvdDesigner.SC_BAND_ALPHA));
             gc.fillRect(x0, top, x1 - x0, bot - top);
             if (i == elSel) {
                 gc.setStroke(col.deriveColor(0, 1, 1, 0.85));
@@ -10366,7 +10361,8 @@ class GraphEditor extends Region {
                 gc.strokeRect(x0 + 1, top + 1, x1 - x0 - 2, bot - top - 2);
             }
             String label = elemLabel(e);
-            double bw = label.length() * 6 + 12;
+            // + the kind icon's slot (D259 §1.8/§9.6): 14 px + a 4 px gap
+            double bw = label.length() * 6 + 12 + 18;
             if (x1 - x0 >= bw + 6) {
                 double bx = (x0 + x1) / 2 - bw / 2, by = top + 24;
                 gc.setGlobalAlpha(0.92);
@@ -10376,21 +10372,13 @@ class GraphEditor extends Region {
                 gc.setLineWidth(1);
                 gc.strokeRoundRect(bx, by, bw, 15, 7, 7);
                 Color tcol = col.brighter();
+                // the stroked kind icon at the chip's left (D259 §9.6,
+                // s = 1.0 — font glyphs render badly), the text shifted
+                // right past it by 18 px
+                FvdDesigner.strokeScKindIcon(gc, e.kind.ordinal(),
+                    bx + 6, by + 2.5, 1.0, tcol);
                 gc.setFill(tcol);
-                int gi = label.indexOf('↻');
-                if (gi < 0) {
-                    gc.fillText(label, bx + bw / 2, by + 8);
-                } else {
-                    // the rate marker draws as a ROUND mini
-                    // circle-arrow (v18.11 — the font glyph's circle
-                    // is flat-bottomed); a space holds its slot in
-                    // the centered layout
-                    gc.fillText(label.substring(0, gi) + " "
-                        + label.substring(gi + 1), bx + bw / 2, by + 8);
-                    double slotX = bx + bw / 2
-                        + (gi + 0.5 - label.length() / 2.0) * 6;
-                    strokeMiniCircleArrow(gc, slotX, by + 7.5, 3.4, tcol);
-                }
+                gc.fillText(label, bx + 18 + (bw - 18) / 2, by + 8);
                 gc.setGlobalAlpha(1.0);
             }
         }
@@ -10398,7 +10386,7 @@ class GraphEditor extends Region {
         // [0, ease] + a diamond ON the entry boundary — the same
         // surface as every internal blend
         {
-            double ease = Math.min(sc.elements.get(0).smoothIn,
+            double ease = Math.min(sc.elements.get(0).blendIn,
                 sc.elements.get(0).arcLen());
             if (ease > 1e-9) {
                 double za = tToX(scAxisAtS(sc, 0));
@@ -10438,7 +10426,7 @@ class GraphEditor extends Region {
             gc.setGlobalAlpha(1.0);
             if (internal) {   // smoothing diamond: filled = blending
                 double dy = scDiamondY();
-                boolean on = sc.elements.get(j).smoothIn > 1e-9;
+                boolean on = sc.elements.get(j).blendIn > 1e-9;
                 gc.setGlobalAlpha(0.85);
                 gc.beginPath();
                 gc.moveTo(bx, dy - 5);
@@ -10457,17 +10445,20 @@ class GraphEditor extends Region {
         double rx = 0;
         if (elDragBoundary >= 0 && elDragBoundary < sc.elements.size()) {
             StraightCurveSection.Element e = sc.elements.get(elDragBoundary);
-            readout = e.kind == StraightCurveSection.Kind.STRAIGHT
-                ? String.format(Locale.US, "length %.1f m", e.length)
-                : String.format(Locale.US, "arc %.1f m  (%.0f°)", e.arcLen(), e.angleDeg);
+            readout = switch (e.kind) {
+                case STRAIGHT -> String.format(Locale.US, "length %.1f m", e.L);
+                case PLANAR -> String.format(Locale.US, "arc %.1f m  (%.0f°)",
+                    e.L, e.turnDeg());
+                case HELICAL -> String.format(Locale.US, "arc %.1f m", e.L);
+            };
             rx = tToX(scAxisAtS(sc, b[elDragBoundary + 1]));
         } else if (elDragSmooth == 0 && !sc.elements.isEmpty()) {
-            double sm = sc.elements.get(0).smoothIn;
+            double sm = sc.elements.get(0).blendIn;
             readout = sm < 1e-9 ? "entry ease off"
                 : String.format(Locale.US, "entry ease %.1f m", sm);
             rx = tToX(scAxisAtS(sc, 0));
         } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
-            double sm = sc.elements.get(elDragSmooth).smoothIn;
+            double sm = sc.elements.get(elDragSmooth).blendIn;
             readout = sm < 1e-9 ? "smooth off"
                 : String.format(Locale.US, "smooth %.1f m", sm);
             rx = tToX(scAxisAtS(sc, b[elDragSmooth]));
@@ -10667,7 +10658,7 @@ class GraphEditor extends Region {
                 len = Math.round(len / step) * step;
             }
             len = Math.min(len, sc.elements.get(0).arcLen());
-            sc.elements.get(0).smoothIn = len < 0.2 ? 0 : len;
+            sc.elements.get(0).blendIn = len < 0.2 ? 0 : len;
         } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
             // diamond: symmetric; band edge: one-sided (D248)
             double len = Gestures.edgeWindowLen(sAuth, b[elDragSmooth],
@@ -10676,7 +10667,7 @@ class GraphEditor extends Region {
                 double step = app.settings.snapLen();
                 len = Math.round(len / step) * step;
             }
-            sc.elements.get(elDragSmooth).smoothIn = len < 0.2 ? 0 : len;
+            sc.elements.get(elDragSmooth).blendIn = len < 0.2 ? 0 : len;
         } else {
             return;
         }
@@ -10685,14 +10676,13 @@ class GraphEditor extends Region {
     }
 
     /** Set an element's arc length: a straight's length directly; a
-     *  curve keeps its radius and re-angles (sign preserved). */
+     *  curve keeps its CURVATURE and re-lengthens (D259 — the v11
+     *  "keep the radius, re-angle, sign preserved" IS this). */
     private static void applyElemLen(StraightCurveSection.Element el, double len) {
-        if (el.kind == StraightCurveSection.Kind.STRAIGHT) {
-            el.length = len;
+        if (el.isStraight()) {
+            el.L = len;
         } else {
-            double sign = el.angleDeg < 0 ? -1 : 1;
-            el.radius = Math.max(0.1, el.radius);
-            el.angleDeg = sign * Math.toDegrees(len / el.radius);
+            el.L = Math.max(StraightCurveSection.MIN_ELEM_LEN, len);
         }
     }
 
@@ -10731,8 +10721,8 @@ class GraphEditor extends Region {
     }
 
     /** Insert an element at list position `at` (one undo step). New
-     *  elements arrive with the default entry blend — smoothing is a
-     *  first-class citizen here, not an afterthought. An element
+     *  elements arrive SHARP (SC_SMOOTH_DEFAULT 0 since v20.0, D259
+     *  D9 — the blend is opt-in, via the diamond). An element
      *  added at the END of the list pans a manual zoom window to the
      *  section's new end (batch 37 — Append's s/c twin); mid-list
      *  inserts never pan. */
@@ -10770,7 +10760,7 @@ class GraphEditor extends Region {
         StraightCurveSection sc = activeSc();
         if (sc == null || idx < 0 || idx >= sc.elements.size()) return;
         StraightCurveSection.Element el = sc.elements.get(idx);
-        boolean isStraight = el.kind == StraightCurveSection.Kind.STRAIGHT;
+        boolean isStraight = el.isStraight();
 
         Stage dlg = new Stage();
         dlg.initOwner(app.stage);
@@ -10788,14 +10778,15 @@ class GraphEditor extends Region {
         rbC.setToggleGroup(kindGrp);
         (isStraight ? rbS : rbC).setSelected(true);
 
-        TextField lenF = new TextField(String.format(Locale.US, "%.3f",
-            isStraight ? el.length : el.arcLen()));
+        // the R + angle form of a PLANAR (D259 — the element stores κ
+        // and arc length; radius() = +∞ for κ = 0 / straights)
+        TextField lenF = new TextField(String.format(Locale.US, "%.3f", el.L));
         TextField radF = new TextField(String.format(Locale.US, "%.3f",
-            el.radius > 0 ? el.radius : 20));
+            Double.isFinite(el.radius()) ? el.radius() : 20));
         TextField angF = new TextField(String.format(Locale.US, "%.3f",
-            !isStraight ? el.angleDeg : 90));
+            el.turnDeg() != 0 ? el.turnDeg() : 90));
         TextField dirF = new TextField(String.format(Locale.US, "%.3f", el.dirDeg));
-        TextField smF = new TextField(String.format(Locale.US, "%.3f", el.smoothIn));
+        TextField smF = new TextField(String.format(Locale.US, "%.3f", el.blendIn));
         dirF.setTooltip(new Tooltip(
             "Curve plane: 0 = flat turn (positive angle = left), 90 = pull up,"
             + " 180 = flat turn right, 270 = drop; negative angle mirrors"));
@@ -10908,19 +10899,26 @@ class GraphEditor extends Region {
             final StraightCurveSection.Element el2 = e2;
             pushUndoSnapshot();
             if (rbS.isSelected()) {
-                double keep = el2.kind == StraightCurveSection.Kind.STRAIGHT
-                    ? el2.length : el2.arcLen();
-                el2.kind = StraightCurveSection.Kind.STRAIGHT;
-                el2.length = Math.max(MIN_ELEM_LEN, parseOr(lenF, keep));
+                // keep the arc length (D259 §1.7: → STRAIGHT keeps L)
+                double keep = el2.L;
+                el2.changeKind(StraightCurveSection.Kind.STRAIGHT, 0, 0);
+                el2.L = keep;
+                el2.L = Math.max(MIN_ELEM_LEN, parseOr(lenF, keep));
             } else {
-                el2.kind = StraightCurveSection.Kind.CURVE;
-                el2.radius = Math.max(0.1, parseOr(radF, el2.radius > 0 ? el2.radius : 20));
-                double ang = parseOr(angF, el2.angleDeg != 0 ? el2.angleDeg : 90);
+                // a helix leaves its pitch fields first (Stage 1a's
+                // dialog knows no helix — the Stage 3a window does)
+                if (el2.kind == StraightCurveSection.Kind.HELICAL) {
+                    el2.changeKind(StraightCurveSection.Kind.PLANAR, 0, 0);
+                }
+                double ang = parseOr(angF, el2.turnDeg() != 0 ? el2.turnDeg() : 90);
                 if (Math.abs(ang) < 0.5) ang = ang < 0 ? -0.5 : 0.5;
-                el2.angleDeg = ang;
+                // radius floored at 1/KAPPA_MAX = 0.1 m inside; sets
+                // kind PLANAR, κ (linked) and the arc length
+                el2.setRadiusAndTurn(parseOr(radF,
+                    Double.isFinite(el2.radius()) ? el2.radius() : 20), ang);
                 el2.dirDeg = parseOr(dirF, el2.dirDeg);
             }
-            el2.smoothIn = Math.max(0, parseOr(smF, el2.smoothIn));   // elem 0
+            el2.blendIn = Math.max(0, parseOr(smF, el2.blendIn));   // elem 0
                 // = the entry roll ease since v19.3 (D232)
             el2.rollMode = rbGlob.isSelected()
                 ? StraightCurveSection.RollMode.GLOBAL

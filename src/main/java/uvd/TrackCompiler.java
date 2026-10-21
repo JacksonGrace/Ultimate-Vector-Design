@@ -61,21 +61,36 @@ public final class TrackCompiler {
      *  matches the flattened piece/section iteration. */
     public record Span(int i0, int i1, double t0, double t1,
                        double s0, double sLen, TrackPose exit,
-                       double exitPsi, Quat exitCanon, Quat exitTilt) {
+                       double exitPsi, Quat exitCanon, Quat exitTilt,
+                       List<ScIntegrator.Bound> scBounds) {
         public Span(int i0, int i1, double t0, double t1,
                     double s0, double sLen, TrackPose exit) {
-            this(i0, i1, t0, t1, s0, sLen, exit, 0, null, Quat.IDENTITY);
+            this(i0, i1, t0, t1, s0, sLen, exit, 0, null, Quat.IDENTITY, null);
         }
         public Span(int i0, int i1, double t0, double t1,
                     double s0, double sLen, TrackPose exit,
                     double exitPsi, Quat exitCanon) {
             this(i0, i1, t0, t1, s0, sLen, exit, exitPsi, exitCanon,
-                Quat.IDENTITY);
+                Quat.IDENTITY, null);
+        }
+        public Span(int i0, int i1, double t0, double t1,
+                    double s0, double sLen, TrackPose exit,
+                    double exitPsi, Quat exitCanon, Quat exitTilt) {
+            this(i0, i1, t0, t1, s0, sLen, exit, exitPsi, exitCanon,
+                exitTilt, null);
         }
     }
 
-    /** One section's geometry + the pose it hands the next section. */
-    public record Centerline(List<FVDIntegrator.Sample> samples, TrackPose exit) {}
+    /** One section's geometry + the pose it hands the next section;
+     *  scBounds = a straight/curve section's per-border records (v20.0,
+     *  D259 §1.4.3 — the ONE per-border record the Span carries), null
+     *  for every other kind. */
+    public record Centerline(List<FVDIntegrator.Sample> samples, TrackPose exit,
+                             List<ScIntegrator.Bound> scBounds) {
+        public Centerline(List<FVDIntegrator.Sample> samples, TrackPose exit) {
+            this(samples, exit, null);
+        }
+    }
 
     // -----------------------------------------------------------------
     // CANONICAL-FRAME GENERATION (v18.27, D199): every non-bridge
@@ -507,7 +522,7 @@ public final class TrackCompiler {
                 // "splits re-solve" corner is closed.
                 spans.add(new Span(i0, all.size() - 1, t0, end.t(),
                     s0, end.s() - s0, line.exit(),
-                    cp.psiDeg(), cp.canon(), tilt));
+                    cp.psiDeg(), cp.canon(), tilt, line.scBounds()));
                 // a CLEAN span's samples are the design solve's own
                 // geometry: generated here (never a bridge), placed
                 // rigidly WITHOUT a tilt or a smoothing shift (either
@@ -826,7 +841,8 @@ public final class TrackCompiler {
             FVDIntegrator.Sample last = r.samples().get(r.samples().size() - 1);
             TrackPose exit = new TrackPose(last.pos(), r.qEnd(),
                 entry.s0() + last.s(), entry.t0() + last.t());
-            return new Centerline(r.samples(), exit);
+            // the per-border records ride the Span (D259 §1.4.3)
+            return new Centerline(r.samples(), exit, r.bounds());
         }
         if (section instanceof BridgeSection bs) {
             // bridge (v13.0, D72): FROZEN world-anchored geometry — the
@@ -1181,7 +1197,7 @@ public final class TrackCompiler {
         spans.set(nsp - 1, new Span(sb.i0(), sb.i1(), sb.t0(), sb.t1(),
             sb.s0(), sb.sLen(), new TrackPose(xb.pos().add(dp),
                 xb.orient(), xb.s0(), xb.t0()),
-            sb.exitPsi(), sb.exitCanon(), sb.exitTilt()));
+            sb.exitPsi(), sb.exitCanon(), sb.exitTilt(), sb.scBounds()));
         // re-stamp the ENERGY heights the blend/translation moved
         // (D199): world deltas anchored on the untouched window start
         // — the window is world geometry by definition
