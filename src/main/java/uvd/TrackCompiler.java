@@ -42,7 +42,24 @@ public final class TrackCompiler {
     public record Result(List<FVDIntegrator.Sample> samples,
                          double[] trueV, double[][] rates,
                          double[][] trueFelt, double[][] trueRates,
-                         List<Span> spans) {}
+                         List<Span> spans,
+                         // the KINKS (v20.1, his 2026-10-21 note 7): the
+                         // global sample indices k where an AUTHORED
+                         // instantaneous orientation change sits between
+                         // samples k − 1 and k off a strict seam — a
+                         // section boundary into a section with absolute
+                         // lanes (k = its span's i0) or a straight/curve
+                         // element border into an absolute-bank element
+                         // (k = the border sample + 1); ascending; Pass A
+                         // differences one-sided around them and the
+                         // editor draws carets there (see kinksOf)
+                         int[] kinks) {
+        public Result(List<FVDIntegrator.Sample> samples, double[] trueV,
+                      double[][] rates, double[][] trueFelt,
+                      double[][] trueRates, List<Span> spans) {
+            this(samples, trueV, rates, trueFelt, trueRates, spans, new int[0]);
+        }
+    }
 
     /** One section's slice of the assembled ride (v11.0): sample index
      *  range [i0..i1] plus its global time/arc-length extent, plus the
@@ -691,11 +708,104 @@ public final class TrackCompiler {
         // ±1 central windows never straddle a seam, so seam-adjacent
         // rates are one-sided and CLEAN — the graphs draw right up to
         // the boundary instead of trimming a smear band
-        int[] segStarts = new int[spans.size()];
-        for (int i = 0; i < spans.size(); i++) segStarts[i] = spans.get(i).i0();
+        // + the authored KINKS inside spans (his 2026-10-21 note 7): an
+        // absolute-bank element border snaps the bank between two
+        // samples of ONE span — the central difference across it was
+        // the exploding roll rate; one-sided around it like a seam
+        int[] kinks = kinksOf(c, all, spans);
+        java.util.TreeSet<Integer> starts = new java.util.TreeSet<>();
+        for (Span sp : spans) starts.add(sp.i0());
+        for (int k : kinks) starts.add(k);
+        int[] segStarts = new int[starts.size()];
+        int si = 0;
+        for (int k : starts) segStarts[si++] = k;
         double[][] rates = passA(all, segStarts);
         return new Result(all, trueV, rates,
-            trueFelt(all, trueV), trueRates(all, rates, trueV), spans);
+            trueFelt(all, trueV), trueRates(all, rates, trueV), spans, kinks);
+    }
+
+    /** An authored instantaneous orientation change counts as a KINK
+     *  from this frame jump between two consecutive samples (deg; the
+     *  editor's CARET_KINK_MIN) — a continuous rate of 150 °/s turns
+     *  1.5° per 0.01 s step, under it. */
+    public static final double KINK_MIN_DEG = 2;
+
+    /** THE KINKS of a compile (v20.1, his 2026-10-21 note 7): the
+     *  global sample indices k where an AUTHORED instantaneous
+     *  orientation change sits between samples k − 1 and k, OFF the
+     *  strict seams (those wear their own carets) and the bridges:
+     *  <ul><li>a section at k ≥ 1 of its piece (a plain boundary) whose
+     *  lanes are ABSOLUTE — bank (rollAbsolute + rollGlobal) or
+     *  elevation / heading (ypAbsolute + yawPitchGlobal): the
+     *  projection snaps the frame onto the lane's start over the
+     *  first step, so the jump sits between the boundary sample
+     *  (the previous span's last) and this span's first — k = i0;</li>
+     *  <li>a straight/curve element border INTO an element whose roll
+     *  lane is ABSOLUTE: the first leg into it snaps the bank onto
+     *  the lane — k = the border sample + 1 (ScIntegrator.Bound's
+     *  arc locates the border sample).</li></ul>
+     *  A candidate is a kink when the FRAME JUMP between the two
+     *  samples (TrackCompiler.axisAngle) reaches KINK_MIN_DEG — a
+     *  lane that happens to start at the incoming bank snaps nothing
+     *  and gets no caret. Ascending, unique. */
+    static int[] kinksOf(Coaster c, List<FVDIntegrator.Sample> all,
+                         List<Span> spans) {
+        java.util.TreeSet<Integer> out = new java.util.TreeSet<>();
+        double minRad = Math.toRadians(KINK_MIN_DEG);
+        int flat = 0;
+        for (int p = 0; p < c.pieces.size(); p++) {
+            TrackPiece piece = c.pieces.get(p);
+            for (int k = 0; k < piece.sections.size(); k++, flat++) {
+                if (flat >= spans.size()) break;
+                Span sp = spans.get(flat);
+                Section sec = piece.sections.get(k);
+                if (sec instanceof LaneSection ls && k >= 1 && !ls.reversed()
+                        && ((ls.rollAbsolute && ls.rollGlobal)
+                            || (ls.ypAbsolute && ls.yawPitchGlobal))) {
+                    int i0 = sp.i0();
+                    if (i0 >= 1 && i0 < all.size()
+                            && jumpRad(all.get(i0 - 1), all.get(i0)) >= minRad) {
+                        out.add(i0);
+                    }
+                } else if (sec instanceof StraightCurveSection sc
+                        && !sc.reversed && sp.scBounds() != null) {
+                    List<ScIntegrator.Bound> bd = sp.scBounds();
+                    for (int j = 1; j < bd.size() - 1 && j < sc.elements.size(); j++) {
+                        if (!sc.elements.get(j).roll.rollAbsolute()) continue;
+                        ScIntegrator.Bound b = bd.get(j);
+                        if (!b.landed()) continue;
+                        int kb = sampleAtArc(all, sp, sp.s0() + b.s());
+                        if (kb < 0 || kb + 1 > sp.i1()) continue;
+                        if (jumpRad(all.get(kb), all.get(kb + 1)) >= minRad) {
+                            out.add(kb + 1);
+                        }
+                    }
+                }
+            }
+        }
+        int[] arr = new int[out.size()];
+        int i = 0;
+        for (int k : out) arr[i++] = k;
+        return arr;
+    }
+
+    /** The rotation angle (rad) between two samples' frames. */
+    static double jumpRad(FVDIntegrator.Sample a, FVDIntegrator.Sample b) {
+        Quat qa = Quat.fromFrame(a.T(), a.U()), qb = Quat.fromFrame(b.T(), b.U());
+        return axisAngle(qb.mul(qa.conjugate())).length();
+    }
+
+    /** The span's sample at global arc s (a landed border sits ON a
+     *  sample — the nearest within 1e-6 m), else −1. */
+    static int sampleAtArc(List<FVDIntegrator.Sample> all, Span sp, double s) {
+        int lo = Math.max(0, sp.i0()), hi = Math.min(sp.i1(), all.size() - 1);
+        if (lo > hi) return -1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (all.get(mid).s() <= s) lo = mid; else hi = mid;
+        }
+        int at = Math.abs(all.get(lo).s() - s) <= Math.abs(all.get(hi).s() - s) ? lo : hi;
+        return Math.abs(all.get(at).s() - s) <= 1e-6 ? at : -1;
     }
 
     /** SPEED CONTROLS resolved per global sample (v18.0, D160): row i

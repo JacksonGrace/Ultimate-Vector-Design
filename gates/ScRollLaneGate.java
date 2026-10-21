@@ -578,7 +578,10 @@ public final class ScRollLaneGate {
                 "ScRollLaneGate e6 interior node 1 re-valued while cut, then grow: the edit stays AND the tail returns bitwise",
                 d == null ? "" : d);
         }
-        // e7 the previous node moved while cut (D105 keeps its slope)
+        // e7 the previous node moved while cut (D105 keeps its slope) — the
+        // 2026-10-21 note 1: the segment into the cut node changed, so the
+        // cut node STAYS and the old graph continues past it; the drawn
+        // graph over [0, 20] is bitwise what the cut lane drew
         {
             StraightCurveSection.Element x = e1Fixture();
             x.setLength(20);
@@ -586,17 +589,93 @@ public final class ScRollLaneGate {
             x.roll.nodes.get(2).t = 15;
             BezierBaker.rescaleDvToGaps(x.roll.nodes, gaps);
             boolean still = x.roll.untouched();
+            List<BezierBaker.Node> cutLane = copyLane(x.roll.nodes);
             x.setLength(L);
-            BezierBaker.Node prev = x.roll.nodes.get(2), next = x.roll.nodes.get(3);
-            BezierBaker.Node sp = orig.get(2), sn = orig.get(3);
-            double r = (next.t - prev.t) / (sn.t - sp.t);
-            boolean handle = bits(prev.outFrac, sp.outFrac) && bits(prev.outDv, sp.outDv * r)
-                && bits(prev.t, 15.0);
-            List<BezierBaker.Node> tail = x.roll.nodes.subList(3, x.roll.nodes.size());
-            String dt = nodesDiff(tail, orig.subList(3, orig.size()));
-            check(still && handle && dt == null && !x.roll.isCut() && x.roll.nodes.size() == 5,
-                "ScRollLaneGate e7 the previous node moved 14 → 15 while cut (D105 rescale): still untouched, grow restores its out handle at the shadow's slope over the new gap (outDv × newGap/oldGap bitwise), the tail bitwise",
-                f("untouched %s, prev outDv %s (shadow %s × %s), tail %s", still, prev.outDv, sp.outDv, r, dt == null ? "bitwise" : dt));
+            List<BezierBaker.Node> V = x.roll.nodes;
+            boolean kept = V.size() == 6 && bits(V.get(2).t, 15.0) && bits(V.get(3).t, 20.0)
+                && !x.roll.isCut();
+            double wIn = 0, wOut = 0;
+            for (int i = 0; i <= 1000; i++) {
+                double xa = 20.0 * i / 1000;
+                double dv = Math.abs(BezierBaker.exactAt(V, xa) - BezierBaker.exactAt(cutLane, xa));
+                // INSIDE bitwise; AT the knot the cut lane's exactAt takes its
+                // hold short-cut (last.val) while the grown lane bisects the
+                // segment end — rounding only
+                if (i < 1000 ? dv != 0 : dv > 1e-12) wIn = Math.max(wIn, dv + 1);
+                double xb = 20 + (L - 20) * i / 1000;
+                wOut = Math.max(wOut, Math.abs(BezierBaker.exactAt(V, xb)
+                    - BezierBaker.exactAt(orig, xb)));
+            }
+            check(still && kept && wIn == 0 && wOut <= 1e-12,
+                "ScRollLaneGate e7 the previous node moved 14 → 15 while cut (D105 rescale): still untouched; grow KEEPS the cut node (6 nodes), the drawn graph over [0, 20] bitwise the cut lane's, the old graph continues past it (≤ 1e-12 of the original over [20, 10π])",
+                f("untouched %s, nodes %d, in-range mismatch %s, past-cut dev %.2e", still, V.size(), wIn == 0 ? "none" : "YES", wOut));
+        }
+        // e10 a node INSERTED between the previous node and the cut node while
+        // cut, then moved (note 1's other case): the same law
+        {
+            StraightCurveSection.Element x = e1Fixture();
+            x.setLength(20);
+            List<BezierBaker.Node> ln = x.roll.nodes;
+            BezierBaker.Node ins = BezierBaker.splitSegment(ln.get(2), ln.get(3), 17);
+            ins.t = 17;
+            ln.add(3, ins);
+            ins.val += 2;   // moved
+            boolean still = x.roll.untouched();
+            List<BezierBaker.Node> cutLane = copyLane(ln);
+            x.setLength(L);
+            List<BezierBaker.Node> V = x.roll.nodes;
+            boolean kept = V.size() == 7 && bits(V.get(3).t, 17.0) && bits(V.get(4).t, 20.0)
+                && !x.roll.isCut();
+            boolean inBits = true;
+            double wOut = 0;
+            for (int i = 0; i <= 1000; i++) {
+                double xa = 20.0 * i / 1000;
+                double dv = Math.abs(BezierBaker.exactAt(V, xa) - BezierBaker.exactAt(cutLane, xa));
+                inBits &= i < 1000 ? dv == 0 : dv <= 1e-12;   // the knot: rounding (e7's note)
+                double xb = 20 + (L - 20) * i / 1000;
+                wOut = Math.max(wOut, Math.abs(BezierBaker.exactAt(V, xb)
+                    - BezierBaker.exactAt(orig, xb)));
+            }
+            check(still && kept && inBits && wOut <= 1e-12,
+                "ScRollLaneGate e10 a node inserted at 17 and moved while cut: grow keeps the cut node (7 nodes), the drawn graph over [0, 20] bitwise, the old graph continues past the cut (≤ 1e-12)",
+                f("untouched %s, nodes %d, in-range bitwise %s, past-cut dev %.2e", still, V.size(), inBits, wOut));
+            // and a second shrink / grow round trip from here is stable
+            List<BezierBaker.Node> before = copyLane(V);
+            x.setLength(12);
+            x.setLength(L);
+            String d10 = nodesDiff(x.roll.nodes, before);
+            check(d10 == null && !x.roll.isCut(),
+                "ScRollLaneGate e10b shrink 12 → grow back from the grown lane: bitwise (the untouched segment takes the bitwise return)",
+                d10 == null ? "" : d10);
+        }
+        // e11 scaleValues (note 6 — the rate-unit Switch): values + handle
+        // offsets × f(t), the shadow and the fingerprint along, untouched() kept
+        {
+            StraightCurveSection.Element x = e1Fixture();
+            x.setLength(20);
+            List<BezierBaker.Node> before = copyLane(x.roll.nodes);
+            List<BezierBaker.Node> shBefore = copyLane(x.roll.shadow());
+            x.roll.scaleValues(t -> 2.0);
+            boolean ok = x.roll.untouched() && x.roll.nodes.size() == before.size();
+            for (int i = 0; ok && i < before.size(); i++) {
+                BezierBaker.Node a = before.get(i), b2 = x.roll.nodes.get(i);
+                ok = bits(b2.val, a.val * 2) && bits(b2.inDv, a.inDv * 2)
+                    && bits(b2.outDv, a.outDv * 2) && bits(b2.t, a.t)
+                    && bits(b2.inFrac, a.inFrac) && bits(b2.outFrac, a.outFrac);
+            }
+            for (int i = 0; ok && i < shBefore.size(); i++) {
+                BezierBaker.Node a = shBefore.get(i), b2 = x.roll.shadow().get(i);
+                ok = bits(b2.val, a.val * 2) && bits(b2.inDv, a.inDv * 2)
+                    && bits(b2.outDv, a.outDv * 2);
+            }
+            x.setLength(L);
+            boolean grew = !x.roll.isCut() && x.roll.nodes.size() == orig.size();
+            for (int i = 0; grew && i < orig.size(); i++) {
+                grew = bits(x.roll.nodes.get(i).val, orig.get(i).val * 2);
+            }
+            check(ok && grew,
+                "ScRollLaneGate e11 scaleValues(×2) on a cut lane: every value / handle offset doubled, the shadow too, untouched() kept, grow returns the doubled original",
+                f("scaled %s, grew %s", ok, grew));
         }
         // e8 node 0 stays at 0 for any legal length (L ≥ MIN_ELEM_LEN > 0)
         {
@@ -1215,6 +1294,74 @@ public final class ScRollLaneGate {
     }
 
     // ---------------------------------------------------------------
+    // q — KINKS (his 2026-10-21 note 7): an absolute-bank element
+    // border / a plain boundary into an absolute-bank lane section
+    // are declared instantaneous changes — one-sided rates, no spike
+    // ---------------------------------------------------------------
+
+    static void rowQ() {
+        // q1 an s/c: straight (rate 0) | R20 90° with an ABSOLUTE 30° bank
+        // lane | straight (rate 0): the border into element 1 snaps the
+        // bank by 30° — a kink at the border sample + 1; the roll rate is
+        // finite everywhere; the border into element 2 (rate lane) is
+        // no kink (the bank re-binds, no snap)
+        StraightCurveSection sc = F();
+        flat(sc.elements.get(1), 30, true, true, true);
+        Coaster c = docOf(sc);
+        TrackCompiler.Result r = TrackCompiler.compile(c, DT);
+        TrackCompiler.Span sp = r.spans().get(0);
+        double[] b = { 0, sc.elements.get(0).L,
+            sc.elements.get(0).L + sc.elements.get(1).L };
+        int kb1 = TrackCompiler.sampleAtArc(r.samples(), sp, sp.s0() + b[1]);
+        int kb2 = TrackCompiler.sampleAtArc(r.samples(), sp, sp.s0() + b[2]);
+        boolean k1 = kb1 >= 0 && java.util.Arrays.binarySearch(r.kinks(), kb1 + 1) >= 0;
+        boolean k2 = kb2 >= 0 && java.util.Arrays.binarySearch(r.kinks(), kb2 + 1) >= 0;
+        double worst = 0;
+        for (double[] row : r.rates()) worst = Math.max(worst, Math.abs(row[3]));
+        double jump = Math.toDegrees(TrackCompiler.jumpRad(r.samples().get(kb1),
+            r.samples().get(kb1 + 1)));
+        check(k1 && !k2 && r.kinks().length == 1 && worst < 400,
+            "ScRollLaneGate q1 an absolute 30° element behind a rate element: ONE kink at the"
+            + " border sample + 1 (the 30° snap), none at the exit border; the roll rate stays"
+            + " finite (one-sided Pass A — the central difference read ~3000 °/s)",
+            f("kinks %s, border samples %d / %d, jump %.2f°, max |roll rate| %.1f °/s",
+                java.util.Arrays.toString(r.kinks()), kb1, kb2, jump, worst));
+        // q2 the same element starting AT the incoming bank (0°): no snap, no kink
+        StraightCurveSection sc2 = F();
+        flat(sc2.elements.get(1), 0, true, true, true);
+        TrackCompiler.Result r2 = TrackCompiler.compile(docOf(sc2), DT);
+        check(r2.kinks().length == 0,
+            "ScRollLaneGate q2 an absolute lane starting at the incoming bank: no kink",
+            java.util.Arrays.toString(r2.kinks()));
+        // q3 a PLAIN boundary into a lane section with an absolute 20° bank
+        // lane: a kink at the section's first sample (its span's i0)
+        ForceSection a = new ForceSection(forceHold(1.0, 0, 0, 4), 20);
+        ForceSection bsec = new ForceSection(forceHold(1.0, 0, 20, 3), 20);
+        bsec.rollGlobal = true;
+        bsec.rollAbsolute = true;
+        Coaster c3 = docOf(a, bsec);
+        TrackCompiler.Result r3 = TrackCompiler.compile(c3, DT);
+        int i0 = r3.spans().get(1).i0();
+        check(r3.kinks().length == 1 && r3.kinks()[0] == i0,
+            "ScRollLaneGate q3 a plain boundary into an absolute-bank lane section (0° → 20°):"
+            + " the kink is that span's first sample",
+            f("kinks %s, span 1 i0 %d", java.util.Arrays.toString(r3.kinks()), i0));
+        // q4 the default-layout force sections (rate lanes): no kinks; and the
+        // Result's 6-arg form carries an empty list
+        TrackCompiler.Result r4 = TrackCompiler.compile(docOf(a), DT);
+        check(r4.kinks().length == 0, "ScRollLaneGate q4 a plain rate-lane section: no kinks", "");
+    }
+
+    /** A force section's three held lanes over `len` seconds. */
+    static List<List<BezierBaker.Node>> forceHold(double gv, double gl, double roll, double len) {
+        List<List<BezierBaker.Node>> l = new ArrayList<>();
+        l.add(BezierBaker.holdLane(0, len, gv));
+        l.add(BezierBaker.holdLane(0, len, gl));
+        l.add(BezierBaker.holdLane(0, len, roll));
+        return l;
+    }
+
+    // ---------------------------------------------------------------
 
     public static void main(String[] args) throws Exception {
         System.out.println("ScRollLaneGate — D259 §2.9 (the roll lane per s/c element, Stage 1b run 1)");
@@ -1232,6 +1379,7 @@ public final class ScRollLaneGate {
         rowL();
         rowM();
         rowN();
+        rowQ();
         System.out.println();
         System.out.println("ScRollLaneGate: " + pass + " passed, " + fail + " failed");
         System.exit(fail == 0 ? 0 : 1);

@@ -29,9 +29,13 @@ import java.util.List;
  * RETURNS bitwise when the element grows again (E2/E3), unless the
  * cut node's position, value, handle SLOPES or smooth flag changed
  * meanwhile (the {@link Cut} fingerprint; slopes, not handle lengths
- * — a neighbor's move rescales dv and keeps the slope, D105). The
- * shadow persists in the file (`rsh` + `rcut`, DesignIO §2.8); the
- * compile never reads it.
+ * — a neighbor's move rescales dv and keeps the slope, D105). A
+ * changed SEGMENT INTO the cut node (the node before it edited, a
+ * node inserted between) keeps the cut node as a real node on growth
+ * and continues the old graph past it (the 2026-10-21 note 1 — the
+ * drawn graph over [0, L] never changes on growth, see
+ * {@link #applyLength}). The shadow persists in the file (`rsh` +
+ * `rcut`, DesignIO §2.8); the compile never reads it.
  *
  * Settings: rollGlobal / ratePerMeter / rollAbsolute with the lane
  * sections' interlocks — absolute ⇒ global (the setter forces it),
@@ -281,43 +285,104 @@ public final class RollLane {
         return near(inSlope, cut.inSlope()) && near(outSlope, cut.outSlope());
     }
 
-    /** E3's V for an untouched cut node: the user's prefix ++ (c iff
-     *  not inserted) ++ the shadow's tail past the cut, the node
-     *  before c restored per the out-slope rule. */
+    /** E3's V for an untouched cut node (the 2026-10-21 hand-test
+     *  note 1 — "the roll graph's shape must never change on growth"):
+     *  <ul><li>the SEGMENT INTO c still the shadow's own left half
+     *  (the node before c bitwise the split's — t, val, out handle —
+     *  and c's in handle bitwise the split's): the BITWISE RETURN —
+     *  the user's prefix ++ (c iff not inserted) ++ the shadow's tail,
+     *  the node before c taking the shadow's raw out handle back
+     *  (the drawn curve over [0, L] IS the shadow's there, by the de
+     *  Casteljau identity, so dropping the inserted knot changes
+     *  nothing);</li>
+     *  <li>otherwise (the node before c moved, re-valued or
+     *  re-handled, or a node inserted between it and c): c STAYS a
+     *  real node exactly where the cut was, its out handle := the
+     *  shadow's RIGHT half's node 0 out handle at the cut and the
+     *  first tail node's in handle := that half's node 1 in handle —
+     *  the drawn graph over [0, L] is kept bitwise (every node of the
+     *  user's lane rides through untouched) and the old graph
+     *  continues past c (the de Casteljau right half, ≤ 1e-12 of the
+     *  shadow's curve).</li></ul>
+     *  Before this rule a changed segment restored the previous
+     *  node's handle at the shadow's slope over the new gap and
+     *  dropped c — the drawn curve over [prev, c] changed on growth
+     *  (his report). The fingerprint's prevOutSlope is INERT now
+     *  (still recorded + persisted — `rcut` keeps its grammar). */
     private List<BezierBaker.Node> rebuildVirtual() {
         int size = nodes.size();
         boolean ins = cut.inserted();
-        List<BezierBaker.Node> V = new ArrayList<>();
-        int prefixEnd = ins ? size - 1 : size;   // c excluded iff inserted
-        for (int k = 0; k < prefixEnd; k++) V.add(nodes.get(k).copy());
         BezierBaker.Node c = nodes.get(size - 1);
-        int prevIdx = ins ? V.size() - 1 : V.size() - 2;
-        BezierBaker.Node shadowPrev = lastBefore(shadow, cut.t());
-        BezierBaker.Node tailFirst = firstAfter(shadow, cut.t());
-        if (prevIdx >= 0 && shadowPrev != null) {
-            BezierBaker.Node prev = V.get(prevIdx);
-            double cur = slope(prev.outDv, BezierBaker.effOutDt(prev, c));
-            if (near(cur, cut.prevOutSlope())) {
-                // the restored segment's right node: the shadow's
-                // first node past the cut (inserted) or c itself
-                BezierBaker.Node right = ins ? tailFirst : V.get(V.size() - 1);
-                if (right != null) {
-                    prev.outFrac = shadowPrev.outFrac;
-                    if (bits(prev.t, shadowPrev.t)) {
-                        prev.outDv = shadowPrev.outDv;          // raw, bitwise
-                    } else {
-                        double oldGap = right.t - shadowPrev.t;
-                        double now = right.t - prev.t;
-                        double r = now / oldGap;                 // rescaleDvToGaps
-                        prev.outDv = shadowPrev.outDv * r;
-                    }
-                }
+        BezierBaker.Node prev = size >= 2 ? nodes.get(size - 2) : null;
+        List<BezierBaker.Node> left = cutLeft(shadow, cut.t());
+        BezierBaker.Node leftC = left.get(left.size() - 1);
+        BezierBaker.Node leftPrev = left.size() >= 2 ? left.get(left.size() - 2) : null;
+        boolean intact = prev == null ? leftPrev == null
+            : leftPrev != null && bits(prev.t, leftPrev.t) && bits(prev.val, leftPrev.val)
+                && bits(prev.outFrac, leftPrev.outFrac) && bits(prev.outDv, leftPrev.outDv)
+                && bits(c.inFrac, leftC.inFrac) && bits(c.inDv, leftC.inDv);
+        List<BezierBaker.Node> V = new ArrayList<>();
+        if (intact) {
+            int prefixEnd = ins ? size - 1 : size;   // c excluded iff inserted
+            for (int k = 0; k < prefixEnd; k++) V.add(nodes.get(k).copy());
+            BezierBaker.Node shadowPrev = lastBefore(shadow, cut.t());
+            if (ins && shadowPrev != null && !V.isEmpty()) {
+                BezierBaker.Node p = V.get(V.size() - 1);   // prev's copy
+                p.outFrac = shadowPrev.outFrac;             // the split's
+                p.outDv = shadowPrev.outDv;                 // raw, bitwise
             }
+            for (BezierBaker.Node n : shadow) {
+                if (n.t > cut.t()) V.add(n.copy());
+            }
+            return V;
         }
+        for (int k = 0; k < size; k++) V.add(nodes.get(k).copy());
+        List<BezierBaker.Node> right = cutRight(shadow, cut.t());
+        BezierBaker.Node cv = V.get(V.size() - 1);
+        cv.outFrac = right.get(0).outFrac;   // the curve past the cut
+        cv.outDv = right.get(0).outDv;
+        boolean first = true;
         for (BezierBaker.Node n : shadow) {
-            if (n.t > cut.t()) V.add(n.copy());
+            if (n.t <= cut.t()) continue;
+            BezierBaker.Node m = n.copy();
+            if (first && right.size() >= 2) {
+                m.inFrac = right.get(1).inFrac;
+                m.inDv = right.get(1).inDv;
+            }
+            first = false;
+            V.add(m);
         }
         return V;
+    }
+
+    /** RATE-UNIT CONVERSION of the lane's VALUES (the 2026-10-21
+     *  hand-test note 6 — a Switch between °/s and °/m converts the
+     *  graph literally, never reinterprets it): every node's value and
+     *  handle offsets × f(t) (the editor passes v at the node's arc for
+     *  °/m → °/s, 1/v the other way), the shadow's nodes the same, the
+     *  fingerprint's value and slopes × f(cut.t) so untouched() keeps
+     *  reading true (the same multiplication on both sides). */
+    public void scaleValues(java.util.function.DoubleUnaryOperator f) {
+        for (BezierBaker.Node n : nodes) {
+            double k = f.applyAsDouble(n.t);
+            n.val *= k;
+            n.inDv *= k;
+            n.outDv *= k;
+        }
+        if (shadow != null) {
+            for (BezierBaker.Node n : shadow) {
+                double k = f.applyAsDouble(n.t);
+                n.val *= k;
+                n.inDv *= k;
+                n.outDv *= k;
+            }
+        }
+        if (cut != null) {
+            double k = f.applyAsDouble(cut.t());
+            cut = new Cut(cut.inserted(), cut.t(), cut.val() * k,
+                cut.inSlope() * k, cut.outSlope() * k, cut.smooth(),
+                cut.prevOutSlope() * k);
+        }
     }
 
     // ---- the halves of a split element (E5: shadow-free) ----

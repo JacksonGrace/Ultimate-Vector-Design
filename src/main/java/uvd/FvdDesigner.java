@@ -3695,6 +3695,7 @@ public class FvdDesigner extends Application {
         if (!hasCoaster() || coaster.pieces.isEmpty()) {
             lastSamples = null;
             sectionSpans = null;
+            kinks = null;
             resultRates = null;
             trueV = null;
             trueFelt = null;
@@ -3751,6 +3752,7 @@ public class FvdDesigner extends Application {
         trueFelt = compiled.trueFelt();
         trueRates = compiled.trueRates();
         sectionSpans = compiled.spans();
+        kinks = compiled.kinks();   // the authored instantaneous changes (note 7)
         updateBridgeControls();   // gap spinner tracks live moves
         syncDesignReadout();      // D222: design-orientation line
         double maxGv = -99, minGv = 99, maxY = -1e9, minY = 1e9, maxV = 0;
@@ -4483,6 +4485,12 @@ public class FvdDesigner extends Application {
     // per-section sample spans from the last compile (v11.0): the
     // editor lays out DISTANCE-domain strips from these
     List<TrackCompiler.Span> sectionSpans;
+    // the KINKS of the last compile (v20.1, his 2026-10-21 note 7 —
+    // TrackCompiler.Result.kinks): ascending global sample indices
+    // whose frame jumps from the previous sample by authored design
+    // (an absolute lane's entry off a strict seam, an absolute-bank
+    // element border); the editor draws carets there
+    int[] kinks;
     final ToggleButton[] laneButtons = new ToggleButton[3];
     boolean rippleT, rippleV;   // ripple-edit toggles (time / value)
     private Label rippleTLabel;   // relabels time/distance per axis (v18.0)
@@ -6760,6 +6768,24 @@ public class FvdDesigner extends Application {
             javafx.stage.Stage d = editor.probeShowElementDialog(1);
             chk.accept(d != null && d.isShowing(), "S7 the element dialog opens");
             if (d != null) d.close();
+            javafx.stage.Stage d2 = editor.probeShowRollDialog(1);
+            chk.accept(d2 != null && d2.isShowing(), "S7b the roll dialog opens");
+            if (d2 != null) d2.close();
+            // the band's two buttons exist (note 3): the view zoomed onto
+            // the s/c (the default layout's 407 m leave its bands ~80 px
+            // wide at auto-fit — too narrow for the roll button, which
+            // then simply does not draw)
+            TrackCompiler.Span zsp = editor.probeSpanOf(kH[0]);
+            if (zsp != null) editor.probeSetView(zsp.s0(), zsp.s0() + zsp.sLen());
+            editor.probeRedraw();
+            java.util.Set<Integer> el = new java.util.HashSet<>(), ro = new java.util.HashSet<>();
+            for (double[] r : editor.probeChipRects()) {
+                if ((int) r[5] == 0) el.add((int) r[4]); else ro.add((int) r[4]);
+            }
+            el.retainAll(ro);   // an element carrying BOTH buttons
+            chk.accept(!el.isEmpty(), "S7c a band carries the element chip + the roll button"
+                + " (elements " + el + ")");
+            editor.probeSetView(0, -1);   // auto-fit again
         });
         // ---- S8: absolute bank → the Bank tint
         steps.add(() -> {

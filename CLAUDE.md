@@ -490,19 +490,18 @@ StraightCurveSection.java  Phase 2 (v11.0, D68); the PHASE 4 OVERHAUL
                     AXIS_MERGE_EPS 1e-12 live here too — every other
                     class cites the names, never the numbers. The
                     strip's blend DIAMONDS + band edges (D234/D248 drags)
-                    are unchanged. STAGE-1a INTERIM: the v11.1 per-element
-                    ROLL pair (RollMode RATE °/s | GLOBAL ° + rollVal)
-                    still rides each element and the dialog, acting
-                    about T only; D4 as REVISED 2026-10-21 replaces it in
-                    Stage 1b with a per-element roll LANE (its own axis
-                    [0, L], its own settings; a longer element holds the
-                    end node's value, a shorter one CUTS the lane with
-                    the insert-node math and keeps the cut-off part,
-                    which returns bitwise when the element grows again
-                    unless the cut node moved — design doc §2 RE-SPEC).
-                    Always DISTANCE domain: the SHAPE is speed-
-                    independent (except the interim RATE roll, per
-                    second by design) and — new in v20.0 — ROLL-FREE: a
+                    are unchanged. THE ROLL LANE PER ELEMENT since v20.1
+                    (D259.1b — D4 as REVISED 2026-10-21): Element.roll =
+                    a uvd.RollLane, never null (the v11.1 RollMode /
+                    rollVal pair is GONE — deprecated inert fields the
+                    loader migrates); Element.setLength(L) is the ONE
+                    length choke (the resize drag, the dialog, the
+                    solver later) and runs the lane's cut / shadow rule;
+                    the §3 SEAM INVARIANT makes every s/c edge a strict
+                    seam (see Coaster / TrackCompiler). Always DISTANCE
+                    domain: the SHAPE is speed-independent (a °/s roll
+                    lane twists per second by design, never bending the
+                    spine) and — new in v20.0 — ROLL-FREE: a
                     banked entry no longer tilts a turn's plane (today's
                     R20/90°/30° banked turn dove 10.9 m); the shape IS
                     gravity-referenced through the level frame of its
@@ -512,6 +511,41 @@ StraightCurveSection.java  Phase 2 (v11.0, D68); the PHASE 4 OVERHAUL
                     BEST-EFFORT (D7/D8: no bitwise promise, one
                     SC_LEGACY_CONVERTED report sentence). Elements
                     mutable, editor-owned.
+RollLane.java       THE ROLL LANE OF ONE S/C ELEMENT (v20.1, D259.1b —
+                    D4 revised). Pure Java, no JavaFX. nodes on x ∈
+                    [0, L] (meters from the element's start; node 0 at
+                    0), lanes() = ONE object [EMPTY, EMPTY, nodes] for
+                    the element's life (the editor's identity guards +
+                    bake's three-lane contract), the flags rollGlobal /
+                    ratePerMeter / rollAbsolute with the lane sections'
+                    interlocks (absolute ⇒ global; local ⇒ not absolute;
+                    setFlags normalizes), the default a global 0 °/m
+                    hold (D3). THE CUT / SHADOW RULE (§2.2, applyLength —
+                    called by Element.setLength): E1 a longer element
+                    holds the end node's value; E2 a shorter one CUTS the
+                    lane with Coaster.splitLanes' exact de Casteljau left
+                    half and keeps the cut-off part as the SHADOW (the
+                    virtual lane) + the Cut fingerprint of the cut node
+                    (t / val / in + out slopes / smooth / inserted); E3
+                    on growth — UNTOUCHED(c) by the fingerprint: (i) the
+                    segment INTO c still the shadow's own left half → the
+                    BITWISE return (the inserted knot vanishes, the node
+                    before it takes the shadow's raw out handle), (ii)
+                    that segment changed (his 2026-10-21 note 1: the node
+                    before c edited, a node inserted between) → c STAYS a
+                    real node, its out handle and the first tail node's
+                    in handle := the shadow's RIGHT half at the cut, the
+                    rest verbatim — the drawn graph over [0, L] never
+                    changes on growth; a touched c = the tail is GONE.
+                    cutHalves (a split element's shadow-free halves),
+                    negate (mirror), copy, installNodes / installShadow
+                    (IO), scaleValues(f) (his note 6 — the rate-unit
+                    Switch multiplies every value / handle offset by
+                    f(t), the shadow and the fingerprint along), CUT_EPS
+                    1e-9, SLOPE_EPS 1e-12 relative. Persisted as `rn` /
+                    `rsh` / `rcut` lines under the `el` line (DesignIO
+                    §2.8). ScRollLaneGate 70.
+
 ScIntegrator.java   S/C PHYSICS. Pure Java, no JavaFX. The ROTATION-RATE
                     VECTOR profile Ω/m(s) in WORLD coordinates on each
                     element's ROLL-FREE AXIS (v20.0, D259 §1.2-§1.4 —
@@ -530,8 +564,19 @@ ScIntegrator.java   S/C PHYSICS. Pure Java, no JavaFX. The ROTATION-RATE
                     h → −R at a vertical T); STRAIGHT 0. Blends lerp the
                     VECTORS with the sine ease CENTERED on borders (total
                     turn preserved for straight↔arc; halves clamped
-                    inside short elements); the interim RATE roll cT
-                    blends with the QUINTIC (D233). LEG BOUNDARIES: EVERY
+                    inside short elements); THE ROLL LANE (v20.1, D259
+                    §2.3): each element's lane bakes on an element-
+                    anchored 0.05 m grid (laneKeyframes), the TWIST angle
+                    phi rides the RK4 state and applies about T per leg
+                    (the spine bitwise roll-free), an ABSOLUTE lane snaps
+                    the bank onto its C1 target per leg (a border INTO an
+                    absolute element whose node 0 differs from the
+                    arriving bank is a declared KINK — TrackCompiler.
+                    kinksOf, carets in the editor), a GLOBAL rate lane
+                    projects onto bank0 + cumRoll, bank0 / cumRoll re-bind
+                    at every landing border; merged borders need equal
+                    flags + a value-continuous lane; blendHalves(sc) is
+                    the strip's hit-test twin. LEG BOUNDARIES: EVERY
                     non-MERGED border is a landing (its centre too, under
                     a blend — the per-border Bound record), blend EDGES
                     are landings, and the on-side lookup cap applies at
@@ -1166,7 +1211,7 @@ Coaster.java        THE DOCUMENT: global v0 + the TWO FRICTION
                     inert under the D236 hybrid). Still refuses
                     s/c-edge / legacy-
                     reversed / stalled-window seams with stats-bar
-                    reasons; smoothing itself can no longer be
+                    reasons; smoothing itself can again be
                     ENABLED on s/c edges (D232).
                     Also the bridge placement MARCH/optimizer +
                     the auto-reoptimize pass (v13.14; captureBridgeTarget
@@ -2671,12 +2716,17 @@ source tree — they won't compile against the current time-domain API.
   the Bound records). Shape is fully speed-independent; vDesign only
   sets the time mapping and the recorded felt G — and it IS
   gravity-referenced through the entry's level frame (a baked pitch
-  reshapes an s/c like a force section). STAGE-1a INTERIM roll
-  (v11.1, until the 1b per-element lane): RATE °/s joins Ω about T
-  (per second — the one design-speed dependence); GLOBAL ° holds the
-  bank vs the HORIZON via a pure T-roll projection after every leg
-  (eased from the entry bank over max(blendIn, 2 m); never bends the
-  spine; a merged run eases once).
+  reshapes an s/c like a force section). ROLL = each element's own
+  LANE since v20.1 (D259.1b, D4 revised): a rate lane (°/m or °/s,
+  local about T or global vs the horizon) or an absolute BANK lane,
+  integrated as a twist angle about T per leg — never bending the
+  spine; an absolute lane's bank snaps per leg (the entry snap at a
+  border is a declared kink with a caret), a global rate lane
+  projects onto the running bank target, both re-bind at landing
+  borders. Every s/c EDGE is a STRICT SEAM (the §3 invariant, D5/D31):
+  an s/c is always a piece's section 0 and whatever follows it the
+  next piece's section 0, joined by an AUTOMATIC seam that generates
+  at the follow contract exactly like an in-piece continuation.
 
 ## Key decisions and WHY (full log in docs/DECISIONS.md)
 
@@ -3134,31 +3184,63 @@ rose (235,130,180), helical violet (200,130,235) — through
 FvdDesigner.SC_KIND_COLOR, and the chip = the stroked kind ICON
 (ScLook.iconStroke/iconHead, FvdDesigner.strokeScKindIcon) + the arc
 length "12 m" — no radius/angle/roll suffix; SC_SMOOTH_DEFAULT is 0,
-D9 sharp; the element dialog still edits radius + angle + direction
-(mapped onto κ/L by Element.setRadiusAndTurn) + the interim roll rows
-until the Stage-3a window): an
-active s/c section replaces the lanes with element BANDS (labeled
-chips like "⌒ 31.4 m"), felt-G derived
-curves behind at 0.45 alpha, dashed separators, and a smoothing
+D9 sharp; v20.1 D259.1b: THE ROLL LANE STRIP — an active s/c BINDS
+the LANE ELEMENT's roll lane (GraphEditor.scLaneElem, sticky: set
+by selecting an element / its band or clicking another element's
+graph, clamped on delete / undo; scLaneBound() = lane 2 of app.lanes
+non-empty is THE "s/c binds a lane" predicate), mode-3 lane buttons
+(Gv/Gl grayed with SC_LANES_WHY, Roll live — "Bank" under an
+absolute lane), the element's L is a HARD wall (laneEnd: drags, A,
+inserts; a hold-insert takes the room the wall leaves and halves the
+next transition when nothing can shift, ROLL_WALL_WHY), the other
+elements' lanes draw dimmed (authored, or derived in the rate view),
+the CUT STUB (three dots past the cut node while a shadow exists),
+the s/c rate view (StraightCurveSection.viewOtherRate), B / Shift+B
+at element borders (scBorderTarget — AUTHORED value + the node's own
+handle slope when the settings match, the SAMPLED bank / bank rate /
+body roll rate otherwise) and at the section's seams; THREE SETTINGS
+BUTTONS since his 2026-10-21 note 3 — the S/C badge (the section), the
+ELEMENT CHIP at the band's TOP-LEFT (a hover-lit button: the element
+dialog — kind / length / radius / angle / direction / entry smoothing)
+and the ROLL BUTTON beside it (the mini circle arrow in the roll
+lane's color: the Roll dialog — axis / rate units / behavior with the
+interlocks, Switch = the flags (a rate-unit flip between two rate
+settings CONVERTS the values: × v at the node's arc or ÷ v, the shadow
+along — note 6), Bake = Coaster.bakeElementRoll through the density
+preview; scChipRects / hitScChip / hoverScChip); the band's
+double-click opens NOTHING (a roll node's still opens its editor) and
+the band's right-click menu lives on for now; a band PRESS selects
+the element AND starts a BOX SELECT of its roll nodes (note 5); the
+press ladder = nodes / knobs > the two chip buttons > the badge /
+'+' > blend diamonds, borders, band edges > another element's lane
+node / curve > a click ON the lane curve inserts > band): an
+active s/c section replaces the lanes with element BANDS, felt-G
+derived curves behind at 0.45 alpha + the roll lane, dashed
+separators (wearing a KINK CARET where the next element's absolute
+bank lane snaps — note 7), and a smoothing
 DIAMOND per internal boundary (filled = blending; shaded band = the
 blend zone). Drag a separator or the section end = resize the left
 element (EXTENDS past the current end too — the cursor map
 extrapolates beyond the span at the end sample's speed, v11.1; Ctrl
 snaps by the Options element-length step, default 1 m;
-live readout; H_RESIZE cursor); drag a diamond = blend length (snaps
-shut < 0.2 m); click = select; double-click / right-click "Edit
-element…" = typed dialog (kind radios, length or radius/angle/
-direction, entry smoothing — on element 0 the field is the SECTION-
-ENTRY roll ease (v19.3, D232; the κ seam stays sharp) — and ROLL: Rate °/s | Global bank ° radios + value, v11.1;
-chips wear ∠° / ↻°/s when non-zero); right-click also inserts
-straight/curve before/after +
+live readout; H_RESIZE cursor; every length write goes through
+Element.setLength — the lane's cut / shadow rule); drag a diamond =
+blend length (snaps shut < 0.2 m); click = select; the chip button /
+right-click "Edit element…" = the typed dialog (kind radios, length
+or radius/angle/direction, entry smoothing — element 0 has NO
+smoothing row since v20.1: the D232/D233 section-entry roll ease is
+gone with the lane, the strict seam's ◇ is the one entry control);
+right-click also inserts straight/curve before/after +
 deletes (clean-release rule, right-drag still pans); Delete = remove
-selected element; A = append a straight; badge menu adds length/count
-info + "Append element". New elements default 2 m entry smoothing
-(SC_SMOOTH_DEFAULT) and GLOBAL 0 roll. The toolbar button is
+selected element (or a selected roll node); A = append a straight
+(or a hold node after a selected roll node); badge menu adds
+length/count info + "Append element" + "Orientation settings…"
+(the lane element's Roll dialog) + the rate-view item. New elements
+arrive SHARP (SC_SMOOTH_DEFAULT 0) with the default lane. The
+toolbar button is
 "Append (A)" (v11.1; the live shortcut tag + short tooltip since
 v19.12 D241) — seconds on lane sections, elements on s/c (the
-tooltip carries both meanings). Lane buttons disable (mode 2), the plot shows
+tooltip carries both meanings). The plot shows
 FORCE view (felt G) so other strips/overlays/B-matching read
 generically; scales fit the derived curves; s/c strip layout uses the
 compiled Spans (DISTANCE domain: duration exists only after compile —
@@ -3244,8 +3326,12 @@ Resulting overlays wear theirs in the overlay palette; a
 SMOOTHED seam draws none) and — strict only, while smoothing is
 ENABLED — the SMOOTHING DIAMOND — ALWAYS VISIBLE on strict seams since
 v19.8 (D237: HOLLOW while smoothing is off, dragging the hollow
-diamond ENABLES smoothing at the dragged length — s/c edges still
-refuse via seamScEdge; hover = a gray center dot in the hollow
+diamond ENABLES smoothing at the dragged length — on s/c edges too
+since v20.1 (D259 §3.6 SM1: seamScEdge and the D232 ban are GONE with
+the entry ease; TrackCompiler.smoothEngagesWhy's DRY RUN grays the
+"Enable smoothing" item, speaks on the hollow diamond's hover, after
+a drag that left a non-engaging window and under the Smoothing Options
+window's length box); hover = a gray center dot in the hollow
 diamond + small ◀ ▶ carets in both states, drawCaretH; and the
 cursor respects press priority — a node on a band edge shows the
 normal cursor, not H_RESIZE) — (v17.3, D140: the s/c pattern —
@@ -3421,8 +3507,12 @@ without revert). Smoothing
 is edited on the seam itself (the diamond), and in 3D the SEAM
 GIZMO (v17.3, D140): the follower's reveal ball sits ON the
 junction (seamWorldPos — the D136 ghost was the STALE stored
-position); its rings (shown whenever gizmos are on, v17.7) cover
-the DISCONTINUOUS axes only, writing
+position; the UPSTREAM span's exit since v20.1, D259 §3.8 — the
+follower's first sample sits one dropped dt INSIDE, ~0.26 m at
+26 m/s; Coaster.seamWorldPos); its rings (shown whenever gizmos
+are on, v17.7) cover the DISCONTINUOUS axes only (no roll ring
+while the follower's first element's bank lane owns the seam's
+bank — SEAM_ROLL_ABS_WHY grays the window's roll row too), writing
 the held angles (gizmoSetSeamOrient; ring axes off the follow-
 contract frame seamEntryOrient; one undo per gesture);
 DOUBLE-CLICK = the settings pop-out (reveal state unchanged).

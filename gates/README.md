@@ -15,7 +15,16 @@ three: LabelGate 190, uvd.ConflictGate 87, SmoothRealGate 77 — see their entri
 D255 (batch 37) added no member but grew seven: GestureGate 180, FloorGate 34, LabelGate 129, uvd.ConflictGate 51, RangeResolveGate 115,
 MirrorGate 100, RunGate 78 — see their entries; all green on wiped classes 2026-09-30. Compile the gates with `-encoding UTF-8`.
 (Nl2Check, a recovered pre-D184 script, is NOT a battery member: it fails 158 sign checks by design of the later lateral / yaw flips.)
-37 members since D259.1a (uvd.ScElemGate new — v20.0, the s/c element model; Phase2Gate's
+39 members since D259.1b (uvd.ScRollLaneGate 70 — the roll lane per s/c element: lane / integrator / cut-shadow (e7 + e10
+re-pinned to his note 1's "the graph never changes on growth", e11 scaleValues) / bake / IO rows + q1-q4 the KINKS (an absolute
+element border / a plain boundary into an absolute lane = a declared kink, Pass A one-sided, the roll rate finite); uvd.ScSeamGate
+37 — the straight/curve seam invariant: automatic followers == the in-piece twin bitwise (a-c; c4 behind a CONFLICT-TILTED upstream to
+1e-9 m with the inherited tilt), smoothing's dry run (e), the k == 0 real anchor (f), the L4 refusals (g), one compile per '+' (h),
+the forward align (i*), freeze / unlock (j/k), the seam ball (l), copy / mirror (o); grew LabelGate 229 (section 20 = §3.10's
+sentences + 19k/19l), uvd.ConflictGate 90 (m1/m2, i7 + l14a re-pinned), InsertGate 45 (d3 re-pinned, d7 generalized, d8/d9),
+RunGate 82 (l1-l4), CopyGate 74 (k1); PlacementGate c1 / OrientModeGate c1 re-pinned to the 6-field `porient` line; DetermGate198 d,
+Phase2Gate scRoundTrip, ScElemGate g/k build their s/c through Coaster.appendSectionWithInvariant (the loader's invariant pass cuts
+an in-piece s/c); all 39 + Nl2ElemProbe green on wiped classes 2026-10-21); 37 since D259.1a (uvd.ScElemGate new — v20.0, the s/c element model; Phase2Gate's
 clamped-blend bound RE-PINNED 1e-6° → 1e-5° (2.96e-6° at dt 0.01 from the new border-centre landing, 0 at dt ≤ 0.005
 — BlendTurnProbe) and RangeResolveGate's g2 hinge RE-PINNED to a DISTANCE °/m geo section with g2c at 2e-4 (an s/c is
 gravity-referenced under D2, no longer frame-independent); all 37 + Nl2ElemProbe green on wiped classes 2026-10-21);
@@ -685,6 +694,11 @@ JavaFX DEV HOOKS ride the app, not gates/ (no JavaFX on this classpath):
   -Dfvd.typedprobe=1 (D256 — the typed mark's real wiring on the Track Piece pitch box at 12.3456: click in/out keeps the bits,
    KEY_TYPED 12.35 + Enter stores exactly 12.35 with one undo step, Esc / typed-identical Esc / a lone '-' keep the bits, the Coaster
    menu's heart box through its ActionEvent; never touches the system clipboard; "TYPEDPROBE fails=0", 36 PASS)
+  -Dfvd.scprobe=1 (D259.1b — the per-element roll lane strip on the default document + a model-appended s/c of three elements:
+   activation binds element 0's lane (mode-3 buttons), the lane element switches by identity, insert / A (the hold halves the next
+   transition on a default lane) / Delete / B at an interior border, the cut / shadow round trip through Element.setLength (bitwise
+   return), the element dialog + the Roll dialog open / close, both band buttons recorded, the Bank tint after a flag switch, the 3D
+   double-click's lane switch then insert, an element delete clamps the lane element; "PROBE sc fails=N", 21 checks)
   -Dfvd.initspeedprobe=<file.uvd> (D256 — opens the file, the init-speed window on piece 1 section 1, Button.fire on "Set Design to
    Real", editor.undo / redo: the bitwise landing on the displayed real seam speed with the anchor set, the no-op second click,
    Ctrl+Z / Ctrl+Shift+Z through the DocState snapshot; + D257's LAYOUT checks: on piece 0 section 1 (no conflict) the readout

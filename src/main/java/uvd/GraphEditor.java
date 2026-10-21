@@ -5267,6 +5267,11 @@ class GraphEditor extends Region {
     void probeRedraw() { redraw(); }
     void probeSyncLaneButtons() { syncLaneButtons(); }
     javafx.stage.Stage probeShowElementDialog(int idx) { return showElementDialog(idx); }
+    javafx.stage.Stage probeShowRollDialog(int idx) { return showRollDialog(idx); }
+    int[] probeChipAt(double x, double y) { return hitScChip(x, y); }
+    List<double[]> probeChipRects() { return scChipRects; }
+    /** A manual view window in AXIS units (t1 < 0 = auto-fit). */
+    void probeSetView(double t0, double t1) { viewT0 = t0; viewT1 = t1; redraw(); }
     /** The Convert dialog's whole-section commit for section k of the
      *  active piece, same type/domain/axes (the identity re-author). */
     void probeWholeConvert(int k) {
@@ -6370,10 +6375,10 @@ class GraphEditor extends Region {
             } else if (sec instanceof StraightCurveSection scr && !scr.reversed
                     && !scr.elements.isEmpty()) {
                 // an s/c's roll settings live PER ELEMENT (v20.1, D259
-                // §2.5): the item opens the LANE element's dialog (its
-                // Roll block) — badges open while active, so k is active
+                // §2.5): the item opens the LANE element's ROLL dialog
+                // (his note 3) — badges open while active, so k is active
                 MenuItem orient = new MenuItem("Orientation settings…");
-                orient.setOnAction(ev -> showElementDialog(scLaneIdx(scr)));
+                orient.setOnAction(ev -> showRollDialog(scLaneIdx(scr)));
                 cm.getItems().add(orient);
             }
         }
@@ -8814,6 +8819,17 @@ class GraphEditor extends Region {
                 } else {
                     gc.strokeLine(bx, MARGIN_TOP,
                         bx, MARGIN_TOP + plotHeight());
+                    // a plain boundary INTO a section with absolute
+                    // lanes snaps the frame over its first step — a
+                    // declared KINK (his 2026-10-21 note 7): carets for
+                    // the components that jump, in place of a spike
+                    RunSec nrs = rl.get(i + 1);   // the section the boundary leads INTO
+                    TrackCompiler.Span nsp = spanAt(nrs.piece(), nrs.section());
+                    if (nsp != null && isKink(nsp.i0())) {
+                        for (CaretSpec cs : kinkCarets(bx, kinkSpikes(nsp.i0()))) {
+                            drawCaret(gc, bx, cs.y(), cs.up(), cs.col(), cs.small());
+                        }
+                    }
                 }
                 gc.setGlobalAlpha(1.0);
                 gc.setLineWidth(1);
@@ -8847,6 +8863,11 @@ class GraphEditor extends Region {
         if (psp == null) return null;
         Quat ql = psp.exit().orient();
         Quat qr = seamEntryOrient(rl.get(i + 1).piece());
+        // an ABSOLUTE-BANK first lane (a straight/curve element 0's, a
+        // lane section's) snaps the bank onto its node 0 right after
+        // the seam — the caret carries that snap too (his 2026-10-21
+        // note 7; analytic, so smoothing never moves it, D143)
+        qr = absBankSnap(rl.get(i + 1).piece(), qr);
         Vec3 dphi = TrackCompiler.axisAngle(qr.mul(ql.conjugate()));
         Vec3 t = ql.T(), u = ql.U();
         Vec3 r = u.cross(t);
@@ -8854,6 +8875,96 @@ class GraphEditor extends Region {
         // by D185: both the felt-Gl and the yaw-rate graphs spike
         // opposite the internal U-rotation now, in both views)
         return new double[]{ -dphi.dot(r), -dphi.dot(u), dphi.dot(t) };
+    }
+
+    /** The follow-contract frame ROTATED onto an absolute first lane's
+     *  node-0 bank — a strict follower whose section 0 is an s/c with
+     *  an absolute element-0 lane, or a lane section with an absolute
+     *  bank lane (the identity otherwise; vertical T: unchanged). */
+    private Quat absBankSnap(int followerPiece, Quat q) {
+        if (followerPiece < 0 || followerPiece >= app.coaster.pieces.size()) return q;
+        List<Section> ss = app.coaster.pieces.get(followerPiece).sections;
+        if (ss.isEmpty()) return q;
+        List<BezierBaker.Node> lane = null;
+        if (ss.get(0) instanceof StraightCurveSection sc && !sc.elements.isEmpty()
+                && sc.elements.get(0).roll.rollAbsolute()) {
+            lane = sc.elements.get(0).roll.nodes;
+        } else if (ss.get(0) instanceof LaneSection ls && ls.rollAbsolute
+                && ls.rollGlobal && !ls.reversed()) {
+            lane = ls.lanes.get(2);
+        }
+        if (lane == null || lane.isEmpty()) return q;
+        double b = FVDIntegrator.bankOfTU(q.T(), q.U());
+        if (Double.isNaN(b)) return q;
+        double target = Math.toRadians(lane.get(0).val);
+        double d = target - b;
+        d -= 2 * Math.PI * Math.round(d / (2 * Math.PI));   // the nearest turn
+        return Math.abs(d) < 1e-12 ? q : Quat.aboutAxis(q.T(), d).mul(q);
+    }
+
+    /** Is global sample i a KINK of the last compile (TrackCompiler.
+     *  Result.kinks — his 2026-10-21 note 7)? */
+    private boolean isKink(int i) {
+        return app.kinks != null && java.util.Arrays.binarySearch(app.kinks, i) >= 0;
+    }
+
+    /** The spike components of the frame jump INTO sample k (from
+     *  k − 1), projected the way seamSpikes projects — the kink's
+     *  carets read them; null off a compile. */
+    private double[] kinkSpikes(int k) {
+        if (app.lastSamples == null || k < 1 || k >= app.lastSamples.size()) return null;
+        FVDIntegrator.Sample a = app.lastSamples.get(k - 1), b = app.lastSamples.get(k);
+        Quat ql = Quat.fromFrame(a.T(), a.U()), qr = Quat.fromFrame(b.T(), b.U());
+        Vec3 dphi = TrackCompiler.axisAngle(qr.mul(ql.conjugate()));
+        Vec3 r = a.U().cross(a.T());
+        return new double[]{ -dphi.dot(r), -dphi.dot(a.U()), dphi.dot(a.T()) };
+    }
+
+    /** The carets of a KINK at screen x (his 2026-10-21 note 7): like
+     *  the strict seam's (seamCarets) but ONLY the components that
+     *  reach CARET_KINK_MIN (no small form — a kink is a declared
+     *  jump), and never on a lane shown as an ABSOLUTE ANGLE (a bank /
+     *  elevation / heading lane STEPS there — no rate explodes);
+     *  the resulting overlays' comps 1/2 unless absolute, comp 3
+     *  unless the bank overlay. */
+    private List<CaretSpec> kinkCarets(double bx, double[] spike) {
+        List<CaretSpec> out = new ArrayList<>();
+        if (spike == null) return out;
+        int[] upR = { 0 }, dnR = { 0 };
+        for (int L = 0; L < LANES; L++) {
+            if (Math.abs(spike[L]) < CARET_KINK_MIN) continue;
+            if (L == 2 && activeRollAbs()) continue;
+            if (L < 2 && activeYpAbs()) continue;
+            boolean up = spike[L] > 0;
+            out.add(new CaretSpec(caretY(bx, up, upR, dnR), up, laneColor(L), false));
+        }
+        if (resAxisOn) {
+            boolean resAbs = app.settings.resRollAbs() && app.settings.resRollG();
+            for (int comp = 1; comp <= 3; comp++) {
+                if (!resCompOn(comp)) continue;
+                if (comp <= 2 && resYpAbsOn()) continue;
+                if (comp == 3 && resAbs) continue;
+                if (Math.abs(spike[comp - 1]) < CARET_KINK_MIN) continue;
+                boolean up = spike[comp - 1] > 0;
+                out.add(new CaretSpec(caretY(bx, up, upR, dnR), up,
+                    overlayColor(comp), false));
+            }
+        }
+        return out;
+    }
+
+    /** The kinks' axis coordinates inside the run — the drawn
+     *  overlays break there like at seams (midway between the two
+     *  samples). */
+    private List<Double> kinkAxes() {
+        List<Double> out = new ArrayList<>();
+        if (app.kinks == null || app.lastSamples == null) return out;
+        for (int k : app.kinks) {
+            if (k >= 1 && k < app.lastSamples.size()) {
+                out.add((gAxis(k - 1) + gAxis(k)) / 2);
+            }
+        }
+        return out;
     }
 
     /** One placed seam caret (D249): its y on the line, direction,
@@ -10383,6 +10494,18 @@ class GraphEditor extends Region {
         return -1;
     }
 
+    /** The s/c band button under (x, y) — {element, kind} (kind 0 =
+     *  the element chip, 1 = the roll button), else null (his
+     *  2026-10-21 note 3). */
+    private int[] hitScChip(double x, double y) {
+        for (double[] r : scChipRects) {
+            if (x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]) {
+                return new int[]{ (int) r[4], (int) r[5] };
+            }
+        }
+        return null;
+    }
+
     // ---------- straight/curve ELEMENT STRIP (v11.0, D68) ----------
     // the active s/c section's strip REPLACES the lanes with the element
     // widget: a translucent band per element (labeled chip at the top),
@@ -10393,6 +10516,13 @@ class GraphEditor extends Region {
     // right-click = insert/delete menu; double-click = element dialog.
     // The felt-G curves draw behind at SC_CURVE_ALPHA for context.
     private int elSel = -1;            // selected element of the active s/c
+    // the two chip BUTTONS per band (his 2026-10-21 note 3): rows
+    // {x, y, w, h, element, kind} — kind 0 = the element chip (the
+    // element dialog), 1 = the roll button (the Roll dialog); rebuilt
+    // per redraw; hoverScChip = {element, kind} under the cursor
+    private final List<double[]> scChipRects = new ArrayList<>();
+    private int[] hoverScChip = null;
+    private static final double SC_ROLL_CHIP_W = 22;
     // the LANE ELEMENT (v20.1, D259 §2.4): the element whose roll lane
     // app.lanes binds to — 0 when an s/c activates, set by selecting an
     // element or clicking another element's lane; STICKY (a deselect
@@ -10675,13 +10805,23 @@ class GraphEditor extends Region {
             String label = elemLabel(e);
             // + the kind icon's slot (D259 §1.8/§9.6): 14 px + a 4 px gap
             double bw = label.length() * 6 + 12 + 18;
+            // the ELEMENT BUTTON (his 2026-10-21 note 3): the chip sits
+            // at the band's TOP-LEFT as a button — hover-lit like the
+            // badge (brighter fill / edge, hand cursor), a click opens
+            // the element dialog; beside it the ROLL BUTTON (the mini
+            // circle arrow in the roll lane's color) opens the element's
+            // roll settings. The S/C badge above them stays the
+            // section's. Both rects are recorded for the press.
             if (x1 - x0 >= bw + 6) {
-                double bx = (x0 + x1) / 2 - bw / 2, by = top + 24;
-                gc.setGlobalAlpha(0.92);
-                gc.setFill(Color.rgb(45, 50, 62));
+                double bx = x0 + 4, by = top + 24;
+                boolean hotE = hoverScChip != null && hoverScChip[0] == i
+                    && hoverScChip[1] == 0;
+                gc.setGlobalAlpha(hotE ? 1.0 : 0.92);
+                gc.setFill(hotE ? Color.rgb(84, 92, 112) : Color.rgb(45, 50, 62));
                 gc.fillRoundRect(bx, by, bw, 15, 7, 7);
-                gc.setStroke(i == elSel ? Color.WHITE : col.deriveColor(0, 1, 1, 0.7));
-                gc.setLineWidth(1);
+                gc.setStroke(hotE || i == elSel ? Color.WHITE
+                    : col.deriveColor(0, 1, 1, 0.7));
+                gc.setLineWidth(hotE ? 1.6 : 1);
                 gc.strokeRoundRect(bx, by, bw, 15, 7, 7);
                 Color tcol = col.brighter();
                 // the stroked kind icon at the chip's left (D259 §9.6,
@@ -10691,6 +10831,22 @@ class GraphEditor extends Region {
                     bx + 6, by + 2.5, 1.0, tcol);
                 gc.setFill(tcol);
                 gc.fillText(label, bx + 18 + (bw - 18) / 2, by + 8);
+                scChipRects.add(new double[]{ bx, by, bw, 15, i, 0 });
+                if (x1 - x0 >= bw + 6 + SC_ROLL_CHIP_W + 4) {
+                    double rx = bx + bw + 4;
+                    boolean hotR = hoverScChip != null && hoverScChip[0] == i
+                        && hoverScChip[1] == 1;
+                    Color rcol = laneColor(2);
+                    gc.setGlobalAlpha(hotR ? 1.0 : 0.92);
+                    gc.setFill(hotR ? Color.rgb(84, 92, 112) : Color.rgb(45, 50, 62));
+                    gc.fillRoundRect(rx, by, SC_ROLL_CHIP_W, 15, 7, 7);
+                    gc.setStroke(hotR ? Color.WHITE : rcol.deriveColor(0, 1, 1, 0.7));
+                    gc.setLineWidth(hotR ? 1.6 : 1);
+                    gc.strokeRoundRect(rx, by, SC_ROLL_CHIP_W, 15, 7, 7);
+                    strokeMiniCircleArrow(gc, rx + SC_ROLL_CHIP_W / 2, by + 7.5,
+                        4.5, rcol.brighter());
+                    scChipRects.add(new double[]{ rx, by, SC_ROLL_CHIP_W, 15, i, 1 });
+                }
                 gc.setGlobalAlpha(1.0);
             }
         }
@@ -10730,6 +10886,20 @@ class GraphEditor extends Region {
             gc.strokeLine(bx, top, bx, bot);
             gc.setLineDashes((double[]) null);
             gc.setGlobalAlpha(1.0);
+            // a border INTO an absolute-bank element snaps the bank on
+            // the first leg past it — a declared KINK (his 2026-10-21
+            // note 7): the roll caret (and the overlays') on the
+            // border instead of an exploding rate
+            if (internal) {
+                TrackCompiler.Span ksp = spanOf(activeSection);
+                int kb = ksp == null || app.lastSamples == null ? -1
+                    : TrackCompiler.sampleAtArc(app.lastSamples, ksp, ksp.s0() + b[j]);
+                if (kb >= 0 && isKink(kb + 1)) {
+                    for (CaretSpec cs : kinkCarets(bx, kinkSpikes(kb + 1))) {
+                        drawCaret(gc, bx, cs.y(), cs.up(), cs.col(), cs.small());
+                    }
+                }
+            }
             if (internal) {   // smoothing diamond: filled = blending
                 double dy = scDiamondY();
                 boolean on = sc.elements.get(j).blendIn > 1e-9;
@@ -10914,6 +11084,20 @@ class GraphEditor extends Region {
                     && hitKnob(e.getX(), e.getY()) != 0))) {
             return false;
         }
+        // the band's two BUTTONS (his 2026-10-21 note 3): the element
+        // chip opens the element dialog, the roll button the Roll
+        // dialog — selecting the element (+ its lane) on the way
+        int[] chip = hitScChip(e.getX(), e.getY());
+        if (chip != null) {
+            if (chip[0] != elSel || chip[0] != scLaneIdx(sc)) {
+                elSel = chip[0];
+                setScLaneElem(chip[0]);
+            }
+            redraw();
+            if (chip[1] == 0) showElementDialog(chip[0]);
+            else showRollDialog(chip[0]);
+            return true;
+        }
         int d = hitScDiamond(e.getX(), e.getY());
         if (d >= 1) {   // interior borders only — the entry ease is gone (v20.1)
             beginGesture();
@@ -10994,6 +11178,11 @@ class GraphEditor extends Region {
                 setScLaneElem(i);   // selecting an element = editing its lane
                 redraw();
             }
+            // ... and a BOX SELECT of the (now) lane element's roll nodes
+            // begins (his 2026-10-21 note 5): a drag selects the nodes
+            // it catches, a clean click stays the element select (the
+            // tiny box deselects nodes, the plot's own rule)
+            pressBoxStart(e);
             return true;
         }
         if (seamDiamondPressed(e)) return true;
@@ -11184,9 +11373,12 @@ class GraphEditor extends Region {
         redraw();
     }
 
-    /** Double-click an element (or its right-click "Edit element…"):
-     *  type the parameters directly. The kind radios switch the visible
-     *  rows; switching keeps the arc length where it can. */
+    /** The ELEMENT dialog — the element chip BUTTON at the band's
+     *  top-left (his 2026-10-21 note 3; the band's double-click no
+     *  longer opens it) or the right-click "Edit element…": type the
+     *  parameters directly. The kind radios switch the visible rows;
+     *  switching keeps the arc length where it can. Its Roll block
+     *  moved to showRollDialog (the roll button beside the chip). */
     private Stage showElementDialog(int idx) {
         StraightCurveSection sc = activeSc();
         if (sc == null || idx < 0 || idx >= sc.elements.size()) return null;
@@ -11222,33 +11414,6 @@ class GraphEditor extends Region {
             "Curve plane: 0 = flat turn (positive angle = left), 90 = pull up,"
             + " 180 = flat turn right, 270 = drop; negative angle mirrors"));
 
-        // the ROLL block (v20.1, D259 §2.5): the element's OWN roll
-        // settings — axis, rate units, behavior — with the lane
-        // interlocks (Absolute ⇒ Global; Local ⇒ Rate); the two
-        // buttons act on THIS element's lane alone and close the
-        // dialog — Apply never touches the roll settings
-        final boolean rollG0 = el.roll.rollGlobal();
-        final boolean rollPM0 = el.roll.ratePerMeter();
-        final boolean rollAbs0 = el.roll.rollAbsolute();
-        ToggleGroup axG = new ToggleGroup();
-        RadioButton axL = new RadioButton("Local (about the track)");
-        RadioButton axGl = new RadioButton("Global (bank vs horizon)");
-        axL.setToggleGroup(axG);
-        axGl.setToggleGroup(axG);
-        ToggleGroup unG = new ToggleGroup();
-        RadioButton unS = new RadioButton("°/s");
-        RadioButton unM = new RadioButton("°/m");
-        unS.setToggleGroup(unG);
-        unM.setToggleGroup(unG);
-        ToggleGroup bhG = new ToggleGroup();
-        RadioButton bhR = new RadioButton("Rate");
-        RadioButton bhA = new RadioButton("Absolute bank");
-        bhR.setToggleGroup(bhG);
-        bhA.setToggleGroup(bhG);
-        (rollG0 ? axGl : axL).setSelected(true);
-        (rollPM0 ? unM : unS).setSelected(true);
-        (rollAbs0 ? bhA : bhR).setSelected(true);
-
         int row = 0;
         grid.add(new Label("Kind"), 0, row);
         grid.add(new HBox(10, rbS, rbC), 1, row++);
@@ -11265,48 +11430,6 @@ class GraphEditor extends Region {
         // the D232/D233 entry roll ease is gone; the strict seam's ◇ is
         // the one entry control): its row does not exist
         if (idx > 0) grid.addRow(row++, smL, smF);
-        Label rollHead = new Label(SectionNames.ROLL_BLOCK);
-        rollHead.setStyle("-fx-font-weight: bold;");
-        grid.add(rollHead, 0, row++, 2, 1);
-        grid.add(new Label("Axis"), 0, row);
-        grid.add(new HBox(10, grayHint(axL, SectionNames.ABS_NEEDS_GLOBAL_WHY),
-            axGl), 1, row++);
-        grid.add(new Label("Rate units"), 0, row);
-        HBox unitsRow = new HBox(10, unS, unM);
-        grid.add(grayHint(unitsRow, SectionNames.BANK_NO_RATE_WHY), 1, row++);
-        grid.add(new Label("Behavior"), 0, row);
-        grid.add(new HBox(10, bhR, bhA), 1, row++);
-        Button rollSwitch = new Button(SectionNames.ROLL_SWITCH_BUTTON);
-        Button rollBake = new Button(SectionNames.ROLL_BAKE_BUTTON);
-        rollSwitch.setTooltip(new Tooltip(SectionNames.ROLL_SWITCH_TIP));
-        rollBake.setTooltip(new Tooltip(SectionNames.ROLL_BAKE_TIP));
-        HBox rollBtns = new HBox(8,
-            grayHint(rollSwitch, SectionNames.ROLL_PICK_WHY),
-            grayHint(rollBake, sc.reversed
-                ? "Legacy reversed sections refuse baking."
-                : SectionNames.ROLL_PICK_WHY));
-        rollBtns.setAlignment(Pos.CENTER_LEFT);
-        grid.add(rollBtns, 0, row++, 2, 1);
-        Runnable rollSync = () -> {
-            boolean abs = bhA.isSelected();
-            if (abs) axGl.setSelected(true);           // Absolute ⇒ Global
-            axL.setDisable(abs);
-            unS.setDisable(abs);                       // no rate units on a bank
-            unM.setDisable(abs);
-            unitsRow.setDisable(abs);
-            boolean gSel = axGl.isSelected() || abs;
-            boolean changed = gSel != rollG0 || unM.isSelected() != rollPM0
-                || abs != rollAbs0;
-            rollSwitch.setDisable(!changed);
-            rollBake.setDisable(!changed || sc.reversed);
-        };
-        axL.setOnAction(ev -> { bhR.setSelected(true); rollSync.run(); });   // Local ⇒ Rate
-        axGl.setOnAction(ev -> rollSync.run());
-        unS.setOnAction(ev -> rollSync.run());
-        unM.setOnAction(ev -> rollSync.run());
-        bhR.setOnAction(ev -> rollSync.run());
-        bhA.setOnAction(ev -> rollSync.run());
-        rollSync.run();
         for (javafx.scene.Node c : grid.getChildren()) {
             if (c instanceof TextField tf) {
                 tf.setPrefColumnCount(7);
@@ -11395,6 +11518,139 @@ class GraphEditor extends Region {
             dlg.close();
         });
         cancel.setOnAction(ev -> dlg.close());
+
+        dlg.setScene(new Scene(grid));
+        dlg.show();
+        app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
+        return dlg;
+    }
+
+    /** The rate-unit conversion of ONE element's roll lane (his
+     *  2026-10-21 note 6 — RollLane.scaleValues): v = the DESIGN speed
+     *  at the node's arc off the displayed compile (the element's end
+     *  speed past L — the shadow's nodes; the section's design speed
+     *  without a compile); toPerMeter = ÷ v, else × v. */
+    private void scaleRollUnits(int piece, int k, int idx,
+                                StraightCurveSection sc, RollLane rl,
+                                boolean toPerMeter) {
+        TrackCompiler.Span sp = spanAt(piece, k);
+        double[] b = scBoundsS(sc);
+        double L = sc.elements.get(idx).L;
+        java.util.function.DoubleUnaryOperator vAt = x -> {
+            double v = Math.max(0.5, sc.vDesign());
+            List<FVDIntegrator.Sample> ss = app.lastSamples;
+            if (sp != null && ss != null && !ss.isEmpty() && idx < b.length - 1) {
+                double s = sp.s0() + b[idx] + Math.min(Math.max(0, x), L);
+                int lo = Math.max(0, Math.min(sp.i0(), ss.size() - 1));
+                int hi = Math.max(lo, Math.min(sp.i1(), ss.size() - 1));
+                while (hi - lo > 1) {
+                    int mid = (lo + hi) >>> 1;
+                    if (ss.get(mid).s() <= s) lo = mid; else hi = mid;
+                }
+                int at = s - ss.get(lo).s() <= ss.get(hi).s() - s ? lo : hi;
+                v = Math.max(0.5, ss.get(at).v());
+            }
+            return toPerMeter ? 1 / v : v;
+        };
+        rl.scaleValues(vAt);
+    }
+
+    /** The ROLL SETTINGS dialog of ONE element (his 2026-10-21 hand-
+     *  test note 3 — the Roll block LEFT the element dialog: section
+     *  settings = the S/C badge, element settings = the element chip
+     *  BUTTON at the band's top-left, roll settings = the roll button
+     *  beside it; the badge menu's "Orientation settings…" over an s/c
+     *  opens this one too): axis / rate units / behavior with the lane
+     *  interlocks, Switch (flags; a rate-unit flip converts the values,
+     *  note 6) and Bake (through the density preview) — both re-resolve
+     *  the element BY INDEX (D247) and close the dialog. */
+    private Stage showRollDialog(int idx) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null || idx < 0 || idx >= sc.elements.size()) return null;
+        StraightCurveSection.Element el = sc.elements.get(idx);
+        Stage dlg = new Stage();
+        dlg.initOwner(app.stage);
+        dlg.setTitle(SectionNames.ROLL_BLOCK + " — element " + (idx + 1)
+            + " of the straight/curve section");
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(14));
+        // the ROLL block (v20.1, D259 §2.5): the element's OWN roll
+        // settings — axis, rate units, behavior — with the lane
+        // interlocks (Absolute ⇒ Global; Local ⇒ Rate); the two
+        // buttons act on THIS element's lane alone and close the
+        // dialog — Apply never touches the roll settings
+        final boolean rollG0 = el.roll.rollGlobal();
+        final boolean rollPM0 = el.roll.ratePerMeter();
+        final boolean rollAbs0 = el.roll.rollAbsolute();
+        ToggleGroup axG = new ToggleGroup();
+        RadioButton axL = new RadioButton("Local (about the track)");
+        RadioButton axGl = new RadioButton("Global (bank vs horizon)");
+        axL.setToggleGroup(axG);
+        axGl.setToggleGroup(axG);
+        ToggleGroup unG = new ToggleGroup();
+        RadioButton unS = new RadioButton("°/s");
+        RadioButton unM = new RadioButton("°/m");
+        unS.setToggleGroup(unG);
+        unM.setToggleGroup(unG);
+        ToggleGroup bhG = new ToggleGroup();
+        RadioButton bhR = new RadioButton("Rate");
+        RadioButton bhA = new RadioButton("Absolute bank");
+        bhR.setToggleGroup(bhG);
+        bhA.setToggleGroup(bhG);
+        (rollG0 ? axGl : axL).setSelected(true);
+        (rollPM0 ? unM : unS).setSelected(true);
+        (rollAbs0 ? bhA : bhR).setSelected(true);
+
+
+        Button closeBtn = new Button("Close");
+        closeBtn.setCancelButton(true);
+        int row = 0;
+        Label rollHead = new Label(SectionNames.ROLL_BLOCK);
+        rollHead.setStyle("-fx-font-weight: bold;");
+        grid.add(rollHead, 0, row++, 2, 1);
+        grid.add(new Label("Axis"), 0, row);
+        grid.add(new HBox(10, grayHint(axL, SectionNames.ABS_NEEDS_GLOBAL_WHY),
+            axGl), 1, row++);
+        grid.add(new Label("Rate units"), 0, row);
+        HBox unitsRow = new HBox(10, unS, unM);
+        grid.add(grayHint(unitsRow, SectionNames.BANK_NO_RATE_WHY), 1, row++);
+        grid.add(new Label("Behavior"), 0, row);
+        grid.add(new HBox(10, bhR, bhA), 1, row++);
+        Button rollSwitch = new Button(SectionNames.ROLL_SWITCH_BUTTON);
+        Button rollBake = new Button(SectionNames.ROLL_BAKE_BUTTON);
+        rollSwitch.setTooltip(new Tooltip(SectionNames.ROLL_SWITCH_TIP));
+        rollBake.setTooltip(new Tooltip(SectionNames.ROLL_BAKE_TIP));
+        HBox rollBtns = new HBox(8,
+            grayHint(rollSwitch, SectionNames.ROLL_PICK_WHY),
+            grayHint(rollBake, sc.reversed
+                ? "Legacy reversed sections refuse baking."
+                : SectionNames.ROLL_PICK_WHY));
+        rollBtns.getChildren().add(closeBtn);
+        rollBtns.setAlignment(Pos.CENTER_LEFT);
+        grid.add(rollBtns, 0, row++, 2, 1);
+        Runnable rollSync = () -> {
+            boolean abs = bhA.isSelected();
+            if (abs) axGl.setSelected(true);           // Absolute ⇒ Global
+            axL.setDisable(abs);
+            unS.setDisable(abs);                       // no rate units on a bank
+            unM.setDisable(abs);
+            unitsRow.setDisable(abs);
+            boolean gSel = axGl.isSelected() || abs;
+            boolean changed = gSel != rollG0 || unM.isSelected() != rollPM0
+                || abs != rollAbs0;
+            rollSwitch.setDisable(!changed);
+            rollBake.setDisable(!changed || sc.reversed);
+        };
+        axL.setOnAction(ev -> { bhR.setSelected(true); rollSync.run(); });   // Local ⇒ Rate
+        axGl.setOnAction(ev -> rollSync.run());
+        unS.setOnAction(ev -> rollSync.run());
+        unM.setOnAction(ev -> rollSync.run());
+        bhR.setOnAction(ev -> rollSync.run());
+        bhA.setOnAction(ev -> rollSync.run());
+        rollSync.run();
+        final int elPiece = activePiece, elSec = activeSection;
         // SWITCH = the flags only, one undo step (the same graph reads
         // under the new settings); BAKE = Coaster.bakeElementRoll
         // through the density preview (the graph converts so the bank
@@ -11409,8 +11665,20 @@ class GraphEditor extends Region {
                 return;
             }
             boolean abs = bhA.isSelected();
+            boolean pmNew = unM.isSelected();
             pushUndoSnapshot();
-            e2.roll.setFlags(axGl.isSelected() || abs, unM.isSelected(), abs);
+            // RATE UNITS convert the VALUES literally (his 2026-10-21 note
+            // 6): between two RATE settings a °/m → °/s switch multiplies
+            // every node value and handle offset by the design speed at
+            // the node's arc (÷ v the other way), the shadow too; a bank
+            // lane never converts (angles are not rates, D213) and the
+            // axis / behavior flips keep reinterpreting the graph
+            if (!abs && !e2.roll.rollAbsolute() && pmNew != e2.roll.ratePerMeter()) {
+                StraightCurveSection s2 = (StraightCurveSection)
+                    app.coaster.pieces.get(elPiece).sections.get(elSec);
+                scaleRollUnits(elPiece, elSec, idx, s2, e2.roll, pmNew);
+            }
+            e2.roll.setFlags(axGl.isSelected() || abs, pmNew, abs);
             if (activePiece == elPiece && activeSection == elSec) {
                 elSel = idx;
                 setScLaneElem(idx);
@@ -11428,6 +11696,7 @@ class GraphEditor extends Region {
                 axGl.isSelected() || abs, unM.isSelected(), abs);
         });
 
+        closeBtn.setOnAction(ev -> dlg.close());
         dlg.setScene(new Scene(grid));
         dlg.show();
         app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
@@ -12119,6 +12388,13 @@ class GraphEditor extends Region {
                 hoverBadge = hb;
                 redraw();
             }
+            // the s/c band buttons light up the same way (note 3)
+            int[] hc = pcSec >= 0 || activeSc() == null ? null
+                : hitScChip(e.getX(), e.getY());
+            if (!java.util.Arrays.equals(hc, hoverScChip)) {
+                hoverScChip = hc;
+                redraw();
+            }
             // seam-DIAMOND hover (v19.8, D237): the hollow diamond
             // grows its gray center + side carets
             int hd = pcSec >= 0 ? -1 : hitSeamDiamond(e.getX(), e.getY());
@@ -12151,7 +12427,7 @@ class GraphEditor extends Region {
                 && activeBridge() == null
                 && selIdx < active().size()
                 && hitKnob(e.getX(), e.getY()) != 0;
-            boolean hand = hs >= 0 || hb >= 0;
+            boolean hand = hs >= 0 || hb >= 0 || hoverScChip != null;
             if (pcLine || (hn < 0 && !overKnob
                     && (hd >= 0
                         || seamEdgeHit(e.getX(), e.getY()) >= 0))) {
@@ -12268,7 +12544,8 @@ class GraphEditor extends Region {
             if (!Double.isNaN(hoverT) || hoverResComp != 0
                     || hoverDerLane >= 0 || hoverNodeIdx >= 0
                     || hoverBadge >= 0 || hoverSeam >= 0
-                    || hoverSeamDia >= 0 || hoverKnob != 0) {
+                    || hoverSeamDia >= 0 || hoverKnob != 0
+                    || hoverScChip != null) {
                 hoverT = Double.NaN;
                 hoverRawT = Double.NaN;
                 hoverResComp = 0;
@@ -12276,6 +12553,7 @@ class GraphEditor extends Region {
                 hoverNodeIdx = -1;
                 hoverKnob = 0;
                 hoverBadge = -1;
+                hoverScChip = null;
                 hoverSeam = -1;
                 hoverSeamDia = -1;
                 redraw();
@@ -12489,19 +12767,11 @@ class GraphEditor extends Region {
                 }
                 StraightCurveSection sc = activeSc();
                 if (sc != null) {
-                    // a roll NODE opens its editor (v20.1), else the
-                    // element under the click opens its dialog
+                    // a roll NODE opens its editor (v20.1); the band's
+                    // double-click opens NOTHING since his 2026-10-21
+                    // note 3 — the band's buttons are the dialogs' doors
                     int hn2 = scLaneBound() ? hitNode(e.getX(), e.getY()) : -1;
-                    if (hn2 >= 0) {
-                        showNodeEditor(hn2);
-                        return;
-                    }
-                    double gt = xToT(e.getX());
-                    if (gt >= tOff - 1e-9 && gt <= tOff + sectionEnd() + 1e-9
-                            && e.getY() >= MARGIN_TOP
-                            && e.getY() <= MARGIN_TOP + plotHeight()) {
-                        showElementDialog(elementAtT(sc, gt));
-                    }
+                    if (hn2 >= 0) showNodeEditor(hn2);
                     return;
                 }
                 int hit = hitNode(e.getX(), e.getY());
@@ -17367,12 +17637,20 @@ class GraphEditor extends Region {
                 if (ln.size() < 2 || last.t < nb.L - 1e-9) {
                     return new double[]{ last.val, 0 };   // holding flat
                 }
-                return new double[]{ BezierBaker.exactAt(ln, nb.L),
-                                     BezierBaker.slopeAt(ln, nb.L) };
+                // the END node's own in-handle slope — the node editor's
+                // number (his 2026-10-21 note 2: BezierBaker.slopeAt AT
+                // the last knot bisects to u = 1, where a flat in handle
+                // has zero dx — B matched the value and leveled the knob)
+                double inDt = BezierBaker.effInDt(ln.get(ln.size() - 2), last);
+                return new double[]{ last.val,
+                    Math.abs(inDt) < 1e-12 ? 0 : last.inDv / inDt };
             }
             BezierBaker.Node n0 = ln.get(0);   // the next element's START
+            // the START node's out-handle slope (slopeAt(ln, 0) read 0 —
+            // "before start" AT the first knot; note 2's bug)
+            double outDt = ln.size() < 2 ? 0 : BezierBaker.effOutDt(n0, ln.get(1));
             return new double[]{ n0.val,
-                ln.size() < 2 ? 0 : BezierBaker.slopeAt(ln, 0) };
+                Math.abs(outDt) < 1e-12 ? 0 : n0.outDv / outDt };
         }
         TrackCompiler.Span sp = spanOf(activeSection);
         if (sp == null || app.lastSamples == null || app.resultRates == null
@@ -21436,6 +21714,7 @@ class GraphEditor extends Region {
     }
 
     private void redrawBody() {
+        scChipRects.clear();   // the s/c strip re-records its buttons
         // LIVE node-editor resync (v19.14, D243) — before every
         // guard: the dialog follows outside edits even while the
         // panel is collapsed. Muted equal-value writes = free.
@@ -21626,6 +21905,14 @@ class GraphEditor extends Region {
         // resulting roll = the authored roll lane.
         if (resAxisOn) {
             List<Double> seams = sectionBoundaries();
+            // + the KINKS (his 2026-10-21 note 7): the path breaks at an
+            // authored instantaneous change inside a span like at a seam
+            List<Double> kx = kinkAxes();
+            if (!kx.isEmpty()) {
+                seams = new ArrayList<>(seams);
+                seams.addAll(kx);
+                java.util.Collections.sort(seams);
+            }
             // clamped to the RUN (v13.11, D85): the global timeline
             // continues into detached pieces, whose overlay bled in
             // just right of the run's curves

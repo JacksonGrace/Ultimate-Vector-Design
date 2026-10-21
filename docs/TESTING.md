@@ -5555,6 +5555,127 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     StripGate 49, uvd.ConflictGate 87, Nl2ElemProbe 22. The legacy probe
     pair: gates/probes/legacy-axis-2026-10-21 (LegacyAxisProbe +
     BlendTurnProbe, the recorded legacy-checksums.txt).
+    1b — v20.1 (D259.1b): the ROLL LANE PER ELEMENT + the SEAM INVARIANT
+    (design doc §2 / §3). BY HAND (he tested (a)-(f) on 2026-10-21 and
+    sent notes 1-7, all landed in D259.1b; (g)-(p) untested):
+        (a) Select an s/c section: the lane buttons gray Gv/Gl and light
+        Roll; element 0's roll graph draws editable, the other elements'
+        dimmed; click another element's graph (or its band) — it becomes
+        the editable one; nodes insert / drag / append (A) / delete like
+        any roll lane and never pass the element's end (the wall).
+        (b) Shrink an element below its last node: the cut node sits at
+        the new end with three dots past it; grow it back — the old
+        graph returns bitwise. Edit the node BEFORE the cut (move it, or
+        insert a node between it and the cut) and grow: the cut node
+        stays as a real node and the old graph continues past it — the
+        drawn graph over the element never changes on growth (note 1).
+        (c) The three buttons at a band's top-left: the element chip
+        opens the element dialog (kind / size / smoothing — no roll
+        rows), the circle-arrow button beside it the Roll dialog (axis /
+        units / behavior, Switch / Bake), the S/C badge the section's
+        menu; a band double-click opens nothing (note 3). Press-drag on
+        an empty band area draws a box and selects the roll nodes it
+        catches (note 5).
+        (d) Roll dialog: pick °/s on a °/m lane and Switch — every node
+        value and handle multiplies by the speed there (the graph reads
+        the same bank rate in the new units); Bake converts through the
+        density preview instead (note 6).
+        (e) B on the last node of an element's lane matches the next
+        element's start VALUE AND SLOPE (note 2 — it leveled the handle);
+        B on node 0 matches the previous element's end; Shift+B both.
+        (f) A rate element followed by an ABSOLUTE-bank element whose
+        first node differs from the arriving bank: the border line wears
+        a roll caret in the rate view (or the Resulting roll overlay),
+        the roll-rate graph stays finite on both sides and the overlay
+        breaks there (note 7); the same on a plain section boundary
+        into a force/geo section with an absolute bank / elevation /
+        heading lane that starts off the arriving angle; an absolute
+        lane starting AT the arriving angle shows no caret.
+        (g) ⊕ > Add straight/curve after a force section: the new s/c
+        is its own piece behind a strict seam (double line, no carets,
+        "Strict Seam n" in the toolbar), all axes following, no ≠v on
+        it; ⊕ > Add force after the s/c: again a strict seam. Insert
+        section… an s/c at a plain boundary: a seam on BOTH sides.
+        (h) The seam menu on such a seam: "Un-strict seam" is grayed
+        ("…connect the sections instead." / "…convert it first.");
+        "Split track at seam" still works; Delete… / Mirror / Copy /
+        Switch Coaster… on the run carry the automatic seams along.
+        (i) Edit the upstream force section's graphs, move the run's
+        anchor (x/y/z, yaw), tilt it: the s/c follows and re-aims
+        exactly like an in-piece continuation; its badge never wears
+        ≠o on its own (a conflict-tilted upstream passes its ≠o on).
+        (j) Open the seam window: the rows show the live angles; lock an
+        axis — the s/c freezes at its current pose (nothing moves),
+        type an angle — the seam kinks (carets); unlock all three — it
+        follows again. "Align to previous end (B)": with a locked axis
+        holding a typed angle, the button (or B / Shift+B with no node
+        selected and the seam ball revealed / the window open) sets the
+        locked angles back to the previous section's end once; grayed
+        "This seam already follows the previous section." with nothing
+        locked; B with nothing selected and no seam highlighted says
+        "B needs a selected node or a highlighted strict seam.".
+        (k) Smoothing on an s/c edge: drag the hollow diamond — the
+        window engages (band, no carets); on a seam into a SHORT s/c
+        (< 1 m) the "Enable smoothing" item is grayed with the dry-run
+        sentence, the hollow diamond's hover posts it, a drag that ends
+        too short posts it once, the Smoothing Options window shows it
+        under the length box while the length is too short.
+        (l) The seam ball sits exactly on the junction (not a quarter
+        meter inside the s/c); ties run across the seam at the normal
+        spacing (no double tie, no gap); one heartline strand over the
+        run; POV riding across the seam keeps the selection, entering
+        another track piece (run) selects it.
+        (m) The seam window's roll row grays when the s/c's first element
+        has an absolute bank lane ("The bank lane sets the bank at this
+        seam — edit its first node."); no roll ring on the seam rig.
+        (n) Set Design to Real on the s/c (the badge's Initial design
+        speed… window): the hover says the k ≥ 1 sentences, never "This
+        track piece starts here".
+        (o) Open "Multi-section orientation conflict.fvd" / "Multiple
+        Strict Seam Testing 9.22.26.fvd" / "Oscillations in baking
+        influence 8.24.26.fvd" / "UVD Test Coaster 10.16.26.uvd": the
+        load sentence reports converted straight/curve elements, the
+        document opens dirty, the in-piece s/c is its own piece behind a
+        strict seam and its design speed sits on the real seam speed;
+        the track ends where it did (± 1e-6 m).
+        (p) Save → reload: the lane, its shadow and the automatic seam
+        round-trip bitwise (the `rn` / `rsh` / `rcut` lines, the porient
+        line's 6th field).
+    Headless (2026-10-21, wiped classes, the final tree): uvd.ScRollLaneGate
+    70 passed (a-n: the lane / integrator / cut-shadow / bake / IO rows of
+    run 1; e7 re-pinned + e10 for note 1; e11 scaleValues for note 6;
+    q1-q4 the kinks: an absolute 30° element behind a rate element = ONE
+    kink at the border sample + 1 with the roll rate finite (the central
+    difference read ~3000 °/s), an absolute lane starting at the arriving
+    bank = none, a plain boundary into an absolute-bank lane section =
+    the span's first sample, a rate section = none); uvd.ScSeamGate 37
+    passed (a-o of run 3 + c4 the conflict-tilted upstream: the automatic
+    follower == the in-piece twin to 1e-9 m with frames / felt / design v
+    bitwise and the inherited tilt read by the Span-form predicate, c4b
+    the freeze + a lock keeps the track to 1e-9 m); uvd.ScElemGate 122;
+    DetermGate197-200 6/6/10/7, LoadGate196 7, OrientGate 23, OrientGate2
+    18, Phase2Gate, DomainGate, Phase3Gate, MultiCoasterGate 15,
+    SmoothRealGate 21, uvd.KeyRouteGate 103, TypedMarkGate 42,
+    InflSplitGate 22, ReanchorGate 3, MirrorGate 100, YpAbsGate 22,
+    uvd.SeamShapeGate 31 (its recorded pre-D247 checksums held),
+    RangeResolveGate 115, CopyGate 74, MergeGate 23, InsertGate 45,
+    LabelGate 229, uvd.PulseClockGate 30, RunGate 82, PlacementGate 41,
+    OrientModeGate 51, GestureGate 180, EndFollowGate 73, FloorGate 34,
+    StripGate 49, uvd.ConflictGate 90, Nl2ElemProbe 22, uvd.DecompProbe,
+    InflMatchProbe. Dev hooks: -Dfvd.scprobe=1 "PROBE sc fails=0" (21:
+    activation binds element 0's lane, the lane element switches, insert
+    / A / Delete / B at a border, the cut / shadow round trip, the
+    element + roll dialogs open, both band buttons recorded, the Bank
+    tint, the 3D double-click's lane switch + insert, an element delete
+    clamps the lane element), keyprobe / typedprobe / initspeedprobe /
+    smoothprobe fails=0. The clean-span dump of his 56 documents against
+    the pre-run-3 tree (3359e3e via git archive): every track end within
+    1.0e-6 m; four documents re-time their s/c on the real seam speed
+    (the A4 anchor) — "Multi-section orientation conflict.fvd" 12.4 m/s,
+    "Multiple Strict Seam Testing 9.22.26.fvd" 8.5, "UVD Test Coaster
+    10.16.26.uvd" 2.8, "Oscillations in baking influence 8.24.26.fvd"
+    0.0007; against batch 39's recorded dump the same four plus the
+    re-pinned copy-sc fixture (run 1 rebuilt it on the lane).
 
 ## Debugging heuristics learned the hard way
 

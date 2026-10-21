@@ -16150,3 +16150,123 @@ InsertGate 40, LabelGate 182, uvd.PulseClockGate 30, RunGate 78,
 PlacementGate 41, OrientModeGate 51, GestureGate 180, EndFollowGate 73,
 FloorGate 34, StripGate 49, uvd.ConflictGate 87, Nl2ElemProbe 22 (TESTING
 #176/1a). Hand-tested by him: nothing yet.
+
+D259.1b (v20.1) — STAGE 1b, THE ROLL LANE PER ELEMENT + THE SEAM
+INVARIANT (design doc §2 as rewritten 2026-10-21 and §3; four runs —
+run 1 the model + integrator (cloud, branch sc-1b-core, merged
+5cab6ff), run 2 the editor (local, 3359d3e), run 3 the seam invariant's
+model (cloud, branch sc-1b-seams, merged 051d6db) + its local half
+(62931e8), run 4 his hand-test notes + these docs). WHAT: every
+straight/curve ELEMENT carries its OWN roll lane (uvd.RollLane — nodes
+on [0, L] in meters, its own axis / rate units / behavior with the lane
+sections' interlocks, the default a global 0 °/m hold; the interim v11.1
+RATE/GLOBAL pair and the D233 entry ease are GONE, old `elem` lines
+migrate best-effort into the lane, the `el … rollg= ratem= rollabs=` +
+`rn`/`rsh`/`rcut` grammar persists lane, shadow and cut fingerprint);
+the integrator bakes each lane on an element-anchored grid, carries the
+twist angle in the RK4 state about T (the spine stays roll-free and
+bitwise), snaps an ABSOLUTE lane per leg and re-binds the bank at every
+landing border; the LEGACY_BODY_AXIS switch of 1a is retired. THE CUT /
+SHADOW RULE (D4 revised): a shorter element CUTS the lane with the
+insert-node de Casteljau split and keeps the cut-off part as the SHADOW
+(the virtual lane, persisted) that returns when the element grows —
+BITWISE while the segment into the cut node is untouched, and since his
+2026-10-21 note 1 a changed segment (the node before the cut edited, a
+node inserted between) KEEPS the cut node as a real node and continues
+the old graph past it through the shadow's right half, so the drawn
+graph over [0, L] never changes on growth (run 2's first rule restored
+the previous node's handle at the shadow's slope and dropped the cut
+node — the curve changed, his report; ScRollLaneGate e7/e10). THE
+EDITOR: an s/c binds the LANE ELEMENT's roll lane (sticky — selecting
+an element or clicking another element's graph switches it; the other
+elements' lanes draw dimmed), the element's L is a HARD wall, the cut
+stub, B / Shift+B at element borders (authored when the settings
+match, sampled otherwise — the analytic edge slopes since his note 2:
+BezierBaker.slopeAt at the first / last knot read 0 or blew up, so B
+leveled the handle), mode-3 lane buttons, the s/c rate view; THREE
+SETTINGS BUTTONS since his note 3 — the S/C badge (the section), the
+element chip at the band's top-left (the element dialog: kind / length
+/ radius / angle / direction / entry smoothing) and the roll button
+beside it (the Roll dialog: axis / units / behavior + Switch / Bake);
+the band's double-click opens nothing, the band's right-click menu
+stays for now (slated for removal); a band PRESS also starts a BOX
+SELECT of the lane's roll nodes (note 5); a rate-unit Switch between
+two rate settings CONVERTS the values literally — every node value and
+handle offset × v at the node's arc, or ÷ v, the shadow along (note
+6; the axis / behavior flips still reinterpret, a bank lane never
+converts, D213). THE SEAM INVARIANT (D5/D31; §3): a straight/curve
+section is ALWAYS a piece's section 0 and the section after it the
+next piece's section 0 — every s/c edge is a STRICT seam, AUTOMATIC
+when the program cuts it (TrackPiece.sAuto, all axes following,
+smoothing 0, the follower's first section REAL-ANCHORED so no phantom
+≠v opens, LOCKSTEP): the '+' paths, Insert, a partial convert and the
+loader's pass (Coaster.appendSectionWithInvariant /
+insertSectionAtSeam / ensureScFollower / DesignIO.scInvariantLoadPass —
+a pre-D259 file with an in-piece s/c loads cut, one sentence, dirty).
+An AUTOMATIC follower generates AT the follow contract exactly like an
+in-piece continuation (TrackCompiler's A1 branch: the upstream span's
+exact canonical pair; behind a TILTED upstream span it continues the
+DESIGN chain and INHERITS the tilt about its own entry — the run-3
+review's answer to the notes' open question 2: the in-piece twin to
+1e-9 m, frames / felt bitwise, ScSeamGate c4; the ≠o predicate's Span
+form reads the inherited tilt), its stored placement is INERT until a
+lock or a design delta turns it into a D135/D247 follower
+(Coaster.freezeAutoFollower = the ONE prologue of every seam write — the
+seam window, the mode row, Design ↔ Real, detach, the orphan guard of
+Delete / Move / Switch Coaster / Copy); L4: such a seam cannot be
+un-stricted (grayed: connect or convert the sections instead); the
+automatic follower's first section is RECONCILED at k == 0 (A4 — the
+D256 flag decides, never the lock state). Smoothing works on s/c edges
+(SM1 — the D232 ban went with the entry ease; the window's DRY RUN
+TrackCompiler.smoothEngagesWhy grays the Enable item, speaks on the
+hollow diamond's hover, after a drag that left a non-engaging window
+and in the Smoothing Options window); the seam ball sits ON the
+junction (the upstream exit, not the follower's first sample one dt
+inside); the seam window's "Align to previous end (B)" button (the
+LOCKED axes := the previous section's end orientation, one shot,
+through seamEdit; B / Shift+B with no node selected align the
+highlighted seam — the revealed seam rig's or the open window's — else
+B_NO_TARGET_WHY); the roll row grays under an absolute element-0 lane
+(the lane's node 0 owns the entry bank; no roll ring); junctions count
+s/c edges in their ordinals; POV follow + ride restart key on the RUN
+(crossing a seam inside the run activates nothing); ties, combs and the
+heartline strand anchor per RUN. CARETS AT KINKS (his note 7): an
+AUTHORED instantaneous orientation change inside a run that is not a
+strict seam — a plain boundary into a section with absolute lanes
+(bank, elevation / heading), an element border into an absolute-bank
+element — is declared by the compiler (TrackCompiler.Result.kinks,
+KINK_MIN_DEG 2 on the frame jump), Pass A differences ONE-SIDED around
+it (the central difference across an absolute border read ~3000 °/s —
+the exploding roll rate), the editor draws the components' CARETS on
+the boundary / border line (rate views only — a lane shown as an
+absolute angle just steps) and breaks the resulting overlays there; a
+strict seam's own carets include the bank snap of an absolute first
+lane (analytic, smoothing never moves it). WHY the lane: his D4 as
+revised — "element borders behave like plain section boundaries for
+roll"; the cut/shadow so a resize never loses authored work; the
+invariant so an s/c's seams are honest strict seams with one UI, and
+the automatic follower so the user never sees a difference from an
+in-piece continuation. ACCEPTED: the automatic follower's design speed
+re-anchors on the real seam speed (A4) — his three pre-D259 files with
+an in-piece s/c and UVD Test Coaster 10.16.26.uvd re-time their s/c on
+first open (12.4 / 8.5 / 2.8 / 0.0007 m/s, every track end within
+1e-6 m — the clean-span dump against the pre-run-3 tree); an s/c's
+numeric integration moves ~1e-6 m with its design speed (RK4 step
+phase); a conflict-tilted upstream's follower keeps its ≠o (the twin's
+sections did); the kink test is a 2° frame jump at a structural
+candidate (a continuous abs lane rolling faster than 200 °/s on its
+first step would flag — a caret and a one-sided difference, harmless);
+the strict-seam caret's analytic snap covers bank only (an absolute
+elevation / heading first lane behind a seam reads the contract frame —
+documented limit); the band's right-click menu lives on until its
+functions move; value boxes with full spinner behavior wait for the
+Stage-3a element window (his note 4). GATES: uvd.ScRollLaneGate 70 (a-n
++ e7/e10/e11 + q1-q4), uvd.ScSeamGate 37 (a-o + c4/c4b), LabelGate 229,
+uvd.ConflictGate 90, InsertGate 45, RunGate 82, CopyGate 74,
+PlacementGate / OrientModeGate re-pinned to the 6-field porient line,
+DetermGate198 d / Phase2Gate scRoundTrip / ScElemGate g+k built through
+the invariant; the whole 39-member battery green on wiped classes
+2026-10-21; -Dfvd.scprobe=1 (21 checks), keyprobe, typedprobe,
+initspeedprobe, smoothprobe fails=0. Hand-tested by him 2026-10-21: the
+roll lane strip (his notes 1-7 — this entry); nothing of the seam
+invariant yet (TESTING #176/1b).
