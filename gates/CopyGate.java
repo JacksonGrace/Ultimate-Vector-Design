@@ -566,6 +566,47 @@ public class CopyGate {
         }
         check(scOk, "h5 s/c copy: new element + lane objects, lane values, flags, shadow + fingerprint verbatim (element 1 in a cut state)", "");
 
+        // ---------- (k) v20.1, D259 §3: copyRun carries the AUTOMATIC seam ----------
+        {
+            Coaster k = new Coaster();
+            TrackPiece kp = new TrackPiece(0, 21, 0, 0);
+            kp.sections.add(new ForceSection(forceLanes(), 22));
+            k.pieces.add(kp);
+            TrackCompiler.Result kr0 = rebuild(k);
+            k.appendSectionWithInvariant(0, StraightCurveSection.straight(9,
+                kr0.samples().get(kr0.spans().get(0).i1()).v()), Coaster.INTEGRATE_DT);
+            TrackCompiler.Result kr = rebuild(k);
+            int nk = k.copyRun(0, 1, Coaster.COPY_DZ, kr.spans());   // the orphan-guard overload
+            TrackCompiler.Result kr1 = rebuild(k);
+            int n = kr1.spans().get(1).i1() + 1;
+            String same = identical(kr1.samples(), 0, kr1.samples(), kr1.spans().get(2).i0(), n);
+            // identical() compares positions too — the copy sits 5 m along +z, so the
+            // frames / speeds are compared bitwise here and the positions as a translation
+            double worst = 0;
+            boolean fr = true;
+            for (int i = 0; i < n; i++) {
+                FVDIntegrator.Sample a = kr1.samples().get(i);
+                FVDIntegrator.Sample b = kr1.samples().get(kr1.spans().get(2).i0() + i);
+                fr &= Double.doubleToLongBits(a.T().x()) == Double.doubleToLongBits(b.T().x())
+                    && Double.doubleToLongBits(a.T().y()) == Double.doubleToLongBits(b.T().y())
+                    && Double.doubleToLongBits(a.T().z()) == Double.doubleToLongBits(b.T().z())
+                    && Double.doubleToLongBits(a.U().x()) == Double.doubleToLongBits(b.U().x())
+                    && Double.doubleToLongBits(a.U().y()) == Double.doubleToLongBits(b.U().y())
+                    && Double.doubleToLongBits(a.U().z()) == Double.doubleToLongBits(b.U().z())
+                    && Double.doubleToLongBits(a.v()) == Double.doubleToLongBits(b.v())
+                    && Double.doubleToLongBits(kr1.trueV()[i])
+                        == Double.doubleToLongBits(kr1.trueV()[kr1.spans().get(2).i0() + i]);
+                worst = Math.max(worst,
+                    a.pos().add(new Vec3(0, 0, Coaster.COPY_DZ)).sub(b.pos()).length());
+            }
+            check(nk == 2 && k.pieces.size() == 4 && k.autoFollower(3) && k.pieces.get(3).sAuto
+                    && !k.pieces.get(2).followPrev && k.scInvariantHolds() && fr && worst <= 1e-9,
+                "k1 copyRun of [force] | automatic [sc] (the orphan-guard overload): the copied"
+                + " follower is automatic (sAuto carried, the head normalized), frames / speeds /"
+                + " true speeds BITWISE the source's, positions the +5 z translation ≤ 1e-9",
+                String.format("worst %.2e m", worst) + (same == null ? " (positions equal too)" : ""));
+        }
+
         System.out.println();
         System.out.println(fail == 0
             ? "ALL COPY GATES PASS (" + pass + ")"

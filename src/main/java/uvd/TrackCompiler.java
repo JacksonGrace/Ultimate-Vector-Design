@@ -242,6 +242,8 @@ public final class TrackCompiler {
     }
 
     public static Result compile(Coaster c, double dt) {
+        Prof.count("compile");   // -Dfvd.timing=1 only (ScSeamGate h
+                                 // counts the compiles a '+' costs)
         FVDIntegrator.Friction fric = c.fric();   // Phase 3 (v17.0)
         List<FVDIntegrator.Sample> all = new ArrayList<>();
         List<Span> spans = new ArrayList<>();

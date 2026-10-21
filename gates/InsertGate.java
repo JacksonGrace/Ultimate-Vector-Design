@@ -387,6 +387,60 @@ public class InsertGate {
         followerClaims("d7", c4, r40, preD, r40.spans().get(0).exit(),
             r40.spans().get(0).exit().orient(), r41, 2, 1);
 
+        // ---- (d8) an s/c insert at a plain boundary with Lock OFF (v20.1,
+        // D259 §3.2): BOTH edges of the inserted s/c become automatic
+        // strict seams — the after-seam first (indices hold), then the one
+        // before — and the downstream re-solves from the new exit like the
+        // in-piece '+' used to
+        Coaster c8 = fixture();
+        TrackCompiler.Result r80 = rebuild(c8);
+        double vSeam8 = r80.samples().get(r80.spans().get(0).i1()).v();
+        StraightCurveSection sc8 = StraightCurveSection.straight(7, vSeam8);
+        int[] at8 = c8.insertSectionAtSeam(0, 1, sc8, false, DT);
+        check(at8 != null && at8[0] == 1 && at8[1] == 0 && c8.pieces.size() == 3
+            && c8.pieces.get(1).sections.size() == 1
+            && c8.pieces.get(1).sections.get(0) == sc8
+            && c8.autoFollower(1) && c8.autoFollower(2)
+            && c8.pieces.get(2).sections.size() == 2 && c8.scInvariantHolds()
+            && sc8.vRealAnchored() && c8.pieces.get(2).sections.get(0).vRealAnchored(),
+            "d8 s/c NO-lock insert at seam 0|1: [s0] | automatic [sc] | automatic [s1 s2] —"
+            + " both edges strict, both followers' first sections real-anchored (D259 §3.2)",
+            at8 == null ? "null" : at8[0] + "," + at8[1] + " pieces " + c8.pieces.size());
+        TrackCompiler.Result r81 = rebuild(c8);
+        check(settled && Math.abs(r81.spans().get(1).sLen() - 7.0) < 1e-9,
+            "d8b the settle terminates; the s/c's compiled arc == len",
+            "arc " + f(r81.spans().get(1).sLen()));
+        Coaster t8 = fixture();
+        rebuild(t8);
+        t8.pieces.get(0).sections.add(1, StraightCurveSection.straight(7, vSeam8));
+        TrackCompiler.Result rt8 = rebuild(t8);
+        check(r81.samples().size() == rt8.samples().size()
+            && checksum(r81) == checksum(rt8),
+            "d8c the three-piece document == the in-piece twin BITWISE (both automatic"
+            + " followers generate at the contract; the downstream re-solves, not frozen)",
+            r81.samples().size() + " samples");
+
+        // ---- (d9) a force hold appended AT the strict seam after an s/c
+        // tail (the strict-seam Insert with an s/c upstream): the hold gets
+        // its own automatic seam before it (the section after an s/c)
+        Coaster c9 = fixture();
+        TrackCompiler.Result r90 = rebuild(c9);
+        c9.appendSectionWithInvariant(0, StraightCurveSection.straight(6,
+            r90.samples().get(r90.spans().get(2).i1()).v()), DT);   // [s0 s1 s2] | auto [sc]
+        TrackCompiler.Result r91 = rebuild(c9);
+        ForceSection add9 = hold(r91, 3, 1.0);   // the s/c's end state
+        int[] at9 = c9.insertSectionAtSeam(1, 1, add9, false, DT);   // secIdx == size: append
+        check(at9 != null && at9[0] == 2 && at9[1] == 0 && c9.pieces.size() == 3
+            && c9.autoFollower(1) && c9.autoFollower(2)
+            && c9.pieces.get(1).sections.size() == 1
+            && c9.pieces.get(2).sections.get(0) == add9 && add9.vRealAnchored()
+            && c9.scInvariantHolds(),
+            "d9 a force hold appended after an s/c tail: [s0 s1 s2] | [sc] | automatic [hold]"
+            + " (the section after an s/c is a piece's section 0, L1)",
+            at9 == null ? "null" : at9[0] + "," + at9[1] + " pieces " + c9.pieces.size());
+        rebuild(c9);
+        check(settled, "d9b the settle terminates with the hold behind the s/c");
+
         // ---- (e) refusals / edge indices mutate nothing ----
         Coaster c5 = fixture();
         TrackCompiler.Result r50 = rebuild(c5);

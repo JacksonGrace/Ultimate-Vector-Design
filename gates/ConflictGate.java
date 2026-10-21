@@ -1936,6 +1936,53 @@ public class ConflictGate {
                                  : " time 0 " + slot + " ");
     }
 
+    /** D259 §3.5 A4 (v20.1): a straight/curve section appended through
+     *  the invariant is a FOLLOWER's first section, real-anchored and
+     *  reconciled at k == 0 — under friction, and behind a smoothed seam
+     *  (smoothing × clean-span × anchor). */
+    static void scSeamBlock() throws Exception {
+        // ---- m1: friction on, the s/c-first follower lands bitwise ----
+        Coaster c = chain(true);
+        TrackCompiler.Result r0 = rebuild(c);
+        double vEnd = r0.samples().get(r0.spans().get(r0.spans().size() - 1).i1()).v();
+        int[] at = c.appendSectionWithInvariant(0,
+            StraightCurveSection.straight(12, vEnd), DT);
+        int[] n1 = { 0 };
+        TrackCompiler.Result r1 = rebuildCount(c, n1);
+        Section sc = c.pieces.get(1).sections.get(0);
+        int ip = seam(c, r1, 1, 0);
+        int k1 = spanIdx(c, 1);
+        check(at != null && at[0] == 1 && c.autoFollower(1) && sc.vRealAnchored()
+                && !sc.vPinned() && bits(sc.vDesign(), r1.trueV()[ip])
+                && unequal(r1, k1) == 0 && entryLevel(c, r1, 1, 0) == 0,
+            "m1 an s/c appended through the invariant (friction on): an automatic follower"
+            + " whose first section is real-anchored — vDesign == the real seam speed BITWISE,"
+            + " its span copies the design speed (clean), no glyph",
+            String.format(Locale.US, "vDesign %.9f real %.9f exact rewrites %d",
+                sc.vDesign(), r1.trueV()[ip], n1[0]));
+        int[] n1b = { 0 };
+        TrackCompiler.Result r1b = rebuildCount(c, n1b);
+        check(n1b[0] == 0 && sumAll(r1b) == sumAll(r1),
+            "m1b a second rebuild is a bitwise no-op", "");
+        // ---- m2: smoothing × clean-span × anchor ----
+        c.pieces.get(1).sSmoothLen = 6;
+        int[] n2 = { 0 };
+        TrackCompiler.Result r2 = rebuildCount(c, n2);
+        int ip2 = seam(c, r2, 1, 0);
+        int[] n2b = { 0 };
+        TrackCompiler.Result r3 = rebuildCount(c, n2b);
+        int lv = entryLevel(c, r2, 1, 0);
+        check(bits(sc.vDesign(), r2.trueV()[ip2]) && n2b[0] == 0
+                && sumAll(r3) == sumAll(r2) && unequal(r2, k1) > 0 && lv <= 1
+                && unequal(r2, k1 - 1) < r2.spans().get(k1 - 1).i1() - r2.spans().get(k1 - 1).i0(),
+            "m2 the same seam smoothed at 6 m: the follower's vDesign lands on the DISPLAYED"
+            + " (blended) seam speed bitwise, its span is the march now (not clean), the"
+            + " upstream span still copies up to its window, at most the slight glyph, a"
+            + " second rebuild is a bitwise no-op",
+            String.format(Locale.US, "level %d, follower unequal %d, exact rewrites %d then %d",
+                lv, unequal(r2, k1), n2[0], n2b[0]));
+    }
+
     static void realAnchorBlock() throws Exception {
         // ---- l1: the user's bug reproduces ----
         Coaster c = loadB38();
@@ -2326,6 +2373,9 @@ public class ConflictGate {
 
         // ---- (l) batch 38: the explicit real anchor (D256) ----
         realAnchorBlock();
+
+        // ---- (m) v20.1, D259 §3: an s/c-first AUTOMATIC follower at k == 0 ----
+        scSeamBlock();
 
         System.out.println();
         System.out.println(fail == 0

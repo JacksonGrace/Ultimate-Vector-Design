@@ -961,6 +961,58 @@ public class RunGate {
                 "nh " + nh10 + " / " + id.runHeads());
         }
 
+        // ---------------- l) v20.1, D259 §3: an AUTOMATIC follower inside a run + the orphan-guard overloads ----------------
+        {
+            // run A = [force] | automatic [sc] (the straight/curve invariant), run B detached
+            Coaster z = new Coaster();
+            TrackPiece za = new TrackPiece(0, 21, 0, 0);
+            za.sections.add(new ForceSection(forceLanes(), 26));
+            z.pieces.add(za);
+            TrackCompiler.Result zr = rebuild(z);
+            z.appendSectionWithInvariant(0, StraightCurveSection.straight(10,
+                zr.samples().get(zr.spans().get(0).i1()).v()), DT);
+            TrackPiece zb = new TrackPiece(80, 15, 40, 30);
+            zb.sections.add(new ForceSection(forceLanes(), 22));
+            z.pieces.add(zb);
+            TrackCompiler.Result z0 = rebuild(z);
+            int nA = z0.spans().get(1).i1() + 1;   // run A's samples
+            check(z.autoFollower(1) && z.runHeads().equals(List.of(0, 2))
+                    && z.runEndOf(0) == 1 && z.runOrdinal(1) == 1,
+                "l1 the automatic follower is a run MEMBER (runEndOf / runOrdinal walk the follow link)", "");
+            // l2 moveRun(A, after B) through the orphan-guard overload: the block keeps its
+            // links, the follower stays automatic and run A compiles BITWISE (rigid)
+            int nhL = z.moveRun(0, 2, z0.spans());
+            TrackCompiler.Result z1 = rebuild(z);
+            String same = identical(z0.samples(), 0, z1.samples(), z1.spans().get(1).i0(), nA);
+            check(nhL == 1 && z.pieces.size() == 3 && z.autoFollower(2) && z.pieces.get(2).sAuto
+                    && !z.pieces.get(1).followPrev && z.runHeads().equals(List.of(0, 1))
+                    && same == null,
+                "l2 moveRun(A, after B) with the displayed spans: run A = [force] | automatic [sc]"
+                + " lands at 1-2, its follower still automatic, its samples BITWISE the unmoved A",
+                "nh " + nhL + (same == null ? "" : ", " + same));
+            // l3 deleteRun(B) through the overload: the follower is untouched + bitwise
+            int nb = z.deleteRun(0, z1.spans());
+            TrackCompiler.Result z2 = rebuild(z);
+            String same2 = identical(z0.samples(), 0, z2.samples(), 0, nA);
+            check(nb == 0 && z.pieces.size() == 2 && z.autoFollower(1) && same2 == null,
+                "l3 deleteRun(B) with the displayed spans: run A heads the list, its automatic"
+                + " follower compiles BITWISE", "nb " + nb + (same2 == null ? "" : ", " + same2));
+            // l4 freezeAutoFollower: a run head writes nothing (false); the follower's stored
+            // placement after a freeze IS the contract — the compile is bitwise either way
+            boolean fh = z.freezeAutoFollower(0, z2.spans());
+            boolean ff = z.freezeAutoFollower(1, z2.spans());
+            TrackCompiler.Result z3 = rebuild(z);
+            TrackPiece foL = z.pieces.get(1);
+            Vec3 ex = z2.spans().get(0).exit().pos();
+            check(!fh && ff && z.autoFollower(1) && identical(z2.samples(), 0, z3.samples(), 0, nA) == null
+                    && Double.doubleToLongBits(foL.x) == Double.doubleToLongBits(ex.x())
+                    && Double.doubleToLongBits(foL.y) == Double.doubleToLongBits(ex.y())
+                    && Double.doubleToLongBits(foL.z) == Double.doubleToLongBits(ex.z()),
+                "l4 freezeAutoFollower: false on the run head; on the follower it writes the"
+                + " contract (x/y/z == the upstream exit bitwise) and the piece stays automatic"
+                + " — the compile bitwise", "");
+        }
+
         System.out.println("RunGate: " + pass + " passed, " + fail + " failed");
         if (fail > 0) System.exit(1);
     }

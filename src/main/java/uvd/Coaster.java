@@ -1332,6 +1332,11 @@ public class Coaster {
      *  by. Pure-heading gaps live inside it too (see
      *  isSeamOrientConflict). */
     public Quat seamConflictTilt(int followerIdx, TrackPose prevExit) {
+        // an AUTOMATIC follower (v20.1, D259 §3.5 A1) generates AT the
+        // follow contract — the compile applies the IDENTITY tilt, so
+        // the predicate reads the same object: no conflict, ever, while
+        // its stored (inert) design pose may say anything
+        if (autoFollower(followerIdx)) return Quat.IDENTITY;
         TrackPiece f = pieces.get(followerIdx);
         return strictEntry(prevExit, f).orient()
             .mul(f.designPose().orient().conjugate());
@@ -2082,6 +2087,13 @@ public class Coaster {
      *  gravity in the stored frame. The follow itself stays ACTIVE
      *  (flags + discontinuous values untouched). */
     boolean bakeFollow(int followerIdx, TrackCompiler.Result r) {
+        // an AUTOMATIC follower's bake IS the freeze (v20.1, D259 §3.5
+        // A3 — the one prologue): the stored pose := the contract with
+        // the upstream span's exact canonical pair, so the generation
+        // that follows is bitwise the A1 branch (a nulled pair would
+        // decompose baseOrient — dust); the piece stays automatic until
+        // a lock or a design delta says otherwise
+        if (autoFollower(followerIdx)) return freezeAutoFollower(followerIdx, r);
         TrackPose eff = followContract(followerIdx, r);
         if (eff == null) return false;
         TrackPiece f = pieces.get(followerIdx);
@@ -2492,6 +2504,11 @@ public class Coaster {
         TrackCompiler.Result r = TrackCompiler.compile(this, dt);
         TrackPose eff = followContract(followerIdx, r);
         if (eff == null) return false;
+        // the A3 prologue (v20.1, D259 §3.5): an AUTOMATIC follower's
+        // stored pose is inert — write the contract into it first, so
+        // the detached run head sits exactly where the seam had it
+        // (the decomposition below then reads zero deltas)
+        freezeAutoFollower(followerIdx, r);
         TrackPiece f = pieces.get(followerIdx);
         double[] d = TrackPiece.decomposeNear(f.baseOrient, eff.orient(),
             f.yawDeg, f.pitchDeg, f.rollDeg);
