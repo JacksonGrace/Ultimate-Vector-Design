@@ -1331,11 +1331,23 @@ public class Coaster {
      *  design — the same product TrackCompiler's follower branch tilts
      *  by. Pure-heading gaps live inside it too (see
      *  isSeamOrientConflict). */
+    /** The SPAN form (v20.1, the run-3 review): an AUTOMATIC follower
+     *  INHERITS the upstream span's tilt (TrackCompiler's A1 branch —
+     *  the IDENTITY object behind an untilted upstream), so the ≠o
+     *  predicate reads the very object the compile applied; every
+     *  other follower = the pose form. The UI's two callers pass the
+     *  upstream span. */
+    public Quat seamConflictTilt(int followerIdx, TrackCompiler.Span up) {
+        if (autoFollower(followerIdx)) return up.exitTilt();
+        return seamConflictTilt(followerIdx, up.exit());
+    }
+
     public Quat seamConflictTilt(int followerIdx, TrackPose prevExit) {
         // an AUTOMATIC follower (v20.1, D259 §3.5 A1) generates AT the
-        // follow contract — the compile applies the IDENTITY tilt, so
-        // the predicate reads the same object: no conflict, ever, while
-        // its stored (inert) design pose may say anything
+        // follow contract with the UPSTREAM span's tilt — the pose form
+        // cannot see the span, so it answers for the untilted upstream
+        // (the IDENTITY object; the gates' fixtures); the Span form
+        // above is the one the UI reads
         if (autoFollower(followerIdx)) return Quat.IDENTITY;
         TrackPiece f = pieces.get(followerIdx);
         return strictEntry(prevExit, f).orient()
@@ -1776,11 +1788,21 @@ public class Coaster {
         f.x = eff.pos().x();
         f.y = eff.pos().y();
         f.z = eff.pos().z();
-        f.baseOrient = eff.orient();
-        if (up.exitTilt() == Quat.IDENTITY && up.exitCanon() != null) {
+        if (up.exitCanon() != null) {
+            // the DESIGN chain's exit + its exact pair: behind a
+            // TILTED upstream span the frozen piece becomes a D247
+            // follower whose design tier IS that chain (baseOrient :=
+            // aboutY(psi)·canon, placeLine's composition) and whose
+            // conflict tilt = the tilt the A1 branch inherited (the
+            // run-3 review — generation bitwise the branch, the tilt
+            // to dust); untilted, the contract's own orientation (the
+            // composition equals it to dust) with the pair
             f.canonPsiDeg = up.exitPsi();
             f.canonOrient = up.exitCanon();
+            f.baseOrient = up.exitTilt() == Quat.IDENTITY ? eff.orient()
+                : Quat.aboutY(up.exitPsi()).mul(up.exitCanon());
         } else {
+            f.baseOrient = eff.orient();
             f.canonOrient = null;   // decompose baseOrient (D199 default)
         }
         f.yawDeg = 0;

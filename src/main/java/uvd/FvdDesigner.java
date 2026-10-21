@@ -336,7 +336,11 @@ public class FvdDesigner extends Application {
                       double designPitch, double designRoll,
                       // "Affect Subsequent Strict Seams" (D249 — the
                       // inverted rename of D248's Only-Affect flag)
-                      boolean affectSeams) {}
+                      boolean affectSeams,
+                      // the AUTOMATIC-seam flag (v20.1, D259 §3.5 — a
+                      // restored follower without it would fall back
+                      // to its stale stored placement)
+                      boolean sAuto) {}
 
     /** One coaster's undoable state (v19.2, D230): name, pieces, the
      *  path-shaping globals (heart/gauge/v0/friction — D51) and its
@@ -478,7 +482,8 @@ public class FvdDesigner extends Application {
                 piece.sSmoothLen,
                 piece.canonPsiDeg, piece.canonOrient,
                 piece.orientMode, piece.designPitchDeg,
-                piece.designRollDeg, piece.affectSubsequentSeams));
+                piece.designRollDeg, piece.affectSubsequentSeams,
+                piece.sAuto));
         }
         return ps;
     }
@@ -645,6 +650,7 @@ public class FvdDesigner extends Application {
             piece.designPitchDeg = pst.designPitch();
             piece.designRollDeg = pst.designRoll();
             piece.affectSubsequentSeams = pst.affectSeams();   // D249
+            piece.sAuto = pst.sAuto();                          // D259 §3.5
             for (SecState st : pst.sections()) {
                 Section sec = switch (st.mode()) {
                     case 3  -> st.bridge();   // deep copy, adopted
@@ -879,7 +885,7 @@ public class FvdDesigner extends Application {
         DocState pre = snapshotDoc();
         Coaster src = coaster;
         boolean destWasEmpty = dest.pieces.isEmpty();
-        int nh = src.moveRunTo(dest, rs);
+        int nh = src.moveRunTo(dest, rs, sectionSpans);   // + the orphan guard (D259)
         if (nh < 0) {   // cannot happen after the checks above
             statsLabel.setText("Switch Coaster refused — the track"
                 + " piece could not be moved.");
@@ -2590,7 +2596,7 @@ public class FvdDesigner extends Application {
             // the snapshot is pushed only once the copy landed
             // (D247 review fix — a refusal must not clear redo)
             DocState pre = snapshotDoc();
-            int nh = coaster.copyRun(rs, re, Coaster.COPY_DZ);
+            int nh = coaster.copyRun(rs, re, Coaster.COPY_DZ, sectionSpans);   // + the orphan guard (D259)
             if (nh < 0) {
                 statsLabel.setText("Copy refused — the last piece of"
                     + " the coaster ends in an orphaned bridge; delete"
@@ -2713,7 +2719,7 @@ public class FvdDesigner extends Application {
         editor.hideInitSpeedWindow();
         dropGizmoReveals();
         editor.pushUndoSnapshot();
-        int nb = coaster.deleteRun(rs);
+        int nb = coaster.deleteRun(rs, sectionSpans);   // + the orphan guard (D259)
         if (nb == -2) {   // cannot happen after the checks above
             statsLabel.setText("Delete refused — the piece is not the "
                 + "head of a track piece.");
@@ -4217,7 +4223,7 @@ public class FvdDesigner extends Application {
             for (int q = 0; q < pp; q++) flat += coaster.pieces.get(q).sections.size();
             int last = flat - 1;   // the previous piece's last span
             if (last < 0 || last >= sectionSpans.size()) return null;
-            return coaster.seamConflictTilt(pp, sectionSpans.get(last).exit());
+            return coaster.seamConflictTilt(pp, sectionSpans.get(last));   // the Span form (v20.1)
         }
         return p.entryPose().orient().mul(p.designPose().orient().conjugate());
     }
@@ -10625,7 +10631,11 @@ public class FvdDesigner extends Application {
             }
             currentFile = f;
             // old straight/curve elements migrated on load (v20.0,
-            // D259 §1.8 — one sentence, appended to the report)
+            // D259 §1.8 — one sentence, appended to the report) — and
+            // since v20.1 (D259 §3.2) the invariant's load pass that
+            // cut an in-piece s/c into its own piece: the SAME sentence
+            // (§10.4), and the document is DIRTY either way — the next
+            // save writes the new grammar / the cut seams
             String legacy = r.legacyNote();
             String legacyTail = legacy == null ? "" : " " + legacy;
             // a FAIL-SOFT load (v18.44, D216) repaired the file:
@@ -10638,7 +10648,7 @@ public class FvdDesigner extends Application {
                     + "check the layout; saving writes a clean file."
                     + legacyTail);
             } else {
-                dirty = false;
+                dirty = legacy != null;   // a migrated file re-saves clean
                 updateTitle();
                 statsLabel.setText("Loaded: " + f.getName() + legacyTail);
             }

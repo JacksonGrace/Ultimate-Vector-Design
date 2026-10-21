@@ -817,7 +817,15 @@ class Viewport3D {
                 if (app.editor != null && !app.editor.convertUiActive()) {
                     int pc = app.editor.pieceAtTime(
                         app.lastSamples.get(idx).t());
-                    if (pc >= 0 && pc != app.povFollowPiece) {
+                    // keyed on the RUN since v20.1 (D259 §3.8): crossing
+                    // a strict seam or a bridge INSIDE the run activates
+                    // nothing (the graph shows the whole run already);
+                    // entering another run activates the piece + section
+                    // under the ride time. POV_FOLLOW_RUN false = D85's
+                    // per-piece follow.
+                    if (pc >= 0 && (POV_FOLLOW_RUN
+                            ? runKey(pc) != runKey(app.povFollowPiece)
+                            : pc != app.povFollowPiece)) {
                         app.povFollowPiece = pc;
                         app.editor.activateAt(app.lastSamples.get(idx).t());
                     }
@@ -1405,7 +1413,11 @@ class Viewport3D {
             // otherwise RESUME where the ride left off (it used to
             // always restart at 0)
             int ap = app.editor != null ? app.editor.activePiece() : 0;
-            if (ap != app.povFollowPiece) {
+            // a piece of ANOTHER run selected since POV last rode = start
+            // at ITS beginning (v20.1, D259 §3.8 — the run is the unit);
+            // a piece inside the same run keeps the resume rule
+            if (POV_FOLLOW_RUN ? runKey(ap) != runKey(app.povFollowPiece)
+                               : ap != app.povFollowPiece) {
                 app.povTime = app.editor != null
                     ? app.editor.pieceStartTime(ap) : 0;
                 app.povFollowPiece = ap;
@@ -1726,6 +1738,8 @@ class Viewport3D {
             // (v19.2, D231 — it appears the moment its type is picked)
             if (app.isPendingPiece(app.activeCoaster, p)) continue;
             List<FVDIntegrator.Sample> sub = samples.subList(i0, i1 + 1);
+            // ties and combs anchor per RUN (v20.1, D259 §3.8)
+            double anchorS = runAnchorS(p, spans, samples);
             // "Visualize Track Selection" OFF (v17.10): every piece
             // renders in its full active coloring — no desaturation
             boolean act = !app.settings.visualizeSelection()
@@ -1741,7 +1755,7 @@ class Viewport3D {
                 addSplit(parts, underParts,
                     buildRailMesh(sub, i0, app.railGauge / 2, act, false));
                 TiePiece tp = new TiePiece(sub, i0, act, false,
-                    new Group(), new Group());
+                    new Group(), new Group(), anchorS);
                 tiePieces.add(tp);
                 parts.add(tp.group());
                 underParts.add(tp.under());
@@ -1751,7 +1765,7 @@ class Viewport3D {
                 addSplit(ghostParts, ghostUnderParts,
                     buildRailMesh(sub, i0, app.railGauge / 2, act, true));
                 TiePiece tp = new TiePiece(sub, i0, act, true,
-                    new Group(), new Group());
+                    new Group(), new Group(), anchorS);
                 tiePieces.add(tp);
                 ghostParts.add(tp.group());
                 ghostUnderParts.add(tp.under());
@@ -1769,9 +1783,9 @@ class Viewport3D {
                 addSplit(ghostParts, ghostUnderParts,
                     buildRailMesh(dead, stall, app.railGauge / 2, act, true));
                 TiePiece tpa = new TiePiece(alive, i0, act, false,
-                    new Group(), new Group());
+                    new Group(), new Group(), anchorS);
                 TiePiece tpd = new TiePiece(dead, stall, act, true,
-                    new Group(), new Group());
+                    new Group(), new Group(), anchorS);
                 tiePieces.add(tpa);
                 tiePieces.add(tpd);
                 parts.add(tpa.group());
@@ -1794,9 +1808,16 @@ class Viewport3D {
             MeshView bdU = buildBoundaryDisks(samples, spans, b0, nSec,
                 true);
             if (bdU != null) boundsUnder.getChildren().add(bdU);
-            // heartline strand PER PIECE (v16.13): detached pieces
-            // never read as one strand however close they park
-            if (heart != null) heart.getChildren().add(buildHeartlineMesh(sub));
+            // heartline strand PER RUN since v20.1 (D259 §3.8 — per
+            // PIECE from v16.13: detached pieces never read as one
+            // strand however close they park, and a run's strict seams
+            // and bridges no longer break it): built once, at the run
+            // head, over the whole run's samples
+            if (heart != null && app.coaster.runStartOf(p) == p) {
+                int i1r = Math.max(i1, runEndSample(p, spans, samples));
+                heart.getChildren().add(buildHeartlineMesh(
+                    samples.subList(i0, i1r + 1)));
+            }
             // track COMBS (v16.13; three-way mode since v16.14 — the
             // G-force comb is vertical + lateral as one unit; FIVE
             // modes since v17.16 D157: + GEOMETRIC (curvature, three
@@ -1804,25 +1825,25 @@ class Viewport3D {
             if (combs != null) {
                 int cmode = app.settings.combMode();
                 if (cmode == AppSettings.COMB_GFORCE) {
-                    combs.getChildren().add(buildCombMesh(sub, i0, 0));
-                    combs.getChildren().add(buildCombMesh(sub, i0, 1));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 0, anchorS));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 1, anchorS));
                 } else if (cmode == AppSettings.COMB_SPEED) {
-                    combs.getChildren().add(buildCombMesh(sub, i0, 2));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 2, anchorS));
                 } else if (cmode == AppSettings.COMB_GEO) {
                     int gm = app.settings.combGeoMode();
                     if (gm == AppSettings.COMB_GEO_LOCAL) {
-                        combs.getChildren().add(buildCombMesh(sub, i0, 3));
-                        combs.getChildren().add(buildCombMesh(sub, i0, 4));
+                        combs.getChildren().add(buildCombMesh(sub, i0, 3, anchorS));
+                        combs.getChildren().add(buildCombMesh(sub, i0, 4, anchorS));
                     } else if (gm == AppSettings.COMB_GEO_GLOBAL) {
-                        combs.getChildren().add(buildCombMesh(sub, i0, 5));
-                        combs.getChildren().add(buildCombMesh(sub, i0, 6));
+                        combs.getChildren().add(buildCombMesh(sub, i0, 5, anchorS));
+                        combs.getChildren().add(buildCombMesh(sub, i0, 6, anchorS));
                     } else {
-                        combs.getChildren().add(buildCombMesh(sub, i0, 7));
+                        combs.getChildren().add(buildCombMesh(sub, i0, 7, anchorS));
                     }
                 } else {
-                    combs.getChildren().add(buildCombMesh(sub, i0, 8));
-                    combs.getChildren().add(buildCombMesh(sub, i0, 9));
-                    combs.getChildren().add(buildCombMesh(sub, i0, 10));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 8, anchorS));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 9, anchorS));
+                    combs.getChildren().add(buildCombMesh(sub, i0, 10, anchorS));
                 }
             }
         }
@@ -1972,7 +1993,8 @@ class Viewport3D {
                     List<FVDIntegrator.Sample> sub = smp.subList(i0, i1 + 1);
                     g.getChildren().add(buildRailMesh(sub, i0, -app.railGauge / 2, true, false));
                     g.getChildren().add(buildRailMesh(sub, i0, app.railGauge / 2, true, false));
-                    g.getChildren().addAll(buildTieMeshes(sub, true, i0, null, false));
+                    g.getChildren().addAll(buildTieMeshes(sub, true, i0, null, false,
+                        sub.get(0).s()));   // an inactive coaster: per piece (its spans are not in hand)
                 }
                 g.setMouseTransparent(true);
                 out.add(g);
@@ -2054,6 +2076,55 @@ class Viewport3D {
      *  as a hairline neon-yellow strand (Options toggle). JavaFX 3D has no
      *  polylines, so it's a minimal 4-sided tube; the self-illumination map
      *  makes it glow unlit at any distance. */
+    /** POV follow + ride restart key on the RUN (v20.1, D259 §3.8);
+     *  false = D85's per-piece rule. */
+    static final boolean POV_FOLLOW_RUN = true;
+
+    /** The run head of piece p, −1 off the list (runStartOf's
+     *  index-safe twin for the POV follow). */
+    private int runKey(int p) {
+        return p < 0 || p >= app.coaster.pieces.size() ? -1
+            : app.coaster.runStartOf(p);
+    }
+
+    /** The ARC where the RUN holding piece p begins — its head's first
+     *  sample (v20.1, D259 §3.8: the tie grid, the comb loop and the
+     *  heartline strand anchor per RUN, so a seam inside the run
+     *  never shows a short tie gap or a double tie). */
+    private double runAnchorS(int p, List<TrackCompiler.Span> spans,
+                              List<FVDIntegrator.Sample> samples) {
+        int rh = app.coaster.runStartOf(p);
+        int b = 0;
+        for (int q = 0; q < rh && q < app.coaster.pieces.size(); q++) {
+            b += app.coaster.pieces.get(q).sections.size();
+        }
+        if (b < spans.size() && spans.get(b).i0() < samples.size()) {
+            return samples.get(spans.get(b).i0()).s();
+        }
+        return samples.isEmpty() ? 0 : samples.get(0).s();
+    }
+
+    /** The LAST sample index of the run holding piece p (the run
+     *  end's last span), clamped into the sample list. */
+    private int runEndSample(int p, List<TrackCompiler.Span> spans,
+                             List<FVDIntegrator.Sample> samples) {
+        int re = app.coaster.runEndOf(p);
+        int b = 0;
+        for (int q = 0; q < re && q < app.coaster.pieces.size(); q++) {
+            b += app.coaster.pieces.get(q).sections.size();
+        }
+        int last = b + app.coaster.pieces.get(re).sections.size() - 1;
+        if (last < 0 || last >= spans.size()) return samples.size() - 1;
+        return Math.min(spans.get(last).i1(), samples.size() - 1);
+    }
+
+    /** The first grid point ≥ s0 of a grid anchored at `anchor` with
+     *  the given spacing (the run-anchored tie / comb loops). */
+    private static double gridFrom(double anchor, double spacing, double s0) {
+        return anchor + Math.max(0, Math.ceil((s0 - anchor - 1e-9) / spacing))
+            * spacing;
+    }
+
     MeshView buildHeartlineMesh(List<FVDIntegrator.Sample> samples) {
         final double R = 0.015;
         final int SIDES = 4;
@@ -2103,7 +2174,9 @@ class Viewport3D {
                             // the UNDERGROUND half's group (v19.20,
                             // D249 — lives in trackUnder/ghostUnder;
                             // refreshTieHighlight refills both)
-                            Group under) { }
+                            Group under,
+                            // the RUN's anchor arc (v20.1, D259 §3.8)
+                            double anchorS) { }
     private final List<TiePiece> tiePieces = new ArrayList<>();
 
     // ---------- GROUND SPLIT (v19.20, D249) ----------
@@ -2856,7 +2929,7 @@ class Viewport3D {
             List<javafx.scene.Node> above = new ArrayList<>();
             List<javafx.scene.Node> under = new ArrayList<>();
             for (MeshView mv : buildTieMeshes(tp.samples(), tp.active(),
-                    tp.base(), hi, tp.ghost())) {
+                    tp.base(), hi, tp.ghost(), tp.anchorS())) {
                 addSplit(above, under, mv);   // ground split (D249)
             }
             tp.group().getChildren().setAll(above);
@@ -2872,7 +2945,7 @@ class Viewport3D {
      *  mesh (v16.11 — the selected-section cue). */
     private List<MeshView> buildTieMeshes(List<FVDIntegrator.Sample> samples,
                                           boolean active, int base, int[] hi,
-                                          boolean ghost) {
+                                          boolean ghost, double anchorS) {
         final double TIE_HALF_W = 0.045;  // along T (track direction)
         final double TIE_HALF_H = 0.03;   // along U
         TriangleMesh mesh = new TriangleMesh();     // normal ties
@@ -2883,8 +2956,11 @@ class Viewport3D {
         double spacing = Math.max(0.1, app.tieSpacing);
         if (samples.size() < 2) return new ArrayList<>();
         // sample s is GLOBAL arc length — per-piece meshes (v13.2) start
-        // mid-ride, so the tie grid anchors at the sublist's own start
-        double s0 = samples.get(0).s();
+        // mid-ride; the tie grid anchors at the RUN's start since v20.1
+        // (D259 §3.8 — was the sublist's own start: a short gap or a
+        // double tie at every seam inside a run), its first tie the
+        // first grid point at or past this sublist
+        double s0 = gridFrom(anchorS, spacing, samples.get(0).s());
         double sEnd = samples.get(samples.size() - 1).s();
         // ties end exactly at the rail centerlines: the tie cross-section
         // (0.09 x 0.06 m) hides inside the 0.07 m-radius tubes, nothing pokes out
@@ -3565,7 +3641,7 @@ class Viewport3D {
     /** One comb's teeth over a piece's samples (base = the sublist's
      *  global start index — the TRUE arrays are ride-global). */
     private MeshView buildCombMesh(List<FVDIntegrator.Sample> samples,
-                                   int base, int kind) {
+                                   int base, int kind, double anchorS) {
         TriangleMesh mesh = new TriangleMesh();
         int v = 0, tc = 0;
         double scale = FvdDesigner.clamp(
@@ -3626,7 +3702,8 @@ class Viewport3D {
                 }
             }
         } else {
-        double s0 = samples.get(0).s();
+        // the comb grid anchors at the RUN's start (v20.1, D259 §3.8)
+        double s0 = gridFrom(anchorS, COMB_SPACING, samples.get(0).s());
         double sEnd = samples.get(samples.size() - 1).s();
         for (double S = s0; S <= sEnd + 1e-9; S += COMB_SPACING) {
             ArcHit h = arcHit(samples, lo, S);
@@ -5476,6 +5553,17 @@ class Viewport3D {
      *  TrackPiece objects (D205). */
     private record Reveal(int piece, int kind) { }
     private Reveal gizmoReveal = null;
+
+    /** The follower whose SEAM rig this pane reveals, else −1 (v20.1,
+     *  D259 §3.7 — B / Shift+B with a highlighted seam; a run head's
+     *  entry rig is not a seam). */
+    int revealedSeamPiece() {
+        return gizmoReveal != null && gizmoReveal.kind() == 1
+            && gizmoReveal.piece() >= 0
+            && gizmoReveal.piece() < app.coaster.pieces.size()
+            && app.coaster.followsPrev(gizmoReveal.piece())
+            ? gizmoReveal.piece() : -1;
+    }
     private double gDragX, gDragY;       // screen point of the press
     // SHIFT = a tenth of the mouse travel, RE-BASED per event: the
     // previous event's raw screen point + the accumulated debt raw −
@@ -6353,7 +6441,9 @@ class Viewport3D {
                         FvdDesigner.clamp(deg, -85, 85));
                 }, local ? seamLocal(pi, pitAx) : null);
         }
-        if (design || f.sLockRoll) {
+        // no roll ring while the follower's element-0 bank lane owns
+        // the seam's bank (v20.1, D259 §3.9)
+        if ((design || f.sLockRoll) && !app.coaster.seamRollOwnedByLane(pi)) {
             addRing(rig, 0.7, RING_ROLL, rolAx,
                 () -> design ? designEuler(f, 2) : f.sRollDeg, deg -> {
                     pushOnce();

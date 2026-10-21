@@ -248,6 +248,38 @@ public final class ScSeamGate {
         return w;
     }
 
+    /** Positions within tol, trueV within tol (the march's dust behind a
+     *  tilt), design v / felt bitwise; frames bitwise when
+     *  framesBitwise, else within tol (the review's c4 rows). */
+    static String nearSamples(TrackCompiler.Result a, TrackCompiler.Result b,
+                              double tol, boolean framesBitwise) {
+        if (a.samples().size() != b.samples().size()) {
+            return "sample count " + a.samples().size() + " vs " + b.samples().size();
+        }
+        double wp = 0, wv = 0, wf = 0;
+        for (int i = 0; i < a.samples().size(); i++) {
+            FVDIntegrator.Sample x = a.samples().get(i), y = b.samples().get(i);
+            wp = Math.max(wp, x.pos().sub(y.pos()).length());
+            wv = Math.max(wv, Math.abs(a.trueV()[i] - b.trueV()[i]));
+            if (!bits(x.v(), y.v())) return "sample " + i + " design v differs";
+            if (framesBitwise) {
+                if (!(bits(x.T(), y.T()) && bits(x.U(), y.U())
+                        && bits(x.Gv(), y.Gv()) && bits(x.Gl(), y.Gl()))) {
+                    return "sample " + i + " frames / felt differ";
+                }
+            } else {
+                // a tilt recomposed from Euler angles (the lock) differs
+                // by dust: frames and the re-projected felt within tol
+                wf = Math.max(wf, Math.max(x.T().sub(y.T()).length(),
+                    x.U().sub(y.U()).length()));
+                wf = Math.max(wf, Math.max(Math.abs(x.Gv() - y.Gv()),
+                    Math.abs(x.Gl() - y.Gl())));
+            }
+        }
+        return wp <= tol && wv <= tol && wf <= tol ? null
+            : f("worst pos %.2e m, trueV %.2e, frame %.2e", wp, wv, wf);
+    }
+
     static List<FVDIntegrator.Sample> spanSamples(TrackCompiler.Result r, int k) {
         TrackCompiler.Span sp = r.spans().get(k);
         return new ArrayList<>(r.samples().subList(sp.i0(), sp.i1() + 1));
@@ -339,6 +371,50 @@ public final class ScSeamGate {
             "c2 a head LOCKSTEP pitch edit (+5°): bitwise the twin; seamConflictTilt reads the"
             + " IDENTITY object — no orientation conflict (the ≠o predicate matches the compile)",
             d2 == null ? "" : d2);
+        // c4 a head REAL_ONLY pitch edit = a CONFLICT TILT on the upstream span (the run-3
+        // review): the automatic follower continues the DESIGN chain and INHERITS the tilt
+        // about its own entry — the in-piece twin (generated in the chain, tilted about the
+        // piece entry) to dust, frames / felt / design speeds bitwise; the Span-form
+        // predicate reads the inherited tilt (≠o like the twin's sections); a lock ON
+        // (the freeze) keeps the track and reads the same conflict
+        Coaster a4 = f1(), t4 = twin1();
+        rebuild(a4); rebuild(t4);
+        // the s/c's design speed PINNED equal on both: the A4 real anchor
+        // lands the follower's on the tilted span's real seam speed (the
+        // D259 §3.5 rule — an in-piece continuation keeps the design
+        // chain's), which would re-time the samples; the claim here is
+        // the GEOMETRY of the inherited tilt
+        a4.pieces.get(1).sections.get(0).vDesign(20);
+        a4.pieces.get(1).sections.get(0).vPinned(true);
+        t4.pieces.get(0).sections.get(1).vDesign(20);
+        t4.pieces.get(0).sections.get(1).vPinned(true);
+        for (Coaster c : List.of(a4, t4)) {
+            c.pieces.get(0).orientMode = TrackPiece.OrientMode.REAL_ONLY;
+            c.pieces.get(0).editPitch(5);
+        }
+        TrackCompiler.Result ra4 = rebuild(a4), rt4 = rebuild(t4);
+        String d4 = nearSamples(ra4, rt4, 1e-9, true);
+        Quat tq4 = a4.seamConflictTilt(1, ra4.spans().get(0));
+        check(d4 == null && a4.autoFollower(1)
+                && tq4 == ra4.spans().get(0).exitTilt()
+                && Coaster.isSeamOrientConflict(tq4)
+                && Coaster.isSeamOrientConflict(ra4.spans().get(0).exitTilt()),
+            "c4 a head REAL_ONLY pitch edit (+5°, a conflict tilt): the automatic follower"
+            + " == the in-piece twin to 1e-9 m (frames / design v / felt bitwise, trueV to"
+            + " 1e-9); the Span-form predicate reads the inherited tilt (≠o)",
+            d4 == null ? "" : d4);
+        // the freeze (a lock ON) keeps the track and the conflict
+        TrackPiece f4 = a4.pieces.get(1);
+        a4.freezeAutoFollower(1, ra4);
+        f4.sLockYaw = true;
+        TrackCompiler.Result ra4b = rebuild(a4);
+        String d4b = nearSamples(ra4, ra4b, 1e-9, false);
+        Quat tq4b = a4.seamConflictTilt(1, ra4b.spans().get(0));
+        check(d4b == null && !a4.autoFollower(1) && Coaster.isSeamOrientConflict(tq4b)
+                && Math.abs(Math.abs(tq4b.w()) - Math.abs(tq4.w())) < 1e-9,
+            "c4b the freeze + a yaw lock behind the tilted upstream: the track to 1e-9 m, the"
+            + " frozen follower's design tier = the chain (the conflict tilt kept)",
+            d4b == null ? "" : d4b);
         // c3 F3: yaw LOCKED — the D135 rigid tilt holds the heading, the local shape freezes
         Coaster a3 = f1(), t3 = twin1();
         TrackCompiler.Result r30 = rebuild(a3);

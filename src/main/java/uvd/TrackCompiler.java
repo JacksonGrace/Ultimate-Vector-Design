@@ -363,14 +363,48 @@ public final class TrackCompiler {
                     // seam continues: the world pose is decomposed
                     // instead (canonOf — D199 dust under a yaw move
                     // there, the documented tilted-piece limit).
-                    tilt = Quat.IDENTITY;
-                    pose = eff;
+                    // [SUPERSEDED in the run-3 review — see the branch
+                    // below: the design chain continues and the tilt
+                    // is inherited; canonOf only without a pair.]
                     anchor = eff.pos();
-                    cp = prevSpan.exitTilt() == Quat.IDENTITY
-                            && prevSpan.exitCanon() != null
-                        ? new CanonPose(eff.pos(), prevSpan.exitPsi(),
-                            prevSpan.exitCanon())
-                        : canonOf(eff);
+                    if (prevSpan.exitCanon() == null) {
+                        // no chain pair to continue (never after a
+                        // placed section — a belt): the world pose
+                        tilt = Quat.IDENTITY;
+                        pose = eff;
+                        cp = canonOf(eff);
+                    } else {
+                        // the DESIGN chain continues EXACTLY (the
+                        // in-piece twin's generation bits) — and behind
+                        // a TILTED upstream span (a conflict tilt, a
+                        // locked follower's re-aim) the follower
+                        // INHERITS that tilt about its own entry (the
+                        // run-3 review, closing the notes' open question
+                        // 2): the in-piece twin is generated in the
+                        // design chain and rigid-tilted about the PIECE
+                        // entry; rotating the same design geometry
+                        // about THIS entry by the same tilt lands on the
+                        // identical world track, because the tilt's
+                        // rotation center commutes with the chain's
+                        // rigid placement (ScSeamGate c4 — ≤ 1e-9 m,
+                        // frames / felt bitwise). The untilted upstream
+                        // keeps the IDENTITY object (the clean-span rule
+                        // + tiltLine see "untilted", bitwise); the tilted
+                        // one carries the conflict on — ≠o shows on the
+                        // follower like on the twin's sections
+                        // (Coaster.seamConflictTilt's Span form reads
+                        // the same object). `pose` is the DESIGN-space
+                        // entry (aboutY(psi)·canon — placeLine's
+                        // composition), what a trailing bridge capture
+                        // tilts back into the world.
+                        tilt = prevSpan.exitTilt();
+                        cp = new CanonPose(eff.pos(), prevSpan.exitPsi(),
+                            prevSpan.exitCanon());
+                        pose = tilt == Quat.IDENTITY ? eff
+                            : new TrackPose(eff.pos(),
+                                Quat.aboutY(prevSpan.exitPsi())
+                                    .mul(prevSpan.exitCanon()));
+                    }
                 } else {
                     Quat gen = designed ? piece.designPose().orient()
                                         : piece.genPose().orient();

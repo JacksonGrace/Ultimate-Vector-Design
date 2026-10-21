@@ -555,21 +555,22 @@ class GraphEditor extends Region {
             // and the former "Make smoothing real…" / "Disable
             // smoothing" items as buttons.
             TrackPiece fsm = app.coaster.pieces.get(right.piece());
-            // smoothing is NOT an option on the edge of an s/c
-            // section (v19.3, D232 — user spec: its own entry ease
-            // conflicts and the window has no lane form); an already-
-            // smoothed old file still gets the options window. Gray
-            // reasons ride hover tooltips since v19.7 (D236, grayItem).
-            boolean scEdge = seamScEdge(right.piece());
+            // an s/c EDGE smooths like any seam since v20.1 (D259 §3.6
+            // SM1 — the D232 ban went with the entry ease); what grays
+            // the item now is the window's DRY RUN: would 10 m engage
+            // at this seam? (SM2/SM3 — TrackCompiler.smoothEngagesWhy,
+            // the identical window arithmetic.) Gray reasons ride hover
+            // tooltips since v19.7 (D236, grayItem).
+            String smWhy = fsm.sSmoothLen > 0.01 ? null
+                : TrackCompiler.smoothEngagesWhy(app.lastSamples,
+                    app.sectionSpans, pieceBase(right.piece()), 10);
             MenuItem smItem;
             if (fsm.sSmoothLen > 0.01) {
                 smItem = new MenuItem(SectionNames.SMOOTH_OPTIONS_ITEM);
                 smItem.setOnAction(ev ->
                     showSmoothingOptions(right.piece()));
-            } else if (scEdge) {
-                smItem = grayItem("Enable smoothing",
-                    "Smoothing cannot be enabled on a straight/curve"
-                    + " edge — the s/c entry ease owns that seam.");
+            } else if (smWhy != null) {
+                smItem = grayItem(SectionNames.ENABLE_SMOOTHING_ITEM, smWhy);
             } else {
                 smItem = new MenuItem(SectionNames.ENABLE_SMOOTHING_ITEM);
                 smItem.setOnAction(ev -> {
@@ -580,9 +581,13 @@ class GraphEditor extends Region {
                     redraw();
                 });
             }
-            MenuItem un = new MenuItem("Un-strict seam");   // (D232:
-                // the explainer parenthetical left the label)
-            un.setOnAction(ev -> {
+            // L4 (v20.1, D259 §3.1): a straight/curve edge is ALWAYS a
+            // strict seam — the item grays with the model's reason
+            String unWhy = app.coaster.unstrictSeamWhy(right.piece());
+            MenuItem un = unWhy != null ? grayItem("Un-strict seam", unWhy)
+                : new MenuItem("Un-strict seam");   // (D232: the
+                // explainer parenthetical left the label)
+            if (unWhy == null) un.setOnAction(ev -> {
                 // the seam is about to vanish (D247 review fix) AND the
                 // pieces after it shift down one — the index-resolved
                 // bridge window closes too (D248 review fix)
@@ -604,8 +609,10 @@ class GraphEditor extends Region {
                     refreshOffset();
                 } else {
                     // never silent (D235)
-                    app.statsLabel.setText("Un-strict refused — the "
-                        + "previous piece must not end with a bridge.");
+                    String w2 = app.coaster.unstrictSeamWhy(fp);
+                    app.statsLabel.setText(w2 != null ? w2
+                        : "Un-strict refused — the previous piece must"
+                        + " not end with a bridge.");
                 }
                 redraw();
             });
@@ -754,14 +761,14 @@ class GraphEditor extends Region {
         if (s != null) s.run();
     };
 
-    /** The strict seam's WORLD position — the follower's first
-     *  compiled sample; the 3D seam gizmo anchors here (v17.3,
-     *  D140). Null without a compile. */
+    /** The strict seam's WORLD position — the UPSTREAM span's exit
+     *  position since v20.1 (D259 §3.8, Coaster.seamWorldPos: the
+     *  junction itself; it read the follower's first sample before,
+     *  one dropped dt INSIDE the follower — v·dt ≈ 0.26 m at 26 m/s);
+     *  the 3D seam gizmo / junction ball anchor here (v17.3, D140).
+     *  Null without a compile. */
     Vec3 seamWorldPos(int followerIdx) {
-        TrackCompiler.Span sp = spanAt(followerIdx, 0);
-        if (sp == null || app.lastSamples == null
-                || sp.i0() >= app.lastSamples.size()) return null;
-        return app.lastSamples.get(sp.i0()).pos();
+        return app.coaster.seamWorldPos(followerIdx, app.sectionSpans);
     }
 
     /** The follower's EFFECTIVE entry orientation (the follow
@@ -795,7 +802,7 @@ class GraphEditor extends Region {
             TrackCompiler.Span psp = spanAt(p - 1, prev.sections.size() - 1);
             if (psp == null) return false;
             return Coaster.isSeamOrientConflict(
-                app.coaster.seamConflictTilt(p, psp.exit()));
+                app.coaster.seamConflictTilt(p, psp));   // the Span form (v20.1)
         }
         return app.coaster.pieces.get(p).orientConflict();
     }
@@ -830,6 +837,10 @@ class GraphEditor extends Region {
             write.run();
             return;
         }
+        // the A3 prologue (v20.1, D259 §3.5): an AUTOMATIC follower's
+        // stored placement is inert — freeze the follow contract into
+        // it before any held-angle / lock write (a no-op otherwise)
+        app.coaster.freezeAutoFollower(fi, app.sectionSpans);
         TrackPiece f = app.coaster.pieces.get(fi);
         TrackPiece.OrientMode mode = f.orientMode;
         double[] before = mode == TrackPiece.OrientMode.REAL_ONLY
@@ -887,6 +898,7 @@ class GraphEditor extends Region {
      *  returns whether anything was written. */
     boolean seamEditDesign(int fi, int axis, double deg) {
         if (fi < 0 || fi >= app.coaster.pieces.size()) return false;
+        app.coaster.freezeAutoFollower(fi, app.sectionSpans);   // A3 (D259)
         TrackPiece f = app.coaster.pieces.get(fi);
         if (!Coaster.seamDesignSet(f, axis, deg)) {
             // ONE sentence for the vertical refusal (D249 review fix:
@@ -1194,6 +1206,7 @@ class GraphEditor extends Region {
             return;
         }
         pushUndoSnapshot();
+        app.coaster.freezeAutoFollower(fi, app.sectionSpans);   // A3 (D259)
         app.placementEdit(fi, () -> app.coaster.seamRealToDesign(fi));
         app.markDirty();
         app.rebuildTrack();
@@ -1201,6 +1214,51 @@ class GraphEditor extends Region {
         app.updateBridgeControls();
         redrawFromViewport();
         if (seamSync != null) seamSync.run();
+    }
+
+    /** THE FORWARD ALIGN (v20.1, D259 §3.7 — the seam window's "Align
+     *  to previous end (B)" button and B / Shift+B with a highlighted
+     *  seam): Coaster.alignSeamToUpstream through the seamEdit choke
+     *  (the A3 freeze, the mode routing and the carry like a typed
+     *  box), ONE undo step; refuses with the model's dry-run sentence
+     *  (never silent, D235). */
+    void alignSeam(int fi) {
+        if (app.convertBusy()) return;   // posts CONVERT_BUSY_MSG
+        String why = app.coaster.alignSeamWhy(fi, app.sectionSpans);
+        if (why != null) {
+            app.statsLabel.setText("Align refused — " + why);
+            return;
+        }
+        pushUndoSnapshot();
+        seamEdit(fi, () -> app.coaster.alignSeamToUpstream(fi,
+            app.sectionSpans));
+        app.markDirty();
+        app.rebuildTrack();
+        app.syncPlacementSpinners();
+        app.refreshGizmos(false);
+        redrawFromViewport();
+        if (seamSync != null) seamSync.run();
+    }
+
+    /** The strict seam B / Shift+B act on WITHOUT a selected node
+     *  (v20.1, D259 §3.7): the revealed SEAM rig's follower (the key
+     *  pane first, then any pane), else the open seam window's
+     *  follower, else −1. */
+    int highlightedSeam() {
+        int r = -1;
+        Viewport3D kv = app.keyViewport();
+        if (kv != null) r = kv.revealedSeamPiece();
+        if (r < 0) {
+            for (Viewport3D vp : app.viewports) {
+                r = vp.revealedSeamPiece();
+                if (r >= 0) break;
+            }
+        }
+        if (r < 0 && seamWin != null && seamWinCoaster == app.coaster) {
+            r = seamWinPiece;
+        }
+        return r >= 0 && r < app.coaster.pieces.size() && followsPrev(r)
+            ? r : -1;
     }
 
     /** The seam window's title (v19.19, D248): "Strict Seam n" — the
@@ -1356,8 +1414,14 @@ class GraphEditor extends Region {
                 // back (an axis unlocked = follows the seam) must show
                 // the live angle even while its editor still holds
                 // focus — JavaFX drops that focus only at the next pulse
-                sp.setDisable(dAxis ? dVert : !on);
-                rst.setDisable(dAxis ? dVert : !on);
+                // ROLL under an ABSOLUTE s/c lane (v20.1, D259 §3.9): the
+                // follower's element 0 lane node 0 sets the entry bank
+                // — the whole row grays (padlock, box, ↺)
+                boolean owned = axis == 2
+                    && app.coaster.seamRollOwnedByLane(followerIdx);
+                sp.setDisable(owned || (dAxis ? dVert : !on));
+                rst.setDisable(owned || (dAxis ? dVert : !on));
+                disc.setDisable(owned);
                 seamSyncing = true;
                 try {
                     disc.setSelected(!on);   // selected = 🔓 = follows
@@ -1535,6 +1599,9 @@ class GraphEditor extends Region {
             // design box's own gray = a vertical design frame (D249)
             java.util.function.Supplier<String> spWhy = () -> {
                 TrackPiece f = live.get();
+                if (axis == 2 && app.coaster.seamRollOwnedByLane(followerIdx)) {
+                    return SectionNames.SEAM_ROLL_ABS_WHY;   // §3.9
+                }
                 return f != null && axis != 0
                     && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
                     ? DESIGN_VERTICAL_MSG
@@ -1542,20 +1609,51 @@ class GraphEditor extends Region {
             };
             java.util.function.Supplier<String> rstWhy = () -> {
                 TrackPiece f = live.get();
+                if (axis == 2 && app.coaster.seamRollOwnedByLane(followerIdx)) {
+                    return SectionNames.SEAM_ROLL_ABS_WHY;   // §3.9
+                }
                 return f != null && axis != 0
                     && f.orientMode == TrackPiece.OrientMode.DESIGN_ONLY
                     ? DESIGN_VERTICAL_MSG
                     : "Lock 🔒 first — ↺ then restores the stored"
                         + " placement's angle.";
             };
+            // the padlock grays only under the absolute lane (§3.9)
+            java.util.function.Supplier<String> discWhy = () ->
+                SectionNames.SEAM_ROLL_ABS_WHY;
             HBox orow = LiveWindow.orientRow(labels[a],
-                grayHint(sp, spWhy), disc, grayHint(rst, rstWhy),
+                grayHint(sp, spWhy), axis == 2 ? grayHint(disc, discWhy) : disc,
+                grayHint(rst, rstWhy),
                 designLbls[a] == null ? null : designLbls[a].node);
             box.getChildren().add(orow);
             // the yaw | pitch-roll line ends at the row's ↺ (batch 37
             // — the short, lighter separator of all three windows)
             if (a == 0) box.getChildren().add(LiveWindow.rowSeparator(orow));
         }
+        // FORWARD ALIGN (v20.1, D259 §3.7): the LOCKED axes := the
+        // previous section's end orientation, one shot, through the
+        // seamEdit choke (mode routing + the carry like a typed box);
+        // the live "(B)" tag — B / Shift+B with no node selected do the
+        // same for a highlighted seam. Grayed with the model's reason.
+        Button alignBtn = new Button(SectionNames.ALIGN_BUTTON + " ("
+            + app.settings.shortcut("smooth") + ")");
+        alignBtn.setFocusTraversable(false);
+        alignBtn.setStyle("-fx-font-size: 11px;");
+        Tooltip alignTip = new Tooltip(SectionNames.ALIGN_TIP);
+        alignTip.setShowDelay(javafx.util.Duration.millis(300));
+        Tooltip.install(alignBtn, alignTip);
+        java.util.function.Supplier<String> alignWhy = () ->
+            app.coaster.alignSeamWhy(followerIdx, app.sectionSpans);
+        alignBtn.setOnAction(ev -> {
+            if (!alive.getAsBoolean()) return;
+            if (app.convertBusy()) return;   // posts CONVERT_BUSY_MSG
+            alignSeam(followerIdx);
+            syncAll.accept(true);
+        });
+        HBox alignRow = new HBox(8, grayHint(alignBtn, alignWhy));
+        alignRow.setAlignment(Pos.CENTER_LEFT);
+        box.getChildren().add(alignRow);
+        rowSyncs.add(force -> alignBtn.setDisable(alignWhy.get() != null));
         // the ORIENTATION-MODE row (D249) — the follower's own; a pure
         // flip moves nothing and rebuilds nothing, one undo step each;
         // a follower is never a bridge target, so the design radio has
@@ -1564,7 +1662,12 @@ class GraphEditor extends Region {
         LiveWindow.FlagRow flags = LiveWindow.flagRow(live,
             () -> alive.getAsBoolean() && !app.docApplying()
                 && !app.convertBusy(),
-            this::pushUndoSnapshot, app::markDirty, null, null, () -> {
+            () -> {
+                pushUndoSnapshot();
+                // the A3 prologue (D259 §3.5): a mode flip on an
+                // AUTOMATIC follower freezes its contract first
+                app.coaster.freezeAutoFollower(followerIdx, app.sectionSpans);
+            }, app::markDirty, null, null, () -> {
                 syncAll.accept(true);
                 app.syncPlacementSpinners();
                 app.refreshGizmos(false);
@@ -1919,7 +2022,13 @@ class GraphEditor extends Region {
         });
         HBox btnRow = new HBox(8, grayHint(real, realWhy), disable);
         btnRow.setAlignment(Pos.CENTER_LEFT);
-        VBox box = new VBox(8, lenRow, btnRow);
+        // SM3 (v20.1, D259 §3.6): the DRY RUN of the box's length —
+        // the sentence shows (and the window grows) only while the
+        // window would NOT engage (TrackCompiler.smoothEngagesWhy)
+        Label engNote = LiveWindow.grayNote("");
+        engNote.setManaged(false);
+        engNote.setVisible(false);
+        VBox box = new VBox(8, lenRow, engNote, btnRow);
         // ONE resync (the seam window's rule): a LIVE pass (the hook /
         // a rebuild) skips the length box while it is being typed in;
         // a FORCED pass (an undo restore) always writes
@@ -1928,6 +2037,11 @@ class GraphEditor extends Region {
             if (f == null) return;
             if (force || !lenBox.field.isFocused()) lenBox.set(f.sSmoothLen);
             real.setDisable(realWhy.get() != null);
+            String ew = TrackCompiler.smoothEngagesWhy(app.lastSamples,
+                app.sectionSpans, pieceBase(followerIdx), f.sSmoothLen);
+            engNote.setText(ew == null ? "" : ew);
+            engNote.setManaged(ew != null);
+            engNote.setVisible(ew != null);
             LiveWindow.refit(app, winRef[0]);
         };
         syncAll.accept(true);   // the shown state BEFORE the measure
@@ -3582,6 +3696,16 @@ class GraphEditor extends Region {
                 return sectionTitle(p, i) + " is too short to measure — "
                     + "lengthen it first.";
             }
+        }
+        // the chained convert re-joins its range one section at a time
+        // (Coaster.absorbFollower) — never across a straight/curve edge
+        // (v20.1, D259 §3.2; a belt: under L1 an s/c piece is ONE
+        // section, so a range never meets one)
+        for (int i = k; i < last; i++) {
+            boolean sa = secs.get(i) instanceof StraightCurveSection;
+            boolean sb = secs.get(i + 1) instanceof StraightCurveSection;
+            if (sa && sb) return SectionNames.UNSTRICT_SC_WHY;
+            if (sa || sb) return SectionNames.UNSTRICT_CONVERT_WHY;
         }
         return null;
     }
@@ -7515,6 +7639,11 @@ class GraphEditor extends Region {
         if (lastInPiece) {
             hideJunctionWindows();   // piece indices shift (D247 review fix; + the bridge window, D248)
             List<TrackPiece> pcs = app.coaster.pieces;
+            // the ORPHAN GUARD (v20.1, D259 §3.5 A3): the successor
+            // loses its predecessor — an AUTOMATIC follower there is
+            // frozen at its contract first (its stale stored pose
+            // would be its fallback otherwise)
+            app.coaster.freezeAutoFollower(activePiece + 1, app.sectionSpans);
             pcs.remove(activePiece);
             // the successor's follow flag becomes INERT when it now
             // heads the list or sits behind a bridge-ending piece —
@@ -7640,8 +7769,18 @@ class GraphEditor extends Region {
         // the reconcile keeps the new section on the real seam speed
         // (buildScStraight set its own; the lane holds here are fresh)
         if (tru) added.vRealAnchored(true);
-        secs.add(added);
-        activeSection = sections().size() - 1;
+        // THE STRAIGHT/CURVE INVARIANT (v20.1, D259 §3.2): the append
+        // goes through the model — an s/c, or a lane section after an
+        // s/c tail, lands behind an AUTOMATIC strict seam (the new
+        // section is then section 0 of a new piece); a lane after a
+        // lane is bitwise the old append. The cut inserts pieces, so
+        // the index-resolved junction windows close first.
+        hideJunctionWindows();
+        int[] at = app.coaster.appendSectionWithInvariant(activePiece, added,
+            FvdDesigner.INTEGRATE_DT);
+        if (at == null) at = new int[]{ activePiece, sections().size() - 1 };
+        activePiece = at[0];
+        activeSection = at[1];
         app.lanes = lanesFor(added);
         defaultLane();   // a new section opens on lane 0 (D248)
         elSel = mode == 2 ? 0 : -1;
@@ -7653,6 +7792,8 @@ class GraphEditor extends Region {
                               // a window that ends before it
         syncLaneButtons();
         app.rebuildTrack();   // spans before layout: s/c widths need them
+        app.updatePieceButton();        // a cut adds a junction (D259)
+        app.syncPlacementSpinners();
         refreshOffset();
         redraw();
     }
@@ -8230,6 +8371,8 @@ class GraphEditor extends Region {
                         && yGlobal.isSelected(),
                     vCustom, len);
             }
+            hideJunctionWindows();   // the invariant's cuts shift
+                                     // piece indices (D259 §3.2)
             int[] at = app.coaster.insertSectionAtSeam(pL,
                 strictSeam ? sections().size() : insertIdx, added,
                 lockDown, FvdDesigner.INTEGRATE_DT);
@@ -8292,8 +8435,15 @@ class GraphEditor extends Region {
         LaneSection added = buildLaneHold(secs.size() - 1, geo, real, dist,
             rollG, ypG, rateM, rollAbs, ypAbs, vCustom,
             dist ? Coaster.CONT_HOLD_DIST : 1);
-        secs.add(added);
-        activeSection = sections().size() - 1;
+        // through the straight/curve invariant (v20.1, D259 §3.2 — a
+        // hold after an s/c tail lands behind an automatic strict
+        // seam; after a lane section this is the old append bitwise)
+        hideJunctionWindows();
+        int[] at = app.coaster.appendSectionWithInvariant(activePiece, added,
+            FvdDesigner.INTEGRATE_DT);
+        if (at == null) at = new int[]{ activePiece, sections().size() - 1 };
+        activePiece = at[0];
+        activeSection = at[1];
         app.lanes = lanesFor(added);
         defaultLane();   // a new section opens on lane 0 (D248)
         elSel = -1;
@@ -8301,6 +8451,8 @@ class GraphEditor extends Region {
         viewT1 = -1;
         syncLaneButtons();
         app.rebuildTrack();
+        app.updatePieceButton();        // a cut adds a junction (D259)
+        app.syncPlacementSpinners();
         refreshOffset();
         redraw();
     }
@@ -8865,16 +9017,12 @@ class GraphEditor extends Region {
     /** Which strict seam's smoothing diamond is under (x, y); -1 =
      *  none. Since v19.8 (D237) DISABLED seams hit too — dragging
      *  the hollow diamond ENABLES smoothing at the dragged length —
-     *  except on s/c edges, where smoothing is banned (D232). */
+     *  on s/c edges as well since v20.1 (D259 §3.6: the D232 ban went
+     *  with the entry ease). */
     private int hitSeamDiamond(double x, double y) {
         List<RunSec> rl = runLayout();
         for (int i = 0; i < rl.size() - 1; i++) {
             if (!seamStrict(rl, i)) continue;
-            if (app.coaster.pieces.get(rl.get(i + 1).piece())
-                        .sSmoothLen <= 0.01
-                    && seamScEdge(rl.get(i + 1).piece())) {
-                continue;   // the menu's grayed row explains
-            }
             double bx = tToX(rl.get(i).t0() + rl.get(i).dur());
             if (Math.hypot(x - bx, y - seamDiaYAt(rl, i, bx)) <= 7) {
                 return i;
@@ -8883,24 +9031,11 @@ class GraphEditor extends Region {
         return -1;
     }
 
-    /** Is the strict seam INTO followerPiece an s/c edge (either side
-     *  a StraightCurveSection)? Smoothing cannot be enabled there
-     *  (D232) — factored from the seam menu in v19.8. */
-    private boolean seamScEdge(int followerPiece) {
-        if (followerPiece <= 0
-                || followerPiece >= app.coaster.pieces.size()) {
-            return false;
-        }
-        List<Section> aSecs =
-            app.coaster.pieces.get(followerPiece - 1).sections;
-        List<Section> bSecs =
-            app.coaster.pieces.get(followerPiece).sections;
-        return (!aSecs.isEmpty()
-                && aSecs.get(aSecs.size() - 1)
-                    instanceof StraightCurveSection)
-            || (!bSecs.isEmpty()
-                && bSecs.get(0) instanceof StraightCurveSection);
-    }
+    // (seamScEdge — the D232 s/c-edge smoothing ban — is GONE since
+    // v20.1, D259 §3.6 SM1: the entry ease it protected went with
+    // Stage 1b, and the seam diamond is the one smoothing control on
+    // every strict seam; the dry run smoothEngagesWhy says when a
+    // window would not engage.)
 
     /** A strict seam's blend-band EDGE within grab range (v17.4,
      *  D141); −1 = none. Deliberately the LOWEST interactive rank —
@@ -9184,11 +9319,6 @@ class GraphEditor extends Region {
     private void drawSeamDiamond(GraphicsContext gc, List<RunSec> rl,
                                  int i, double bx) {
         TrackPiece f = app.coaster.pieces.get(rl.get(i + 1).piece());
-        // the one seam that still hides it: an s/c edge, where
-        // smoothing cannot be enabled at all (D232)
-        if (f.sSmoothLen <= 0.01 && seamScEdge(rl.get(i + 1).piece())) {
-            return;
-        }
         double dy = seamDiaYAt(rl, i, bx);
         boolean hov = i == hoverSeamDia
             && seamDragPiece != rl.get(i + 1).piece();
@@ -11994,6 +12124,19 @@ class GraphEditor extends Region {
             int hd = pcSec >= 0 ? -1 : hitSeamDiamond(e.getX(), e.getY());
             if (hd != hoverSeamDia) {
                 hoverSeamDia = hd;
+                // SM3 (v20.1, D259 §3.6): a HOLLOW diamond's hover says
+                // when the 10 m window a drag or the menu would set
+                // could not engage (the dry run; silent while it would)
+                if (hd >= 0) {
+                    List<RunSec> rlh = runLayout();
+                    int fh = rlh.get(hd + 1).piece();
+                    if (app.coaster.pieces.get(fh).sSmoothLen <= 0.01) {
+                        String w = TrackCompiler.smoothEngagesWhy(
+                            app.lastSamples, app.sectionSpans,
+                            pieceBase(fh), 10);
+                        if (w != null) app.statsLabel.setText(w);
+                    }
+                }
                 redraw();
             }
             // node/knob computed BEFORE the cursor (D237, user
@@ -12278,6 +12421,18 @@ class GraphEditor extends Region {
                     }
                 }
                 return;
+            }
+            if (seamDragPiece >= 0
+                    && seamDragPiece < app.coaster.pieces.size()) {
+                // SM3 (v20.1, D259 §3.6): a drag that left a window too
+                // short to engage says so ONCE, on the release
+                TrackPiece fd = app.coaster.pieces.get(seamDragPiece);
+                if (fd.sSmoothLen > 0.01) {
+                    String w = TrackCompiler.smoothEngagesWhy(
+                        app.lastSamples, app.sectionSpans,
+                        pieceBase(seamDragPiece), fd.sSmoothLen);
+                    if (w != null) app.statsLabel.setText(w);
+                }
             }
             seamDragPiece = -1;
             elDragBoundary = -1;
@@ -16534,7 +16689,10 @@ class GraphEditor extends Region {
             if (Gestures.speedDiffers(s0.vDesign(), re[0])) {
                 return SectionNames.INIT_SMOOTH_SHRINK_WHY;
             }
-            if (k == 0) {   // a follower's / bridged-in piece's first section
+            // a BRIDGED-IN piece's first section is never reconciled; a
+            // strict FOLLOWER's is since v20.1 (D259 §3.5 A4 — it takes
+            // the k ≥ 1 sentences, never noConflictFirstPin)
+            if (k == 0 && !app.coaster.followsPrev(piece)) {
                 return s0.vPinned() ? noConflictFirstPin : noConflictNone;
             }
             if (s0.vPinned()) return noConflict;
@@ -17008,11 +17166,19 @@ class GraphEditor extends Region {
         }
         // section-EDGE nodes have no smooth/broken meaning (one handle) —
         // there B RETURNS the node to the boundary value + slope (v10.1)
-        if (selIdx == 0 || selIdx == active().size() - 1) {
+        if (selIdx >= 0 && (selIdx == 0 || selIdx == active().size() - 1)) {
             matchBoundary(selIdx);
             return;
         }
-        if (selIdx < 0) return;
+        if (selIdx < 0) {
+            // no node: B aligns a HIGHLIGHTED strict seam (v20.1, D259
+            // §3.7 — the revealed seam rig or the open seam window);
+            // nothing highlighted = never silent (D235)
+            int hs = highlightedSeam();
+            if (hs >= 0) alignSeam(hs);
+            else app.statsLabel.setText(SectionNames.B_NO_TARGET_WHY);
+            return;
+        }
         pushUndoSnapshot();
         touchActive();   // D248
         BezierBaker.Node n = active().get(selIdx);
@@ -17359,8 +17525,11 @@ class GraphEditor extends Region {
         }
         List<BezierBaker.Node> lane = active();
         if (selIdx < 0) {
-            app.statsLabel.setText("Shift+B needs a selected section-EDGE "
-                + "node (a lane's first or last).");
+            // no node: Shift+B aligns a HIGHLIGHTED strict seam like B
+            // (v20.1, D259 §3.7); nothing highlighted = the one sentence
+            int hs = highlightedSeam();
+            if (hs >= 0) alignSeam(hs);
+            else app.statsLabel.setText(SectionNames.B_NO_TARGET_WHY);
             return;
         }
         boolean infl = activeInfl() != null;
