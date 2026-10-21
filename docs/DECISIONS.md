@@ -16266,7 +16266,56 @@ uvd.ConflictGate 90, InsertGate 45, RunGate 82, CopyGate 74,
 PlacementGate / OrientModeGate re-pinned to the 6-field porient line,
 DetermGate198 d / Phase2Gate scRoundTrip / ScElemGate g+k built through
 the invariant; the whole 39-member battery green on wiped classes
-2026-10-21; -Dfvd.scprobe=1 (21 checks), keyprobe, typedprobe,
+2026-10-21; -Dfvd.scprobe=1 (21 checks; 26 since round 2), keyprobe, typedprobe,
 initspeedprobe, smoothprobe fails=0. Hand-tested by him 2026-10-21: the
 roll lane strip (his notes 1-7 — this entry); nothing of the seam
 invariant yet (TESTING #176/1b).
+
+D259.1b, round 2 (v20.1, 2026-10-21) — his second hand-test round on the
+roll lane strip. (1) THE R2 m FREEZE: a curve with an absolute roll lane
+of many nodes, one of them SELECTED, shrunk from R20 to R2 through the
+element dialog — the cut left the lane with two nodes while selIdx /
+selSet still pointed past its end, and drawHandles(selIdx) threw inside
+the redraw body AFTER the strip's alpha had been lowered: JavaFX's
+GraphicsContext keeps its state across calls, so every later background
+fill painted at that alpha (the plot darkened per redraw and stopped
+updating — the undo could not help: the stale index outlived it) and the
+POV timer's per-frame redraw died until a key release's rebuild repainted
+(the ride "only updated when I let go of W"). Found by a review workflow
+(four code-path readers + refuters) after the first in-JVM repro, without
+a selected node, ran clean. FIX: GraphEditor.clampNodeSelection at the top
+of every redraw body and after the dialog's length write (the primary onto
+the last node, the set pruned); drawHandles / knobPos refuse a stale index;
+and THE REDRAW BELT — redrawBody resets the context (alpha 1, no dashes,
+width 1) before every body and catches a body's RuntimeException: the
+state is reset again, the fault is printed once per message and posted on
+the stats bar ("The graph could not be drawn completely — please report
+this: …"), the editor stays usable. scprobe S11-S11d reproduce the state
+(the last node selected, the shrink, redraws, the POV ride with W held,
+Ctrl+Z) and assert zero faults, alpha 1 and the restored lane re-bound.
+(2) The roll button wears a 3D ORIENTATION icon after his reference image
+(FvdDesigner.strokeOrientIcon — a wide horizontal ring traversed
+counterclockwise with its arrowhead at the left end, crossed by a taller
+vertical ring whose front half runs up to an arrowhead pointing right; the
+kind icons' stroke style, the roll lane's color). (3) The Roll dialog's
+Switch / Bake buttons lost their parentheticals; the explanations sit under
+the buttons as gray captions (ROLL_SWITCH_CAP / ROLL_BAKE_CAP — the force /
+geo Orientation settings dialog's pattern; LabelGate 19e2 / 19f2). (4) The
+seam window's "Align to previous end (B)" button is GONE (his call —
+unlocking the axes already re-aims the seam); B / Shift+B with the seam
+highlighted keep the forward align; ALIGN_BUTTON / ALIGN_TIP and LabelGate
+20f / 20g removed, ScSeamGate row n 11 constants. (5) With a straight/curve
+section selected its OWN two seams were unreachable: the end border's resize
+and the band select outranked the seam line and diamond. Now the seam
+DIAMOND is tested before the end border's resize, and a CLEAN click (≤ 3 px)
+on either seam line opens the seam menu on release (GraphEditor.scSeamClick;
+a drag past 3 px at the end border still resizes the last element, with a
+deadband so a click never commits a micro-resize; the start border has no
+resize). (6) The element chip and the roll button sit ON THE BADGE'S ROW,
+in line with the S/C badge — the element-0 chip starts past the badge
+(GraphEditor.activeBadgeSpan recomputes the badge rect: badges draw after
+the strip, so badgeRects is a frame stale). Gates: LabelGate 229 (+2 −2),
+ScSeamGate 37, ScRollLaneGate 70, the whole battery green on wiped classes;
+scprobe 26 checks. Docs: TESTING #176/1b (c)/(j), the design doc §2.5 /
+§3.7 / §3.8 / §3.10 / §9.7, CLAUDE.md's strip paragraph, Help. NEXT: Stage
+2a (ScSolve) — step 0 written into the design doc §10.6, run 1 in the cloud.

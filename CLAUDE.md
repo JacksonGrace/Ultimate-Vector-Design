@@ -1671,7 +1671,20 @@ GraphEditor.java    JavaFX GRAPH EDITOR (split out v9.2, D52): the
                     (app.rebuildTrack(), app.settings, …). redraw()
                     fires app.fireModelHooks() after its redrawHooks
                     loop (D247 live windows); the node editor sits in
-                    both lists. v19.19 (D248): the NAMING wrappers
+                    both lists. THE REDRAW BELT (v20.1, D259.1b round 2
+                    — his R2 m freeze): redrawBody resets the canvas's
+                    GraphicsContext (alpha 1, no dashes, width 1) before
+                    every body and catches a body's RuntimeException —
+                    the state is reset again, the fault printed once per
+                    message + posted on the stats bar, the editor stays
+                    usable (the context's state PERSISTS across calls:
+                    an exception after a setGlobalAlpha(< 1) made every
+                    later background fill translucent — the plot
+                    darkened per redraw and stopped updating, and the
+                    POV timer's per-frame redraw died); clampNodeSelection
+                    at the top of every body (a shortened lane — a cut
+                    element, a delete, a restore — leaves selIdx / selSet
+                    stale; drawHandles / knobPos refuse a stale index). v19.19 (D248): the NAMING wrappers
                     sectionTitle / junctionOrdinal / junctionTitle /
                     ownerButtonLabel / seamTitle on SectionNames;
                     labelItem (the CustomMenuItem + Label pattern
@@ -3202,18 +3215,23 @@ body roll rate otherwise) and at the section's seams; THREE SETTINGS
 BUTTONS since his 2026-10-21 note 3 — the S/C badge (the section), the
 ELEMENT CHIP at the band's TOP-LEFT (a hover-lit button: the element
 dialog — kind / length / radius / angle / direction / entry smoothing)
-and the ROLL BUTTON beside it (the mini circle arrow in the roll
-lane's color: the Roll dialog — axis / rate units / behavior with the
+and the ROLL BUTTON beside it (the 3D ORIENTATION icon,
+FvdDesigner.strokeOrientIcon, in the roll lane's color: the Roll dialog — axis / rate units / behavior with the
 interlocks, Switch = the flags (a rate-unit flip between two rate
 settings CONVERTS the values: × v at the node's arc or ÷ v, the shadow
 along — note 6), Bake = Coaster.bakeElementRoll through the density
-preview; scChipRects / hitScChip / hoverScChip); the band's
+preview, both with gray captions underneath — round 2; scChipRects /
+hitScChip / hoverScChip; the chips sit ON THE BADGE'S ROW since round
+2, the element-0 chip past the badge — activeBadgeSpan); the band's
 double-click opens NOTHING (a roll node's still opens its editor) and
 the band's right-click menu lives on for now; a band PRESS selects
 the element AND starts a BOX SELECT of its roll nodes (note 5); the
-press ladder = nodes / knobs > the two chip buttons > the badge /
-'+' > blend diamonds, borders, band edges > another element's lane
-node / curve > a click ON the lane curve inserts > band): an
+press ladder = nodes / knobs > the s/c's OWN seam diamond (round 2:
+it outranks the end border's resize; a clean click on either seam
+LINE opens the seam menu on release — scSeamClick — while a drag at
+the end border resizes) > the two chip buttons > the badge / '+' >
+blend diamonds, borders, band edges > another element's lane node /
+curve > a click ON the lane curve inserts > band): an
 active s/c section replaces the lanes with element BANDS, felt-G
 derived curves behind at 0.45 alpha + the roll lane, dashed
 separators (wearing a KINK CARET where the next element's absolute

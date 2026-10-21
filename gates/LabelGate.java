@@ -808,10 +808,10 @@ public class LabelGate {
                 SectionNames.SC_DISTANCE_WHY, "19c the Domain row over an s/c (D30)");
             eq("Absolute bank holds a bank against the horizon — it needs the global roll axis.",
                 SectionNames.ABS_NEEDS_GLOBAL_WHY, "19d the Local radio under Absolute");
-            eq("Switch to These Settings (same graph, change bank)",
-                SectionNames.ROLL_SWITCH_BUTTON, "19e the Switch button");
-            eq("Bake These Settings (convert graph, keep bank)",
-                SectionNames.ROLL_BAKE_BUTTON, "19f the Bake button");
+            eq("Switch to These Settings", SectionNames.ROLL_SWITCH_BUTTON, "19e the Switch button");
+        eq("same graph, change bank", SectionNames.ROLL_SWITCH_CAP, "19e2 its caption (round 2)");
+            eq("Bake These Settings", SectionNames.ROLL_BAKE_BUTTON, "19f the Bake button");
+        eq("convert graph, keep bank", SectionNames.ROLL_BAKE_CAP, "19f2 its caption (round 2)");
             eq("Reinterprets this element's roll graph under the new settings.",
                 SectionNames.ROLL_SWITCH_TIP, "19g the Switch tooltip (one sentence)");
             eq("Converts this element's roll graph so the bank stays the same.",
@@ -851,9 +851,6 @@ public class LabelGate {
             SectionNames.ALIGN_VERTICAL_WHY, "20d the forward align on a vertical frame");
         eq("B needs a selected node or a highlighted strict seam.",
             SectionNames.B_NO_TARGET_WHY, "20e B with nothing to act on");
-        eq("Align to previous end", SectionNames.ALIGN_BUTTON, "20f the seam window's align button");
-        eq("Sets the locked angles to the previous section's end orientation.",
-            SectionNames.ALIGN_TIP, "20g its tooltip (one sentence)");
         eq("The smoothing window holds too few samples to engage — lengthen it.",
             SectionNames.SMOOTH_TOO_SHORT_WHY, "20h smoothEngagesWhy: too few samples");
         eq("A section beside this seam is too short to smooth.",

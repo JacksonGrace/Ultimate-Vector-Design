@@ -698,7 +698,7 @@ JavaFX DEV HOOKS ride the app, not gates/ (no JavaFX on this classpath):
    activation binds element 0's lane (mode-3 buttons), the lane element switches by identity, insert / A (the hold halves the next
    transition on a default lane) / Delete / B at an interior border, the cut / shadow round trip through Element.setLength (bitwise
    return), the element dialog + the Roll dialog open / close, both band buttons recorded, the Bank tint after a flag switch, the 3D
-   double-click's lane switch then insert, an element delete clamps the lane element; "PROBE sc fails=N", 21 checks)
+   double-click's lane switch then insert, an element delete clamps the lane element; "PROBE sc fails=N", 21 checks; 26 since round 2 — S7d the chips on the badge row, S11a-d the R20 → R2 shrink of a many-node absolute lane, the POV ride over it and Ctrl+Z: no exception, the canvas alpha 1, the restored lane re-bound)
   -Dfvd.initspeedprobe=<file.uvd> (D256 — opens the file, the init-speed window on piece 1 section 1, Button.fire on "Set Design to
    Real", editor.undo / redo: the bitwise landing on the displayed real seam speed with the anchor set, the no-op second click,
    Ctrl+Z / Ctrl+Shift+Z through the DocState snapshot; + D257's LAYOUT checks: on piece 0 section 1 (no conflict) the readout

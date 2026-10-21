@@ -809,8 +809,7 @@ public final class ScSeamGate {
             { "This seam already follows the previous section.", SectionNames.ALIGN_FOLLOWS_WHY },
             { "The track is vertical at this seam — there is no heading or bank to align.", SectionNames.ALIGN_VERTICAL_WHY },
             { "B needs a selected node or a highlighted strict seam.", SectionNames.B_NO_TARGET_WHY },
-            { "Align to previous end", SectionNames.ALIGN_BUTTON },
-            { "Sets the locked angles to the previous section's end orientation.", SectionNames.ALIGN_TIP },
+            // (ALIGN_BUTTON / ALIGN_TIP went with the seam window's button, round 2)
             { "The smoothing window holds too few samples to engage — lengthen it.", SectionNames.SMOOTH_TOO_SHORT_WHY },
             { "A section beside this seam is too short to smooth.", SectionNames.SMOOTH_SECTION_SHORT_WHY },
             { "smoothing conversion needs force/geo sections on both sides of the seam", SectionNames.SMOOTH_REAL_SC_WHY },

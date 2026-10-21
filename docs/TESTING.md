@@ -5569,13 +5569,19 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
         insert a node between it and the cut) and grow: the cut node
         stays as a real node and the old graph continues past it — the
         drawn graph over the element never changes on growth (note 1).
-        (c) The three buttons at a band's top-left: the element chip
-        opens the element dialog (kind / size / smoothing — no roll
-        rows), the circle-arrow button beside it the Roll dialog (axis /
-        units / behavior, Switch / Bake), the S/C badge the section's
+        (c) The three buttons on a band's top row, in line with the S/C
+        badge: the element chip opens the element dialog (kind / size /
+        smoothing — no roll rows), the 3D-orientation button beside it
+        the Roll dialog (axis / units / behavior; Switch / Bake with
+        their gray captions underneath), the S/C badge the section's
         menu; a band double-click opens nothing (note 3). Press-drag on
         an empty band area draws a box and selects the roll nodes it
-        catches (note 5).
+        catches (note 5). Round 2: a click on either of the s/c's own
+        seam lines opens the seam menu, dragging the hollow diamond on
+        them enables smoothing (the end border's drag still resizes the
+        last element), and the R20 → R2 shrink of a curve with a
+        many-node absolute lane followed by Ctrl+Z leaves the POV ride
+        and the plot working (S11 of the probe).
         (d) Roll dialog: pick °/s on a °/m lane and Switch — every node
         value and handle multiplies by the speed there (the graph reads
         the same bank rate in the new units); Bake converts through the
@@ -5607,13 +5613,14 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
         (j) Open the seam window: the rows show the live angles; lock an
         axis — the s/c freezes at its current pose (nothing moves),
         type an angle — the seam kinks (carets); unlock all three — it
-        follows again. "Align to previous end (B)": with a locked axis
-        holding a typed angle, the button (or B / Shift+B with no node
-        selected and the seam ball revealed / the window open) sets the
-        locked angles back to the previous section's end once; grayed
-        "This seam already follows the previous section." with nothing
-        locked; B with nothing selected and no seam highlighted says
-        "B needs a selected node or a highlighted strict seam.".
+        follows again. With a locked axis holding a typed angle, B or
+        Shift+B with no node selected and the seam highlighted (its
+        ball revealed, or its window open) sets the locked angles back
+        to the previous section's end once; with nothing locked the
+        stats bar says "This seam already follows the previous
+        section."; with nothing selected and no seam highlighted it says
+        "B needs a selected node or a highlighted strict seam." (the
+        window's own Align button went in round 2 — unlocking re-aims).
         (k) Smoothing on an s/c edge: drag the hollow diamond — the
         window engages (band, no carets); on a seam into a SHORT s/c
         (< 1 m) the "Enable smoothing" item is grayed with the dry-run
@@ -5662,7 +5669,7 @@ After any `FvdDesigner` change, run `mvn javafx:run` and walk:
     LabelGate 229, uvd.PulseClockGate 30, RunGate 82, PlacementGate 41,
     OrientModeGate 51, GestureGate 180, EndFollowGate 73, FloorGate 34,
     StripGate 49, uvd.ConflictGate 90, Nl2ElemProbe 22, uvd.DecompProbe,
-    InflMatchProbe. Dev hooks: -Dfvd.scprobe=1 "PROBE sc fails=0" (21:
+    InflMatchProbe. Dev hooks: -Dfvd.scprobe=1 "PROBE sc fails=0" (26 since round 2 — S7d the chips on the badge row, S11/S11b/S11c/S11d the R20 → R2 shrink of a many-node absolute lane with the POV ride and Ctrl+Z; 21:
     activation binds element 0's lane, the lane element switches, insert
     / A / Delete / B at a border, the cut / shadow round trip, the
     element + roll dialogs open, both band buttons recorded, the Bank

@@ -297,10 +297,13 @@ public final class SectionNames {
         "Absolute bank holds a bank against the horizon — it needs the"
         + " global roll axis.";
     /** The Roll block's two buttons + their one-sentence tooltips. */
-    public static final String ROLL_SWITCH_BUTTON =
-        "Switch to These Settings (same graph, change bank)";
-    public static final String ROLL_BAKE_BUTTON =
-        "Bake These Settings (convert graph, keep bank)";
+    public static final String ROLL_SWITCH_BUTTON = "Switch to These Settings";
+    public static final String ROLL_BAKE_BUTTON = "Bake These Settings";
+    /** Their gray captions under the buttons (his 2026-10-21 round-2
+     *  note 3 — the parentheticals moved out of the labels, the
+     *  Orientation settings dialog's pattern). */
+    public static final String ROLL_SWITCH_CAP = "same graph, change bank";
+    public static final String ROLL_BAKE_CAP = "convert graph, keep bank";
     public static final String ROLL_SWITCH_TIP =
         "Reinterprets this element's roll graph under the new settings.";
     public static final String ROLL_BAKE_TIP =
@@ -490,10 +493,7 @@ public final class SectionNames {
         "B needs a selected node or a highlighted strict seam.";
     /** The seam window's align button caption (the live "(B)" shortcut
      *  tag is appended by the window). */
-    public static final String ALIGN_BUTTON = "Align to previous end";
     /** Its tooltip (one sentence). */
-    public static final String ALIGN_TIP =
-        "Sets the locked angles to the previous section's end orientation.";
     /** The seam window's roll row under an s/c whose element 0 carries
      *  an ABSOLUTE bank lane (§3.9). */
     public static final String SEAM_ROLL_ABS_WHY =

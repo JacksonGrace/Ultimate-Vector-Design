@@ -1216,9 +1216,9 @@ class GraphEditor extends Region {
         if (seamSync != null) seamSync.run();
     }
 
-    /** THE FORWARD ALIGN (v20.1, D259 §3.7 — the seam window's "Align
-     *  to previous end (B)" button and B / Shift+B with a highlighted
-     *  seam): Coaster.alignSeamToUpstream through the seamEdit choke
+    /** THE FORWARD ALIGN (v20.1, D259 §3.7 — B / Shift+B with a
+     *  highlighted seam; the seam window's button went in round 2):
+     *  Coaster.alignSeamToUpstream through the seamEdit choke
      *  (the A3 freeze, the mode routing and the carry like a typed
      *  box), ONE undo step; refuses with the model's dry-run sentence
      *  (never silent, D235). */
@@ -1630,30 +1630,10 @@ class GraphEditor extends Region {
             // — the short, lighter separator of all three windows)
             if (a == 0) box.getChildren().add(LiveWindow.rowSeparator(orow));
         }
-        // FORWARD ALIGN (v20.1, D259 §3.7): the LOCKED axes := the
-        // previous section's end orientation, one shot, through the
-        // seamEdit choke (mode routing + the carry like a typed box);
-        // the live "(B)" tag — B / Shift+B with no node selected do the
-        // same for a highlighted seam. Grayed with the model's reason.
-        Button alignBtn = new Button(SectionNames.ALIGN_BUTTON + " ("
-            + app.settings.shortcut("smooth") + ")");
-        alignBtn.setFocusTraversable(false);
-        alignBtn.setStyle("-fx-font-size: 11px;");
-        Tooltip alignTip = new Tooltip(SectionNames.ALIGN_TIP);
-        alignTip.setShowDelay(javafx.util.Duration.millis(300));
-        Tooltip.install(alignBtn, alignTip);
-        java.util.function.Supplier<String> alignWhy = () ->
-            app.coaster.alignSeamWhy(followerIdx, app.sectionSpans);
-        alignBtn.setOnAction(ev -> {
-            if (!alive.getAsBoolean()) return;
-            if (app.convertBusy()) return;   // posts CONVERT_BUSY_MSG
-            alignSeam(followerIdx);
-            syncAll.accept(true);
-        });
-        HBox alignRow = new HBox(8, grayHint(alignBtn, alignWhy));
-        alignRow.setAlignment(Pos.CENTER_LEFT);
-        box.getChildren().add(alignRow);
-        rowSyncs.add(force -> alignBtn.setDisable(alignWhy.get() != null));
+        // (the FORWARD ALIGN lives on B / Shift+B with the seam
+        // highlighted — GraphEditor.alignSeam; its button here was
+        // REMOVED on his 2026-10-21 round-2 note 4: unlocking the axes
+        // already re-aims the seam)
         // the ORIENTATION-MODE row (D249) — the follower's own; a pure
         // flip moves nothing and rebuilds nothing, one undo step each;
         // a follower is never a bridge target, so the design radio has
@@ -5272,6 +5252,8 @@ class GraphEditor extends Region {
     List<double[]> probeChipRects() { return scChipRects; }
     /** A manual view window in AXIS units (t1 < 0 = auto-fit). */
     void probeSetView(double t0, double t1) { viewT0 = t0; viewT1 = t1; redraw(); }
+    double probeGcAlpha() { return canvas.getGraphicsContext2D().getGlobalAlpha(); }
+    List<double[]> probeBadgeRects() { return badgeRects; }
     /** The Convert dialog's whole-section commit for section k of the
      *  active piece, same type/domain/axes (the identity re-author). */
     void probeWholeConvert(int k) {
@@ -9117,6 +9099,9 @@ class GraphEditor extends Region {
         return best;                              // pass 3
     }
     private int seamDragPiece = -1;    // follower piece being sized
+    // a press on one of the active s/c's OWN seam lines (round 2): a
+    // clean release opens the seam menu; a drag past 3 px clears it
+    private int scSeamClick = -1;
     private double seamDragAxisX;      // the seam's axis coordinate
     private boolean seamDragRel;       // diamond = relative (v17.5)
     private int seamDragSide;          // edge drag: -1 left / +1 right (D248)
@@ -10494,6 +10479,31 @@ class GraphEditor extends Region {
         return -1;
     }
 
+    /** The ACTIVE section's badge extent {x, right} as
+     *  drawSectionBadges will place it THIS redraw (the badges draw
+     *  after the strip, so badgeRects is a frame stale — this is the
+     *  same recipe), or null when no badge draws. The s/c chip row
+     *  starts past it (his round-2 note 6). */
+    private double[] activeBadgeSpan() {
+        double w = canvas.getWidth();
+        for (int k = 0; k < runLayout().size(); k++) {
+            RunSec rs = runLayout().get(k);
+            if (rs.piece() != activePiece || rs.section() != activeSection) continue;
+            boolean dirty = rs.sec() instanceof BridgeSection
+                && rs.piece() + 1 >= app.coaster.pieces.size();   // the orphan badge
+            String label = SectionNames.badgeLabel(rs.sec(), dirty)
+                + driftGlyph(rs.piece(), rs.section())
+                + (sectionOrientConflict(rs.piece(), rs.section())
+                    ? SectionNames.ORIENT_GLYPH : "");
+            double bw = badgeWidth(label);
+            double x0 = Math.max(tToX(rs.t0()), MARGIN_LEFT);
+            double x1 = Math.min(tToX(rs.t0() + rs.dur()), w - marginRight());
+            if (x1 - x0 < bw + 8) return null;
+            return new double[]{ x0 + 4, x0 + 4 + bw };
+        }
+        return null;
+    }
+
     /** The s/c band button under (x, y) — {element, kind} (kind 0 =
      *  the element chip, 1 = the roll button), else null (his
      *  2026-10-21 note 3). */
@@ -10522,7 +10532,7 @@ class GraphEditor extends Region {
     // per redraw; hoverScChip = {element, kind} under the cursor
     private final List<double[]> scChipRects = new ArrayList<>();
     private int[] hoverScChip = null;
-    private static final double SC_ROLL_CHIP_W = 22;
+    private static final double SC_ROLL_CHIP_W = 24;
     // the LANE ELEMENT (v20.1, D259 §2.4): the element whose roll lane
     // app.lanes binds to — 0 when an s/c activates, set by selecting an
     // element or clicking another element's lane; STICKY (a deselect
@@ -10812,8 +10822,13 @@ class GraphEditor extends Region {
             // circle arrow in the roll lane's color) opens the element's
             // roll settings. The S/C badge above them stays the
             // section's. Both rects are recorded for the press.
-            if (x1 - x0 >= bw + 6) {
-                double bx = x0 + 4, by = top + 24;
+            // on the BADGE's row since his round-2 note 6 ("in line with
+            // the S/C section button"): the same y, and the band holding
+            // the badge starts its chips past it
+            double[] bs = activeBadgeSpan();
+            double bx = x0 + 4, by = top + 4;
+            if (bs != null && bs[0] < x1 && bs[1] > x0) bx = Math.max(bx, bs[1] + 4);
+            if (x1 - bx >= bw + 2) {
                 boolean hotE = hoverScChip != null && hoverScChip[0] == i
                     && hoverScChip[1] == 0;
                 gc.setGlobalAlpha(hotE ? 1.0 : 0.92);
@@ -10832,7 +10847,7 @@ class GraphEditor extends Region {
                 gc.setFill(tcol);
                 gc.fillText(label, bx + 18 + (bw - 18) / 2, by + 8);
                 scChipRects.add(new double[]{ bx, by, bw, 15, i, 0 });
-                if (x1 - x0 >= bw + 6 + SC_ROLL_CHIP_W + 4) {
+                if (x1 - bx >= bw + 2 + SC_ROLL_CHIP_W + 4) {
                     double rx = bx + bw + 4;
                     boolean hotR = hoverScChip != null && hoverScChip[0] == i
                         && hoverScChip[1] == 1;
@@ -10843,8 +10858,10 @@ class GraphEditor extends Region {
                     gc.setStroke(hotR ? Color.WHITE : rcol.deriveColor(0, 1, 1, 0.7));
                     gc.setLineWidth(hotR ? 1.6 : 1);
                     gc.strokeRoundRect(rx, by, SC_ROLL_CHIP_W, 15, 7, 7);
-                    strokeMiniCircleArrow(gc, rx + SC_ROLL_CHIP_W / 2, by + 7.5,
-                        4.5, rcol.brighter());
+                    // the 3D orientation glyph (round-2 note 2), 14 × 14 at
+                    // 0.85 → 12 px, centered in the chip
+                    FvdDesigner.strokeOrientIcon(gc, rx + (SC_ROLL_CHIP_W - 14 * 0.85) / 2,
+                        by + 1.1, 0.85, rcol.brighter());
                     scChipRects.add(new double[]{ rx, by, SC_ROLL_CHIP_W, 15, i, 1 });
                 }
                 gc.setGlobalAlpha(1.0);
@@ -11098,6 +11115,14 @@ class GraphEditor extends Region {
             else showRollDialog(chip[0]);
             return true;
         }
+        // the s/c's own TWO seams (his 2026-10-21 round-2 report): the
+        // strict seam's diamond and line sit ON border 0 and border n —
+        // the seam DIAMOND outranks the end border's resize, and a CLEAN
+        // CLICK on either seam line opens the seam menu on release (a
+        // drag at the end border still resizes the last element; the
+        // start border has no resize)
+        if (seamDiamondPressed(e)) return true;
+        int seamHit = hitSeam(e.getX(), e.getY());
         int d = hitScDiamond(e.getX(), e.getY());
         if (d >= 1) {   // interior borders only — the entry ease is gone (v20.1)
             beginGesture();
@@ -11123,11 +11148,16 @@ class GraphEditor extends Region {
         if (bIdx >= 1) {
             beginGesture();
             elDragBoundary = bIdx - 1;
+            scSeamClick = seamHit;   // a clean release = the seam menu
             lastDragX = e.getX();
             lastDragY = e.getY();
             lastDragSnap = e.isControlDown();
             dragTimerLast = 0;
             dragGrowTimer.start();
+            return true;
+        }
+        if (seamHit >= 0) {   // the START seam's line (no resize there)
+            scSeamClick = seamHit;
             return true;
         }
         // blend-band EDGES (v17.4) — under everything above, over
@@ -11512,6 +11542,7 @@ class GraphEditor extends Region {
             // element 0's blend is ALWAYS 0 (v20.1) — its row is absent
             if (idx > 0) el2.blendIn = Math.max(0, parseOr(smF, el2.blendIn));
             if (activePiece == elPiece && activeSection == elSec) elSel = idx;
+            clampNodeSelection();   // a shorter element = a cut lane (round 2)
             app.rebuildTrack();
             refreshOffset();
             redraw();
@@ -11622,11 +11653,18 @@ class GraphEditor extends Region {
         Button rollBake = new Button(SectionNames.ROLL_BAKE_BUTTON);
         rollSwitch.setTooltip(new Tooltip(SectionNames.ROLL_SWITCH_TIP));
         rollBake.setTooltip(new Tooltip(SectionNames.ROLL_BAKE_TIP));
-        HBox rollBtns = new HBox(8,
-            grayHint(rollSwitch, SectionNames.ROLL_PICK_WHY),
-            grayHint(rollBake, sc.reversed
+        // the explanations sit UNDER each button in gray (his round-2
+        // note 3 — the force/geo Orientation settings dialog's pattern;
+        // they were parentheticals in the button text)
+        VBox swBox = new VBox(2, grayHint(rollSwitch, SectionNames.ROLL_PICK_WHY),
+            grayCaption(SectionNames.ROLL_SWITCH_CAP));
+        swBox.setAlignment(Pos.CENTER);
+        VBox bkBox = new VBox(2, grayHint(rollBake, sc.reversed
                 ? "Legacy reversed sections refuse baking."
-                : SectionNames.ROLL_PICK_WHY));
+                : SectionNames.ROLL_PICK_WHY),
+            grayCaption(SectionNames.ROLL_BAKE_CAP));
+        bkBox.setAlignment(Pos.CENTER);
+        HBox rollBtns = new HBox(8, swBox, bkBox);
         rollBtns.getChildren().add(closeBtn);
         rollBtns.setAlignment(Pos.CENTER_LEFT);
         grid.add(rollBtns, 0, row++, 2, 1);
@@ -12589,6 +12627,14 @@ class GraphEditor extends Region {
             }
             if ((elDragBoundary >= 0 || elDragSmooth >= 0 || bridgeDragGap)
                     && e.isPrimaryButtonDown()) {
+                // a press on the s/c's end seam line: 3 px deadband, so a
+                // clean click never commits a micro-resize (round 2)
+                if (scSeamClick >= 0) {
+                    if (Math.hypot(e.getX() - clkPressX, e.getY() - clkPressY) <= 3) {
+                        return;
+                    }
+                    scSeamClick = -1;   // a drag, not a click
+                }
                 commitGestureSnapshot();
                 lastDragX = e.getX();
                 lastDragY = e.getY();
@@ -12699,6 +12745,25 @@ class GraphEditor extends Region {
                     }
                 }
                 return;
+            }
+            if (scSeamClick >= 0) {
+                // a CLEAN click on one of the active s/c's own seam lines
+                // (round 2): the seam menu, the gesture ended here like
+                // the diamond's click (nothing was resized — the drag
+                // handler held the deadband)
+                int sc0 = scSeamClick;
+                scSeamClick = -1;
+                if (e.getButton() == MouseButton.PRIMARY
+                        && Math.hypot(e.getX() - clkPressX,
+                            e.getY() - clkPressY) <= 3) {
+                    elDragBoundary = -1;
+                    dragWinT0 = Double.NaN;
+                    pendingSnapshot = null;
+                    gestureMoved = false;
+                    panLastX = Double.NaN;
+                    showSeamMenu(sc0, e.getScreenX(), e.getScreenY());
+                    return;
+                }
             }
             if (seamDragPiece >= 0
                     && seamDragPiece < app.coaster.pieces.size()) {
@@ -19166,6 +19231,7 @@ class GraphEditor extends Region {
      *  facing knobs are hidden and unclickable. */
     private double[] knobPos(int idx, boolean out) {
         List<BezierBaker.Node> lane = active();
+        if (idx < 0 || idx >= lane.size()) return null;   // a stale selection (round 2)
         BezierBaker.Node n = lane.get(idx);
         // Resulting view offsets knobs by the base at the NODE's time
         // (v15.4, D102 — user spec): the whole node+handle assembly
@@ -21713,7 +21779,62 @@ class GraphEditor extends Region {
         finally { Prof.add("redraw", profT); }
     }
 
+    /** The node selection against the ACTIVE lane's size (round 2): a
+     *  primary past the end moves onto the last node (−1 on an empty
+     *  lane), the set drops what no longer exists, and the primary
+     *  stays a member of the set. Called at the top of every redraw
+     *  body and after the ops that shorten a lane. */
+    private void clampNodeSelection() {
+        List<BezierBaker.Node> ln = active();
+        if (selIdx >= ln.size()) selIdx = ln.isEmpty() ? -1 : ln.size() - 1;
+        selSet.removeIf(i -> i >= ln.size());
+        if (selIdx >= 0 && !selSet.contains(selIdx)) selSet.add(selIdx);
+    }
+
+    /** Redraw faults caught by redrawBody's belt (his 2026-10-21 round-2
+     *  report: a plot that darkened per frame and stopped updating) —
+     *  the count (probe seam) and the last message (posted once). */
+    private int redrawFaults = 0;
+    private String redrawFaultMsg = null;
+    int probeRedrawFaults() { return redrawFaults; }
+
+    /** THE REDRAW BELT (round 2): the canvas's GraphicsContext keeps
+     *  its state between calls, so an exception thrown after a
+     *  gc.setGlobalAlpha(< 1) — anywhere in the body — left every
+     *  later background fill at that alpha: the plot DARKENED a little
+     *  per redraw and stopped updating, the POV timer's per-frame
+     *  redraw died until a key release's rebuild repainted (his
+     *  report: "continuously getting darker", "only updates when I let
+     *  go of W"). The belt resets the context (alpha 1, no dashes,
+     *  width 1) BEFORE every body, and catches a body's RuntimeException:
+     *  the state is reset again, the fault is printed ONCE per message
+     *  and posted on the stats bar with its exception, and the editor
+     *  stays usable (a partly drawn plot beats a dead one). The
+     *  rendering bug itself is still a bug — the message names it. */
     private void redrawBody() {
+        GraphicsContext gc0 = canvas.getGraphicsContext2D();
+        gc0.setGlobalAlpha(1.0);
+        gc0.setLineDashes((double[]) null);
+        gc0.setLineWidth(1);
+        try {
+            redrawBodyInner();
+        } catch (RuntimeException ex) {
+            redrawFaults++;
+            gc0.setGlobalAlpha(1.0);
+            gc0.setLineDashes((double[]) null);
+            gc0.setLineWidth(1);
+            String msg = String.valueOf(ex);
+            if (!msg.equals(redrawFaultMsg)) {
+                redrawFaultMsg = msg;
+                System.err.println("GraphEditor.redraw fault: " + msg);
+                ex.printStackTrace();
+                app.statsLabel.setText("The graph could not be drawn completely"
+                    + " — please report this: " + msg);
+            }
+        }
+    }
+
+    private void redrawBodyInner() {
         scChipRects.clear();   // the s/c strip re-records its buttons
         // LIVE node-editor resync (v19.14, D243) — before every
         // guard: the dialog follows outside edits even while the
@@ -21754,6 +21875,14 @@ class GraphEditor extends Region {
             }
             return;
         }
+        // THE SELECTION CLAMP (round 2 — the R2 m freeze's root cause,
+        // found by the review workflow): a lane that just got SHORTER
+        // (an element shrunk through Element.setLength cuts its roll
+        // lane; a delete; an undo restore) left selIdx / selSet pointing
+        // past its end, and drawHandles(selIdx) threw inside the body —
+        // after the strip's alpha was lowered, so every later redraw
+        // painted darker and the POV timer's redraw died per frame
+        clampNodeSelection();
         GraphicsContext gc = canvas.getGraphicsContext2D();
         double w = canvas.getWidth(), h = canvas.getHeight();
         if (app.coaster.pieces.isEmpty()) {   // NO COASTER (D230): blank —
@@ -22633,6 +22762,7 @@ class GraphEditor extends Region {
 
     private void drawHandles(GraphicsContext gc, int idx) {
         List<BezierBaker.Node> lane = active();
+        if (idx < 0 || idx >= lane.size()) return;   // a stale selection (round 2)
         BezierBaker.Node n = lane.get(idx);
         double nx = ltToX(n.t);
         double ny = valToY(activeLane, dispVal(activeLane, n.t, n.val));

@@ -5150,6 +5150,59 @@ public class FvdDesigner extends Application {
         g.restore();
     }
 
+    /** A 3D ORIENTATION icon stroked onto a canvas (his 2026-10-21
+     *  round-2 note 2 — the roll button's glyph, after the attached
+     *  reference): a wide horizontal ring traversed counterclockwise
+     *  with its arrowhead at the left end pointing down, crossed by a
+     *  taller vertical ring whose front half runs up to the top with
+     *  its arrowhead pointing right. The style of strokeScKindIcon —
+     *  a 14 × 14 box at (x, y), scale s, line width 1.2, round caps,
+     *  filled heads; the context's state is saved and restored. */
+    static void strokeOrientIcon(GraphicsContext g, double x, double y,
+            double s, Color c) {
+        g.save();
+        g.translate(x, y);
+        g.scale(s, s);
+        g.setStroke(c);
+        g.setFill(c);
+        g.setLineWidth(1.2);
+        g.setLineCap(javafx.scene.shape.StrokeLineCap.ROUND);
+        g.setLineJoin(javafx.scene.shape.StrokeLineJoin.ROUND);
+        g.setLineDashes((double[]) null);
+        double cx = 7, cy = 7.5;
+        // the horizontal ring: counterclockwise from 230° through 300°
+        // of arc to 170° (the left end) — arrowhead there, pointing
+        // the way the arc travels (down-left)
+        double rx = 6, ry = 2.3;
+        g.strokeArc(cx - rx, cy - ry, 2 * rx, 2 * ry, 230, 300,
+            javafx.scene.shape.ArcType.OPEN);
+        orientHead(g, cx, cy, rx, ry, 170, +1);
+        // the vertical ring's FRONT half: clockwise from the bottom
+        // (250°) to the top (90°) — arrowhead at the top pointing right
+        double vx = 2.7, vy = 6.3, vcx = cx + 0.6;
+        g.strokeArc(vcx - vx, cy - vy, 2 * vx, 2 * vy, 250, -160,
+            javafx.scene.shape.ArcType.OPEN);
+        orientHead(g, vcx, cy, vx, vy, 90, -1);
+        g.restore();
+    }
+
+    /** The arrowhead of an elliptic arc at angle `deg` (strokeArc's
+     *  convention: counterclockwise on screen), dir +1 = the arc
+     *  travels counterclockwise, −1 clockwise. */
+    private static void orientHead(GraphicsContext g, double cx, double cy,
+            double rx, double ry, double deg, int dir) {
+        double th = Math.toRadians(deg);
+        double px = cx + rx * Math.cos(th), py = cy - ry * Math.sin(th);
+        double tx = -rx * Math.sin(th) * dir, ty = -ry * Math.cos(th) * dir;
+        double len = Math.hypot(tx, ty);
+        tx /= len; ty /= len;
+        double nx = -ty, ny = tx;
+        double ah = 3.0, aw = 2.6;
+        g.fillPolygon(
+            new double[]{ px + tx * ah, px + nx * aw / 2, px - nx * aw / 2 },
+            new double[]{ py + ty * ah, py + ny * aw / 2, py - ny * aw / 2 }, 3);
+    }
+
     /** The kind icon as its own Canvas, (⌈14s⌉+1)×(⌈10s⌉+1) — the
      *  circleArrowIcon pattern (D259 §9.6: pick buttons s = 1.2, the
      *  element window's type chooser s = 1.4). */
@@ -6639,7 +6692,9 @@ public class FvdDesigner extends Application {
      *  the lane element. Prints "PROBE sc fails=N" and exits. */
     private void scProbe() {
         if (System.getProperty("fvd.scprobe") == null) return;
+        final int[] exCount = { 0 };   // uncaught FX-thread exceptions (timers)
         Thread.setDefaultUncaughtExceptionHandler((t, ex) -> {
+            exCount[0]++;
             System.out.println("SCPROBE-EX " + ex);
             ex.printStackTrace();
         });
@@ -6785,6 +6840,21 @@ public class FvdDesigner extends Application {
             el.retainAll(ro);   // an element carrying BOTH buttons
             chk.accept(!el.isEmpty(), "S7c a band carries the element chip + the roll button"
                 + " (elements " + el + ")");
+            // the chips sit on the BADGE's row (round-2 note 6): the
+            // element-0 chip starts past the S/C badge, both at its y
+            // (checked while still zoomed onto the s/c — at auto-fit the
+            // 407 m layout leaves element 0's band too narrow for a chip
+            // past the badge, so it draws none there)
+            double badgeY = -1, badgeR = -1, chip0X = -1, chip0Y = -1;
+            for (double[] r : editor.probeBadgeRects()) {
+                if (badgeY < 0) { badgeY = r[1]; badgeR = r[0] + r[2]; }
+            }
+            for (double[] r : editor.probeChipRects()) {
+                if ((int) r[4] == 0 && (int) r[5] == 0) { chip0X = r[0]; chip0Y = r[1]; }
+            }
+            chk.accept(badgeY >= 0 && chip0Y == badgeY && chip0X >= badgeR,
+                "S7d the chips share the badge's row, element 0's past the badge ("
+                + chip0X + " ≥ " + badgeR + ", y " + chip0Y + " == " + badgeY + ")");
             editor.probeSetView(0, -1);   // auto-fit again
         });
         // ---- S8: absolute bank → the Bank tint
@@ -6822,6 +6892,93 @@ public class FvdDesigner extends Application {
             chk.accept(scH[0].elements.size() == 2 && editor.probeLaneElem() == 1
                 && editor.probeActiveLane() == scH[0].elements.get(1).roll.nodes,
                 "S10 element delete clamps the lane element to 1");
+        });
+        // ---- S11: his 2026-10-21 round-2 report — a curve with an ABSOLUTE
+        // lane of many nodes shrunk from R20 to R2 (the dialog's path), the
+        // POV line, then Ctrl+Z: no exception anywhere, the canvas's
+        // global alpha back at 1 after every redraw, the lane re-bound to
+        // the restored element after the undo
+        steps.add(() -> {
+            StraightCurveSection.Element e1 = scH[0].elements.get(1);
+            List<BezierBaker.Node> many = new ArrayList<>();
+            int nN = 9;
+            for (int i = 0; i < nN; i++) {
+                double x = e1.L * i / (nN - 1);
+                many.add(new BezierBaker.Node(x, 10 * Math.sin(i * 1.3)));
+            }
+            e1.roll.installNodes(many);
+            e1.roll.setFlags(true, true, true);
+            rebuildTrack();
+            editor.setActiveSection(kH[0]);
+            editor.probeSetLaneElem(1);
+            editor.probeRedraw();
+            double a0 = editor.probeGcAlpha();
+            editor.probeSelect(nN - 1);   // the LAST node selected — his state
+            editor.probeRedraw();
+            editor.pushUndoSnapshot();   // the dialog's Apply pushes one
+            e1.setRadiusAndTurn(2, 90);  // L: 31.4 → 3.14 m, the lane cut
+            rebuildTrack();
+            editor.probeRedraw();
+            double a1 = editor.probeGcAlpha();
+            updatePovStats();
+            editor.probeRedraw();
+            boolean cut = e1.roll.isCut() && e1.L < 3.2;
+            boolean selOk = editor.probeSelIdx() < e1.roll.nodes.size();
+            chk.accept(cut && a0 == 1.0 && a1 == 1.0 && selOk
+                    && editor.probeRedrawFaults() == 0,
+                "S11 R20 → R2 with a 9-node absolute lane and its LAST node selected: cut,"
+                + " the selection clamped (" + editor.probeSelIdx() + " < "
+                + e1.roll.nodes.size() + "), redraws + the POV line fault-free ("
+                + editor.probeRedrawFaults() + "), the canvas alpha 1 (" + a0 + " / " + a1 + ")");
+            editor.undo();
+            rebuildTrack();
+            editor.probeRedraw();
+            StraightCurveSection scNow = (StraightCurveSection)
+                coaster.pieces.get(0).sections.get(kH[0]);
+            StraightCurveSection.Element e1b = scNow.elements.get(1);
+            chk.accept(!e1b.roll.isCut() && e1b.roll.nodes.size() == nN
+                && editor.probeActiveLane() == e1b.roll.nodes
+                && editor.probeGcAlpha() == 1.0,
+                "S11b Ctrl+Z: the restored element is uncut with its 9 nodes, the editor"
+                + " binds the RESTORED lane object, alpha 1 (" + editor.probeGcAlpha() + ")");
+            scH[0] = scNow;
+        });
+        // ---- S11c: RIDE the POV over the shrunk element (his report: the
+        // ride only advanced on the key release) — the shrink again, POV
+        // on, W held across a few pulses: the ride advances, nothing throws
+        final double[] povT0 = { 0 };
+        final int[] exAt = { 0 };
+        steps.add(() -> {
+            StraightCurveSection.Element e1 = scH[0].elements.get(1);
+            editor.pushUndoSnapshot();
+            e1.setRadiusAndTurn(2, 90);
+            rebuildTrack();
+            editor.probeRedraw();
+            Viewport3D vp = keyViewport();
+            TrackCompiler.Span sp = editor.probeSpanOf(kH[0]);
+            editor.setActiveSection(kH[0]);
+            if (!vp.povActive) vp.togglePov();
+            if (sp != null) povTime = lastSamples.get(sp.i0()).t();   // park ON the s/c
+            vp.moveKeys.add(javafx.scene.input.KeyCode.W);
+            povT0[0] = povTime;
+            exAt[0] = exCount[0];
+        });
+        steps.add(() -> {   // ~300 ms of pulses later
+            Viewport3D vp = keyViewport();
+            double adv = povTime - povT0[0];
+            vp.moveKeys.remove(javafx.scene.input.KeyCode.W);
+            boolean rode = adv > 0.05;
+            chk.accept(rode && exCount[0] == exAt[0] && editor.probeGcAlpha() == 1.0,
+                "S11c POV riding over the R2 absolute-lane element: advanced "
+                + String.format(java.util.Locale.US, "%.3f", adv)
+                + " s in ~300 ms, uncaught exceptions " + (exCount[0] - exAt[0])
+                + ", alpha " + editor.probeGcAlpha());
+            if (vp.povActive) vp.togglePov();
+            editor.undo();
+            rebuildTrack();
+            editor.probeRedraw();
+            chk.accept(exCount[0] == exAt[0] && editor.probeGcAlpha() == 1.0,
+                "S11d POV off + Ctrl+Z after the ride: no exception, alpha 1");
         });
         devAfter(900, next[0]);
     }
