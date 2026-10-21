@@ -780,6 +780,22 @@ public class Coaster {
      *  spans are bitwise the source's (canonical generation), copied
      *  bridges are first-sight record-only. Returns the copied head's
      *  index. */
+    /** copyRun with the ORPHAN GUARD (v20.1, D259 §3.5 A3): a run
+     *  START that is an automatic follower (the UI passes run heads,
+     *  which never are — a belt) is frozen at its contract off the
+     *  compile in hand FIRST, so the copy's normalized head lands at
+     *  the pose the original really sits at, not a stale creation
+     *  pose. `spans` = the displayed compile's spans (FvdDesigner.
+     *  sectionSpans); null = the plain op. */
+    public int copyRun(int runStart, int runEnd, double dz,
+                       List<TrackCompiler.Span> spans) {
+        if (runStart >= 0 && runStart <= runEnd && runEnd < pieces.size()
+                && !listEndsInOrphanBridge()) {
+            freezeIfAuto(runStart, spans);
+        }
+        return copyRun(runStart, runEnd, dz);
+    }
+
     public int copyRun(int runStart, int runEnd, double dz) {
         if (runStart < 0 || runStart > runEnd || runEnd >= pieces.size()) {
             return -1;
@@ -867,6 +883,19 @@ public class Coaster {
      *  at `head`) when one exists, else the previous run's head;
      *  −1 when the coaster is empty now; −2 refused (bad index / not
      *  a run head — nothing touched). */
+    /** deleteRun with the ORPHAN GUARD (v20.1, D259 §3.5 A3): the piece
+     *  after the deleted block loses its predecessor — if it is an
+     *  automatic follower (by the run topology it is a run head and
+     *  never is — a belt) it is frozen at its contract off the compile
+     *  in hand first. `spans` = the displayed compile's spans; null =
+     *  the plain op. */
+    public int deleteRun(int head, List<TrackCompiler.Span> spans) {
+        if (head >= 0 && head < pieces.size() && runStartOf(head) == head) {
+            freezeIfAuto(runEndOf(head) + 1, spans);
+        }
+        return deleteRun(head);
+    }
+
     public int deleteRun(int head) {
         if (head < 0 || head >= pieces.size()
                 || runStartOf(head) != head) {
@@ -986,6 +1015,21 @@ public class Coaster {
      *  connectStrict's index arithmetic, bitwise (RunGate f). Returns
      *  the moved head's new index, or −1 (list untouched) when
      *  canMoveRun refuses. */
+    /** moveRun with the ORPHAN GUARD (v20.1, D259 §3.5 A3): the piece
+     *  after the block's OLD place loses its predecessor and the piece
+     *  after the destination gets a new one — an automatic follower in
+     *  either slot (by the run topology both are run heads and never
+     *  are — a belt) is frozen at its contract off the compile in hand
+     *  first. `spans` = the displayed compile's spans; null = the plain
+     *  op. */
+    public int moveRun(int head, int afterIdx, List<TrackCompiler.Span> spans) {
+        if (canMoveRun(head, afterIdx)) {
+            freezeIfAuto(runEndOf(head) + 1, spans);
+            freezeIfAuto(afterIdx + 1, spans);
+        }
+        return moveRun(head, afterIdx);
+    }
+
     public int moveRun(int head, int afterIdx) {
         if (!canMoveRun(head, afterIdx)) return -1;
         int re = runEndOf(head);
@@ -1017,6 +1061,19 @@ public class Coaster {
      *  The source may go empty (D239). v0 of either coaster is the
      *  CALLER's (the deleteRun precedent). Returns the moved head's
      *  index in dest. */
+    /** moveRunTo with the ORPHAN GUARD (v20.1, D259 §3.5 A3): the
+     *  source's successor loses its predecessor — an automatic
+     *  follower there (a run head by topology — a belt) is frozen at
+     *  its contract off THIS coaster's compile in hand first. `spans`
+     *  = the displayed compile's spans; null = the plain op. */
+    public int moveRunTo(Coaster dest, int head, List<TrackCompiler.Span> spans) {
+        if (dest != null && dest != this && head >= 0 && head < pieces.size()
+                && runStartOf(head) == head) {
+            freezeIfAuto(runEndOf(head) + 1, spans);
+        }
+        return moveRunTo(dest, head);
+    }
+
     public int moveRunTo(Coaster dest, int head) {
         if (dest == null || dest == this || head < 0
                 || head >= pieces.size() || runStartOf(head) != head) {
@@ -1682,6 +1739,66 @@ public class Coaster {
         TrackPiece f = pieces.get(p);
         return f.sAuto && !f.sLockYaw && !f.sLockPitch && !f.sLockRoll
             && f.designPitchDeg == 0 && f.designRollDeg == 0;
+    }
+
+    /** FREEZE an automatic follower's stored placement at its CURRENT
+     *  follow contract (v20.1, D259 §3.5 A3 — the ONE prologue of
+     *  every write to a follower's placement, tiers, locks or mode:
+     *  the seam window's spinners / padlocks / ↺ / rings, the mode
+     *  row, Design ↔ Real, detachStrictSeam, bakeFollow, a connect
+     *  relock — and the orphan guard of deleteRun / moveRun /
+     *  moveRunTo / copyRun): x/y/z := the upstream span's exit
+     *  position, baseOrient := its exit orientation, the canonical
+     *  pair := that span's exact (psi, canon) (the D199 bits — null
+     *  behind a tilted upstream span, where the chain canon is not the
+     *  world frame), both tiers zero, the held angles seeded from the
+     *  contract (D235: the padlock's own hold of the current angle
+     *  then overwrites one axis). From there a lock turned on or a
+     *  design delta makes the piece a classic D135/D247 follower whose
+     *  generation reads these fields — bitwise the contract they were
+     *  frozen at (ScSeamGate k); with everything off again branch A1
+     *  resumes and they go inert (j). `spans` = the compile in hand
+     *  (the UI's displayed spans — never a recompile). Returns true
+     *  when it wrote; false for a non-automatic follower (its stored
+     *  pose already IS its contract) or without a covering compile. */
+    public boolean freezeAutoFollower(int fi, List<TrackCompiler.Span> spans) {
+        if (!autoFollower(fi) || spans == null) return false;
+        int upIdx = spanBase(this, fi) - 1;   // the upstream's last span
+        if (upIdx < 0 || upIdx >= spans.size()) return false;
+        TrackCompiler.Span up = spans.get(upIdx);
+        TrackPiece f = pieces.get(fi);
+        TrackPose eff = strictEntry(up.exit(), f);   // == up.exit() exactly
+        f.x = eff.pos().x();
+        f.y = eff.pos().y();
+        f.z = eff.pos().z();
+        f.baseOrient = eff.orient();
+        if (up.exitTilt() == Quat.IDENTITY && up.exitCanon() != null) {
+            f.canonPsiDeg = up.exitPsi();
+            f.canonOrient = up.exitCanon();
+        } else {
+            f.canonOrient = null;   // decompose baseOrient (D199 default)
+        }
+        f.yawDeg = 0;
+        f.pitchDeg = 0;
+        f.rollDeg = 0;
+        f.designPitchDeg = 0;
+        f.designRollDeg = 0;
+        seedStrictValues(f, eff.orient());
+        return true;
+    }
+
+    public boolean freezeAutoFollower(int fi, TrackCompiler.Result r) {
+        return r != null && freezeAutoFollower(fi, r.spans());
+    }
+
+    /** The ORPHAN GUARD's one helper (D259 §3.5 A3): freeze piece p if
+     *  it is an automatic follower about to lose (or change) its
+     *  predecessor, so its stored placement is the last compile's
+     *  contract and it falls back onto it like any orphaned follower
+     *  (D135; loads never move pieces, D88). Out-of-range / non-auto
+     *  = nothing. */
+    private void freezeIfAuto(int p, List<TrackCompiler.Span> spans) {
+        if (p >= 0 && p < pieces.size()) freezeAutoFollower(p, spans);
     }
 
     /** Does L1 hold on every piece — no straight/curve section at
@@ -3812,7 +3929,12 @@ public class Coaster {
      *  speed resolve ops key their anchor read on this, never on the
      *  FLATTENED span index: that read the PREVIOUS piece's last
      *  sample — another run — for a detached head at piece index
-     *  > 0. */
+     *  > 0. A strict FOLLOWER's first section has an upstream AND,
+     *  since v20.1 (D259 §3.5 A4), is RECONCILED onto its real seam
+     *  speed whenever it is real-anchored (Section.vRealAnchored —
+     *  every seam the straight/curve invariant creates, or a resolve
+     *  op's flag); a bridged-in piece's first section stays the op's
+     *  own write. */
     public boolean hasUpstream(int p, int k) {
         return k > 0 || followsPrev(p) || bridgedInto(p);
     }
@@ -3841,6 +3963,15 @@ public class Coaster {
         if (pieceIdx < 0 || pieceIdx >= pieces.size()
                 || pieces.get(pieceIdx).sections.isEmpty()
                 || !hasUpstream(pieceIdx, 0)) return Double.NaN;
+        // a strict FOLLOWER's first section is RECONCILED since v20.1
+        // (D259 §3.5 A4): the op's smoothing-suspended write is not its
+        // final value — the at-rest EXACT reconcile lands it on the
+        // DISPLAYED seam speed like a continuation, which is exactly
+        // what realEntrySpeed predicts off the displayed arrays. NaN
+        // here keeps that prediction in force (the window's supplier
+        // takes this value only when it is a number); only a
+        // BRIDGED-IN first section is finalized by the op's own write.
+        if (followsPrev(pieceIdx)) return Double.NaN;
         Section sec = pieces.get(pieceIdx).sections.get(0);
         if (sec.reversed() || sec instanceof BridgeSection) {
             return Double.NaN;
@@ -3894,8 +4025,16 @@ public class Coaster {
         if (ip < 0 || ip >= trueV.length || ip >= samples.size()) return null;
         double vReal = trueV[ip];
         double vWrite = Math.max(0.5, vReal);   // refreezeSpeedOnly's write
-        if (secIdx == 0) return new double[]{ vReal, vWrite };
-        // a continuation: the flagged landing (reconcileChainedSpeeds)
+        // a BRIDGED-IN piece's first section is never reconciled — the
+        // op's own write is final there. A strict FOLLOWER's first
+        // section IS reconciled since v20.1 (D259 §3.5 A4 — the op
+        // flags it, the exact pass lands it on the displayed seam
+        // speed): the flagged landing, like a continuation
+        if (secIdx == 0 && !followsPrev(pieceIdx)) {
+            return new double[]{ vReal, vWrite };
+        }
+        // a continuation / a follower's first: the flagged landing
+        // (reconcileChainedSpeeds) — KEEP IN STEP with its flag branch
         return new double[]{ vReal, Math.max(0.1, vReal) };
     }
 
@@ -3978,7 +4117,9 @@ public class Coaster {
             if (Math.abs(real - sec.vDesign())
                     <= TrackCompiler.BRIDGE_ENTRY_TOL) {
                 sec.vPinned(false);
-                sec.vRealAnchored(true);   // resolved (D256; inert at k == 0)
+                sec.vRealAnchored(true);   // resolved (D256; inert at k == 0
+                    // of a BRIDGED-IN piece — a strict follower's first
+                    // section is reconciled on it since v20.1, D259 §3.5)
                 return true;
             }
             arcWas = spanIdx >= 1 ? r.spans().get(spanIdx - 1).sLen() : 0;
@@ -4463,7 +4604,8 @@ public class Coaster {
                                           boolean exact) {
         boolean changed = false;
         int spanIdx = 0;
-        for (TrackPiece piece : pieces) {
+        for (int pi = 0; pi < pieces.size(); pi++) {
+            TrackPiece piece = pieces.get(pi);
             // CASCADE CARRY (v18.25, D197): when THIS pass just moved
             // a section's design speed, the stale compile's end sample
             // for it is one rewrite behind — prevEnd carries the move
@@ -4480,8 +4622,25 @@ public class Coaster {
                 double nextPrev = Double.NaN;
                 double carryIn = prevEnd;
                 prevEnd = Double.NaN;
-                if (k == 0 || spanIdx >= r.spans().size()) continue;
+                if (spanIdx >= r.spans().size()) continue;
                 Section sec = piece.sections.get(k);
+                // a PIECE-FIRST is never reconciled (D135's honest ≠v —
+                // a run head has no seam, a bridged-in piece's and a
+                // hand-made follower's first section keep their own
+                // design speed) — EXCEPT a strict follower whose first
+                // section is REAL-ANCHORED (v20.1, D259 §3.5 A4 — D5):
+                // the explicit D256 flag decides, never the lock state.
+                // ensureScFollower sets it on every seam the invariant
+                // creates, automatic and locked alike; a hand-made
+                // follower keeps D135 unless a resolve op already
+                // flagged its first section (Set Design to Real /
+                // Convert Real to Design, inert at k == 0 until now).
+                // The previous piece's last span is spans[spanIdx − 1]
+                // (the flattened index crosses pieces) and the anchor
+                // branch below lands vIn = vTrue; the EXACT pass + the
+                // fast-pass carry apply unchanged (the entry depends
+                // only on upstream — the triangular termination holds).
+                if (k == 0 && !(followsPrev(pi) && sec.vRealAnchored())) continue;
                 if (sec instanceof BridgeSection || sec.reversed()
                         || sec.vPinned()) continue;   // v14.5 D97: a
                         // pinned seam keeps its split deliberately

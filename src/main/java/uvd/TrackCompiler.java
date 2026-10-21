@@ -333,25 +333,61 @@ public final class TrackCompiler {
                 // Zero design deltas take genPose/pieceCanon BITWISE
                 // (the historic object state). The true tier stays
                 // dead here: the follow contract IS the real frame.
-                TrackPose eff = Coaster.strictEntry(
-                    spans.get(spans.size() - 1).exit(), piece);
-                Quat gen = designed ? piece.designPose().orient()
-                                    : piece.genPose().orient();
-                // the seam's CONFLICT TILT: real (follow contract) vs
-                // design — Coaster.seamConflictTilt reads the same
-                // product for the ≠o predicate (a pure heading
-                // difference inside it is rigid, not a conflict)
-                Quat tq = eff.orient().mul(gen.conjugate());
-                tilt = Math.abs(tq.w()) > 1 - 1e-14
-                    ? Quat.IDENTITY : tq;
-                pose = new TrackPose(eff.pos(), gen);
-                anchor = eff.pos();
-                // follower generation stays at the STORED design
-                // orientation (shape frozen); only the position comes
-                // from the upstream exit — placement-side, so upstream
-                // moves keep the follower's generation bits (D199)
-                cp = designed ? designCanon(piece, eff.pos())
-                              : pieceCanon(piece, eff.pos());
+                Span prevSpan = spans.get(spans.size() - 1);
+                TrackPose eff = Coaster.strictEntry(prevSpan.exit(), piece);
+                if (c.autoFollower(p)) {
+                    // AUTOMATIC FOLLOWER (v20.1, D259 §3.5 A1 — D5): the
+                    // seam the straight/curve invariant created, all
+                    // three locks off, design tier zero. The piece
+                    // GENERATES AT THE FOLLOW CONTRACT — eff IS the
+                    // previous span's exit (strictEntry's exact
+                    // all-unlocked frame) — exactly like an in-piece
+                    // continuation: the SAME CanonPose chainNext handed
+                    // the previous span (psi additive, canon = that
+                    // span's exit canon — the D199 bits, so head x/y/z
+                    // + yaw moves stay bitwise-rigid and the samples
+                    // equal the in-piece twin's bit for bit, ScSeamGate
+                    // a-c), and NO tilt (the IDENTITY object: the
+                    // clean-span rule and tiltLine see "untilted" — an
+                    // unsmoothed auto follower's design speed lands on
+                    // its real seam speed bitwise, A4). The piece's
+                    // x/y/z/yaw/baseOrient/canonical pair/design tier
+                    // are NOT read — inert until a lock or a design
+                    // delta turns it back into a D135/D247 follower
+                    // (Coaster.freezeAutoFollower writes the contract
+                    // into them first). Behind a TILTED upstream span (a
+                    // conflict tilt, a locked follower's re-aim) the
+                    // design chain's canon is not the world frame this
+                    // seam continues: the world pose is decomposed
+                    // instead (canonOf — D199 dust under a yaw move
+                    // there, the documented tilted-piece limit).
+                    tilt = Quat.IDENTITY;
+                    pose = eff;
+                    anchor = eff.pos();
+                    cp = prevSpan.exitTilt() == Quat.IDENTITY
+                            && prevSpan.exitCanon() != null
+                        ? new CanonPose(eff.pos(), prevSpan.exitPsi(),
+                            prevSpan.exitCanon())
+                        : canonOf(eff);
+                } else {
+                    Quat gen = designed ? piece.designPose().orient()
+                                        : piece.genPose().orient();
+                    // the seam's CONFLICT TILT: real (follow contract) vs
+                    // design — Coaster.seamConflictTilt reads the same
+                    // product for the ≠o predicate (a pure heading
+                    // difference inside it is rigid, not a conflict)
+                    Quat tq = eff.orient().mul(gen.conjugate());
+                    tilt = Math.abs(tq.w()) > 1 - 1e-14
+                        ? Quat.IDENTITY : tq;
+                    pose = new TrackPose(eff.pos(), gen);
+                    anchor = eff.pos();
+                    // follower generation stays at the STORED design
+                    // orientation (shape frozen); only the position comes
+                    // from the upstream exit — placement-side, so upstream
+                    // moves keep the follower's generation bits (D199)
+                    cp = designed ? designCanon(piece, eff.pos())
+                                  : pieceCanon(piece, eff.pos());
+                }
             }
             if (!piece.sections.isEmpty() && !bridgedIn && !followed) {
                 runs.add(new double[]{ pieceStart,
@@ -951,7 +987,13 @@ public final class TrackCompiler {
     /** A piece's FIRST section as it really starts — generation at the
      *  design orientation with the rigid tilt applied (the bridge
      *  target-head capture reads this; identity tilt = the historic
-     *  call bitwise). */
+     *  call bitwise). An AUTOMATIC follower (D259 §3.5 A1) has no
+     *  mirror here by construction: its head generates at the UPSTREAM
+     *  span's exit, which this piece-only read cannot see — and a
+     *  bridge target is bridged-in, never a follower, so no caller
+     *  reaches that case (the design doc's "pieceHead mirrors the
+     *  branch" is satisfied vacuously; a Coaster-level read would need
+     *  the upstream compile). */
     static List<FVDIntegrator.Sample> pieceHead(TrackPiece piece, double dt) {
         return pieceHead(piece, dt, FVDIntegrator.Friction.NONE);
     }

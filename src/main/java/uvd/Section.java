@@ -72,10 +72,15 @@ public sealed interface Section
      *  the very next rebuild and the window rolled it back. Set by
      *  "Set Design to Real" / "Convert Real to Design" and the '+' /
      *  Insert "Transition to real" fork; CLEARED by a typed design
-     *  speed (pinned). Inert on run heads, strict followers' and
-     *  bridged-in pieces' first sections (never reconciled — it
-     *  starts to matter once an absorb / Connect makes them a
-     *  continuation) and while pinned (the pin wins). Carried by the
+     *  speed (pinned); SET on the first section of every strict
+     *  follower the straight/curve invariant creates (v20.1, D259 §3.3
+     *  — Coaster.ensureScFollower, automatic and locked alike). Inert
+     *  on run heads', bridged-in pieces' and UNFLAGGED strict
+     *  followers' first sections (never reconciled — it starts to
+     *  matter once an absorb / Connect makes them a continuation); a
+     *  strict follower's FLAGGED first section IS reconciled at k == 0
+     *  since D259 (§3.5 A4 — onto the real seam speed, like a
+     *  continuation); inert while pinned (the pin wins). Carried by the
      *  entry-seam rule: the object that keeps the ORIGINAL entry seam
      *  keeps the flag (copies, whole converts, the left split half,
      *  a merge takes A's). Saved as "2" in the section line's pinned

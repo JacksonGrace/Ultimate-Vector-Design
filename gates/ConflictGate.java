@@ -1525,21 +1525,42 @@ public class ConflictGate {
             s.vDesign(s.vDesign() + 2.5);
             TrackCompiler.Result r = rebuild(c);
             double live = r.trueV()[seam(c, r, f, 0)];
+            // RE-PINNED v20.1 (D259 §3.5 A4): a strict FOLLOWER's first
+            // section is RECONCILED once it is real-anchored — the op
+            // flags it, so its smoothing-suspended write is not final:
+            // the at-rest EXACT pass lands it on the DISPLAYED seam speed
+            // like a continuation, which is what realEntrySpeed predicts
+            // (max(0.1, the displayed real)). firstSectionSettle reads
+            // NaN for a follower (the window's supplier then keeps that
+            // prediction); a run head / bad index read NaN as before.
+            // Until D259 the follower kept the op's suspended write.
             double settle = c.firstSectionSettle(f, DT);
             boolean ok = c.refreezeSpeedOnly(f, 0, DT);
-            TrackCompiler.Result r2 = rebuild(c);
-            double v1 = fol.sections.get(0).vDesign();
-            double settle2 = c.firstSectionSettle(f, DT);
-            check(c.anySmoothing() && ok && speedDiffers(settle, live)
-                    && bits(v1, settle) && bits(settle2, v1)
+            Section s7 = fol.sections.get(0);
+            int[] n7 = { 0 };
+            TrackCompiler.Result r2 = rebuildCount(c, n7);
+            double v1 = s7.vDesign();
+            double live2 = r2.trueV()[seam(c, r2, f, 0)];
+            double[] re2 = dry(c, r2, f, 0);
+            long b1 = Double.doubleToLongBits(v1);
+            int[] n7b = { 0 };
+            TrackCompiler.Result r3 = rebuildCount(c, n7b);
+            check(c.anySmoothing() && ok && Double.isNaN(settle)
+                    && s7.vRealAnchored() && !s7.vPinned()
+                    && bits(v1, live2) && re2 != null && bits(re2[1], v1)
+                    && Double.doubleToLongBits(s7.vDesign()) == b1
+                    && n7b[0] == 0 && sumAll(r3) == sumAll(r2)
                     && Double.isNaN(c.firstSectionSettle(0, DT))
                     && Double.isNaN(c.firstSectionSettle(9, DT)),
-                "i7 behind a smoothed seam (8° kink, 10 m): the op"
-                + " writes the smoothing-suspended seam speed =="
-                + " firstSectionSettle BITWISE, and the dry run then"
-                + " reads no difference (run head / bad index NaN)",
-                String.format("live %.6f settle %.6f vDesign %.6f", live,
-                    settle, v1));
+                "i7 behind a smoothed seam (8° kink, 10 m): the strict"
+                + " follower's first section is RECONCILED (D259 §3.5 A4)"
+                + " — the op flags it, the rebuild lands vDesign on the"
+                + " DISPLAYED seam speed BITWISE, the dry run then reads"
+                + " no difference, firstSectionSettle reads NaN for a"
+                + " follower (run head / bad index NaN too), a second"
+                + " rebuild is a bitwise no-op",
+                String.format("live %.6f -> %.6f vDesign %.9f exact"
+                    + " rewrites %d then %d", live, live2, v1, n7[0], n7b[0]));
         }
     }
 
