@@ -328,11 +328,9 @@ public sealed abstract class LaneSection implements Section
         double[] vals = { v0, v1, v2 };
         List<List<BezierBaker.Node>> lanes = new ArrayList<>(3);
         for (int i = 0; i < 3; i++) {
-            List<BezierBaker.Node> lane = new ArrayList<>(2);
-            lane.add(new BezierBaker.Node(0, vals[i]));
-            lane.add(new BezierBaker.Node(len, vals[i]));
-            BezierBaker.applyDefaultHandles(lane);
-            lanes.add(lane);
+            // the static hold-lane factory (v20.1, D259 §2.1 — shared
+            // with the s/c element's default roll lane; same construction)
+            lanes.add(BezierBaker.holdLane(0, len, vals[i]));
         }
         return lanes;
     }

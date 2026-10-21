@@ -480,7 +480,10 @@ public class Coaster {
                     e.k0 = -e.k0;
                     e.k1 = -e.k1;
                     e.dirDeg = -e.dirDeg;
-                    e.rollVal = -e.rollVal;   // rate AND global bank (interim)
+                    // the element's roll LANE negates (v20.1, D259 §2.1):
+                    // a rate AND a bank alike, the shadow + fingerprint
+                    // too, flags kept
+                    e.roll.negate();
                 }
             }
         }
@@ -3157,10 +3160,39 @@ public class Coaster {
         // canon-space arithmetic for decomposed-base bits (a
         // dust-level reshape for nothing)
         if (piece.orientConflict()) piece.bakeTilt();
-        if (sec instanceof StraightCurveSection) {
+        if (sec instanceof StraightCurveSection sc) {
+            // C32 (v20.1, D259 §2.7): the speed-only path, then every
+            // °/s element's roll lane is RE-TIMED to the same twist at
+            // the new speed — r'(x) = r(x)·v_new(x)/v_old(x) — through
+            // the element bake (its shadow drops); °/m and absolute
+            // elements are untouched BITWISE; a section without a °/s
+            // element is today's op bitwise. The frames come from THIS
+            // compile (the on-screen twist), the per-element entry
+            // speeds from a compile at the new design speed (the Bound
+            // records: friction + controls included).
+            boolean anyPerSec = false;
+            for (StraightCurveSection.Element e : sc.elements) {
+                if (!e.roll.rollAbsolute() && !e.roll.ratePerMeter()) anyPerSec = true;
+            }
             sec.vDesign(vTrue);
             sec.vPinned(false);   // resolved: re-join the speed flow
             sec.vRealAnchored(true);   // and keep following the real speed (D256)
+            if (anyPerSec) {
+                TrackCompiler.Result r2 = compileForFit(dt);
+                TrackCompiler.Span sp2 = spanIdx < r2.spans().size()
+                    ? r2.spans().get(spanIdx) : null;
+                for (int i = 0; i < sc.elements.size(); i++) {
+                    StraightCurveSection.Element e = sc.elements.get(i);
+                    if (e.roll.rollAbsolute() || e.roll.ratePerMeter()) continue;
+                    double vEntry = sp2 != null && sp2.scBounds() != null
+                        && i < sp2.scBounds().size()
+                        ? Math.max(0.5, sp2.scBounds().get(i).v()) : vTrue;
+                    List<BezierBaker.Node> fit = fitElementRoll(r, sp, sc, i,
+                        vEntry, e.roll.rollGlobal(), false, false, dt,
+                        spacing, adaptTol);
+                    if (fit != null) e.roll.installNodes(fit);
+                }
+            }
             return true;
         }
         LaneSection realFit = fitLanes(
@@ -3205,6 +3237,125 @@ public class Coaster {
         realFit.vRealAnchored = true;
         piece.sections.set(secIdx, realFit);
         return true;
+    }
+
+    /** BAKE one s/c element's roll lane into OTHER roll settings
+     *  (v20.1, D259 §2.5 — the model half of the element dialog's
+     *  Roll block "Bake These Settings"; the density preview drives
+     *  spacing / adaptTol like every convert): compileForFit → the
+     *  element's own arc of the compiled samples → the fit engine's
+     *  lane-2 column (roll by −dU·R/ds·vG differencing — D99's ±1
+     *  sample is the accepted floor; abs bank unwrapped; ÷vG never on
+     *  abs; outDom DISTANCE) → ONLY this element's nodes installed,
+     *  re-based to [0, L], shadow dropped (a bake re-authors the
+     *  lane), flags := the new triple (absolute ⇒ global). Elements
+     *  bitwise; an identical triple re-authors at density (the
+     *  laneKeepMap identity rule). false = nothing changed: a bad
+     *  index, a reversed section, an uncompiled / too-short element.
+     *  The Switch twin is flags only (RollLane.setFlags — no node
+     *  write, the editor's own one-liner). */
+    public boolean bakeElementRoll(int pieceIdx, int secIdx, int elemIdx,
+                                   boolean rollGlobal, boolean ratePerMeter,
+                                   boolean rollAbsolute, double dt,
+                                   double spacing, double adaptTol) {
+        if (pieceIdx < 0 || pieceIdx >= pieces.size()) return false;
+        TrackPiece piece = pieces.get(pieceIdx);
+        if (secIdx < 0 || secIdx >= piece.sections.size()) return false;
+        if (!(piece.sections.get(secIdx) instanceof StraightCurveSection sc)
+                || sc.reversed) return false;
+        if (elemIdx < 0 || elemIdx >= sc.elements.size()) return false;
+        TrackCompiler.Result r = compileForFit(dt);
+        int spanIdx = secIdx;
+        for (int p = 0; p < pieceIdx; p++) {
+            spanIdx += pieces.get(p).sections.size();
+        }
+        if (spanIdx >= r.spans().size()) return false;
+        TrackCompiler.Span sp = r.spans().get(spanIdx);
+        if (sp.scBounds() == null || elemIdx + 1 >= sp.scBounds().size()) return false;
+        boolean g = rollGlobal || rollAbsolute;
+        double vEntry = Math.max(0.5, sp.scBounds().get(elemIdx).v());
+        List<BezierBaker.Node> fit = fitElementRoll(r, sp, sc, elemIdx, vEntry,
+            g, ratePerMeter, rollAbsolute, dt, spacing, adaptTol);
+        if (fit == null) return false;
+        StraightCurveSection.Element e = sc.elements.get(elemIdx);
+        e.roll.installNodes(fit);
+        e.roll.setFlags(g, ratePerMeter, rollAbsolute);
+        return true;
+    }
+
+    /** The lane-2 fit of ONE element's arc (bakeElementRoll's and
+     *  C32's shared half): the compiled samples strictly inside the
+     *  element's arc [S_i, S_i + L_i] (the Bound records' exact
+     *  landing arcs) between two BORDER samples interpolated at the
+     *  exact arcs from their bracketing samples (frames re-
+     *  orthonormalized — the Bound's own pose is canonical-frame, the
+     *  samples are world; a lerp over one dt step is second-order in
+     *  the twist), through the ctl-aware fitLanes at the element's
+     *  entry design speed with the section's speed controls on its
+     *  own arc axis; the last node lands on L exactly (the sum's
+     *  rounding dust snapped within RollLane.CUT_EPS). Null when the
+     *  element has fewer than 4 samples (the makeGraphsReal floor) or
+     *  no border record. */
+    private List<BezierBaker.Node> fitElementRoll(TrackCompiler.Result r,
+            TrackCompiler.Span sp, StraightCurveSection sc, int elemIdx,
+            double vEntry, boolean rollG, boolean pm, boolean abs,
+            double dt, double spacing, double adaptTol) {
+        List<ScIntegrator.Bound> bd = sp.scBounds();
+        if (bd == null || elemIdx + 1 >= bd.size()) return null;
+        double sA = sp.s0() + bd.get(elemIdx).s();
+        double sB = sp.s0() + bd.get(elemIdx + 1).s();
+        List<FVDIntegrator.Sample> all = r.samples();
+        int lo = Math.max(0, sp.i0() - 1);
+        int hi = Math.min(sp.i1(), all.size() - 1);
+        FVDIntegrator.Sample a = sampleAtArcLerp(all, lo, hi, sA);
+        FVDIntegrator.Sample b = sampleAtArcLerp(all, lo, hi, sB);
+        if (a == null || b == null) return null;
+        List<FVDIntegrator.Sample> sub = new ArrayList<>();
+        sub.add(a);
+        for (int i = sp.i0(); i <= hi; i++) {
+            double s = all.get(i).s();
+            if (s > sA + 1e-9 && s < sB - 1e-9) sub.add(all.get(i));
+        }
+        sub.add(b);
+        if (sub.size() < 4) return null;
+        double L = sc.elements.get(elemIdx).L;
+        LaneSection fit = fitLanes(sub, vEntry, false, dt, spacing, adaptTol,
+            Section.Domain.DISTANCE, rollG, false, pm, abs, sc, sp);
+        if (fit == null || fit.lanes.get(2).isEmpty()) return null;
+        List<BezierBaker.Node> lane = fit.lanes.get(2);
+        BezierBaker.Node last = lane.get(lane.size() - 1);
+        if (Math.abs(last.t - L) <= RollLane.CUT_EPS) last.t = L;
+        return lane;
+    }
+
+    /** The sample AT global arc s within [lo, hi]: an existing sample
+     *  within 1e-9 m, else the LERP of the bracketing pair (position,
+     *  frame — T normalized, U made ⊥ T, R = U × T —, time, speed and
+     *  felt). Null when s lies outside the range. */
+    private static FVDIntegrator.Sample sampleAtArcLerp(
+            List<FVDIntegrator.Sample> all, int lo, int hi, double s) {
+        if (lo > hi || lo < 0 || hi >= all.size()) return null;
+        if (Math.abs(all.get(lo).s() - s) <= 1e-9) return all.get(lo);
+        if (Math.abs(all.get(hi).s() - s) <= 1e-9) return all.get(hi);
+        if (s < all.get(lo).s() || s > all.get(hi).s()) return null;
+        int i = lo;
+        while (i < hi && all.get(i + 1).s() <= s) i++;
+        FVDIntegrator.Sample x = all.get(i);
+        if (Math.abs(x.s() - s) <= 1e-9) return x;
+        if (i + 1 > hi) return null;
+        FVDIntegrator.Sample y = all.get(i + 1);
+        if (Math.abs(y.s() - s) <= 1e-9) return y;
+        double ds = y.s() - x.s();
+        if (ds <= 1e-12) return x;
+        double u = (s - x.s()) / ds;
+        Vec3 pos = x.pos().add(y.pos().sub(x.pos()).scale(u));
+        Vec3 T = x.T().add(y.T().sub(x.T()).scale(u)).normalize();
+        Vec3 U0 = x.U().add(y.U().sub(x.U()).scale(u));
+        Vec3 U = U0.sub(T.scale(U0.dot(T))).normalize();
+        Vec3 R = U.cross(T);
+        return new FVDIntegrator.Sample(x.t() + (y.t() - x.t()) * u, s, pos,
+            T, U, R, x.v() + (y.v() - x.v()) * u,
+            x.Gv() + (y.Gv() - x.Gv()) * u, x.Gl() + (y.Gl() - x.Gl()) * u);
     }
 
     /** DESIGN → REAL with ABSOLUTE lanes CONVERTED to the current
@@ -6457,8 +6608,11 @@ public class Coaster {
      *  Casteljau identity (curve unchanged); a cut ON a node just
      *  partitions; a lane ending before tc holds — its right half is
      *  the single held-value node. Lock flags ride along (the mid
-     *  node inherits the split segment's). */
-    private static List<List<BezierBaker.Node>> splitLanes(
+     *  node inherits the split segment's). PACKAGE-VISIBLE since
+     *  v20.1 (D259 §2.2): RollLane's cut(X, L) is this split's LEFT
+     *  half (and cutElement's right half the re-based RIGHT one) —
+     *  the arithmetic is shared, never duplicated. */
+    static List<List<BezierBaker.Node>> splitLanes(
             List<List<BezierBaker.Node>> lanes, double tc, boolean keepRight) {
         List<List<BezierBaker.Node>> out = new ArrayList<>(3);
         for (List<BezierBaker.Node> lane : lanes) {
@@ -6560,10 +6714,11 @@ public class Coaster {
     /** Clamp an s/c cut OUT of the regions where truncating the
      *  element list does not reproduce the original shape: the
      *  sine-blend windows around internal boundaries (half the next
-     *  element's blendIn each side) and the global-roll ease window
-     *  at the start of GLOBAL-mode elements (max(blendIn, 2 m) — the
-     *  right half would re-ease from the cut bank). Shared with the
-     *  UI's split line so what you see is where it cuts. Returns the
+     *  element's blendIn each side). The global-roll EASE windows of
+     *  the interim roll pair are GONE since v20.1 (D259 §2.3.6 — the
+     *  per-element lane has no ease: a cut element's halves take the
+     *  lane's exact de Casteljau halves, E5). Shared with the UI's
+     *  split line so what you see is where it cuts. Returns the
      *  clamped LOCAL arc, or −1 when no valid spot exists. */
     public static double scCutClamp(StraightCurveSection sc, double arc) {
         double total = sc.totalLen();
@@ -6575,13 +6730,6 @@ public class Coaster {
             if (i > 0 && e.blendIn > 0) {
                 bad.add(new double[]{ at - e.blendIn / 2 - 0.1,
                                       at + e.blendIn / 2 + 0.1 });
-            }
-            if (e.rollMode == StraightCurveSection.RollMode.GLOBAL) {
-                // the ease formula mirrors ScIntegrator (D232/D233:
-                // elem 0's blendIn is the entry ease VERBATIM — 0 =
-                // sharp, nothing to protect)
-                double ease = i == 0 ? e.blendIn : Math.max(e.blendIn, 2);
-                if (ease > 1e-9) bad.add(new double[]{ at, at + ease });
             }
             at += e.arcLen();
         }
@@ -6649,8 +6797,12 @@ public class Coaster {
      *  changes, the turn tilts the exit's level frame) so the
      *  integrator's equal-axis merge fires; L1 is ulp-nudged toward L/2
      *  (≤ 4 tries) until L1 + L2 == L bitwise (the ARC-SUM rule); the
-     *  left keeps blendIn, the right enters sharp. entry = the element's
-     *  entry pose on the chain. */
+     *  left keeps blendIn, the right enters sharp. The ROLL LANE
+     *  (v20.1, D259 §2.2 E5): both halves take the lane's exact de
+     *  Casteljau halves at the cut arc (the right re-based to x = 0),
+     *  both SHADOW-FREE — installed directly, never through setLength
+     *  (which would cut the parent's lane and keep a shadow). entry =
+     *  the element's entry pose on the chain. */
     static StraightCurveSection.Element[] cutElement(
             StraightCurveSection.Element e, double L1, ElementChain.Pose entry) {
         double L = e.L;
@@ -6664,6 +6816,9 @@ public class Coaster {
         StraightCurveSection.Element a = e.copy(), b = e.copy();
         a.L = l1;
         b.L = l2;
+        RollLane[] rh = e.roll.cutHalves(l1);
+        a.roll = rh[0];
+        b.roll = rh[1];
         b.blendIn = 0;
         b.locks = 0;   // the op decides which bits move (§7.5)
         if (e.kind != StraightCurveSection.Kind.STRAIGHT) {

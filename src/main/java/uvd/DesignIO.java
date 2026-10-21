@@ -361,8 +361,8 @@ public final class DesignIO {
                     out.printf(Locale.US, "section sc %s distance %d %d%n",
                         d(sc.vDesign), sc.reversed ? 1 : 0,
                         sc.vPinned ? 1 : sc.vRealAnchored ? 2 : 0);
-                    for (StraightCurveSection.Element e : sc.elements) {
-                        writeElement(out, e);
+                    for (int ei = 0; ei < sc.elements.size(); ei++) {
+                        writeElement(out, sc.elements.get(ei), ei);
                     }
                     writeSpeedCtls(out, sc.speedCtls, sc.speedMarks);
                     out.println("endsection");
@@ -492,6 +492,14 @@ public final class DesignIO {
         int curLane = -1;
         int curDLane = -1;   // influence delta lane (v15.0, D98)
         SpeedControl curCtl = null;   // speed control (v18.0, D160)
+        // the s/c element whose roll block (`rn` / `rsh` / `rcut`, v20.1
+        // D259 §2.8) the next lines belong to; curElemLane = its `rn`
+        // lines have started (the first one replaces the default lane);
+        // the pending shadow + fingerprint close with the element
+        StraightCurveSection.Element curElem = null;
+        boolean curElemLane = false;
+        List<BezierBaker.Node> curShadow = null;
+        RollLane.Cut curCut = null;
         // legacy flat files: one implicit piece + section holds everything
         if (!v3) {
             curPiece = new TrackPiece(0, 21, 0, 0);
@@ -515,6 +523,18 @@ public final class DesignIO {
             if (!parts[0].equals("coaster") && !parts[0].equals("ncoasters")
                     && !parts[0].equals("camera")) {
                 touched = true;
+            }
+            // any line but the element's own roll lines CLOSES the
+            // pending element's roll block (§2.8 ii: a shadow without a
+            // fingerprint, a fingerprint without a shadow, or one whose
+            // t is not the lane's last node's t is DROPPED and counted)
+            if (curElem != null && !parts[0].equals("rn")
+                    && !parts[0].equals("rsh") && !parts[0].equals("rcut")) {
+                warnings += closeElement(curElem, curShadow, curCut);
+                curElem = null;
+                curElemLane = false;
+                curShadow = null;
+                curCut = null;
             }
             switch (parts[0]) {
                 // MULTI-COASTER block separator (v19.2, D230): finish
@@ -968,38 +988,57 @@ public final class DesignIO {
                 case "el" -> {
                     if (!(curSection instanceof StraightCurveSection sc))
                         throw new IOException("el outside straight/curve section");
-                    sc.elements.add(parseElement(parts));
+                    StraightCurveSection.Element e =
+                        parseElement(parts, sc.elements.isEmpty());
+                    sc.elements.add(e);
+                    curElem = e;
+                    curElemLane = false;
                 }
-                // the PRE-D259 `elem` lines (v11.0-v19.29): best-effort,
-                // today's conversion kept exactly through Stage 1a
-                // (D259 §1.6 iii / §10.4 — the interim roll pair and
-                // element 0's entry ease still ride); each s/c section
-                // that carried any counts ONCE into legacyScSections
-                // (the load report's converted-elements sentence)
+                // the element's ROLL LANE lines (v20.1, D259 §2.8): `rn`
+                // the lane's nodes (the first replaces the default lane),
+                // `rsh` the shadow, `rcut` the fingerprint — closed by the
+                // next line of any other kind (above)
+                case "rn" -> {
+                    if (curElem == null) throw new IOException("rn outside an element");
+                    if (!curElemLane) {
+                        curElem.roll.nodes.clear();
+                        curElemLane = true;
+                    }
+                    curElem.roll.nodes.add(parseNode(parts));
+                }
+                case "rsh" -> {
+                    if (curElem == null) throw new IOException("rsh outside an element");
+                    if (curShadow == null) curShadow = new ArrayList<>();
+                    curShadow.add(parseNode(parts));
+                }
+                case "rcut" -> {
+                    if (curElem == null) throw new IOException("rcut outside an element");
+                    curCut = parseCut(parts);
+                }
+                // the PRE-D259 `elem` lines (v11.0-v19.29): best-effort
+                // (D259 §1.6 iii / §10.4) — the κ-form element with its
+                // DEFAULT roll lane: the interim roll pair and element
+                // 0's entry ease are DROPPED since Stage 1b (v20.1); each
+                // s/c section that carried any counts ONCE into
+                // legacyScSections (the load report's long sentence)
                 case "elem" -> {
                     if (!(curSection instanceof StraightCurveSection sc))
                         throw new IOException("elem outside straight/curve section");
+                    boolean first = sc.elements.isEmpty();
                     StraightCurveSection.Element e = switch (parts[1]) {
                         case "straight" -> StraightCurveSection.Element.straight(
                             Math.max(0.01, Double.parseDouble(parts[2])),
-                            Math.max(0, Double.parseDouble(parts[3])));
+                            first ? 0 : Math.max(0, Double.parseDouble(parts[3])));
                         case "curve" -> StraightCurveSection.Element.curve(
                             Math.max(0.1, Double.parseDouble(parts[2])),
                             Double.parseDouble(parts[3]),
                             Double.parseDouble(parts[4]),
-                            Math.max(0, Double.parseDouble(parts[5])));
+                            first ? 0 : Math.max(0, Double.parseDouble(parts[5])));
                         default -> throw new IOException("unknown element kind: " + parts[1]);
                     };
-                    // trailing roll fields (v11.1); ABSENT on v11.0
-                    // lines = rate 0, the exact old behavior (the
-                    // GLOBAL-0 factory default is for NEW elements only)
-                    int ri = parts[1].equals("straight") ? 4 : 6;
-                    e.rollMode = parts.length > ri && parts[ri].equals("1")
-                        ? StraightCurveSection.RollMode.GLOBAL
-                        : StraightCurveSection.RollMode.RATE;
-                    e.rollVal = parts.length > ri + 1
-                        ? Double.parseDouble(parts[ri + 1]) : 0;
                     sc.elements.add(e);
+                    curElem = e;
+                    curElemLane = false;
                     if (sc != legacyScSec) {   // the section's first converted line
                         legacyScSec = sc;
                         legacyScSections++;
@@ -1018,6 +1057,10 @@ public final class DesignIO {
             TrackPiece p = c.pieces.get(0);
             p.x = start[0]; p.y = start[1]; p.z = start[2];
             ((ForceSection) p.sections.get(0)).vDesign = v0;
+        }
+        // a file ending inside an element's roll block (truncated)
+        if (curElem != null) {
+            warnings += closeElement(curElem, curShadow, curCut);
         }
         c.v0 = v0;
         {
@@ -1081,6 +1124,16 @@ public final class DesignIO {
                     if (sc.elements.isEmpty()) {
                         it.remove();
                         warnings[0]++;
+                        continue;
+                    }
+                    // an element's EMPTY roll lane (every `rn` line of
+                    // its block damaged) heals to the default lane
+                    // (D216 / D259 §2.8 ii)
+                    for (StraightCurveSection.Element e : sc.elements) {
+                        if (e.roll.nodes.isEmpty()) {
+                            e.roll.installNodes(BezierBaker.holdLane(0, e.L, 0));
+                            warnings[0]++;
+                        }
                     }
                     continue;
                 }
@@ -1203,31 +1256,84 @@ public final class DesignIO {
      *  name=value in this FIXED order (byte-canonical round trips) and
      *  every double goes through d(). STRAIGHT carries no curvature
      *  fields (κ ≡ 0), PLANAR no elevation fields, HELICAL no dir.
-     *  kint/bint: 0 = LINEAR, 1 = SINUSOIDAL. The trailing rm/rv pair
-     *  is the Stage-1a INTERIM roll (§1.6 vi — rm 1 = GLOBAL bank °,
-     *  0 = RATE °/s); the 1b loader ignores it. Old readers see `el`
-     *  as an unknown line and drop the element-less section (§1.6 v). */
+     *  kint/bint: 0 = LINEAR, 1 = SINUSOIDAL. Then the element's ROLL
+     *  settings `rollg= ratem= rollabs=` on EVERY line (defaults too —
+     *  byte-canonical round trips, v20.1 D259 §2.8), the lane's `rn`
+     *  node lines (the writeNode grammar verbatim), and `rsh` (the
+     *  shadow) + `rcut` (the fingerprint) iff the lane is cut; element
+     *  0's blend is emitted as 0 (§1.1). The Stage-1a rm=/rv= pair is
+     *  no longer written (the loader migrates it best-effort). Old
+     *  readers see `el` as an unknown line and drop the element-less
+     *  section (§1.6 v); rn/rsh/rcut are unknown lines there. */
     private static void writeElement(PrintWriter out,
-                                     StraightCurveSection.Element e) {
-        int rm = e.rollMode == StraightCurveSection.RollMode.GLOBAL ? 1 : 0;
+                                     StraightCurveSection.Element e, int idx) {
         int kint = e.kInterp == StraightCurveSection.Interp.SINUSOIDAL ? 1 : 0;
+        double blend = idx == 0 ? 0.0 : e.blendIn;
+        RollLane rl = e.roll;
+        String roll = String.format(Locale.US, " rollg=%d ratem=%d rollabs=%d",
+            rl.rollGlobal() ? 1 : 0, rl.ratePerMeter() ? 1 : 0,
+            rl.rollAbsolute() ? 1 : 0);
         switch (e.kind) {
             case STRAIGHT -> out.printf(Locale.US,
-                "el straight L=%s blend=%s locks=%d rm=%d rv=%s%n",
-                d(e.L), d(e.blendIn), e.locks, rm, d(e.rollVal));
+                "el straight L=%s blend=%s locks=%d%s%n",
+                d(e.L), d(blend), e.locks, roll);
             case PLANAR -> out.printf(Locale.US,
                 "el planar L=%s k0=%s k1=%s klink=%d kint=%d dir=%s"
-                    + " blend=%s locks=%d rm=%d rv=%s%n",
+                    + " blend=%s locks=%d%s%n",
                 d(e.L), d(e.k0), d(e.k1), e.kLink ? 1 : 0, kint,
-                d(e.dirDeg), d(e.blendIn), e.locks, rm, d(e.rollVal));
+                d(e.dirDeg), d(blend), e.locks, roll);
             case HELICAL -> out.printf(Locale.US,
                 "el helical L=%s k0=%s k1=%s klink=%d kint=%d b1=%s"
-                    + " blink=%d bint=%d blend=%s locks=%d rm=%d rv=%s%n",
+                    + " blink=%d bint=%d blend=%s locks=%d%s%n",
                 d(e.L), d(e.k0), d(e.k1), e.kLink ? 1 : 0, kint,
                 d(e.b1Deg), e.bLink ? 1 : 0,
                 e.bInterp == StraightCurveSection.Interp.SINUSOIDAL ? 1 : 0,
-                d(e.blendIn), e.locks, rm, d(e.rollVal));
+                d(blend), e.locks, roll);
         }
+        for (BezierBaker.Node n : rl.nodes) writeNode(out, "rn", n);
+        if (rl.isCut()) {
+            for (BezierBaker.Node n : rl.shadow()) writeNode(out, "rsh", n);
+            RollLane.Cut c = rl.cut();
+            out.printf(Locale.US, "rcut ins=%d t=%s v=%s si=%s so=%s sm=%d po=%s%n",
+                c.inserted() ? 1 : 0, d(c.t()), d(c.val()), d(c.inSlope()),
+                d(c.outSlope()), c.smooth() ? 1 : 0, d(c.prevOutSlope()));
+        }
+    }
+
+    /** An `rcut` line's fingerprint (writeElement's dual): name=value
+     *  tokens by name, every number finite (else a damaged line); a
+     *  missing t is damaged too. */
+    private static RollLane.Cut parseCut(String[] parts) throws IOException {
+        boolean ins = false, sm = true;
+        double t = Double.NaN, v = 0, si = 0, so = 0, po = 0;
+        for (int i = 1; i < parts.length; i++) {
+            int eq = parts[i].indexOf('=');
+            if (eq <= 0) continue;
+            String name = parts[i].substring(0, eq);
+            String val = parts[i].substring(eq + 1);
+            switch (name) {
+                case "ins" -> ins = val.equals("1");
+                case "t" -> t = finiteNum(val);
+                case "v" -> v = finiteNum(val);
+                case "si" -> si = finiteNum(val);
+                case "so" -> so = finiteNum(val);
+                case "sm" -> sm = !val.equals("0");
+                case "po" -> po = finiteNum(val);
+                default -> { /* unknown names ignored */ }
+            }
+        }
+        if (Double.isNaN(t)) throw new IOException("rcut without t");
+        return new RollLane.Cut(ins, t, v, si, so, sm, po);
+    }
+
+    /** Close an element's roll block (§2.8 ii): install the shadow +
+     *  fingerprint when BOTH are present and the fingerprint's t is the
+     *  lane's last node's t bitwise; otherwise drop whatever half
+     *  exists. Returns the damaged-line count (0 or 1). */
+    private static int closeElement(StraightCurveSection.Element e,
+                                    List<BezierBaker.Node> shadow, RollLane.Cut cut) {
+        if (shadow == null && cut == null) return 0;
+        return e.roll.installShadow(shadow, cut) ? 0 : 1;
     }
 
     /** An `el` line's element (v20.0, D259 §1.6 — writeElement's
@@ -1240,10 +1346,18 @@ public final class DesignIO {
      *  the default, so the line can grow. The clamps ADMIT everything
      *  the writer emits (D198): L ≥ 0.01, |k0|, |k1| ≤ KAPPA_MAX,
      *  |b1| ≤ B1_MAX, blend ≥ 0, locks masked to the defined bits,
-     *  kint/bint/klink/blink/rm anything but "1" = the 0 meaning. A
+     *  kint/bint/klink/blink anything but "1" = the 0 meaning. A
      *  NON-FINITE number is a damaged line (b1 per §1.6 ii; the others
-     *  too — clamp() lets NaN through, the D216 lesson). */
-    private static StraightCurveSection.Element parseElement(String[] parts)
+     *  too — clamp() lets NaN through, the D216 lesson). ROLL (v20.1,
+     *  D259 §2.8): the default lane over [0, L] (the `rn` lines that
+     *  follow replace it), flags from rollg/ratem/rollabs when any is
+     *  present (rollabs=1 forces rollg=1); a Stage-1a line's rm=/rv=
+     *  pair MIGRATES best-effort (§2.3.6: rm=0 with rv ≠ 0 → a LOCAL
+     *  °/s flat lane at rv; rm=1 with rv ≠ 0 → an ABSOLUTE bank lane at
+     *  rv; rv == 0 → the default) and the inert slots stay zero;
+     *  first = element 0, whose blend is forced to 0 (§1.1). */
+    private static StraightCurveSection.Element parseElement(String[] parts,
+                                                             boolean first)
             throws IOException {
         if (parts.length < 2) throw new IOException("el without a kind");
         StraightCurveSection.Element e = switch (parts[1]) {
@@ -1257,6 +1371,9 @@ public final class DesignIO {
         boolean helix = e.kind == StraightCurveSection.Kind.HELICAL;
         double kMax = StraightCurveSection.KAPPA_MAX;
         double bMax = StraightCurveSection.B1_MAX;
+        boolean anyRoll = false, rollG = true, rateM = true, rollAbs = false;
+        int rm = -1;
+        double rv = 0;
         for (int i = 2; i < parts.length; i++) {
             int eq = parts[i].indexOf('=');
             if (eq <= 0) continue;   // not name=value: ignored like an unknown name
@@ -1283,12 +1400,24 @@ public final class DesignIO {
                 case "blend" -> e.blendIn = Math.max(0, finiteNum(v));
                 case "locks" -> e.locks = Integer.parseInt(v)
                     & StraightCurveSection.Element.LOCK_MASK;
-                case "rm" -> e.rollMode = v.equals("1")
-                    ? StraightCurveSection.RollMode.GLOBAL
-                    : StraightCurveSection.RollMode.RATE;
-                case "rv" -> e.rollVal = finiteNum(v);
+                case "rollg" -> { rollG = v.equals("1"); anyRoll = true; }
+                case "ratem" -> { rateM = v.equals("1"); anyRoll = true; }
+                case "rollabs" -> { rollAbs = v.equals("1"); anyRoll = true; }
+                case "rm" -> rm = v.equals("1") ? 1 : 0;
+                case "rv" -> rv = finiteNum(v);
                 default -> { /* unknown names ignored: the line can grow */ }
             }
+        }
+        if (first) e.blendIn = 0;
+        // the default lane over the PARSED length (the factory built it
+        // over the 0.01 placeholder); then the flags or the migration
+        e.roll = new RollLane(e.L);
+        if (anyRoll) {
+            e.roll.setFlags(rollG, rateM, rollAbs);
+        } else if (rm >= 0 && rv != 0) {
+            e.roll.installNodes(BezierBaker.holdLane(0, e.L, rv));
+            if (rm == 0) e.roll.setFlags(false, false, false);   // LOCAL °/s at rv
+            else e.roll.setFlags(true, true, true);              // ABSOLUTE bank at rv
         }
         return e;
     }

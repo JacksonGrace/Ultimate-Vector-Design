@@ -269,13 +269,48 @@ public final class SectionNames {
         "A helix's end elevation must stay under 90° — use a planar"
         + " pull-up for a loop.";
     /** The load report's line when old `elem` lines were converted
-     *  (D259 §1.8 / §10.4 — the Stage-1a SHORT form: the interim roll
-     *  pair and element 0's entry ease still load; Stage 1b appends
-     *  the dropped-roll clause). */
+     *  (D259 §1.8 / §10.4 — the LONG form since Stage 1b, v20.1: the
+     *  interim roll pair and element 0's entry ease are DROPPED, the
+     *  lane starts at its default). */
     public static final String SC_LEGACY_CONVERTED =
-        "Old straight/curve elements were converted.";
+        "Old straight/curve elements were converted — their roll settings"
+        + " and entry ease were dropped.";
     /** The radius twin of a curvature under KAPPA_INF (ρ > 100 km). */
     public static final String INFINITY_TWIN = "∞";
+
+    // ---- the ROLL LANE per s/c element (v20.1, D259 §2.10 — LabelGate
+    // section 19; the editor sites of §2.4-§2.6 consume them) ----
+    /** The yaw/pitch lane buttons / rows over an s/c (mode 3). */
+    public static final String SC_LANES_WHY =
+        "Straight/curve sections author their shape as elements — only"
+        + " the roll lane exists.";
+    /** A at the lane's end wall / a drag past it (the wall is HARD). */
+    public static final String ROLL_WALL_WHY =
+        "The roll lane ends at the element end — resize the element to"
+        + " extend it.";
+    /** The Domain row over an s/c (D30). */
+    public static final String SC_DISTANCE_WHY =
+        "Straight/curve sections are always distance-based.";
+    /** The Local radio while Absolute bank is selected. */
+    public static final String ABS_NEEDS_GLOBAL_WHY =
+        "Absolute bank holds a bank against the horizon — it needs the"
+        + " global roll axis.";
+    /** The Roll block's two buttons + their one-sentence tooltips. */
+    public static final String ROLL_SWITCH_BUTTON =
+        "Switch to These Settings (same graph, change bank)";
+    public static final String ROLL_BAKE_BUTTON =
+        "Bake These Settings (convert graph, keep bank)";
+    public static final String ROLL_SWITCH_TIP =
+        "Reinterprets this element's roll graph under the new settings.";
+    public static final String ROLL_BAKE_TIP =
+        "Converts this element's roll graph so the bank stays the same.";
+    /** The Roll block's title. */
+    public static final String ROLL_BLOCK = "Roll";
+    /** The track double-click that switched the lane element instead
+     *  of inserting. */
+    public static final String SC_TRACK_DBLCLICK_WHY =
+        "Switched the roll lane to this element — double-click again to"
+        + " insert a node.";
 
     /** An element kind's word (D259 §1.8): Straight / Planar / Helical. */
     public static String kindWord(StraightCurveSection.Kind k) {

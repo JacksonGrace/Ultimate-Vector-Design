@@ -82,6 +82,18 @@ public class BezierBaker {
         if (prev != null) { n.inFrac = DEFAULT_FRAC;  n.inDv = 0; }
     }
 
+    /** A two-node HOLD lane: (x0, v), (x1, v) with flat DEFAULT_FRAC
+     *  handles — the shape LaneSection.holdLanes creates per lane and
+     *  the default roll lane of an s/c element (v20.1, D259 §2.1;
+     *  factored out of holdLanes, both callers). */
+    public static List<Node> holdLane(double x0, double x1, double v) {
+        List<Node> lane = new ArrayList<>(2);
+        lane.add(new Node(x0, v));
+        lane.add(new Node(x1, v));
+        applyDefaultHandles(lane);
+        return lane;
+    }
+
     /** Remove an INTERIOR node, keeping the neighbors' facing handles
      *  at their FRACTIONS but preserving their SLOPES (v13.12, D86 —
      *  the user's spec; a v13.11 attempt kept the absolute knob

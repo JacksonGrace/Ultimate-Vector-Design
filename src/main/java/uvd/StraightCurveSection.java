@@ -36,11 +36,18 @@ import java.util.List;
  * (gated); only the position eases. ScIntegrator clamps blend halves
  * that would overlap inside a short element.
  *
- * STAGE-1a INTERIM (D259.1a): roll is still the v11.1 per-element
- * RATE / GLOBAL pair ({@link RollMode}, {@code rollMode}/{@code rollVal}),
- * acting about T only, and element 0's {@code blendIn} is still the
- * section-entry roll ease (D232/D233). Stage 1b replaces both with the
- * per-element roll LANE (D4 as revised 2026-10-21).
+ * ROLL (Stage 1b, v20.1, D259 §2 — D4 as revised 2026-10-21): every
+ * element carries its OWN roll LANE on its own [0, L] axis with its
+ * own settings ({@link RollLane}, {@code roll}, never null); a
+ * length change goes through {@link Element#setLength} — the ONE
+ * choke of the cut / shadow rule (§2.2). The v11.1 per-element
+ * RATE / GLOBAL pair ({@link RollMode}, {@code rollMode}/{@code rollVal})
+ * is RETIRED — the fields stay as deprecated INERT slots (nothing
+ * reads them; the loader migrates a Stage-1a file's values into the
+ * lane and zeroes them) — and so is element 0's section-entry roll
+ * ease: element 0's {@code blendIn} is ALWAYS 0 (inert in the
+ * compile — Profile.half[0] is 0 —, the writer emits 0, the loader
+ * zeroes it; §1.1).
  */
 public final class StraightCurveSection implements Section {
 
@@ -53,12 +60,11 @@ public final class StraightCurveSection implements Section {
      *  a + (b − a)·(1 − cos πu)/2 (the ScIntegrator blend ease). */
     public enum Interp { LINEAR, SINUSOIDAL }
 
-    /** STAGE-1a INTERIM roll (v11.1, D69; the 1b lane replaces it).
-     *  RATE   — body roll at rollVal °/s about T, exactly like the roll
-     *           lane (time-based: total twist depends on design speed).
-     *  GLOBAL — HOLD rollVal as the bank angle measured against the
-     *           HORIZON, eased in from the element's entry bank over
-     *           max(blendIn, 2 m) so bank never jumps. */
+    /** RETIRED (Stage 1b, v20.1): the v11.1 interim roll pair's mode.
+     *  Kept only so the deprecated inert {@code Element.rollMode} slot
+     *  and the Stage-1a probe sources compile; nothing reads it.
+     *  @deprecated the per-element {@link RollLane} replaced it. */
+    @Deprecated
     public enum RollMode { RATE, GLOBAL }
 
     // ---- the constants named ONCE here (D259 §1.1 — every other
@@ -117,24 +123,40 @@ public final class StraightCurveSection implements Section {
         public Interp bInterp = Interp.LINEAR;
         /** Interior entry blend (m): half = blendIn/2 each side of the
          *  border, clamped per ScIntegrator. Default 0 (D9). Element 0's
-         *  value is the Stage-1a INTERIM section-entry roll ease (D233);
-         *  from 1b it is always 0. */
+         *  value is ALWAYS 0 since Stage 1b (v20.1): the compile ignores
+         *  it (Profile.half[0] = 0), the writer emits 0, the loader
+         *  zeroes it — the section-entry roll ease of D232/D233 is
+         *  retired (a legacy value left in the field is inert). */
         public double blendIn;
         /** The LOCK bit field (LOCK_* above). */
         public int locks;
+        /** The element's OWN roll lane + settings + shadow (v20.1, D259
+         *  §2.1) — NEVER null: every factory and copy() build it, the
+         *  loader heals it. Its x axis is [0, L]; {@link #setLength}
+         *  keeps it there (§2.2). */
+        public RollLane roll;
 
-        // Stage-1a INTERIM roll (v11.1): the 1b lane replaces both.
-        public RollMode rollMode = RollMode.GLOBAL;
-        public double rollVal = 0;   // °/s (RATE) or ° vs horizon (GLOBAL)
+        /** RETIRED inert slots (Stage 1b): the v11.1 interim roll pair.
+         *  Nothing reads them — the integrator consumes {@code roll},
+         *  the writer no longer emits rm=/rv=, the loader migrates a
+         *  Stage-1a file's pair into the lane and zeroes these. They
+         *  remain only so the Stage-1a probe sources compile.
+         *  @deprecated use {@link #roll}. */
+        @Deprecated public RollMode rollMode = RollMode.GLOBAL;
+        @Deprecated public double rollVal = 0;
+
+        private Element(Kind kind, double L) {
+            this.kind = kind;
+            this.L = L;
+            this.roll = new RollLane(L);
+        }
 
         // ---- factories (D259 §1.1 defaults: straight 10 m; planar R20
-        // 90° left; helical plan R20 90°; blendIn 0, no locks, D9/D13) ----
+        // 90° left; helical plan R20 90°; blendIn 0, no locks, D9/D13;
+        // every one builds the DEFAULT roll lane over [0, L], §2.1) ----
 
         public static Element straight(double L) {
-            Element e = new Element();
-            e.kind = Kind.STRAIGHT;
-            e.L = L;
-            return e;
+            return new Element(Kind.STRAIGHT, L);
         }
 
         /** A straight with an entry blend (the v11 signature, kept). */
@@ -145,9 +167,7 @@ public final class StraightCurveSection implements Section {
         }
 
         public static Element planar(double L, double k, double dirDeg) {
-            Element e = new Element();
-            e.kind = Kind.PLANAR;
-            e.L = L;
+            Element e = new Element(Kind.PLANAR, L);
             e.k0 = k;
             e.k1 = k;
             e.kLink = true;
@@ -178,9 +198,7 @@ public final class StraightCurveSection implements Section {
          *  to the given ENTRY elevation (D13: the pitch pair unlinked with
          *  end := start). */
         public static Element helical(double L, double cH, double beta0Deg) {
-            Element e = new Element();
-            e.kind = Kind.HELICAL;
-            e.L = L;
+            Element e = new Element(Kind.HELICAL, L);
             e.k0 = cH;
             e.k1 = cH;
             e.kLink = true;
@@ -230,7 +248,8 @@ public final class StraightCurveSection implements Section {
         }
 
         /** The dialog's radius + signed turn (deg) form of a PLANAR
-         *  element: k = sign(turn)/radius (constant), L = |turn|·radius. */
+         *  element: k = sign(turn)/radius (constant), L = |turn|·radius
+         *  (through {@link #setLength} — the lane follows, §2.2). */
         public void setRadiusAndTurn(double radius, double turnDeg) {
             double r = Math.max(1 / KAPPA_MAX, radius);
             double k = turnDeg == 0 ? 0 : Math.signum(turnDeg) / r;
@@ -238,7 +257,28 @@ public final class StraightCurveSection implements Section {
             k0 = k;
             k1 = k;
             kLink = true;
-            L = Math.abs(Math.toRadians(turnDeg)) * r;
+            setLength(Math.abs(Math.toRadians(turnDeg)) * r);
+        }
+
+        /** THE ONE CHOKE for every length write (v20.1, D259 §2.2): the
+         *  resize drag per event, the dialog's L / radius / angle,
+         *  setRadiusAndTurn, the append-extend drag, the solver later.
+         *  Writes L and applies the lane's cut / shadow rule (E1-E3,
+         *  {@link RollLane#applyLength}): a longer element holds the
+         *  last node's value to the new end, a shorter one cuts the lane
+         *  at the new end and keeps the cut-off part as the shadow,
+         *  which returns bitwise when the element grows again unless the
+         *  cut node was touched. The same L (bitwise) is a no-op (E4).
+         *  changeKind keeps L and never comes here; Coaster.cutElement
+         *  installs its halves' lanes explicitly (E5). A direct write
+         *  of the public {@code L} field bypasses the rule — every
+         *  caller must come through here. */
+        public void setLength(double L) {
+            if (Double.doubleToRawLongBits(L) == Double.doubleToRawLongBits(this.L)) {
+                return;
+            }
+            this.L = L;
+            roll.applyLength(L);
         }
 
         // ---- derived twins (read-only, never stored) ----
@@ -335,10 +375,11 @@ public final class StraightCurveSection implements Section {
             return true;
         }
 
+        /** Deep copy — every field incl. the roll lane (nodes, flags,
+         *  shadow and fingerprint: undo restores a cut state bitwise). */
         public Element copy() {
-            Element e = new Element();
-            e.kind = kind;
-            e.L = L;
+            Element e = new Element(kind, L);
+            e.roll = roll.copy();
             e.k0 = k0;
             e.k1 = k1;
             e.kLink = kLink;
@@ -386,10 +427,11 @@ public final class StraightCurveSection implements Section {
      *  continues the entry pose dead ahead, seamless after anything. */
     public static StraightCurveSection straight(double lengthM, double vDesign) {
         List<Element> els = new ArrayList<>();
-        // element 0's blendIn = the Stage-1a INTERIM section-entry roll
-        // ease, taken verbatim since v19.4 (D233): new sections keep the
-        // comfortable 2 m default explicitly (the 1b lane retires it)
-        els.add(Element.straight(lengthM, 2));
+        // element 0's blendIn is ALWAYS 0 since Stage 1b (v20.1): the
+        // D233 section-entry roll ease is retired — the default roll
+        // lane (global rate 0 °/m) holds the arriving bank from the
+        // first leg, seam smoothing is the one entry control (§2.3.5)
+        els.add(Element.straight(lengthM));
         return new StraightCurveSection(els, vDesign);
     }
 
