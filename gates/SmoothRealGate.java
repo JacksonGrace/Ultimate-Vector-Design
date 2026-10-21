@@ -162,8 +162,11 @@ public class SmoothRealGate {
         cs.pieces.add(sA);
         int np2 = cs.makeSeamStrict(0, 1, DT);
         cs.pieces.get(np2).sSmoothLen = 6;
-        check(cs.makeSmoothingReal(np2, DT, 0.05, 0) != null,
-            "b1 s/c neighbor refuses with a reason");
+        // RE-PINNED v20.1 (D259 §3.6 SM4): the sentence is the constant
+        String whyB1 = cs.makeSmoothingReal(np2, DT, 0.05, 0);
+        check(SectionNames.SMOOTH_REAL_SC_WHY.equals(whyB1),
+            "b1 s/c neighbor refuses with SMOOTH_REAL_SC_WHY verbatim",
+            "why=" + whyB1);
         Coaster cc = new Coaster();
         TrackPiece cA = new TrackPiece(0, 21, 0, 0);
         cA.sections.add(new ForceSection(hillLanes(6), 26));

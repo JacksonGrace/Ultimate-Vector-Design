@@ -2098,8 +2098,7 @@ public class Coaster {
         Section sNextS = B.sections.get(0);
         if (!(sPrevS instanceof LaneSection lPrev)
                 || !(sNextS instanceof LaneSection lNext)) {
-            return "smoothing conversion needs force/geo sections on "
-                + "both sides of the seam";
+            return SectionNames.SMOOTH_REAL_SC_WHY;   // §3.6 SM4 (D259)
         }
         // INFLUENCE on the seam sections is fine as long as the
         // deltas are ZERO across the window (v19.5, D234 — the

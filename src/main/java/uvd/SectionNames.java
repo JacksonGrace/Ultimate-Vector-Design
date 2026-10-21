@@ -456,4 +456,16 @@ public final class SectionNames {
     public static final String UNSTRICT_CONVERT_WHY =
         "A straight/curve section always begins and ends at a strict seam"
         + " — convert it first.";
+    /** The smoothing window would not engage: too few samples
+     *  (TrackCompiler.smoothEngagesWhy, §3.6 SM2). */
+    public static final String SMOOTH_TOO_SHORT_WHY =
+        "The smoothing window holds too few samples to engage — lengthen it.";
+    /** … because a section beside the seam clamps the window's half. */
+    public static final String SMOOTH_SECTION_SHORT_WHY =
+        "A section beside this seam is too short to smooth.";
+    /** Make smoothing real refused next to a straight/curve section
+     *  (§3.6 SM4 — Coaster.makeSmoothingReal's sentence, promoted). */
+    public static final String SMOOTH_REAL_SC_WHY =
+        "smoothing conversion needs force/geo sections on both sides of"
+        + " the seam";
 }

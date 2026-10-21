@@ -184,3 +184,19 @@ automatic seams; the pinned one still writes 1 and loads pinned +
 unflagged — the pin wins on the line). The local session must merge the
 six outside-whitelist hunks (each a handful of lines, all in fixture
 builders / expected strings).
+
+## 4. Item 4 — smoothing on s/c edges (§3.6, the model half)
+
+`TrackCompiler.smoothEngages(all, spans, spanB, len)` (+ the last-two-spans
+form) and `smoothEngagesWhy(all, spans, spanB, len)`: the IDENTICAL window
+arithmetic of `smoothStrictSeam` (hUp/hDn = min(len/2, half the adjacent
+span's arc), the iA/iB walks, the 2/3-samples-per-side test) with nothing
+written; null = engages, SMOOTH_SECTION_SHORT_WHY when the failing side's
+half was clamped by its own span's arc, SMOOTH_TOO_SHORT_WHY otherwise (and
+for a seam the compile does not cover). The compiler itself needs no change
+— the blend is type-agnostic. `makeSmoothingReal`'s s/c refusal sentence is
+`SectionNames.SMOOTH_REAL_SC_WHY` verbatim (SmoothRealGate b1 re-pinned on
+the constant). The §3.6 SM1 deletion of `GraphEditor.seamScEdge` and its
+three sites, and SM3's tooltips / grays, are JavaFX → "For the local
+session". ScSeamGate e pins `smoothEngages == (smoothStrictSeam != null)`
+over 200 random (len, v) pairs (item 6).
