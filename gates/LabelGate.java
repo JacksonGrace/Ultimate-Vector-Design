@@ -817,6 +817,10 @@ public class LabelGate {
             eq("Roll", SectionNames.ROLL_BLOCK, "19i the Roll block's title");
             eq("Switched the roll lane to this element — double-click again to insert a node.",
                 SectionNames.SC_TRACK_DBLCLICK_WHY, "19j the track double-click's lane switch");
+            eq("Pick different roll settings first.",
+                SectionNames.ROLL_PICK_WHY, "19k the Roll block's buttons while unchanged");
+            eq("A bank lane holds angles — there is no rate to view.",
+                SectionNames.BANK_NO_RATE_WHY, "19l the rate-units row / rate-view item over a bank lane");
         }
 
         System.out.println();

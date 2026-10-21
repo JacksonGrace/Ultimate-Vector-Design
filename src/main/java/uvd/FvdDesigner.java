@@ -4342,7 +4342,10 @@ public class FvdDesigner extends Application {
                 + (ypAbs && i < 2 ? (i == 0 ? "Elevation" : "Heading")
                     : rollAbs && i == 2 ? "Bank"
                     : names[i]));
-            laneButtons[i].setDisable(mode == 2 || (delta && i == 2));
+            // mode 3 = an s/c with its ROLL lane (v20.1, D259 §2.4):
+            // lanes 0/1 gray (SC_LANES_WHY on hover), the roll button live
+            laneButtons[i].setDisable(mode == 2 || (mode == 3 && i < 2)
+                || (delta && i == 2));
             // an ABSOLUTE-BANK section's lane-2 button wears the bank
             // color like its curve (v18.2, user spec)
             Color bc = i == 2 && rollAbs ? BANK_COLOR
@@ -5679,6 +5682,7 @@ public class FvdDesigner extends Application {
         povProbe();
         initSpeedProbe();
         typedProbe();
+        scProbe();
         smoothProbe();
         bridgeRingProbe();
     }
@@ -6608,6 +6612,188 @@ public class FvdDesigner extends Application {
         });
         devAfter(800, next[0]);
     }
+
+    /** -Dfvd.scprobe=1 (v20.1, D259 §2.4 — Stage 1b run 2): an in-JVM
+     *  smoke test of the per-element ROLL LANE strip on the default
+     *  document + a model-appended s/c of three elements: activation
+     *  binds element 0's lane (mode 3 buttons), the lane element
+     *  switches, a node inserts / appends (A) / deletes, B at an
+     *  interior border, the cut / shadow round trip through
+     *  Element.setLength (the model choke the strip drags call), the
+     *  element dialog opens + closes, the Bank tint, the 3D
+     *  double-click's lane switch + insert, an element delete clamps
+     *  the lane element. Prints "PROBE sc fails=N" and exits. */
+    private void scProbe() {
+        if (System.getProperty("fvd.scprobe") == null) return;
+        Thread.setDefaultUncaughtExceptionHandler((t, ex) -> {
+            System.out.println("SCPROBE-EX " + ex);
+            ex.printStackTrace();
+        });
+        final int[] fails = { 0 };
+        java.util.function.BiConsumer<Boolean, String> chk = (ok, name) -> {
+            if (!ok) fails[0]++;
+            System.out.println("SCPROBE " + (ok ? "PASS  " : "FAIL  ") + name);
+        };
+        final StraightCurveSection[] scH = { null };
+        final int[] kH = { -1 };
+        final double[] L1 = { 0 };
+        final List<Runnable> steps = new ArrayList<>();
+        final int[] at = { 0 };
+        final Runnable[] next = { null };
+        next[0] = () -> {
+            if (at[0] >= steps.size()) {
+                System.out.println("PROBE sc fails=" + fails[0]);
+                final int fz = fails[0];
+                javafx.application.Platform.runLater(() -> {
+                    javafx.application.Platform.exit();
+                    System.exit(fz == 0 ? 0 : 1);
+                });
+                return;
+            }
+            Runnable r = steps.get(at[0]++);
+            try {
+                r.run();
+            } catch (Exception ex) {
+                fails[0]++;
+                System.out.println("SCPROBE FAIL step " + at[0] + " threw " + ex);
+                ex.printStackTrace(System.out);
+            }
+            devAfter(300, next[0]);
+        };
+        // ---- S0: append an s/c of three elements through the model
+        steps.add(() -> {
+            List<Section> ss = coaster.pieces.get(0).sections;
+            StraightCurveSection sc = StraightCurveSection.straight(30, 20);
+            sc.elements.add(StraightCurveSection.Element.curve(20, 90, 0, 0));
+            sc.elements.add(StraightCurveSection.Element.straight(10));
+            ss.add(sc);
+            scH[0] = sc;
+            kH[0] = ss.size() - 1;
+            L1[0] = sc.elements.get(1).L;
+            rebuildTrack();
+            editor.setActiveSection(kH[0]);
+            editor.probeRedraw();
+            chk.accept(editor.probeActiveLane() == sc.elements.get(0).roll.nodes,
+                "S0 activation binds element 0's roll lane");
+            chk.accept(editor.probeLaneElem() == 0, "S0 the lane element is 0");
+            chk.accept(laneButtons[0].isDisabled() && laneButtons[1].isDisabled()
+                && !laneButtons[2].isDisabled(), "S0 mode 3: lanes 0/1 gray, roll live");
+        });
+        // ---- S1: switch the lane element
+        steps.add(() -> {
+            editor.probeSetLaneElem(1);
+            chk.accept(editor.probeLaneElem() == 1
+                && editor.probeActiveLane() == scH[0].elements.get(1).roll.nodes,
+                "S1 the lane element switches to 1 (identity)");
+        });
+        // ---- S2: insert a node, give it a value, rebuild
+        steps.add(() -> {
+            int i = editor.probeInsertNode(10);
+            chk.accept(i == 1 && editor.probeActiveLane().size() == 3,
+                "S2 insert at x = 10 → 3 nodes (idx " + i + ")");
+            editor.probeActiveLane().get(1).val = 2.0;   // 2 °/m
+            rebuildTrack();
+            editor.probeRedraw();
+            chk.accept(lastSamples != null && !lastSamples.isEmpty(),
+                "S2 rebuild with a sloped lane");
+        });
+        // ---- S3: A with the node selected = the hold-insert (room: 31.4 m)
+        steps.add(() -> {
+            editor.probeSelect(1);
+            int n0 = editor.probeActiveLane().size();
+            editor.appendAction();
+            chk.accept(editor.probeActiveLane().size() == n0 + 1,
+                "S3 A on a selected roll node appends a hold");
+            chk.accept(editor.probeActiveLane().get(
+                editor.probeActiveLane().size() - 1).t <= L1[0] + 1e-9,
+                "S3 the lane stays inside the element's wall");
+        });
+        // ---- S4: Delete with the node selected removes the node, not the element
+        steps.add(() -> {
+            int n0 = editor.probeActiveLane().size();
+            int e0 = scH[0].elements.size();
+            editor.probeSelect(2);
+            editor.deleteSelected();
+            chk.accept(editor.probeActiveLane().size() == n0 - 1
+                && scH[0].elements.size() == e0,
+                "S4 Delete removes the selected roll node");
+        });
+        // ---- S5: B on node 0 matches element 0's lane end (0, flat)
+        steps.add(() -> {
+            editor.probeActiveLane().get(0).val = 1.5;
+            editor.probeSelect(0);
+            editor.matchBoundary(0);
+            chk.accept(Math.abs(editor.probeActiveLane().get(0).val) < 1e-12,
+                "S5 B at the border takes element 0's end value");
+        });
+        // ---- S6: the cut / shadow round trip through the model choke
+        steps.add(() -> {
+            StraightCurveSection.Element e = scH[0].elements.get(1);
+            List<BezierBaker.Node> before = RollLane.deepCopy(e.roll.nodes);
+            e.setLength(8);
+            rebuildTrack();
+            editor.probeRedraw();   // the cut stub draws
+            boolean cut = e.roll.isCut()
+                && e.roll.nodes.get(e.roll.nodes.size() - 1).t == 8;
+            e.setLength(L1[0]);
+            rebuildTrack();
+            editor.probeRedraw();
+            boolean back = !e.roll.isCut() && e.roll.nodes.size() == before.size();
+            for (int i = 0; back && i < before.size(); i++) {
+                BezierBaker.Node a = before.get(i), b = e.roll.nodes.get(i);
+                back = Double.doubleToRawLongBits(a.t) == Double.doubleToRawLongBits(b.t)
+                    && Double.doubleToRawLongBits(a.val) == Double.doubleToRawLongBits(b.val);
+            }
+            chk.accept(cut, "S6 shrink to 8 m cuts the lane (cut node at 8)");
+            chk.accept(back, "S6 grow back restores the lane bitwise");
+            chk.accept(editor.probeActiveLane() == e.roll.nodes,
+                "S6 the binding survived the length round trip");
+        });
+        // ---- S7: the element dialog opens and closes
+        steps.add(() -> {
+            javafx.stage.Stage d = editor.probeShowElementDialog(1);
+            chk.accept(d != null && d.isShowing(), "S7 the element dialog opens");
+            if (d != null) d.close();
+        });
+        // ---- S8: absolute bank → the Bank tint
+        steps.add(() -> {
+            scH[0].elements.get(1).roll.setFlags(true, true, true);
+            rebuildTrack();
+            editor.probeSyncLaneButtons();   // what the Switch button does
+            chk.accept("Bank".equals(laneButtons[2].getText()),
+                "S8 an absolute lane tints the roll button Bank");
+            scH[0].elements.get(1).roll.setFlags(true, true, false);
+            rebuildTrack();
+            editor.probeSetLaneElem(1);
+        });
+        // ---- S9: the 3D double-click: first switches the lane element, then inserts
+        steps.add(() -> {
+            TrackCompiler.Span sp = editor.probeSpanOf(kH[0]);
+            chk.accept(sp != null, "S9 the s/c span exists");
+            if (sp == null) return;
+            double arc = scH[0].elements.get(0).L + scH[0].elements.get(1).L + 5;
+            double t = 0;
+            for (int i = sp.i0(); i <= Math.min(sp.i1(), lastSamples.size() - 1); i++) {
+                if (lastSamples.get(i).s() - sp.s0() >= arc) { t = lastSamples.get(i).t(); break; }
+            }
+            editor.insertAtTime(t);
+            chk.accept(editor.probeLaneElem() == 2, "S9 the double-click switches to element 2");
+            int n0 = editor.probeActiveLane().size();
+            editor.insertAtTime(t);
+            chk.accept(editor.probeActiveLane().size() == n0 + 1,
+                "S9 the second double-click inserts on element 2");
+        });
+        // ---- S10: deleting the lane element clamps the binding
+        steps.add(() -> {
+            editor.probeSelect(-1);
+            editor.deleteSelected();   // elSel = 2 → the element goes
+            chk.accept(scH[0].elements.size() == 2 && editor.probeLaneElem() == 1
+                && editor.probeActiveLane() == scH[0].elements.get(1).roll.nodes,
+                "S10 element delete clamps the lane element to 1");
+        });
+        devAfter(900, next[0]);
+    }
+
 
     /** DEV HOOK (v19.27, D256): `-Dfvd.typedprobe=1` — exercise the
      *  TYPED MARK's real wiring on the default document with IN-JVM

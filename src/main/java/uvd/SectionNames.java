@@ -311,6 +311,14 @@ public final class SectionNames {
     public static final String SC_TRACK_DBLCLICK_WHY =
         "Switched the roll lane to this element — double-click again to"
         + " insert a node.";
+    /** The Roll block's Switch / Bake buttons while the radios equal
+     *  the element's current settings. */
+    public static final String ROLL_PICK_WHY =
+        "Pick different roll settings first.";
+    /** The Rate-units row under Absolute bank, and the badge menu's
+     *  rate-view item over a bank lane. */
+    public static final String BANK_NO_RATE_WHY =
+        "A bank lane holds angles — there is no rate to view.";
 
     /** An element kind's word (D259 §1.8): Straight / Planar / Helical. */
     public static String kindWord(StraightCurveSection.Kind k) {

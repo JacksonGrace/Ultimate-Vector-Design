@@ -2071,6 +2071,7 @@ class GraphEditor extends Region {
         dropActiveView();   // leaving = back to the true domain (v16.2)
         activePiece = p;
         activeSection = (int) FvdDesigner.clamp(k, 0, sections().size() - 1);
+        scLaneElem = 0;   // the lane element restarts per section (v20.1)
         app.lanes = lanesFor(sections().get(activeSection));
         selIdx = -1;
         selSet.clear();
@@ -2117,6 +2118,7 @@ class GraphEditor extends Region {
         dropActiveView();   // leaving = back to the true domain (v16.2)
         activePiece = p;
         activeSection = 0;
+        scLaneElem = 0;
         app.lanes = lanesFor(sections().get(0));
         selIdx = -1;
         selSet.clear();
@@ -2155,6 +2157,14 @@ class GraphEditor extends Region {
         if (s instanceof LaneSection ls) {
             return ls.editInfluence && ls.influenced() ? ls.deltaLanes
                                                        : ls.lanes;
+        }
+        // a STRAIGHT/CURVE section binds the LANE ELEMENT's roll lane
+        // (v20.1, D259 §2.4): [EMPTY, EMPTY, nodes] — ONE object per
+        // element for its life; a legacy REVERSED s/c stays read-only
+        // (its elements draw in train order, no lane surface)
+        if (s instanceof StraightCurveSection sc && !sc.reversed
+                && !sc.elements.isEmpty()) {
+            return sc.elements.get(scLaneIdx(sc)).roll.lanes();
         }
         return NO_LANES;
     }
@@ -2287,8 +2297,12 @@ class GraphEditor extends Region {
             return surfRs.sec().domain() == Section.Domain.DISTANCE;
         }
         List<Section> secs = sections();
-        return activeSection < secs.size()
-            && secs.get(activeSection) instanceof LaneSection ls
+        if (activeSection >= secs.size()) return false;
+        Section s = secs.get(activeSection);
+        // an s/c element's roll lane is METERS of the element's own
+        // arc (v20.1, D259 §2.4)
+        if (s instanceof StraightCurveSection) return true;
+        return s instanceof LaneSection ls
             && ls.domain() == Section.Domain.DISTANCE;
     }
 
@@ -2428,6 +2442,12 @@ class GraphEditor extends Region {
         if (surfStrip) {
             return spAxisOf(surfRs, surfCtl.x0 + x) - tOff;
         }
+        // an s/c element's lane (v20.1, D259 §2.4): element-local x →
+        // the section's axis through the strip's own arc map (linear
+        // on the meters axis; the time VIEW rides the compiled
+        // samples — scAxisAtS handles both)
+        StraightCurveSection scw = activeSc();
+        if (scw != null) return scAxisAtS(scw, scLaneStart() + x) - tOff;
         return warpMap == null ? x
             : Coaster.mapCol(warpMap, warpToDist ? 0 : 1,
                 warpToDist ? 1 : 0, x);
@@ -2438,6 +2458,8 @@ class GraphEditor extends Region {
         if (surfStrip) {
             return spNativeAtAxis(surfRs, a + tOff) - surfCtl.x0;
         }
+        StraightCurveSection scw = activeSc();
+        if (scw != null) return scSAtT(scw, a + tOff) - scLaneStart();
         return warpMap == null ? a
             : Coaster.mapCol(warpMap, warpToDist ? 1 : 0,
                 warpToDist ? 0 : 1, a);
@@ -2483,6 +2505,9 @@ class GraphEditor extends Region {
     private double nodeGlobalTime(double nativeX) {
         TrackCompiler.Span sp = activeSpan();
         if (sp == null) return nativeX;
+        // an s/c roll node's x is the ELEMENT's own arc (v20.1): the
+        // section arc = the lane element's start + x
+        if (activeSc() != null) nativeX += scLaneStart();
         if (!activeDistNative()) return sp.t0() + nativeX;
         List<Section> secs = sections();
         boolean rev = activeSection < secs.size()
@@ -2635,6 +2660,7 @@ class GraphEditor extends Region {
     private boolean laneShownPM(int lane) {
         if (surfStrip) return false;
         boolean nat = activeRatePM(lane);
+        if (activeSc() != null) return laneWarped(lane) ? !nat : nat;
         if (sections().get(activeSection) instanceof LaneSection ls
                 && ls.viewOtherRate() && laneIsRate(ls, lane)) {
             return !nat;
@@ -2646,6 +2672,12 @@ class GraphEditor extends Region {
      *  (the cross-rate view warp applies to it)? */
     private boolean laneWarped(int lane) {
         if (surfStrip) return false;
+        StraightCurveSection sc = activeSc();
+        if (sc != null) {   // the lane element's RATE lane only (v20.1)
+            RollLane rl = scLane();
+            return lane == 2 && rl != null && sc.viewOtherRate
+                && !rl.rollAbsolute();
+        }
         return sections().get(activeSection) instanceof LaneSection ls
             && ls.viewOtherRate() && laneIsRate(ls, lane);
     }
@@ -2654,6 +2686,8 @@ class GraphEditor extends Region {
      *  (v16.7, D118)? */
     private boolean activeRollAbs() {
         if (surfStrip) return false;
+        RollLane rl = scLane();   // the lane element's lane (v20.1)
+        if (rl != null) return rl.rollAbsolute();
         return sections().get(activeSection) instanceof LaneSection ls
             && ls.rollAbsolute && ls.rollGlobal;
     }
@@ -2727,6 +2761,8 @@ class GraphEditor extends Region {
      *  surface every delta lane is a rate (v16.7 — a °/m force
      *  section's Δpitch/Δyaw author °/m). */
     private boolean activeRatePM(int lane) {
+        RollLane rl = scLane();   // the lane element's lane (v20.1)
+        if (rl != null) return lane == 2 && rl.ratePerMeter() && !rl.rollAbsolute();
         if (!(sections().get(activeSection) instanceof LaneSection ls)) {
             return false;
         }
@@ -2780,7 +2816,14 @@ class GraphEditor extends Region {
      *  spinner's visibility rides along (v13.2) — this runs on every
      *  section/piece switch, load, add and delete. */
     private void syncLaneButtons() {
+        // an s/c with a lane surface edits lane 2 only (v20.1, D259
+        // §2.4 — mode 3: buttons 0/1 gray with SC_LANES_WHY)
+        if (scLaneBound() && activeLane != 2) {
+            activeLane = 2;
+            if (app.laneButtons[2] != null) app.laneButtons[2].setSelected(true);
+        }
         app.setLaneButtonMode(activeGeo() ? 1
+            : scLaneBound() ? 3
             : activeSc() != null || activeBridge() != null ? 2 : 0,
             activeInfl() != null);
         app.updateBridgeControls();
@@ -2888,6 +2931,9 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         if (activeSection < secs.size()) {
             secs.get(activeSection).viewOtherDomain(false);
+            if (secs.get(activeSection) instanceof StraightCurveSection sv) {
+                sv.viewOtherRate = false;   // the s/c rate view (v20.1)
+            }
             if (secs.get(activeSection) instanceof LaneSection lv) {
                 lv.viewOtherRate = false;
             }
@@ -2898,7 +2944,10 @@ class GraphEditor extends Region {
         List<Section> secs = sections();
         k = (int) FvdDesigner.clamp(k, 0, secs.size() - 1);
         if (k == activeSection && app.lanes == lanesFor(secs.get(k))) return;
-        if (k != activeSection) dropActiveView();
+        if (k != activeSection) {
+            dropActiveView();
+            scLaneElem = 0;   // the lane element restarts per section (v20.1)
+        }
         activeSection = k;
         app.lanes = lanesFor(secs.get(k));
         selIdx = -1;
@@ -2922,6 +2971,7 @@ class GraphEditor extends Region {
             selSet.clear();
             return;
         }
+        scLaneElem = 0;
         app.lanes = lanesFor(sections().get(0));
         selIdx = -1;
         selSet.clear();
@@ -2947,8 +2997,10 @@ class GraphEditor extends Region {
             app.coaster.pieces.size() - 1);
         List<Section> secs = sections();
         activeSection = (int) FvdDesigner.clamp(section, 0, secs.size() - 1);
-        app.lanes = lanesFor(secs.get(activeSection));
         StraightCurveSection sc = activeSc();
+        // the lane element survives an undo restore, clamped (v20.1)
+        scLaneElem = sc == null ? 0 : scLaneIdx(sc);
+        app.lanes = lanesFor(secs.get(activeSection));
         elSel = sc == null ? -1
             : Math.min(elSel, sc.elements.size() - 1);
         syncLaneButtons();
@@ -3376,7 +3428,25 @@ class GraphEditor extends Region {
         }
         Section sec = secs.get(k);
         int piece = activePiece;
-        if (sec instanceof StraightCurveSection) {
+        if (sec instanceof StraightCurveSection scr) {
+            // C32 (v20.1, D259 §2.7): every °/s element's roll lane is
+            // RE-TIMED at the true speed — a re-fit, so the density
+            // preview drives it like every other convert; a section
+            // without a °/s element keeps the direct speed-only path
+            boolean perSec = false;
+            for (StraightCurveSection.Element e : scr.elements) {
+                if (!e.roll.rollAbsolute() && !e.roll.ratePerMeter()) perSec = true;
+            }
+            if (perSec && !scr.reversed) {
+                beginDensityPreview(k, false, true, true,
+                    (sp, tol) -> app.coaster.makeGraphsReal(piece, k,
+                        FvdDesigner.INTEGRATE_DT, sp, tol),
+                    () -> {
+                        activePiece = piece;
+                        activeSection = k;
+                    });
+                return;
+            }
             // pushed only on success (the D247 rule; D249 review fix)
             FvdDesigner.DocState pre = snapshot();
             app.coaster.resolveRefusedWhy = null;
@@ -5052,6 +5122,27 @@ class GraphEditor extends Region {
     /** The document undo depth (-Dfvd.typedprobe, D256: "one undo
      *  step exists"). */
     int probeUndoDepth() { return undoStack.size(); }
+    // the s/c lane probe's seams (v20.1, -Dfvd.scprobe=1)
+    int probeLaneElem() { return scLaneElem; }
+    void probeSetLaneElem(int i) { setScLaneElem(i); redraw(); }
+    List<BezierBaker.Node> probeActiveLane() { return active(); }
+    int probeInsertNode(double x) {
+        int i = insertNodeOnCurve(x);
+        redraw();
+        app.rebuildTrack();
+        return i;
+    }
+    void probeSelect(int idx) {
+        selIdx = idx;
+        selSet.clear();
+        if (idx >= 0) selSet.add(idx);
+    }
+    int probeSelIdx() { return selIdx; }
+    int probeElSel() { return elSel; }
+    TrackCompiler.Span probeSpanOf(int k) { return spanOf(k); }
+    void probeRedraw() { redraw(); }
+    void probeSyncLaneButtons() { syncLaneButtons(); }
+    javafx.stage.Stage probeShowElementDialog(int idx) { return showElementDialog(idx); }
     /** The Convert dialog's whole-section commit for section k of the
      *  active piece, same type/domain/axes (the identity re-author). */
     void probeWholeConvert(int k) {
@@ -6112,6 +6203,30 @@ class GraphEditor extends Region {
                     cm.getItems().add(viewRate);
                 }
             }
+            // an s/c's rate view (v20.1, D259 §2.4): the lane element's
+            // units flip; an absolute (bank) lane has no rate to view
+            if (sec instanceof StraightCurveSection srv && !srv.reversed
+                    && !srv.elements.isEmpty()) {
+                RollLane rlv = srv.elements.get(scLaneIdx(srv)).roll;
+                if (k != activeSection) {
+                    cm.getItems().add(grayItem("View rates in "
+                        + (rlv.ratePerMeter() ? "°/s" : "°/m"),
+                        "Activate the section first."));
+                } else if (rlv.rollAbsolute()) {
+                    cm.getItems().add(grayItem("View rates in °/s",
+                        SectionNames.BANK_NO_RATE_WHY));
+                } else {
+                    CheckMenuItem viewRate = new CheckMenuItem(
+                        "View rates in " + (rlv.ratePerMeter() ? "°/s" : "°/m"));
+                    viewRate.setSelected(srv.viewOtherRate);
+                    viewRate.setOnAction(ev -> {
+                        srv.viewOtherRate = !srv.viewOtherRate;
+                        refreshOffset();
+                        redraw();
+                    });
+                    cm.getItems().add(viewRate);
+                }
+            }
             // a line UNDER the view items (batch 36, user spec)
             if (!(sec instanceof BridgeSection)) {
                 cm.getItems().add(new SeparatorMenuItem());
@@ -6127,6 +6242,14 @@ class GraphEditor extends Region {
                     && !(lor.influenced() && lor.editInfluence)) {
                 MenuItem orient = new MenuItem("Orientation settings…");
                 orient.setOnAction(ev -> showOrientationDialog(k));
+                cm.getItems().add(orient);
+            } else if (sec instanceof StraightCurveSection scr && !scr.reversed
+                    && !scr.elements.isEmpty()) {
+                // an s/c's roll settings live PER ELEMENT (v20.1, D259
+                // §2.5): the item opens the LANE element's dialog (its
+                // Roll block) — badges open while active, so k is active
+                MenuItem orient = new MenuItem("Orientation settings…");
+                orient.setOnAction(ev -> showElementDialog(scLaneIdx(scr)));
                 cm.getItems().add(orient);
             }
         }
@@ -7370,7 +7493,7 @@ class GraphEditor extends Region {
      *  the toolbar wraps each button in the live grayHint). */
     String laneDisableWhy(int i) {
         if (activeSc() != null) {
-            return "Straight/curve sections have no lanes.";
+            return SectionNames.SC_LANES_WHY;   // lanes 0/1 (v20.1)
         }
         if (activeBridge() != null) {
             return "A bridge's curves are solver-owned.";
@@ -8824,26 +8947,16 @@ class GraphEditor extends Region {
         if (sc == null || y < MARGIN_TOP
                 || y > MARGIN_TOP + plotHeight()) return -1;
         double[] b = scBoundsS(sc);
-        ScIntegrator.Profile prof = new ScIntegrator.Profile(sc);
+        double[] halves = ScIntegrator.blendHalves(sc);
         for (int j = 1; j < b.length - 1; j++) {
-            if (prof.half[j] <= 1e-9) continue;
-            if (Math.abs(x - tToX(scAxisAtS(sc, b[j] - prof.half[j]))) <= 4
+            if (halves[j] <= 1e-9) continue;
+            if (Math.abs(x - tToX(scAxisAtS(sc, b[j] - halves[j]))) <= 4
                     || Math.abs(x
-                        - tToX(scAxisAtS(sc, b[j] + prof.half[j]))) <= 4) {
+                        - tToX(scAxisAtS(sc, b[j] + halves[j]))) <= 4) {
                 return j;
             }
         }
-        // the entry-ease band ends at s = ease; its edge drags the
-        // ease absolutely (the same elDragSmooth == 0 branch as the
-        // entry diamond)
-        if (!sc.elements.isEmpty()) {
-            double ease = Math.min(sc.elements.get(0).blendIn,
-                sc.elements.get(0).arcLen());
-            if (ease > 1e-9
-                    && Math.abs(x - tToX(scAxisAtS(sc, ease))) <= 4) {
-                return 0;
-            }
-        }
+        // (the D234 entry-ease band edge is gone since v20.1)
         return -1;
     }
 
@@ -9312,6 +9425,15 @@ class GraphEditor extends Region {
      *  units. */
     private void drawDerivedStrip(GraphicsContext gc, double off, double dur,
                                   TrackCompiler.Span sp) {
+        drawDerivedStrip(gc, off, dur, sp, 7, false);
+    }
+
+    /** laneMask: bit L draws lane L (7 = all); clipStretch: keep the
+     *  [off, off + dur] filter even with a span (an s/c ELEMENT's
+     *  stretch inside its section's span, v20.1). */
+    private void drawDerivedStrip(GraphicsContext gc, double off, double dur,
+                                  TrackCompiler.Span sp, int laneMask,
+                                  boolean clipStretch) {
         if (app.resultRates == null || app.lastSamples == null
                 || app.lastSamples.isEmpty()) return;
         // Off-screen strips skip outright, on-screen ones walk their
@@ -9329,11 +9451,13 @@ class GraphEditor extends Region {
             i1 = Math.min(i1, Math.min(sp.i1(), n - 1));
         }
         for (int L = 0; L < LANES; L++) {
+            if ((laneMask & (1 << L)) == 0) continue;
             List<double[]> pts = new ArrayList<>();
             for (int i = i0; i <= i1; i++) {
                 double a = gAxis(i);
                 // spanless callers keep the stretch filter (trim-free)
-                if (sp == null && (a < off - 1e-6 || a > off + dur + 1e-6)) {
+                if ((sp == null || clipStretch)
+                        && (a < off - 1e-6 || a > off + dur + 1e-6)) {
                     continue;
                 }
                 pts.add(new double[]{ tToX(a), valToY(L, derivedDisp(i, L)) });
@@ -9481,6 +9605,8 @@ class GraphEditor extends Region {
      *  for the abs-bank case (handled first — it shows the ANGLE). */
     private boolean activeLaneWorldAxis(int L) {
         if (surfStrip || activeInfl() != null) return false;
+        RollLane rl = scLane();   // the lane element's lane (v20.1)
+        if (rl != null) return L == 2 && rl.rollGlobal();
         List<Section> secs = sections();
         if (!(activeSection < secs.size()
                 && secs.get(activeSection) instanceof LaneSection ls)) {
@@ -10137,6 +10263,15 @@ class GraphEditor extends Region {
     // right-click = insert/delete menu; double-click = element dialog.
     // The felt-G curves draw behind at SC_CURVE_ALPHA for context.
     private int elSel = -1;            // selected element of the active s/c
+    // the LANE ELEMENT (v20.1, D259 §2.4): the element whose roll lane
+    // app.lanes binds to — 0 when an s/c activates, set by selecting an
+    // element or clicking another element's lane; STICKY (a deselect
+    // never changes it); clamped on element delete / undo
+    private int scLaneElem = 0;
+    // the other elements' lanes draw at this alpha (feel-tunable)
+    private static final double SC_LANE_INACTIVE_ALPHA = 0.45;
+    // the cut stub's dot count (D259 §2.2 E6)
+    private static final int SC_CUT_STUB = 3;
     private int elDragBoundary = -1;   // element whose LENGTH is dragging
     private int elDragSmooth = -1;     // element whose ENTRY blend is dragging
     private int scDragSide = 0;        // interior blend EDGE drag: -1/+1,
@@ -10160,6 +10295,50 @@ class GraphEditor extends Region {
             b[i + 1] = b[i] + sc.elements.get(i).arcLen();
         }
         return b;
+    }
+
+    /** The lane element's index, clamped into the list (v20.1). */
+    private int scLaneIdx(StraightCurveSection sc) {
+        return (int) FvdDesigner.clamp(scLaneElem, 0, sc.elements.size() - 1);
+    }
+
+    /** The lane element's roll lane, or null off an s/c (or on a
+     *  legacy reversed one, which binds no lane). */
+    private RollLane scLane() {
+        StraightCurveSection sc = activeSc();
+        if (sc == null || sc.reversed || sc.elements.isEmpty()) return null;
+        return sc.elements.get(scLaneIdx(sc)).roll;
+    }
+
+    /** The lane element's start arc from the section start (authored). */
+    private double scLaneStart() {
+        StraightCurveSection sc = activeSc();
+        if (sc == null) return 0;
+        double s = 0;
+        int li = scLaneIdx(sc);
+        for (int i = 0; i < li; i++) s += sc.elements.get(i).arcLen();
+        return s;
+    }
+
+    /** The LANE's end wall in native units: an s/c element's own L
+     *  (HARD — a lane never lengthens an element, v20.1), else the
+     *  section end. sectionEnd() stays the SECTION's extent (the s/c
+     *  widget's bounds). */
+    private double laneEnd() {
+        StraightCurveSection sc = activeSc();
+        if (sc != null && !sc.elements.isEmpty()) {
+            return sc.elements.get(scLaneIdx(sc)).L;
+        }
+        return sectionEnd();
+    }
+
+    /** Does the active s/c bind a roll LANE right now (v20.1) — lane 2
+     *  of app.lanes non-empty? False on a legacy reversed s/c, an
+     *  element-less one and off an s/c. Read THIS, never the lane
+     *  under activeLane (lane 0 is empty on every s/c). */
+    private boolean scLaneBound() {
+        return activeSc() != null && app.lanes.size() > 2
+            && !app.lanes.get(2).isEmpty();
     }
 
     /** The active section's span from the last compile, or null. */
@@ -10280,8 +10459,8 @@ class GraphEditor extends Region {
         StraightCurveSection sc = activeSc();
         if (sc == null) return -1;
         double[] b = scBoundsS(sc);
-        // j = 0 is the SECTION-ENTRY ease diamond (v19.4, D233)
-        for (int j = 0; j < b.length - 1; j++) {
+        // interior borders only — the D233 entry-ease diamond is gone (v20.1)
+        for (int j = 1; j < b.length - 1; j++) {
             if (Math.hypot(x - tToX(scAxisAtS(sc, b[j])), y - scDiamondY()) <= 7) {
                 return j;
             }
@@ -10336,12 +10515,15 @@ class GraphEditor extends Region {
         double dur = sectionDur(activeSection);
         gc.setGlobalAlpha(SC_CURVE_ALPHA);
         gc.setLineWidth(1.5);
-        drawDerivedStrip(gc, tOff, dur, spanOf(activeSection));
+        // the felt Gv/Gl context stays; the derived ROLL curve is gone
+        // once the lane element's own lane draws (v20.1, D259 §2.4)
+        drawDerivedStrip(gc, tOff, dur, spanOf(activeSection),
+            scLaneBound() ? 3 : 7, false);
         gc.setGlobalAlpha(1.0);
 
         double[] b = scBoundsS(sc);
         // the same clamped blend halves the integrator uses
-        ScIntegrator.Profile prof = new ScIntegrator.Profile(sc);
+        double[] halves = ScIntegrator.blendHalves(sc);
         double top = MARGIN_TOP, bot = MARGIN_TOP + plotHeight();
         gc.setFont(Font.font(10));
         gc.setTextAlign(TextAlignment.CENTER);
@@ -10382,38 +10564,32 @@ class GraphEditor extends Region {
                 gc.setGlobalAlpha(1.0);
             }
         }
-        // the SECTION-ENTRY roll ease (v19.4, D233): its own band
-        // [0, ease] + a diamond ON the entry boundary — the same
-        // surface as every internal blend
-        {
-            double ease = Math.min(sc.elements.get(0).blendIn,
-                sc.elements.get(0).arcLen());
-            if (ease > 1e-9) {
-                double za = tToX(scAxisAtS(sc, 0));
-                double zb = tToX(scAxisAtS(sc, ease));
-                gc.setFill(Color.rgb(255, 255, 255, 0.07));
-                gc.fillRect(Math.min(za, zb), top, Math.abs(zb - za), bot - top);
+        // (the SECTION-ENTRY roll ease band + diamond of D233/D234 are
+        // GONE since v20.1 — element 0's blend is always 0; the seam ◇
+        // is the one entry control, D259 §3.6)
+        // the CUT STUB (v20.1, D259 §2.2 E6): while the lane element's
+        // lane keeps a shadow, three dots run from its cut node past
+        // the band's end — "more graph is stored here"
+        RollLane rlc = scLane();
+        if (rlc != null && rlc.isCut() && !rlc.nodes.isEmpty()) {
+            BezierBaker.Node lastN = rlc.nodes.get(rlc.nodes.size() - 1);
+            int li = scLaneIdx(sc);
+            double sx = tToX(scAxisAtS(sc, b[li] + lastN.t));
+            double ex = tToX(scAxisAtS(sc, b[li + 1]));
+            double sy = valToY(2, dispVal(2, lastN.t, lastN.val));
+            double dir = ex >= sx ? 1 : -1;
+            gc.setFill(laneColor(2).deriveColor(0, 1, 1, 0.9));
+            for (int k2 = 1; k2 <= SC_CUT_STUB; k2++) {
+                double x = sx + dir * 4 * k2;
+                gc.fillOval(x - 1.5, sy - 1.5, 3, 3);
             }
-            double bx = tToX(scAxisAtS(sc, 0));
-            double dy = scDiamondY();
-            gc.setGlobalAlpha(0.85);
-            gc.beginPath();
-            gc.moveTo(bx, dy - 5);
-            gc.lineTo(bx + 5, dy);
-            gc.lineTo(bx, dy + 5);
-            gc.lineTo(bx - 5, dy);
-            gc.closePath();
-            if (ease > 1e-9) { gc.setFill(Color.WHITE); gc.fill(); }
-            gc.setStroke(Color.WHITE);
-            gc.stroke();
-            gc.setGlobalAlpha(1.0);
         }
         for (int j = 1; j < b.length; j++) {
             double bx = tToX(scAxisAtS(sc, b[j]));
             boolean internal = j < b.length - 1;
-            if (internal && prof.half[j] > 1e-9) {   // the blend zone
-                double za = tToX(scAxisAtS(sc, b[j] - prof.half[j]));
-                double zb = tToX(scAxisAtS(sc, b[j] + prof.half[j]));
+            if (internal && halves[j] > 1e-9) {   // the blend zone
+                double za = tToX(scAxisAtS(sc, b[j] - halves[j]));
+                double zb = tToX(scAxisAtS(sc, b[j] + halves[j]));
                 gc.setFill(Color.rgb(255, 255, 255, 0.07));
                 gc.fillRect(Math.min(za, zb), top, Math.abs(zb - za), bot - top);
             }
@@ -10452,11 +10628,6 @@ class GraphEditor extends Region {
                 case HELICAL -> String.format(Locale.US, "arc %.1f m", e.L);
             };
             rx = tToX(scAxisAtS(sc, b[elDragBoundary + 1]));
-        } else if (elDragSmooth == 0 && !sc.elements.isEmpty()) {
-            double sm = sc.elements.get(0).blendIn;
-            readout = sm < 1e-9 ? "entry ease off"
-                : String.format(Locale.US, "entry ease %.1f m", sm);
-            rx = tToX(scAxisAtS(sc, 0));
         } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
             double sm = sc.elements.get(elDragSmooth).blendIn;
             readout = sm < 1e-9 ? "smooth off"
@@ -10476,6 +10647,67 @@ class GraphEditor extends Region {
         }
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setTextBaseline(VPos.TOP);
+        gc.setLineWidth(2);
+    }
+
+    /** The OTHER elements' roll lanes under the lane element's (v20.1,
+     *  D259 §2.4): like inactive strips — AUTHORED when an element's
+     *  roll settings equal the lane element's (and no rate VIEW warps
+     *  the axis), else DERIVED (the resulting roll over its arc, the
+     *  D179 rule); each holds dotted to its own end. Nodes and handles
+     *  draw for the lane element alone (the shared overlays). */
+    private void drawScOtherLanes(GraphicsContext gc) {
+        StraightCurveSection sc = activeSc();
+        RollLane rl = scLane();
+        if (sc == null || rl == null) return;
+        double[] b = scBoundsS(sc);
+        int li = scLaneIdx(sc);
+        boolean warped = laneWarped(2);
+        TrackCompiler.Span sp = spanOf(activeSection);
+        gc.setGlobalAlpha(SC_LANE_INACTIVE_ALPHA);
+        gc.setLineWidth(1.5);
+        for (int j = 0; j < sc.elements.size(); j++) {
+            if (j == li) continue;
+            RollLane o = sc.elements.get(j).roll;
+            boolean same = !warped && o.rollGlobal() == rl.rollGlobal()
+                && o.ratePerMeter() == rl.ratePerMeter()
+                && o.rollAbsolute() == rl.rollAbsolute();
+            double a0 = scAxisAtS(sc, b[j]), a1 = scAxisAtS(sc, b[j + 1]);
+            if (!same) {
+                drawDerivedStrip(gc, Math.min(a0, a1), Math.abs(a1 - a0), sp,
+                    4, true);
+                continue;
+            }
+            List<double[]> poly = BezierBaker.polyline(o.nodes);
+            List<double[]> pts = new ArrayList<>(poly.size() + 1);
+            for (double[] p : poly) {
+                pts.add(new double[]{ tToX(scAxisAtS(sc, b[j] + p[0])),
+                                      valToY(2, p[1]) });
+            }
+            double[] lastP = poly.get(poly.size() - 1);
+            double Lj = sc.elements.get(j).L;
+            boolean held = lastP[0] < Lj - 1e-9;
+            if (held) {
+                pts.add(new double[]{ tToX(scAxisAtS(sc, b[j] + Lj)),
+                                      valToY(2, lastP[1]) });
+            }
+            fillUnderSeries(gc, pts, 2);
+            gc.setStroke(o.rollAbsolute() ? FvdDesigner.BANK_COLOR : laneColor(2));
+            gc.beginPath();
+            int n = poly.size();
+            for (int i = 0; i < n; i++) {
+                double[] p = pts.get(i);
+                if (i == 0) gc.moveTo(p[0], p[1]); else gc.lineTo(p[0], p[1]);
+            }
+            gc.stroke();
+            if (held) {
+                gc.setLineDashes(3, 7);
+                gc.strokeLine(pts.get(n - 1)[0], pts.get(n - 1)[1],
+                              pts.get(n)[0], pts.get(n)[1]);
+                gc.setLineDashes((double[]) null);
+            }
+        }
+        gc.setGlobalAlpha(1.0);
         gc.setLineWidth(2);
     }
 
@@ -10543,10 +10775,17 @@ class GraphEditor extends Region {
     /** Primary press while a straight/curve section is active. Press
      *  rank mirrors the node editor's: diamonds (the "knobs") > '+' >
      *  badges > boundary grabs > band select > strip activation. */
-    private void scPrimaryPressed(MouseEvent e) {
+    private boolean scPrimaryPressed(MouseEvent e) {
         StraightCurveSection sc = activeSc();
+        // the lane element's NODES and KNOBS outrank everything (v20.1,
+        // D259 §2.4 — the §7.1 ladder): the generic press handles them
+        if (scLaneBound() && (hitNode(e.getX(), e.getY()) >= 0
+                || (selIdx >= 0 && !spFocus && selIdx < active().size()
+                    && hitKnob(e.getX(), e.getY()) != 0))) {
+            return false;
+        }
         int d = hitScDiamond(e.getX(), e.getY());
-        if (d >= 0) {   // 0 = the entry-ease diamond (D233)
+        if (d >= 1) {   // interior borders only — the entry ease is gone (v20.1)
             beginGesture();
             elDragSmooth = d;
             scDragSide = 0;   // the diamond keeps its symmetric drag
@@ -10555,16 +10794,16 @@ class GraphEditor extends Region {
             lastDragSnap = e.isControlDown();
             dragTimerLast = 0;
             dragGrowTimer.start();
-            return;
+            return true;
         }
         if (Math.hypot(e.getX() - addBtnX, e.getY() - addBtnY) <= 10) {
             plusPressed(e.getScreenX(), e.getScreenY());
-            return;
+            return true;
         }
         int badge = hitBadge(e.getX(), e.getY());
         if (badge >= 0) {
             showRunBadgeMenu(badge, e.getScreenX(), e.getScreenY());
-            return;
+            return true;
         }
         int bIdx = hitScBoundary(e.getX(), e.getY());
         if (bIdx >= 1) {
@@ -10575,13 +10814,13 @@ class GraphEditor extends Region {
             lastDragSnap = e.isControlDown();
             dragTimerLast = 0;
             dragGrowTimer.start();
-            return;
+            return true;
         }
         // blend-band EDGES (v17.4) — under everything above, over
         // the element select (which would otherwise eat every click)
-        if (seamEdgePressed(e)) return;
+        if (seamEdgePressed(e)) return true;
         int je = scEdgeHit(e.getX(), e.getY());
-        if (je >= 0) {   // 0 = the entry-ease band edge (D234)
+        if (je >= 1) {   // interior borders only (the entry band is gone, v20.1)
             beginGesture();
             elDragSmooth = je;
             // an interior band EDGE drags one-sided since v19.19 (D248
@@ -10591,44 +10830,111 @@ class GraphEditor extends Region {
             // scDragTo compares against — a legacy REVERSED strip draws
             // element 0 at the right, so a pixel side would be mirrored
             // there (review fix, D248)
-            scDragSide = je >= 1
-                ? (scSAtT(sc, xToT(e.getX())) < scBoundsS(sc)[je] ? -1 : 1)
-                : 0;
+            scDragSide = scSAtT(sc, xToT(e.getX())) < scBoundsS(sc)[je] ? -1 : 1;
             lastDragX = e.getX();
             lastDragY = e.getY();
             lastDragSnap = e.isControlDown();
             dragTimerLast = 0;
             dragGrowTimer.start();
-            return;
+            return true;
         }
         double gt = xToT(e.getX());
         if (gt >= tOff - 1e-9 && gt <= tOff + sectionEnd() + 1e-9
                 && e.getY() >= MARGIN_TOP && e.getY() <= MARGIN_TOP + plotHeight()) {
+            // ANOTHER element's lane node / curve switches the lane
+            // element (v20.1, D259 §2.4 — the greyed-strip rule); a node
+            // hit selects that node too
+            int[] oth = scOtherLaneHit(sc, e.getX(), e.getY());
+            if (oth != null) {
+                setScLaneElem(oth[0]);
+                elSel = oth[0];
+                if (oth[1] >= 0) selIdx = oth[1];
+                redraw();
+                return true;
+            }
+            // a click ON the lane element's curve inserts a node there —
+            // the generic ladder's pressCurveInsert (the insert dot)
+            if (scLaneBound()
+                    && !Double.isNaN(curveHitT(e.getX(), e.getY()))) {
+                return false;
+            }
             int i = elementAtT(sc, gt);
-            if (i != elSel) {
+            if (i != elSel || i != scLaneIdx(sc)) {
                 elSel = i;
+                setScLaneElem(i);   // selecting an element = editing its lane
                 redraw();
             }
-            return;
+            return true;
         }
-        if (seamDiamondPressed(e)) return;
+        if (seamDiamondPressed(e)) return true;
         // seam lines outside the active s/c strip (v17.1) — the strip's
         // own boundaries were claimed by hitScBoundary above
         int seam = hitSeam(e.getX(), e.getY());
         if (seam >= 0) {
             showSeamMenu(seam, e.getScreenX(), e.getScreenY());
-            return;
+            return true;
         }
         RunSec rs = runSecAt(gt);
         if (rs != null && (rs.piece() != activePiece
                 || rs.section() != activeSection)) {
             activateRunSec(rs.piece(), rs.section());
-            return;
+            return true;
         }
         if (elSel != -1) {
-            elSel = -1;
+            elSel = -1;   // the lane element stays (sticky, v20.1)
             redraw();
         }
+        return true;
+    }
+
+    /** Another element's roll lane under (x, y) — {element, node or
+     *  −1}, else null (v20.1, D259 §2.4): nodes within the dimmed
+     *  hit band, then the curve body; the lane element itself and a
+     *  rate-VIEW warp (its other lanes draw derived) are excluded. */
+    private int[] scOtherLaneHit(StraightCurveSection sc, double x, double y) {
+        if (laneWarped(2)) return null;
+        RollLane rl = scLane();
+        if (rl == null) return null;
+        double[] b = scBoundsS(sc);
+        int li = scLaneIdx(sc);
+        int bestEl = -1, bestNode = -1;
+        double best = NODE_HIT + 3;
+        for (int j = 0; j < sc.elements.size(); j++) {
+            if (j == li) continue;
+            List<BezierBaker.Node> ln = sc.elements.get(j).roll.nodes;
+            for (int i = 0; i < ln.size(); i++) {
+                double d = Math.hypot(x - tToX(scAxisAtS(sc, b[j] + ln.get(i).t)),
+                                      y - valToY(2, ln.get(i).val));
+                if (d < best) { best = d; bestEl = j; bestNode = i; }
+            }
+        }
+        if (bestEl >= 0) return new int[]{ bestEl, bestNode };
+        double sAuth = scSAtT(sc, xToT(x));
+        for (int j = 0; j < sc.elements.size(); j++) {
+            if (j == li) continue;
+            double lx = sAuth - b[j];
+            if (lx < -1e-9 || lx > sc.elements.get(j).L + 1e-9) continue;
+            List<BezierBaker.Node> ln = sc.elements.get(j).roll.nodes;
+            double d = Math.abs(y - valToY(2, BezierBaker.evalAt(ln, lx)));
+            if (d < 7) return new int[]{ j, -1 };
+        }
+        return null;
+    }
+
+    /** Make element i the LANE ELEMENT (v20.1, D259 §2.4): rebind
+     *  app.lanes to its roll lane and drop the node selection. */
+    private void setScLaneElem(int i) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null) return;
+        int ni = (int) FvdDesigner.clamp(i, 0, sc.elements.size() - 1);
+        if (ni == scLaneElem && app.lanes == lanesFor(sc)) return;
+        scLaneElem = ni;
+        app.lanes = lanesFor(sc);
+        selIdx = -1;
+        selSet.clear();
+        axisLock = 0;
+        handleViewExpand = false;
+        syncLaneButtons();
     }
 
     /** The running element drag: separators resize the element left of
@@ -10649,16 +10955,6 @@ class GraphEditor extends Region {
             }
             applyElemLen(sc.elements.get(elDragBoundary),
                 Math.max(MIN_ELEM_LEN, newLen));
-        } else if (elDragSmooth == 0 && !sc.elements.isEmpty()) {
-            // the ENTRY ease (D233): absolute — the ease runs [0, len]
-            // INTO the section; snaps shut near zero (0 = sharp)
-            double len = Math.max(0, sAuth);
-            if (snap) {
-                double step = app.settings.snapLen();
-                len = Math.round(len / step) * step;
-            }
-            len = Math.min(len, sc.elements.get(0).arcLen());
-            sc.elements.get(0).blendIn = len < 0.2 ? 0 : len;
         } else if (elDragSmooth >= 1 && elDragSmooth < sc.elements.size()) {
             // diamond: symmetric; band edge: one-sided (D248)
             double len = Gestures.edgeWindowLen(sAuth, b[elDragSmooth],
@@ -10679,11 +10975,9 @@ class GraphEditor extends Region {
      *  curve keeps its CURVATURE and re-lengthens (D259 — the v11
      *  "keep the radius, re-angle, sign preserved" IS this). */
     private static void applyElemLen(StraightCurveSection.Element el, double len) {
-        if (el.isStraight()) {
-            el.L = len;
-        } else {
-            el.L = Math.max(StraightCurveSection.MIN_ELEM_LEN, len);
-        }
+        // THROUGH setLength (v20.1, D259 §2.2): the roll lane's
+        // cut / shadow rule runs on every length write
+        el.setLength(Math.max(StraightCurveSection.MIN_ELEM_LEN, len));
     }
 
     /** Right-click menu of one element (deferred to a clean release so
@@ -10735,6 +11029,7 @@ class GraphEditor extends Region {
             ? StraightCurveSection.Element.straight(10, SC_SMOOTH_DEFAULT)
             : StraightCurveSection.Element.curve(20, 90, 0, SC_SMOOTH_DEFAULT));
         elSel = at;
+        setScLaneElem(at);   // the new element's lane is the one to edit (v20.1)
         app.rebuildTrack();
         refreshOffset();
         redraw();
@@ -10748,6 +11043,12 @@ class GraphEditor extends Region {
         pushUndoSnapshot();
         sc.elements.remove(i);
         elSel = Math.min(elSel, sc.elements.size() - 1);
+        // the lane element clamps / follows the deletion (v20.1)
+        scLaneElem = Math.min(scLaneElem > i ? scLaneElem - 1 : scLaneElem,
+            sc.elements.size() - 1);
+        app.lanes = lanesFor(sc);
+        selIdx = -1;
+        selSet.clear();
         app.rebuildTrack();
         refreshOffset();
         redraw();
@@ -10756,9 +11057,9 @@ class GraphEditor extends Region {
     /** Double-click an element (or its right-click "Edit element…"):
      *  type the parameters directly. The kind radios switch the visible
      *  rows; switching keeps the arc length where it can. */
-    private void showElementDialog(int idx) {
+    private Stage showElementDialog(int idx) {
         StraightCurveSection sc = activeSc();
-        if (sc == null || idx < 0 || idx >= sc.elements.size()) return;
+        if (sc == null || idx < 0 || idx >= sc.elements.size()) return null;
         StraightCurveSection.Element el = sc.elements.get(idx);
         boolean isStraight = el.isStraight();
 
@@ -10791,23 +11092,32 @@ class GraphEditor extends Region {
             "Curve plane: 0 = flat turn (positive angle = left), 90 = pull up,"
             + " 180 = flat turn right, 270 = drop; negative angle mirrors"));
 
-        // roll (v11.1): body rate like the roll lane, or a bank held
-        // against the HORIZON (global 0 = rails stay level through
-        // slopes and turns — the station/brake default)
-        ToggleGroup rollGrp = new ToggleGroup();
-        RadioButton rbRate = new RadioButton("Rate (°/s)");
-        RadioButton rbGlob = new RadioButton("Global bank (°)");
-        rbRate.setToggleGroup(rollGrp);
-        rbGlob.setToggleGroup(rollGrp);
-        rbRate.setTooltip(new Tooltip(
-            "Body roll about the track at this rate, like the roll lane"
-            + " (0 = never twist: bank drifts through pitched turns)"));
-        rbGlob.setTooltip(new Tooltip(
-            "Hold this bank against the horizon (0 = rails stay level),\n"
-            + "eased in over the entry smoothing."));
-        (el.rollMode == StraightCurveSection.RollMode.GLOBAL ? rbGlob : rbRate)
-            .setSelected(true);
-        TextField rollF = new TextField(String.format(Locale.US, "%.3f", el.rollVal));
+        // the ROLL block (v20.1, D259 §2.5): the element's OWN roll
+        // settings — axis, rate units, behavior — with the lane
+        // interlocks (Absolute ⇒ Global; Local ⇒ Rate); the two
+        // buttons act on THIS element's lane alone and close the
+        // dialog — Apply never touches the roll settings
+        final boolean rollG0 = el.roll.rollGlobal();
+        final boolean rollPM0 = el.roll.ratePerMeter();
+        final boolean rollAbs0 = el.roll.rollAbsolute();
+        ToggleGroup axG = new ToggleGroup();
+        RadioButton axL = new RadioButton("Local (about the track)");
+        RadioButton axGl = new RadioButton("Global (bank vs horizon)");
+        axL.setToggleGroup(axG);
+        axGl.setToggleGroup(axG);
+        ToggleGroup unG = new ToggleGroup();
+        RadioButton unS = new RadioButton("°/s");
+        RadioButton unM = new RadioButton("°/m");
+        unS.setToggleGroup(unG);
+        unM.setToggleGroup(unG);
+        ToggleGroup bhG = new ToggleGroup();
+        RadioButton bhR = new RadioButton("Rate");
+        RadioButton bhA = new RadioButton("Absolute bank");
+        bhR.setToggleGroup(bhG);
+        bhA.setToggleGroup(bhG);
+        (rollG0 ? axGl : axL).setSelected(true);
+        (rollPM0 ? unM : unS).setSelected(true);
+        (rollAbs0 ? bhA : bhR).setSelected(true);
 
         int row = 0;
         grid.add(new Label("Kind"), 0, row);
@@ -10821,25 +11131,52 @@ class GraphEditor extends Region {
         Label dirL = new Label("Direction (°)");
         grid.addRow(row++, dirL, dirF);
         Label smL = new Label("Entry smoothing (m)");
-        grid.addRow(row++, smL, smF);
-        grid.add(new Label("Roll"), 0, row);
-        grid.add(new HBox(10, rbRate, rbGlob), 1, row++);
-        Label rollL = new Label("Roll value");
-        grid.addRow(row++, rollL, rollF);
-        if (idx == 0) {
-            // EDITABLE since v19.3 (D232, user spec — "the small
-            // smooth transition at the start"): element 0's value is
-            // the SECTION-ENTRY roll-ease length (global-bank
-            // elements ease from the incoming bank over it,
-            // VERBATIM since D233 — 0 = an instant snap; only NEW
-            // sections are created at 2 m). The κ profile's entry
-            // stays sharp — the seam's continuity comes from the
-            // chain.
-            smL.setText("Entry roll ease (m)");
-            smL.setTooltip(new Tooltip(
-                "How far the bank blends in from the incoming bank at\n"
-                + "the section's entry; 0 = an instant snap."));
-        }
+        // element 0 joins the section's START sharp (v20.1, D259 §1.1 —
+        // the D232/D233 entry roll ease is gone; the strict seam's ◇ is
+        // the one entry control): its row does not exist
+        if (idx > 0) grid.addRow(row++, smL, smF);
+        Label rollHead = new Label(SectionNames.ROLL_BLOCK);
+        rollHead.setStyle("-fx-font-weight: bold;");
+        grid.add(rollHead, 0, row++, 2, 1);
+        grid.add(new Label("Axis"), 0, row);
+        grid.add(new HBox(10, grayHint(axL, SectionNames.ABS_NEEDS_GLOBAL_WHY),
+            axGl), 1, row++);
+        grid.add(new Label("Rate units"), 0, row);
+        HBox unitsRow = new HBox(10, unS, unM);
+        grid.add(grayHint(unitsRow, SectionNames.BANK_NO_RATE_WHY), 1, row++);
+        grid.add(new Label("Behavior"), 0, row);
+        grid.add(new HBox(10, bhR, bhA), 1, row++);
+        Button rollSwitch = new Button(SectionNames.ROLL_SWITCH_BUTTON);
+        Button rollBake = new Button(SectionNames.ROLL_BAKE_BUTTON);
+        rollSwitch.setTooltip(new Tooltip(SectionNames.ROLL_SWITCH_TIP));
+        rollBake.setTooltip(new Tooltip(SectionNames.ROLL_BAKE_TIP));
+        HBox rollBtns = new HBox(8,
+            grayHint(rollSwitch, SectionNames.ROLL_PICK_WHY),
+            grayHint(rollBake, sc.reversed
+                ? "Legacy reversed sections refuse baking."
+                : SectionNames.ROLL_PICK_WHY));
+        rollBtns.setAlignment(Pos.CENTER_LEFT);
+        grid.add(rollBtns, 0, row++, 2, 1);
+        Runnable rollSync = () -> {
+            boolean abs = bhA.isSelected();
+            if (abs) axGl.setSelected(true);           // Absolute ⇒ Global
+            axL.setDisable(abs);
+            unS.setDisable(abs);                       // no rate units on a bank
+            unM.setDisable(abs);
+            unitsRow.setDisable(abs);
+            boolean gSel = axGl.isSelected() || abs;
+            boolean changed = gSel != rollG0 || unM.isSelected() != rollPM0
+                || abs != rollAbs0;
+            rollSwitch.setDisable(!changed);
+            rollBake.setDisable(!changed || sc.reversed);
+        };
+        axL.setOnAction(ev -> { bhR.setSelected(true); rollSync.run(); });   // Local ⇒ Rate
+        axGl.setOnAction(ev -> rollSync.run());
+        unS.setOnAction(ev -> rollSync.run());
+        unM.setOnAction(ev -> rollSync.run());
+        bhR.setOnAction(ev -> rollSync.run());
+        bhA.setOnAction(ev -> rollSync.run());
+        rollSync.run();
         for (javafx.scene.Node c : grid.getChildren()) {
             if (c instanceof TextField tf) {
                 tf.setPrefColumnCount(7);
@@ -10902,8 +11239,9 @@ class GraphEditor extends Region {
                 // keep the arc length (D259 §1.7: → STRAIGHT keeps L)
                 double keep = el2.L;
                 el2.changeKind(StraightCurveSection.Kind.STRAIGHT, 0, 0);
-                el2.L = keep;
-                el2.L = Math.max(MIN_ELEM_LEN, parseOr(lenF, keep));
+                // THROUGH setLength (v20.1, D259 §2.2): the lane's cut /
+                // shadow rule runs on every length write
+                el2.setLength(Math.max(MIN_ELEM_LEN, parseOr(lenF, keep)));
             } else {
                 // a helix leaves its pitch fields first (Stage 1a's
                 // dialog knows no helix — the Stage 3a window does)
@@ -10918,12 +11256,8 @@ class GraphEditor extends Region {
                     Double.isFinite(el2.radius()) ? el2.radius() : 20), ang);
                 el2.dirDeg = parseOr(dirF, el2.dirDeg);
             }
-            el2.blendIn = Math.max(0, parseOr(smF, el2.blendIn));   // elem 0
-                // = the entry roll ease since v19.3 (D232)
-            el2.rollMode = rbGlob.isSelected()
-                ? StraightCurveSection.RollMode.GLOBAL
-                : StraightCurveSection.RollMode.RATE;
-            el2.rollVal = parseOr(rollF, el2.rollVal);
+            // element 0's blend is ALWAYS 0 (v20.1) — its row is absent
+            if (idx > 0) el2.blendIn = Math.max(0, parseOr(smF, el2.blendIn));
             if (activePiece == elPiece && activeSection == elSec) elSel = idx;
             app.rebuildTrack();
             refreshOffset();
@@ -10931,10 +11265,74 @@ class GraphEditor extends Region {
             dlg.close();
         });
         cancel.setOnAction(ev -> dlg.close());
+        // SWITCH = the flags only, one undo step (the same graph reads
+        // under the new settings); BAKE = Coaster.bakeElementRoll
+        // through the density preview (the graph converts so the bank
+        // stays). Both re-resolve the element BY INDEX (D247).
+        rollSwitch.setOnAction(ev -> {
+            StraightCurveSection.Element e2 = elementByIndex(elPiece, elSec, idx);
+            if (e2 == null) {
+                dlg.close();
+                app.statsLabel.setText("Roll settings not applied — that "
+                    + "element no longer exists (the section changed "
+                    + "while the dialog was open).");
+                return;
+            }
+            boolean abs = bhA.isSelected();
+            pushUndoSnapshot();
+            e2.roll.setFlags(axGl.isSelected() || abs, unM.isSelected(), abs);
+            if (activePiece == elPiece && activeSection == elSec) {
+                elSel = idx;
+                setScLaneElem(idx);
+                syncLaneButtons();   // the Bank tint follows the flags
+            }
+            app.rebuildTrack();
+            refreshOffset();
+            redraw();
+            dlg.close();
+        });
+        rollBake.setOnAction(ev -> {
+            boolean abs = bhA.isSelected();
+            dlg.close();
+            bakeElementRollUi(elPiece, elSec, idx,
+                axGl.isSelected() || abs, unM.isSelected(), abs);
+        });
 
         dlg.setScene(new Scene(grid));
         dlg.show();
         app.installDocUndoKeys(dlg.getScene());   // D227: global undo + ride keys
+        return dlg;
+    }
+
+    /** The s/c element at (piece, section, idx) RIGHT NOW, or null —
+     *  the Apply-only dialogs' by-index re-resolve (v19.18, D247). */
+    private StraightCurveSection.Element elementByIndex(int piece, int sec, int idx) {
+        if (piece < 0 || piece >= app.coaster.pieces.size()) return null;
+        List<Section> ss = app.coaster.pieces.get(piece).sections;
+        if (sec < 0 || sec >= ss.size()
+                || !(ss.get(sec) instanceof StraightCurveSection s2)
+                || idx < 0 || idx >= s2.elements.size()) return null;
+        return s2.elements.get(idx);
+    }
+
+    /** "Bake These Settings" (v20.1, D259 §2.5): ONE element's roll
+     *  lane re-fitted into the target settings through the density
+     *  preview (Coaster.bakeElementRoll — spacing in METERS; elements
+     *  bitwise; the lane's shadow drops). The lane element stays the
+     *  baked one across the preview's re-runs. */
+    private void bakeElementRollUi(int piece, int k, int idx, boolean rollG,
+                                   boolean pm, boolean abs) {
+        if (elementByIndex(piece, k, idx) == null) return;
+        if (app.coaster.pieces.get(piece).sections.get(k).reversed()) return;
+        beginDensityPreview(k, false, false, true,
+            (sp, tol) -> app.coaster.bakeElementRoll(piece, k, idx, rollG, pm,
+                abs, FvdDesigner.INTEGRATE_DT, sp, tol),
+            () -> {
+                activePiece = piece;
+                activeSection = k;
+                scLaneElem = idx;
+                elSel = idx;
+            });
     }
 
     private static final int LANES = 3;
@@ -11375,11 +11773,10 @@ class GraphEditor extends Region {
                         }
                     }
                 }
-                // a straight/curve section has its own surface (v11.0)
-                if (activeSc() != null) {
-                    scPrimaryPressed(e);
-                    return;
-                }
+                // a straight/curve section has its own surface (v11.0);
+                // its lane element's nodes, knobs and curve insert take
+                // the generic ladder below (v20.1 — false = not claimed)
+                if (activeSc() != null && scPrimaryPressed(e)) return;
                 // a bridge has no node surface: '+', badges, the
                 // draggable END LINE (gap, v13.3) and strip switches
                 if (activeBridge() != null) {
@@ -11603,10 +12000,12 @@ class GraphEditor extends Region {
             // report): nodes outrank the band edge at PRESS time, so
             // the cursor must not read H_RESIZE over a node sitting
             // on a smoothing-window edge
-            int hn = activeSc() == null && activeBridge() == null
+            // an s/c's lane element has nodes too since v20.1 (its
+            // lanes are empty on a bridge / a legacy reversed s/c)
+            int hn = activeBridge() == null
                 ? hitNode(e.getX(), e.getY()) : -1;
             boolean overKnob = hn < 0 && selIdx >= 0 && !spFocus
-                && activeSc() == null && activeBridge() == null
+                && activeBridge() == null
                 && selIdx < active().size()
                 && hitKnob(e.getX(), e.getY()) != 0;
             boolean hand = hs >= 0 || hb >= 0;
@@ -11617,9 +12016,11 @@ class GraphEditor extends Region {
                 // (v17.3/v17.4)
                 canvas.setCursor(Cursor.H_RESIZE);
             } else if (activeSc() != null) {   // grab cursor over drag targets
-                boolean grab = hitScBoundary(e.getX(), e.getY()) >= 1
-                    || hitScDiamond(e.getX(), e.getY()) >= 0
-                    || scEdgeHit(e.getX(), e.getY()) >= 0;
+                // nodes/knobs outrank the grabs at press (the D237 rule)
+                boolean grab = hn < 0 && !overKnob
+                    && (hitScBoundary(e.getX(), e.getY()) >= 1
+                        || hitScDiamond(e.getX(), e.getY()) >= 0
+                        || scEdgeHit(e.getX(), e.getY()) >= 0);
                 canvas.setCursor(grab ? Cursor.H_RESIZE
                     : hand ? Cursor.HAND : Cursor.DEFAULT);
             } else if (activeBridge() != null) {   // the end line drags
@@ -11629,7 +12030,7 @@ class GraphEditor extends Region {
             } else {
                 canvas.setCursor(hand ? Cursor.HAND : Cursor.DEFAULT);
             }
-            double t = (activeSc() == null && activeBridge() == null
+            double t = (activeBridge() == null
                     && hn < 0
                     && (selIdx < 0 || hitKnob(e.getX(), e.getY()) == 0))
                     ? curveHitT(e.getX(), e.getY()) : Double.NaN;
@@ -11680,6 +12081,8 @@ class GraphEditor extends Region {
                 if (gt > tOff + trim && gt < tOff + dur - trim) {
                     double bestPx = 8;
                     for (int L = 0; L < LANES; L++) {
+                        // the lane element's roll IS the roll (v20.1)
+                        if (L == 2 && scLaneBound()) continue;
                         final int fl = L;
                         // interpolated (D233) — see the overlay hover
                         double v = interpAtAxis(gt, j -> derivedAt(j, fl));
@@ -11700,7 +12103,7 @@ class GraphEditor extends Region {
             // outlive a switch onto an s/c / bridge section, where
             // knobPos would index the wrong lane and throw per move)
             int hk = hn < 0 && selIdx >= 0 && !spFocus && !isDragging()
-                    && activeSc() == null && activeBridge() == null
+                    && activeBridge() == null
                     && selIdx < active().size()
                 ? hitKnob(e.getX(), e.getY()) : 0;
             boolean was = !Double.isNaN(hoverT) || hoverResComp != 0
@@ -11931,6 +12334,13 @@ class GraphEditor extends Region {
                 }
                 StraightCurveSection sc = activeSc();
                 if (sc != null) {
+                    // a roll NODE opens its editor (v20.1), else the
+                    // element under the click opens its dialog
+                    int hn2 = scLaneBound() ? hitNode(e.getX(), e.getY()) : -1;
+                    if (hn2 >= 0) {
+                        showNodeEditor(hn2);
+                        return;
+                    }
                     double gt = xToT(e.getX());
                     if (gt >= tOff - 1e-9 && gt <= tOff + sectionEnd() + 1e-9
                             && e.getY() >= MARGIN_TOP
@@ -12147,8 +12557,33 @@ class GraphEditor extends Region {
      *  clicking the graph curve). */
     void insertAtTime(double globalT) {
         if (!activateGlobal(globalT)) return;
-        // s/c + bridge: activate only, no nodes to insert
-        if (activeSc() != null || activeBridge() != null) return;
+        // a bridge: activate only, no nodes to insert
+        if (activeBridge() != null) return;
+        StraightCurveSection scd = activeSc();
+        if (scd != null) {
+            // an s/c (v20.1, D259 §2.4): the element under the arc
+            // becomes the lane element — a node inserts only when it
+            // already is (one sentence otherwise)
+            TrackCompiler.Span ssp = activeSpan();
+            if (scd.reversed || ssp == null || app.lastSamples == null
+                    || app.lastSamples.isEmpty()) return;
+            double sTrav = app.lastSamples.get(rateIdxAt(globalT)).s() - ssp.s0();
+            double[] bb = scBoundsS(scd);
+            int j = 0;
+            while (j < scd.elements.size() - 1 && sTrav > bb[j + 1] + 1e-9) j++;
+            if (j != scLaneIdx(scd)) {
+                setScLaneElem(j);
+                elSel = j;
+                app.statsLabel.setText(SectionNames.SC_TRACK_DBLCLICK_WHY);
+                redraw();
+                return;
+            }
+            if (insertNodeOnCurve(sTrav - bb[j]) >= 0) {
+                ensureSelectedVisible();
+                redraw();
+            }
+            return;
+        }
         // native lane x at this ride time (v16.0): seconds directly,
         // or the sample's arc for a distance-domain section
         double lx;
@@ -12230,6 +12665,12 @@ class GraphEditor extends Region {
         // lane 2 is inert there — the button disables, and every
         // other path (1/2/3 keys, dimmed-lane clicks) refuses too
         if (lane == 2 && activeInfl() != null) return;
+        // an s/c has the roll lane only (v20.1, D259 §2.4): never a
+        // silent no-op (D235) — the 1/2 keys and buttons say why
+        if (lane < 2 && activeSc() != null) {
+            app.statsLabel.setText(SectionNames.SC_LANES_WHY);
+            return;
+        }
         activeLane = lane;
         selIdx = -1;
         selSet.clear();
@@ -12274,7 +12715,15 @@ class GraphEditor extends Region {
     void appendAction() {
         if (noCoaster() || startPanel != null) return;   // D230/D231
         StraightCurveSection sc = activeSc();
-        if (sc != null) {   // A appends an element instead of a second
+        if (sc != null) {
+            // a SELECTED roll node → the lane's hold-insert (v20.1, D259
+            // §2.4 — the D255 append chain, refusing at the element's
+            // wall); otherwise A appends a straight element
+            if (scLaneBound() && selIdx >= 0 && !spFocus
+                    && selIdx < active().size()) {
+                insertHoldAfterSelected();
+                return;
+            }
             insertElement(elSel >= 0 ? elSel + 1 : sc.elements.size(), true);
             return;
         }
@@ -12295,6 +12744,40 @@ class GraphEditor extends Region {
                 + "section — Append adds nodes up to its end instead.");
             return;
         }
+        // an s/c element's roll lane (v20.1, D259 §2.4): the wall is
+        // HARD at the element's L — the hold uses the room the wall
+        // leaves: later nodes shift by min(step, room); when nothing
+        // can shift (the lane's last node already sits at the end, as
+        // every default lane's does) the hold HALVES the next
+        // transition instead; a transition too short to split refuses
+        double scStep = Double.NaN;   // NaN = the generic step
+        boolean scShift = true;
+        if (activeSc() != null) {
+            List<BezierBaker.Node> ln = active();
+            BezierBaker.Node selN = ln.get(selIdx);
+            boolean fromLast0 = selIdx == ln.size() - 1;
+            double room = laneEnd() - ln.get(ln.size() - 1).t;
+            if (fromLast0) {
+                if (room < minGap() - 1e-9) {
+                    app.statsLabel.setText(SectionNames.ROLL_WALL_WHY);
+                    return;
+                }
+                scStep = Math.min(appendStep(), room);
+            } else {
+                double shift = Math.min(appendStep(), room);
+                if (shift >= minGap() - 1e-9) {
+                    scStep = shift;
+                } else {
+                    double gap = ln.get(selIdx + 1).t - selN.t;
+                    if (gap < 2 * minGap() - 1e-9) {
+                        app.statsLabel.setText(SectionNames.ROLL_WALL_WHY);
+                        return;
+                    }
+                    scStep = gap / 2;
+                    scShift = false;
+                }
+            }
+        }
         pushUndoSnapshot();
         List<BezierBaker.Node> lane = active();
         BezierBaker.Node sel = lane.get(selIdx);
@@ -12312,17 +12795,21 @@ class GraphEditor extends Region {
         boolean chained = !fromLast && appendChainHolds(lane, selIdx);
         if (!fromLast && !chained) endAppendChain();
         double tc = sel.t;
-        double stepX = appendStep();   // 1 s of ride / 10 m of track (v16.0)
+        // 1 s of ride / 10 m of track (v16.0); an s/c element's lane
+        // takes the step its wall allows (above)
+        double stepX = Double.isNaN(scStep) ? appendStep() : scStep;
         // every lane's later nodes move by the hold; a FOREIGN segment
         // spanning tc stretches — its facing handles keep their slopes
         // (v16.1, D105). The active lane's spanning segment is rebuilt
         // by the hold insertion below and skips the rescale.
-        for (List<BezierBaker.Node> ln : app.lanes) {
-            double[] gaps = ln == lane ? null : BezierBaker.segGaps(ln);
-            for (BezierBaker.Node m : ln) {
-                if (m.t > tc + 1e-9) m.t += stepX;
+        if (scShift) {
+            for (List<BezierBaker.Node> ln : app.lanes) {
+                double[] gaps = ln == lane ? null : BezierBaker.segGaps(ln);
+                for (BezierBaker.Node m : ln) {
+                    if (m.t > tc + 1e-9) m.t += stepX;
+                }
+                if (gaps != null) BezierBaker.rescaleDvToGaps(ln, gaps);
             }
-            if (gaps != null) BezierBaker.rescaleDvToGaps(ln, gaps);
         }
         // the selected node's outgoing transition moves to the new node
         // (its lock rides along — the insert-on-curve split rule, D248);
@@ -12398,13 +12885,15 @@ class GraphEditor extends Region {
         // 1 s of ride, or 10 m of track on a distance section (v16.0)
         double newEnd = BezierBaker.rideEnd(app.lanes) + appendStep();
         List<BezierBaker.Node> lane = active();
-        if (activeInfl() != null) {
+        if (activeInfl() != null || activeSc() != null) {
             // the influence wall is absolute: append lands AT most on
-            // the section end, and refuses when there is no room
-            double wall = sectionEnd();
+            // the section end, and refuses when there is no room; an
+            // s/c element's lane wall is its L, likewise (v20.1)
+            double wall = laneEnd();
             if (lane.get(lane.size() - 1).t >= wall - minGap()) {
-                app.statsLabel.setText(
-                    "The influence surface ends with its section.");
+                app.statsLabel.setText(activeSc() != null
+                    ? SectionNames.ROLL_WALL_WHY
+                    : "The influence surface ends with its section.");
                 return;
             }
             newEnd = Math.min(newEnd, wall);
@@ -16569,7 +17058,18 @@ class GraphEditor extends Region {
      *  smooths from ITS first node, and our-side targets would read
      *  its projection snap (by design, D118/D120). */
     private boolean nextAbsRoll() {
+        // an s/c element's lane: the NEXT element's lane at an interior
+        // border (v20.1, D259 §2.6); an s/c NEXT section: its element 0
+        StraightCurveSection scn = activeSc();
+        if (scn != null && scInterior(false)) {
+            return scn.elements.get(scLaneIdx(scn) + 1).roll.rollAbsolute();
+        }
         List<Section> secs = sections();
+        if (activeSection + 1 < secs.size()
+                && secs.get(activeSection + 1) instanceof StraightCurveSection ns
+                && !ns.elements.isEmpty()) {
+            return ns.elements.get(0).roll.rollAbsolute();
+        }
         return activeSection + 1 < secs.size()
             && secs.get(activeSection + 1) instanceof LaneSection nl
             && nl.rollAbsolute && nl.rollGlobal;
@@ -16602,10 +17102,13 @@ class GraphEditor extends Region {
         // without a neighbor (v18.37, D209: with one, B lines the
         // RESULTING graphs up; without one — ride start/end — it
         // returns the delta to zero, the old D102 rule)
+        // an s/c element's lane (v20.1, D259 §2.6): an interior border
+        // has the NEIGHBOR ELEMENT on that side; the section's edges
+        // take the strict-seam routing below
         boolean start = idx == 0 && lane.size() >= 2
-            && (infl || hasNeighborBefore());
+            && (infl || hasNeighborBefore() || scInterior(true));
         boolean end = idx == lane.size() - 1 && idx > 0
-            && (infl || hasNeighborAfter());
+            && (infl || hasNeighborAfter() || scInterior(false));
         if (!start && !end) {
             // B never fails silently (v16.3, user rule)
             app.statsLabel.setText("B matches a section-EDGE node to its "
@@ -16624,8 +17127,7 @@ class GraphEditor extends Region {
             // sides of every seam real-match now; the left side may
             // shift the seam and re-press to converge — documented)
             matchHint = null;
-            if (boundaryState(start ? activeSection - 1 : activeSection + 1,
-                    !start, activeLane) == null) {
+            if (edgeTarget(start, activeLane) == null) {
                 app.statsLabel.setText(matchHint != null ? matchHint
                     : "Nothing to match yet — no compiled curves at "
                     + "this boundary.");
@@ -16633,10 +17135,138 @@ class GraphEditor extends Region {
             }
         }
         pushUndoSnapshot();
-        if (!infl) refreezeSeamSpeed(start);
+        if (!infl && !scInterior(start)) refreezeSeamSpeed(start);
         applyBoundaryMatch(activeLane, start);
         redraw();
         app.rebuildTrack();
+    }
+
+    /** Is the lane element's edge on this side an INTERIOR element
+     *  border (v20.1, D259 §2.6) — a neighbor ELEMENT, not a seam? */
+    private boolean scInterior(boolean start) {
+        StraightCurveSection sc = activeSc();
+        if (sc == null || !scLaneBound()) return false;
+        int li = scLaneIdx(sc);
+        return start ? li > 0 : li < sc.elements.size() - 1;
+    }
+
+    /** The neighbor's {value, slope} in OUR units on this side: the
+     *  neighbor ELEMENT at an interior border, else the neighbor
+     *  SECTION through boundaryState (null = nothing to match;
+     *  matchHint may say why). */
+    private double[] edgeTarget(boolean start, int laneIdx) {
+        StraightCurveSection sc = activeSc();
+        if (sc != null && laneIdx == 2 && scInterior(start)) {
+            return scBorderTarget(sc, scLaneIdx(sc), start);
+        }
+        return boundaryState(start ? activeSection - 1 : activeSection + 1,
+            !start, laneIdx);
+    }
+
+    /** The lane element's own EFFECTIVE roll axis, or the active lane
+     *  section's (effRollGlobal) — the one predicate the seam routing
+     *  reads for OUR side (v20.1). */
+    private boolean activeEffRollGlobal() {
+        RollLane rl = scLane();
+        if (rl != null) return rl.rollGlobal();
+        return sections().get(activeSection) instanceof LaneSection al
+            && effRollGlobal(al);
+    }
+
+    /** B's target at an INTERIOR element border (v20.1, D259 §2.6):
+     *  the neighbor element's lane end (start edge) or start (end
+     *  edge) in OUR lane's units. LIKE settings → the AUTHORED value +
+     *  slope, exact (both lanes are meters; a lane holding past its
+     *  last node is flat); DIFFERING settings → the SAMPLED path: the
+     *  quantity our lane authors — bank, bank rate or body roll rate,
+     *  per meter when ours is — read off the compiled samples on the
+     *  neighbor's side of the border, two samples in, extrapolated
+     *  onto the border arc (the ±1-sample floor; a re-press
+     *  converges). Vertical track refuses with the hint. */
+    private double[] scBorderTarget(StraightCurveSection sc, int li,
+                                    boolean startEdge) {
+        RollLane our = sc.elements.get(li).roll;
+        int ni = startEdge ? li - 1 : li + 1;
+        if (ni < 0 || ni >= sc.elements.size()) return null;
+        StraightCurveSection.Element nb = sc.elements.get(ni);
+        RollLane nl = nb.roll;
+        boolean same = nl.rollGlobal() == our.rollGlobal()
+            && nl.rollAbsolute() == our.rollAbsolute()
+            && (our.rollAbsolute() || nl.ratePerMeter() == our.ratePerMeter());
+        if (same) {
+            List<BezierBaker.Node> ln = nl.nodes;
+            if (ln.isEmpty()) return null;
+            if (startEdge) {   // the previous element's END
+                BezierBaker.Node last = ln.get(ln.size() - 1);
+                if (ln.size() < 2 || last.t < nb.L - 1e-9) {
+                    return new double[]{ last.val, 0 };   // holding flat
+                }
+                return new double[]{ BezierBaker.exactAt(ln, nb.L),
+                                     BezierBaker.slopeAt(ln, nb.L) };
+            }
+            BezierBaker.Node n0 = ln.get(0);   // the next element's START
+            return new double[]{ n0.val,
+                ln.size() < 2 ? 0 : BezierBaker.slopeAt(ln, 0) };
+        }
+        TrackCompiler.Span sp = spanOf(activeSection);
+        if (sp == null || app.lastSamples == null || app.resultRates == null
+                || app.resultRates.length == 0) {
+            matchHint = "Nothing to match yet — no compiled curves at "
+                + "this border.";
+            return null;
+        }
+        double[] b = scBoundsS(sc);
+        double sB = sp.s0() + (startEdge ? b[li] : b[li + 1]);   // global arc
+        List<FVDIntegrator.Sample> ss = app.lastSamples;
+        int i0 = Math.max(0, sp.i0()), i1 = Math.min(sp.i1(),
+            Math.min(ss.size(), app.resultRates.length) - 1);
+        if (i1 - i0 < 4) return null;
+        // the border sample on the NEIGHBOR's side + one two samples in
+        int ib;
+        if (startEdge) {   // the neighbor lies BEFORE the border
+            ib = i0;
+            while (ib + 1 <= i1 && ss.get(ib + 1).s() <= sB + 1e-9) ib++;
+        } else {           // the neighbor lies AFTER the border
+            ib = i1;
+            while (ib - 1 >= i0 && ss.get(ib - 1).s() >= sB - 1e-9) ib--;
+        }
+        int is = startEdge ? Math.max(i0, ib - 2) : Math.min(i1, ib + 2);
+        if (is == ib) return null;
+        double qb = scRollQuantity(ib, our), qs = scRollQuantity(is, our);
+        if (Double.isNaN(qb) || Double.isNaN(qs)) {
+            matchHint = "No defined bank on vertical track — the roll "
+                + "lane can't read this border.";
+            return null;
+        }
+        double ds = ss.get(ib).s() - ss.get(is).s();
+        double slope = Math.abs(ds) < 1e-12 ? 0 : (qb - qs) / ds;
+        double val = qb + slope * (sB - ss.get(ib).s());   // onto the border
+        if (our.rollAbsolute()) val = absRep(val, our.nodes, startEdge);
+        return new double[]{ val, slope };
+    }
+
+    /** The quantity OUR lane authors, read off compiled sample i:
+     *  bank (°), bank rate or body roll rate (°/s — per meter when
+     *  the lane is); NaN on vertical track. */
+    private double scRollQuantity(int i, RollLane our) {
+        FVDIntegrator.Sample sm = app.lastSamples.get(i);
+        if (our.rollAbsolute()) {
+            double bk = FVDIntegrator.bankOfTU(sm.T(), sm.U());
+            return Double.isNaN(bk) ? Double.NaN : Math.toDegrees(bk);
+        }
+        double q;
+        if (our.rollGlobal()) {
+            double vSafe = Math.max(0.5, sm.v());
+            double pitB = Math.toDegrees(FVDIntegrator.G0
+                * (sm.Gv() - sm.U().y()) / vSafe);
+            double yawB = Math.toDegrees(FVDIntegrator.G0
+                * (sm.Gl() + sm.R().y()) / vSafe);   // REPORTED (D184+D185)
+            q = Coaster.worldRates(sm, pitB, yawB, app.resultRates[i][3])[2];
+        } else {
+            q = app.resultRates[i][3];
+        }
+        if (Double.isNaN(q)) return Double.NaN;
+        return our.ratePerMeter() ? q / Math.max(0.5, sm.v()) : q;
     }
 
     /** Boundary matching first makes the seam's DESIGN SPEEDS agree
@@ -16735,9 +17365,9 @@ class GraphEditor extends Region {
         }
         boolean infl = activeInfl() != null;
         boolean start = selIdx == 0
-            && (infl || hasNeighborBefore());
+            && (infl || hasNeighborBefore() || scInterior(true));
         boolean end = selIdx == active().size() - 1 && selIdx > 0
-            && (infl || hasNeighborAfter());
+            && (infl || hasNeighborAfter() || scInterior(false));
         if (!start && !end) {
             app.statsLabel.setText("Shift+B matches section-EDGE nodes to "
                 + "their boundary — select a lane's FIRST or LAST node, "
@@ -16753,9 +17383,9 @@ class GraphEditor extends Region {
         if (!infl) {
             // nullity is uniform across lanes (it only means "no
             // compiled data yet" at a cross-mode boundary) — probe once
+            // (an s/c has lane 2 only, v20.1)
             matchHint = null;
-            if (boundaryState(start ? activeSection - 1 : activeSection + 1,
-                    !start, 0) == null) {
+            if (edgeTarget(start, activeSc() != null ? 2 : 0) == null) {
                 app.statsLabel.setText(matchHint != null ? matchHint
                     : "Nothing to match yet — no compiled curves at "
                     + "this boundary.");
@@ -16763,7 +17393,7 @@ class GraphEditor extends Region {
             }
         }
         pushUndoSnapshot();
-        if (!infl) refreezeSeamSpeed(start);
+        if (!infl && !scInterior(start)) refreezeSeamSpeed(start);
         for (int L = 0; L < LANES; L++) applyBoundaryMatch(L, start);
         redraw();
         app.rebuildTrack();
@@ -16775,6 +17405,22 @@ class GraphEditor extends Region {
     private boolean applyBoundaryMatch(int laneIdx, boolean startEdge) {
         List<BezierBaker.Node> ln = app.lanes.get(laneIdx);
         if (ln.size() < 2) return false;
+        // an s/c element's lane (v20.1, D259 §2.6): an interior border
+        // matches the NEIGHBOR ELEMENT; the section's edges fall
+        // through to the strict-seam routing (boundaryState, lane 2)
+        StraightCurveSection scb = activeSc();
+        if (scb != null && laneIdx == 2 && scInterior(startEdge)) {
+            double[] vs = scBorderTarget(scb, scLaneIdx(scb), startEdge);
+            if (vs == null) return false;
+            BezierBaker.Node n = startEdge ? ln.get(0) : ln.get(ln.size() - 1);
+            n.val = vs[0];
+            if (startEdge) {
+                n.outDv = vs[1] * BezierBaker.effOutDt(n, ln.get(1));
+            } else {
+                n.inDv = vs[1] * BezierBaker.effInDt(ln.get(ln.size() - 2), n);
+            }
+            return true;
+        }
         // INFLUENCE surface (v18.37, D209 — user re-spec reversing
         // the v15.5/D102 zero rule): the edge delta node takes the
         // value + slope that line the RESULTING graphs (base + delta)
@@ -16946,6 +17592,8 @@ class GraphEditor extends Region {
         if (sections().get(activeSection) instanceof LaneSection als
                 && als.lanes.size() > 2 && !als.lanes.get(2).isEmpty()) {
             bd = absRep(bd, als.lanes.get(2), atStart);
+        } else if (scLane() != null && !scLane().nodes.isEmpty()) {
+            bd = absRep(bd, scLane().nodes, atStart);   // an s/c's lane (v20.1)
         }
         return new double[]{ bd, slope };
     }
@@ -17184,8 +17832,10 @@ class GraphEditor extends Region {
             ? activeGeo()
                 && sections().get(activeSection) instanceof LaneSection ai
                 && ai.ratePerMeter
-            : sections().get(activeSection) instanceof LaneSection act
-                && laneRatePM(act, laneIdx);
+            : activeSc() != null
+                ? activeRatePM(laneIdx)   // the lane element's units (v20.1)
+                : sections().get(activeSection) instanceof LaneSection act
+                    && laneRatePM(act, laneIdx);
         if (pm) {
             double v = Math.max(0.5, seamDesignV(atStart));
             double aT = -FVDIntegrator.G0 * seamTy(atStart);
@@ -17382,8 +18032,7 @@ class GraphEditor extends Region {
         // one derivative below the rate lanes B usually smooths).
         // Fires on real-split seams too — bank is a frame quantity,
         // invariant under the design/true speed split.
-        if (!inflM && laneIdx == 2 && actLs != null
-                && actLs.rollAbsolute && actLs.rollGlobal) {
+        if (!inflM && laneIdx == 2 && activeRollAbs()) {   // + an s/c's lane (v20.1)
             double[] ab = absRollTarget(atStart);
             if (ab != null || matchHint != null) return ab;
         }
@@ -17406,14 +18055,15 @@ class GraphEditor extends Region {
         // few samples inside — the value at the seam stays exact, so
         // re-presses don't creep. Vertical seams refuse (no defined
         // heading/bank), reason on the stats bar.
-        if (!inflM && !real && laneIdx == 2 && actLs != null
+        if (!inflM && !real && laneIdx == 2
+                && (actLs != null || activeSc() != null)
                 && nbSec instanceof LaneSection nbr
                 && !nbr.reversed() && !nbr.influenced()
-                && effRollGlobal(nbr) != effRollGlobal(actLs)
+                && effRollGlobal(nbr) != activeEffRollGlobal()
                 // an ABSOLUTE neighbor's roll lane is a BANK, not a
                 // rate — its compiled curves say what it does (v16.8)
                 && !(nbr.rollAbsolute && nbr.rollGlobal)) {
-            double[] rr = rollAcrossSeam(nbr, atStart, effRollGlobal(actLs));
+            double[] rr = rollAcrossSeam(nbr, atStart, activeEffRollGlobal());
             if (rr != null || matchHint != null) return rr;
         }
         // a REVERSED neighbor's authored lanes run against the chain
@@ -17435,13 +18085,13 @@ class GraphEditor extends Region {
                 && (sameMode(nb, secs.get(activeSection)) || laneIdx == 2)
                 && !nb.reversed && !nb.influenced()
                 && (laneIdx == 2
-                    ? actLs != null
-                        && effRollGlobal(nb) == effRollGlobal(actLs)
+                    ? (actLs != null || activeSc() != null)
+                        && effRollGlobal(nb) == activeEffRollGlobal()
                         // rate vs ABSOLUTE mismatch: the two lanes
                         // hold different quantities (°/s-or-°/m vs
                         // bank °) — sampled path below (v16.8)
                         && (nb.rollAbsolute && nb.rollGlobal)
-                           == (actLs.rollAbsolute && actLs.rollGlobal)
+                           == activeRollAbs()
                     // lanes 0/1: exact whenever both sides mean the
                     // same thing — only the YAW/PITCH semantics
                     // matter here (v16.6; a neighbor's roll flag
@@ -17926,6 +18576,9 @@ class GraphEditor extends Region {
         }
         List<BezierBaker.Node> lane = active();
         if (nodeIdx != lane.size() - 1) return Double.MAX_VALUE;
+        // an s/c element's lane wall is HARD at its L (v20.1, D259
+        // §2.4): a lane never lengthens an element — no exemption
+        if (activeSc() != null) return laneEnd();
         // the influence surface's wall is ABSOLUTE (no started-at-end
         // exemption): deltas modify the section, they never extend it
         if (activeInfl() != null) return sectionEnd();
@@ -18443,10 +19096,10 @@ class GraphEditor extends Region {
             dispVal(activeLane, poly.get(0)[0], poly.get(0)[1]));
         // the dotted hold-final-value extension is insertable too
         double laneEnd = lane.get(lane.size() - 1).t;
-        boolean extended = laneEnd < sectionEnd() - 1e-9;
+        boolean extended = laneEnd < laneEnd() - 1e-9;
         int segs = poly.size() + (extended ? 1 : 0);
         for (int i = 1; i < segs; i++) {
-            double t1 = i < poly.size() ? poly.get(i)[0] : sectionEnd();
+            double t1 = i < poly.size() ? poly.get(i)[0] : laneEnd();
             double v1 = i < poly.size() ? poly.get(i)[1] : lane.get(lane.size() - 1).val;
             double t0 = i < poly.size() ? poly.get(i - 1)[0] : laneEnd;
             double px1 = ltToX(t1), py1 = valToY(activeLane,
@@ -18473,7 +19126,7 @@ class GraphEditor extends Region {
      *  spacing rules, reusable for re-checking a SNAPPED position). */
     private boolean insertRoomAt(double t) {
         List<BezierBaker.Node> lane = active();
-        if (t > sectionEnd() + 1e-9) return false;
+        if (t > laneEnd() + 1e-9) return false;
         int i = 0;
         while (i < lane.size() && lane.get(i).t < t) i++;
         if (i == 0) return false;
@@ -18535,7 +19188,7 @@ class GraphEditor extends Region {
             // on the dotted hold-final-value extension: append a real
             // node at the same level (flat sine transition)
             BezierBaker.Node last = lane.get(i - 1);
-            if (t - last.t < insertGap() || t > sectionEnd() + 1e-9) return -1;
+            if (t - last.t < insertGap() || t > laneEnd() + 1e-9) return -1;
             pushUndoSnapshot();
             n = new BezierBaker.Node(t, last.val);
             // the Append recipe (D248): a smooth sloped last node's
@@ -18609,7 +19262,9 @@ class GraphEditor extends Region {
             }
             if (spFocus && spDeleteSelected()) return;
         }
-        if (activeSc() != null && !surfStrip) {
+        // an s/c: a SELECTED roll node takes the shared node delete
+        // below (v20.1); otherwise Delete removes the selected element
+        if (activeSc() != null && !surfStrip && selIdx < 0) {
             deleteElement(elSel);
             return;
         }
@@ -20761,9 +21416,16 @@ class GraphEditor extends Region {
         drawPvRef(gc);   // density preview's original-curve reference
 
         if (activeSc() != null) {
-            // a straight/curve section: the element widget IS the
-            // editing surface — no lanes to stroke (v11.0)
+            // a straight/curve section: the element widget + the
+            // per-element ROLL LANES (v20.1, D259 §2.4): bands, chips
+            // and diamonds first, the other elements' lanes dimmed,
+            // the lane element's lane on top (its nodes and handles
+            // draw with the shared overlays below)
             drawScStrip(gc);
+            if (scLaneBound()) {
+                drawScOtherLanes(gc);
+                strokeLaneCurve(gc, 2);
+            }
         } else if (activeBridge() != null) {
             drawBridgeStrip(gc);   // frozen: derived curves + status
         } else {
@@ -21116,7 +21778,7 @@ class GraphEditor extends Region {
                 wpts.add(new double[]{ ltToX(p[0]),
                     valToY(laneIdx, dispVal(laneIdx, p[0], p[1])) });
             }
-            double wEnd = sectionEnd();
+            double wEnd = laneEnd();
             BezierBaker.Node wLast = lane.get(lane.size() - 1);
             List<double[]> hold = new ArrayList<>();
             if (wLast.t < wEnd - 1e-9) {
@@ -21149,8 +21811,8 @@ class GraphEditor extends Region {
             pts.add(new double[]{ ltToX(p[0]), valToY(laneIdx, p[1]) });
         }
         double[] lastP = poly.get(poly.size() - 1);
-        if (lastP[0] < sectionEnd() - 1e-9) {
-            pts.add(new double[]{ ltToX(sectionEnd()), valToY(laneIdx, lastP[1]) });
+        if (lastP[0] < laneEnd() - 1e-9) {
+            pts.add(new double[]{ ltToX(laneEnd()), valToY(laneIdx, lastP[1]) });
         }
         fillUnderSeries(gc, pts, laneIdx);
 
@@ -21199,7 +21861,7 @@ class GraphEditor extends Region {
         // a lane that ends early holds its final value to the ride end:
         // drawn DOTTED to show it's implied, not authored (clickable to
         // insert a real node on it)
-        double end = sectionEnd();
+        double end = laneEnd();
         BezierBaker.Node last = lane.get(lane.size() - 1);
         if (last.t < end - 1e-9) {
             double ly = valToY(laneIdx, last.val);

@@ -132,6 +132,32 @@ public final class ScIntegrator {
         return k;
     }
 
+    /** The clamped blend half-widths per border (index i = the border
+     *  at element i's start; 0 at the section entry) WITHOUT building
+     *  a Profile — the strip's band edges and diamonds read these per
+     *  hit test (v20.1: a Profile now bakes every element's lane, too
+     *  heavy for a hover). The arithmetic is the Profile's, verbatim. */
+    static double[] blendHalves(StraightCurveSection sc) {
+        int n = sc.elements.size();
+        double[] half = new double[n];
+        double[] len = new double[n];
+        for (int i = 0; i < n; i++) {
+            StraightCurveSection.Element e = sc.elements.get(i);
+            len[i] = e.arcLen();
+            half[i] = i == 0 ? 0 : Math.max(0, e.blendIn / 2);
+        }
+        for (int i = 0; i < n; i++) {
+            double hIn = half[i];
+            double hOut = i + 1 < n ? half[i + 1] : 0;
+            if (hIn + hOut > len[i] && hIn + hOut > 1e-12) {
+                double f = len[i] / (hIn + hOut);
+                half[i] = hIn * f;
+                if (i + 1 < n) half[i + 1] = hOut * f;
+            }
+        }
+        return half;
+    }
+
     // ---------- the profile ----------
 
     /** The rotation-rate profile. starts[i] = element i's start arc;

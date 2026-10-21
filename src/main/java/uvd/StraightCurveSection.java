@@ -398,6 +398,10 @@ public final class StraightCurveSection implements Section {
 
     /** The list object is long-lived — the editor holds the reference. */
     public final List<Element> elements;
+    /** The strip's CROSS-RATE VIEW flag (v20.1, D259 §2.1 — the lane
+     *  element's rate lane shown in the other units); SESSION state,
+     *  never saved, auto-drops on leaving the section (D119). */
+    public boolean viewOtherRate;
 
     public double vDesign;
     public boolean reversed = false;

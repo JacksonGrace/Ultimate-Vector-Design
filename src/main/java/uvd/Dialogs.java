@@ -300,10 +300,11 @@ class Dialogs {
         helpText(box, "Elements instead of lanes: straights (length) and "
             + "arcs (radius, angle, direction — 0 = flat left turn, 90 = "
             + "pull-up; negative mirrors), authored per meter — the shape "
-            + "ignores speed.");
-        helpKey(box, "Edit", "click a band = select · double-click = its dialog (kind, size, smoothing, roll) · right-click inserts and deletes · drag a separator or the section end to resize (Ctrl snaps) · A appends a straight (zoomed in, the view pans to it).");
-        helpKey(box, "Roll", "per element: a global bank angle held against the horizon (0 = rails level), or a body-roll rate (0 = the bank drifts through pitched turns). Transitions ease without a jolt; non-zero roll shows on the chip.");
-        helpKey(box, "Smoothing ◇", "the diamond on each boundary sets that transition's blend length (drag; snaps shut). The diamond on the section's entry is the bank ease into the first element — 0 is an instant snap.");
+            + "ignores speed; each element's roll graph twists it without "
+            + "bending it.");
+        helpKey(box, "Edit", "click a band = select · double-click = its dialog (kind, size, smoothing, roll settings) · right-click inserts and deletes · drag a separator or the section end to resize (Ctrl snaps) · A appends a straight, or with a roll node selected adds a node to that graph (zoomed in, the view pans to it).");
+        helpKey(box, "Roll", "Each element has its own roll graph over its length, edited like any roll lane and with its own axis, behavior and rate units (the Roll block of its dialog; Switch keeps the graph, Bake converts it so the bank stays); by default a global roll rate per meter of 0, which keeps whatever bank arrives. Click another element's graph to edit it. B on an edge node lines the graph up with the neighboring element's. Shortening an element cuts its roll graph at the new end and keeps the cut-off part (the end node shows a dotted stub); lengthening it brings that part back exactly, unless you moved the end node meanwhile.");
+        helpKey(box, "Smoothing ◇", "the diamond on each boundary sets that transition's blend length (drag; snaps shut). The section's start joins sharp — the strict seam's own diamond smooths it.");
 
         helpHead(box, "Speed & conflicts");
         helpText(box, "Every section owns a design speed; the true ride "
