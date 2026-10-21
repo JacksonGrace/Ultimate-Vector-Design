@@ -219,9 +219,15 @@ public final class TrackCompiler {
                 sm.v(), sm.Gv(), sm.Gl()));
         }
         TrackPose e = local.exit();
+        // the per-border records ride through (v20.1, D259 §1.4.3 —
+        // Stage 1a dropped them here, so Span.scBounds was null for
+        // every placed s/c section): the integrator's CANONICAL-frame
+        // states, unplaced — their arcs, times and speeds are what the
+        // element bake and the gates read
         return new Centerline(out, new TrackPose(
             cp.pos().add(rotY(e.pos(), c, s)),
-            Quat.aboutY(cp.psiDeg()).mul(e.orient()), e.s0(), e.t0()));
+            Quat.aboutY(cp.psiDeg()).mul(e.orient()), e.s0(), e.t0()),
+            local.scBounds());
     }
 
     /** Advance the chain past a canonically-generated section: heading

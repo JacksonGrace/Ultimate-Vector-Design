@@ -3286,16 +3286,18 @@ public class Coaster {
     /** The lane-2 fit of ONE element's arc (bakeElementRoll's and
      *  C32's shared half): the compiled samples strictly inside the
      *  element's arc [S_i, S_i + L_i] (the Bound records' exact
-     *  landing arcs) between two BORDER samples interpolated at the
-     *  exact arcs from their bracketing samples (frames re-
-     *  orthonormalized — the Bound's own pose is canonical-frame, the
-     *  samples are world; a lerp over one dt step is second-order in
-     *  the twist), through the ctl-aware fitLanes at the element's
-     *  entry design speed with the section's speed controls on its
-     *  own arc axis; the last node lands on L exactly (the sum's
-     *  rounding dust snapped within RollLane.CUT_EPS). Null when the
-     *  element has fewer than 4 samples (the makeGraphsReal floor) or
-     *  no border record. */
+     *  landing arcs) between two BORDER samples — a LANDED border's
+     *  exact post-projection state (the Bound, placed into the world
+     *  by the rigid map that carries the canonical entry frame onto
+     *  the section's world entry sample: the twist at the border is
+     *  exact, so the ±1-sample differencing sees no smear from the
+     *  next element's lane), a MERGED border's (roll-free record) the
+     *  lerp of its bracketing samples — through the ctl-aware fitLanes
+     *  at the element's entry design speed with the section's speed
+     *  controls on its own arc axis; the last node lands on L exactly
+     *  (the sum's rounding dust snapped within RollLane.CUT_EPS).
+     *  Null when the element has fewer than 4 samples (the
+     *  makeGraphsReal floor) or no border record. */
     private List<BezierBaker.Node> fitElementRoll(TrackCompiler.Result r,
             TrackCompiler.Span sp, StraightCurveSection sc, int elemIdx,
             double vEntry, boolean rollG, boolean pm, boolean abs,
@@ -3307,8 +3309,15 @@ public class Coaster {
         List<FVDIntegrator.Sample> all = r.samples();
         int lo = Math.max(0, sp.i0() - 1);
         int hi = Math.min(sp.i1(), all.size() - 1);
-        FVDIntegrator.Sample a = sampleAtArcLerp(all, lo, hi, sA);
-        FVDIntegrator.Sample b = sampleAtArcLerp(all, lo, hi, sB);
+        // the section's world ENTRY sample: the span's own first sample
+        // when it sits on the entry arc (a run head), else the seam
+        // sample before it (a continuation's dropped sample, D84)
+        FVDIntegrator.Sample entry = Math.abs(all.get(sp.i0()).s() - sp.s0()) <= 1e-9
+            ? all.get(sp.i0())
+            : (sp.i0() > 0 && Math.abs(all.get(sp.i0() - 1).s() - sp.s0()) <= 1e-9
+                ? all.get(sp.i0() - 1) : null);
+        FVDIntegrator.Sample a = placedBound(bd, elemIdx, entry, sp, all, lo, hi, sA);
+        FVDIntegrator.Sample b = placedBound(bd, elemIdx + 1, entry, sp, all, lo, hi, sB);
         if (a == null || b == null) return null;
         List<FVDIntegrator.Sample> sub = new ArrayList<>();
         sub.add(a);
@@ -3326,6 +3335,33 @@ public class Coaster {
         BezierBaker.Node last = lane.get(lane.size() - 1);
         if (Math.abs(last.t - L) <= RollLane.CUT_EPS) last.t = L;
         return lane;
+    }
+
+    /** A border's sample for the element fit: a LANDED record placed
+     *  into the world by the rigid map M = [Tw Uw Rw]·[Tc Uc Rc]ᵀ of
+     *  the section's entry frames (canonical → world — heading and any
+     *  rigid tilt alike; the canonical generation starts at the
+     *  origin, so pos = entry + M·bound.pos), felt from the nearest
+     *  sample at that arc; a MERGED record (roll-free, no twist) or a
+     *  missing entry sample falls back to the lerp. */
+    private static FVDIntegrator.Sample placedBound(List<ScIntegrator.Bound> bd,
+            int idx, FVDIntegrator.Sample entry, TrackCompiler.Span sp,
+            List<FVDIntegrator.Sample> all, int lo, int hi, double sGlobal) {
+        ScIntegrator.Bound b = bd.get(idx);
+        FVDIntegrator.Sample near = sampleAtArcLerp(all, lo, hi, sGlobal);
+        if (!b.landed() || entry == null || near == null) return near;
+        Quat q0 = bd.get(0).q();
+        Vec3 tc = q0.T(), uc = q0.U(), rc = uc.cross(tc);
+        Vec3 tw = entry.T(), uw = entry.U(), rw = uw.cross(tw);
+        Vec3 bt = b.q().T(), bu = b.q().U(), bp = b.pos();
+        Vec3 T = tw.scale(tc.dot(bt)).add(uw.scale(uc.dot(bt))).add(rw.scale(rc.dot(bt))).normalize();
+        Vec3 U0 = tw.scale(tc.dot(bu)).add(uw.scale(uc.dot(bu))).add(rw.scale(rc.dot(bu)));
+        Vec3 U = U0.sub(T.scale(U0.dot(T))).normalize();
+        Vec3 R = U.cross(T);
+        Vec3 pos = entry.pos().add(tw.scale(tc.dot(bp))).add(uw.scale(uc.dot(bp)))
+            .add(rw.scale(rc.dot(bp)));
+        return new FVDIntegrator.Sample(sp.t0() + b.t(), sGlobal, pos, T, U, R,
+            b.v(), near.Gv(), near.Gl());
     }
 
     /** The sample AT global arc s within [lo, hi]: an existing sample
