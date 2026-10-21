@@ -209,9 +209,20 @@ public class InsertGate {
                                List<FVDIntegrator.Sample> pre, TrackPose preExit,
                                Quat preFrame, TrackCompiler.Result r1) {
         int nUp = c.pieces.get(0).sections.size();   // post-insert
-        TrackCompiler.Span ins = r1.spans().get(nUp - 1);   // inserted exit
-        TrackPiece f = c.pieces.get(1);
-        List<FVDIntegrator.Sample> post = pieceSamples(c, r1, 1);
+        followerClaims(tag, c, r0, pre, preExit, preFrame, r1, 1, nUp - 1);
+    }
+
+    /** The general form (v20.1, D259 §3): `fi` = the LOCKED follower's
+     *  piece index, `insIdx` = the inserted section's flattened span
+     *  index (its exit is the follower's seam). */
+    static void followerClaims(String tag, Coaster c, TrackCompiler.Result r0,
+                               List<FVDIntegrator.Sample> pre, TrackPose preExit,
+                               Quat preFrame, TrackCompiler.Result r1,
+                               int fi, int insIdx) {
+        int nUp = insIdx + 1;
+        TrackCompiler.Span ins = r1.spans().get(insIdx);   // inserted exit
+        TrackPiece f = c.pieces.get(fi);
+        List<FVDIntegrator.Sample> post = pieceSamples(c, r1, fi);
         Vec3 delta = ins.exit().pos().sub(preExit.pos());
         double dw = worldDev(pre, post, delta);
         check(dw < 1e-9, tag + " follower world samples == pre-insert ones "
@@ -348,10 +359,23 @@ public class InsertGate {
         double vSeam = r40.samples().get(r40.spans().get(0).i1()).v();
         StraightCurveSection sc = StraightCurveSection.straight(7, vSeam);
         int[] atD = c4.insertSectionAtSeam(0, 1, sc, true, DT);
-        check(atD != null && atD[0] == 0 && atD[1] == 1
-            && c4.pieces.size() == 2
-            && c4.pieces.get(0).sections.get(1) == sc,
-            "d3 s/c lock insert at seam 0|1: [s0 sc] | strict | [s1 s2]");
+        // RE-PINNED v20.1 (D259 §3.2 — the straight/curve invariant): the
+        // inserted s/c is its OWN one-section AUTOMATIC follower between
+        // the upstream and the all-locked follower: [s0] | auto [sc] |
+        // locked [s1 s2]; the returned {piece, section} is the s/c's new
+        // home
+        TrackPiece fD = c4.pieces.size() > 2 ? c4.pieces.get(2) : null;
+        check(atD != null && atD[0] == 1 && atD[1] == 0
+            && c4.pieces.size() == 3
+            && c4.pieces.get(1).sections.size() == 1
+            && c4.pieces.get(1).sections.get(0) == sc
+            && c4.autoFollower(1) && c4.pieces.get(1).sAuto
+            && sc.vRealAnchored() && c4.pieces.get(1).sSmoothLen == 0
+            && fD != null && fD.followPrev && fD.sLockYaw && fD.sLockPitch
+            && fD.sLockRoll && !fD.sAuto && fD.sections.size() == 2
+            && c4.scInvariantHolds(),
+            "d3 s/c lock insert at seam 0|1: [s0] | automatic [sc] | locked [s1 s2] (D259 §3.2)",
+            atD == null ? "null" : atD[0] + "," + atD[1] + " pieces " + c4.pieces.size());
         check(sc.totalLen() == 7.0, "d4 s/c insert: totalLen() == len");
         TrackCompiler.Result r41 = rebuild(c4);
         check(settled, "d5 settle terminates with the s/c insert");
@@ -361,7 +385,7 @@ public class InsertGate {
         List<FVDIntegrator.Sample> preD = new ArrayList<>(r40.samples().subList(
             r40.spans().get(1).i0(), r40.spans().get(2).i1() + 1));
         followerClaims("d7", c4, r40, preD, r40.spans().get(0).exit(),
-            r40.spans().get(0).exit().orient(), r41);
+            r40.spans().get(0).exit().orient(), r41, 2, 1);
 
         // ---- (e) refusals / edge indices mutate nothing ----
         Coaster c5 = fixture();

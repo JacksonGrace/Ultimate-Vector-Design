@@ -1870,14 +1870,30 @@ public class Coaster {
      *  its exit frame — the '+'-style continuation semantics) and
      *  the reconcile re-freezes their design speeds on the next
      *  rebuild (interior k>0 sections; a follower's first section
-     *  is never re-frozen). The STRICT-seam case IS this branch:
+     *  is re-frozen only when it is real-anchored — every seam the
+     *  straight/curve invariant creates, D259 §3.5 A4; a hand-made
+     *  follower's keeps D135). The STRICT-seam case IS this branch:
      *  the caller passes the UPSTREAM piece and secIdx = its size —
      *  the existing follower's held angles hold, its position
      *  follows.</li></ul>
+     *  THE STRAIGHT/CURVE INVARIANT (v20.1, D259 §3.2 — D31: every
+     *  s/c edge is a strict seam) runs after either shape, off ONE
+     *  compile of the post-insert document (restoreScInvariant): an
+     *  inserted s/c gets an automatic seam AFTER it (when a non-bridge
+     *  section follows — downstream first, so the indices hold) and
+     *  BEFORE it; a force/geo inserted right after an s/c (the
+     *  strict-seam case with an s/c upstream tail, or before an s/c's
+     *  trailing bridge) gets one before it; Lock ON appends as today
+     *  and then cuts before the appended s/c, so it becomes a
+     *  one-section automatic follower between the upstream and the
+     *  all-locked follower. Each seam the invariant makes is
+     *  automatic (all axes follow, sAuto, smoothing 0, the follower's
+     *  first section real-anchored — §3.3/§3.4).
      *  Speed controls, marks and influence are per section OBJECT,
      *  so nothing of theirs moves. Returns {piece, section} of the
-     *  inserted section, or null (bad indices / the boundary isn't
-     *  compiled — nothing mutated then). */
+     *  inserted section — on the NEW piece when a seam was cut before
+     *  it —, or null (bad indices / the boundary isn't compiled —
+     *  nothing mutated then). */
     public int[] insertSectionAtSeam(int pieceIdx, int secIdx,
                                      Section added, boolean lockDownstream,
                                      double dt) {
@@ -1894,10 +1910,67 @@ public class Coaster {
             int np = makeSeamStrict(pieceIdx, secIdx, dt);
             if (np < 0) return null;
             piece.sections.add(added);
-            return new int[]{ pieceIdx, piece.sections.size() - 1 };
+            return restoreScInvariant(pieceIdx, piece.sections.size() - 1, dt);
         }
         piece.sections.add(secIdx, added);
-        return new int[]{ pieceIdx, secIdx };
+        return restoreScInvariant(pieceIdx, secIdx, dt);
+    }
+
+    /** APPEND a section to piece pieceIdx under the straight/curve
+     *  invariant (v20.1, D259 §3.2 — the '+' paths' ONE model call,
+     *  replacing their bare `sections.add`): the section lands at the
+     *  end, then restoreScInvariant cuts the automatic seam the
+     *  invariant wants before it — an appended s/c, or a force/geo
+     *  appended after an s/c tail. A lane after a lane adds nothing and
+     *  compiles nothing (bitwise the old append); a cut costs the ONE
+     *  compile the split reads, so a '+' costs that compile plus the
+     *  rebuild (ScSeamGate h). Returns {piece, section} where `added`
+     *  now lives (the new follower's section 0 after a cut), or null
+     *  (bad index / null section — nothing mutated). */
+    public int[] appendSectionWithInvariant(int pieceIdx, Section added,
+                                            double dt) {
+        if (added == null || pieceIdx < 0 || pieceIdx >= pieces.size()) {
+            return null;
+        }
+        TrackPiece piece = pieces.get(pieceIdx);
+        piece.sections.add(added);
+        return restoreScInvariant(pieceIdx, piece.sections.size() - 1, dt);
+    }
+
+    /** RESTORE L1 around section i of piece pieceIdx, just inserted
+     *  (D259 §3.2): cut an automatic seam AFTER it when it is an s/c
+     *  followed by a non-bridge section, and BEFORE it when it is an
+     *  s/c or follows an s/c (a bridge after an s/c is L1's trailing
+     *  exception; a bridge before the cut cannot occur — a bridge is a
+     *  trailing section). Downstream first so the indices hold; both
+     *  cuts read ONE compile of the current document (the Result
+     *  overload of ensureScFollower — a cut only inserts pieces after
+     *  pieceIdx, so the earlier boundary's flattened span index stays
+     *  valid). No cut needed = no compile. Returns {piece, section}
+     *  where section i lives afterwards. */
+    private int[] restoreScInvariant(int pieceIdx, int i, double dt) {
+        TrackPiece piece = pieces.get(pieceIdx);
+        List<Section> s = piece.sections;
+        boolean scHere = s.get(i) instanceof StraightCurveSection;
+        boolean bridgeHere = s.get(i) instanceof BridgeSection;
+        boolean scBefore = i > 0
+            && s.get(i - 1) instanceof StraightCurveSection;
+        boolean bridgeBefore = i > 0
+            && s.get(i - 1) instanceof BridgeSection;
+        boolean cutAfter = scHere && i + 1 < s.size()
+            && !(s.get(i + 1) instanceof BridgeSection);
+        boolean cutBefore = i > 0 && !bridgeBefore
+            && (scHere || (scBefore && !bridgeHere));
+        if (!cutAfter && !cutBefore) return new int[]{ pieceIdx, i };
+        TrackCompiler.Result r = TrackCompiler.compile(this, dt);
+        if (cutAfter) {
+            ensureScFollower(pieceIdx, i + 1, r, false, false, false, 0);
+        }
+        if (cutBefore) {
+            int np = ensureScFollower(pieceIdx, i, r, false, false, false, 0);
+            if (np >= 0) return new int[]{ np, 0 };
+        }
+        return new int[]{ pieceIdx, i };
     }
 
     /** Is piece p an ACTIVE follower (the compiler's guard)? */
@@ -4315,9 +4388,25 @@ public class Coaster {
         if (followerIdx != prevIdx + 1 || !followerActive(followerIdx)) {
             return false;
         }
+        // never ACROSS a straight/curve edge (v20.1, D259 §3.2 — L1):
+        // the range flow's gray reason is absorbFollowerWhy
+        if (absorbFollowerWhy(prevIdx, followerIdx) != null) return false;
         pieces.get(followerIdx).followPrev = false;
         attachPiece(prevIdx, followerIdx);
         return true;
+    }
+
+    /** The straight/curve invariant's refusal for absorbing follower
+     *  followerIdx into prevIdx (D259 §3.2 — the chained "Convert Real
+     *  to Design" re-joins its range one section at a time; an s/c
+     *  edge never re-joins): UNSTRICT_SC_WHY on an s/c‖s/c seam,
+     *  UNSTRICT_CONVERT_WHY with an s/c on one side, null otherwise.
+     *  rangeResolveWhy carries it. (With L1 holding a range inside one
+     *  piece never meets an s/c — an s/c piece is one section — so
+     *  this is a belt.) */
+    public String absorbFollowerWhy(int prevIdx, int followerIdx) {
+        if (followerIdx != prevIdx + 1) return null;
+        return unstrictSeamWhy(followerIdx);
     }
 
     /** AUTHORED-axis map of one compiled span (v16.0, D103): ascending
@@ -6350,6 +6439,17 @@ public class Coaster {
                     tp.sections.get(0).vPinned(true);
                 }
                 tp.sections.add(0, conv);
+                // THE STRAIGHT/CURVE INVARIANT (v20.1, D259 §3.2): with
+                // an s/c as the target's old section 0 the prepended
+                // lanes must not share its piece — an automatic strict
+                // seam between them, off a compile of the re-stitched
+                // document (the lanes stay the bridged-in piece, the
+                // s/c follows them; its D97 pin keeps the split)
+                if (tp.sections.size() > 1
+                        && tp.sections.get(1) instanceof StraightCurveSection) {
+                    TrackCompiler.Result rc = TrackCompiler.compile(this, dt);
+                    ensureScFollower(pieceIdx + 1, 1, rc, false, false, false, 0);
+                }
             } else {
                 // orphaned bridge: no target to join — the converted
                 // lanes ride a new piece at the cut (old behavior)
@@ -6575,6 +6675,18 @@ public class Coaster {
             cutNative, Double.POSITIVE_INFINITY);
         piece.sections.set(secIdx, left ? conv : keep);
         piece.sections.add(secIdx + 1, left ? keep : conv);
+        if (sec instanceof StraightCurveSection) {
+            // THE STRAIGHT/CURVE INVARIANT (v20.1, D259 §3.2): the kept
+            // s/c half and the converted lanes are two sections of one
+            // piece now — the cut boundary (the kept half's seam, on
+            // either side) becomes an automatic strict seam off a
+            // compile of the post-convert document; the pose IS that
+            // compile's boundary (D89's interpolated cut re-anchored
+            // through the chain). A pinned (conflicted) source leaves
+            // the pin on both halves, so the reconcile skips them.
+            TrackCompiler.Result rc = TrackCompiler.compile(this, dt);
+            ensureScFollower(pieceIdx, secIdx + 1, rc, false, false, false, 0);
+        }
         return true;
     }
 

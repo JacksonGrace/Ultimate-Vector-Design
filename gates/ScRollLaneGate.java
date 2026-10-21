@@ -1050,7 +1050,11 @@ public final class ScRollLaneGate {
         // m1 F default + m2 F cut: save → load → rebuild bitwise, byte-identical
         for (int variant = 0; variant < 2; variant++) {
             Coaster c = variant == 0 ? docOf(F()) : cutDoc();
-            ((TrackPiece) c.pieces.get(0)).sections.add(StraightCurveSection.straight(10, 18));
+            // RE-PINNED v20.1 (D259 §3): an s/c after an s/c is its own
+            // piece behind an AUTOMATIC strict seam — the model append cuts
+            // it (an in-piece pair would be split by the loader's §3.2 pass
+            // and could not round-trip byte-identically)
+            c.appendSectionWithInvariant(0, StraightCurveSection.straight(10, 18), DT);
             TrackCompiler.Result r0 = rebuild(c);
             String t1 = save(c);
             DesignIO.LoadResult lr = loadText(t1);

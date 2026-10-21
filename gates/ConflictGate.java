@@ -2166,30 +2166,38 @@ public class ConflictGate {
         {
             Coaster sc = chain(true);
             TrackPiece tp = sc.pieces.get(0);
+            // RE-PINNED v20.1 (D259 §3 — the straight/curve invariant): an
+            // s/c is always its own piece behind an AUTOMATIC strict seam —
+            // the model append cuts it and sets the flag itself; the pinned
+            // twin keeps its pin (the pin wins on the line: it writes 1 and
+            // loads pinned + unflagged). An in-piece s/c at k > 0 would be
+            // split by the loader's §3.2 pass.
             StraightCurveSection st = StraightCurveSection.straight(10, 20);
-            st.vRealAnchored = true;
-            tp.sections.add(st);
+            sc.appendSectionWithInvariant(0, st, DT);
             StraightCurveSection pn = StraightCurveSection.straight(10, 20);
             pn.vPinned = true;
-            pn.vRealAnchored = true;   // a pin wins on the line too
-            tp.sections.add(pn);
+            sc.appendSectionWithInvariant(1, pn, DT);
             String t = saveText(sc);
             Coaster back = loadText(t);
-            Section b3 = back.pieces.get(0).sections.get(3);
-            Section b4 = back.pieces.get(0).sections.get(4);
+            Section b3 = back.pieces.get(1).sections.get(0);
+            Section b4 = back.pieces.get(2).sections.get(0);
             check(t.contains(secLine("sc", 20, 2)) && t.contains(secLine("sc", 20, 1))
+                    && st.vRealAnchored() && pn.vRealAnchored() && pn.vPinned()
                     && b3.vRealAnchored() && !b3.vPinned()
-                    && b4.vPinned() && !b4.vRealAnchored(),
+                    && b4.vPinned() && !b4.vRealAnchored()
+                    && back.pieces.size() == 3 && back.autoFollower(1)
+                    && back.autoFollower(2),
                 "l14a an s/c section writes 2 / loads anchored; a pinned one"
-                + " writes 1 and loads pinned, unflagged", "");
+                + " writes 1 and loads pinned, unflagged (both behind automatic"
+                + " seams, D259 §3)", "");
             Section cp = Coaster.copySection(st, 5);
             Section cp2 = Coaster.copySection(tp.sections.get(1), 5);
             tp.sections.get(1).vRealAnchored(true);
             Section cp3 = Coaster.copySection(tp.sections.get(1), 5);
             check(cp.vRealAnchored() && !cp2.vRealAnchored() && cp3.vRealAnchored(),
                 "l14b copySection carries the flag (s/c + lanes)", "");
-            tp.sections.remove(4);
-            tp.sections.remove(3);
+            sc.pieces.remove(2);   // back to the three lane sections alone
+            sc.pieces.remove(1);
             rebuild(sc);
             Section s1c = tp.sections.get(1);
             boolean split = sc.splitSectionAt(0, 1, 1.0, DT);

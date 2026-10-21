@@ -119,3 +119,68 @@ firstSectionSettle reads NaN.
 ≠o upstream (canonOf fallback, deviation 1) · the k == 0 real anchor
 (A4; friction + smoothing gated in item 6) · freeze / unlock round trip ·
 delete / move / switch-coaster / copy of an auto follower (the guards).
+
+## 3. Item 3 — the belts (§3.2)
+
+`insertSectionAtSeam`: both shapes end in `restoreScInvariant(pieceIdx, i,
+dt)` — for the just-inserted section i it cuts an automatic seam AFTER it
+(an s/c followed by a non-bridge section) and BEFORE it (an s/c, or a
+force/geo right after an s/c; never across a bridge), downstream first,
+both cuts off ONE compile of the post-insert document (no cut needed = no
+compile); Lock ON = `makeSeamStrict` first, append, then the cut before the
+appended s/c (a one-section automatic follower between the upstream and
+the all-locked follower); the return is {piece, section} where the section
+now lives. `appendSectionWithInvariant(pieceIdx, added, dt)` = the '+'
+paths' one model call (append, then the same restore; a lane after a lane
+compiles nothing — bitwise the old append). `partialConvertSection` on an
+s/c source: after installing the two halves, an automatic seam at the cut
+boundary off a compile of the post-convert document (either keep side).
+`partialConvertBridge` RIGHT onto an s/c-first target: an automatic seam
+between the prepended lanes and the s/c (the lanes stay the bridged-in
+piece; the s/c's D97 pin keeps its split). `absorbFollower` refuses across
+an s/c edge, `absorbFollowerWhy(prev, fi)` = `unstrictSeamWhy(fi)` (the
+range flow's gray — a belt: with L1 holding a range never meets an s/c
+inside one piece; `isolateRange` needs nothing — an s/c piece is one
+section). THE LOAD PASS: `DesignIO.scInvariantLoadPass(c)` runs at the end
+of `finishCoaster` only when `scInvariantHolds()` is false (every other
+file: no compile, every bit as before); ONE compile at
+`Coaster.INTEGRATE_DT`, then last-to-first per piece every s/c at k > 0 and
+every non-bridge section after an s/c → `ensureScFollower(…, r, false,
+false, false, 0)`; the cuts are counted in the NEW `LoadResult.scSeamsCut`
+(a sixth record component; the 5-arg constructor kept) and `legacyNote()`
+returns SC_LEGACY_CONVERTED when either count is > 0 — the ONE load
+sentence (§10.4), the caller marks dirty (FvdDesigner already does for a
+non-null note? — see "For the local session").
+
+§10.6 cells: '+' s/c after force / geo / s/c · '+' force after an s/c ·
+Insert s/c at a plain / strict boundary, Lock ON / OFF · partial convert
+keep-left / keep-right · bridge partial RIGHT onto an s/c-first target ·
+absorbFollower / isolateRange across an s/c edge (refuse / nothing to do) ·
+attachPiece's L1 assert (item 1) · Load with an in-piece s/c at k > 0.
+
+### Gate re-pins the load pass forced (OUTSIDE the file whitelist — minimal)
+
+The load pass splits every in-piece s/c, so a fixture that saves `[…, sc]`
+or `[sc, sc]` inside one piece and expects a byte-identical round trip
+cannot pass any more. Each fixture now builds the same document through
+`appendSectionWithInvariant` (the s/c behind an automatic seam — the
+compile is the same geometry, the follower's first section real-anchored
+and re-frozen at k == 0 exactly like the old in-piece continuation was),
+and the one old-file fixture asserts the pass itself:
+
+| gate (not on the whitelist) | row | change |
+|---|---|---|
+| DetermGate198 | d | the continuation s/c appended through the model (6 passed, unchanged count) |
+| uvd.ScRollLaneGate | m1/m2 | the appended straight through the model (63, unchanged) |
+| Phase2Gate | scRoundTrip | the s/c appended through the model; `s3` read off piece 1 section 0 |
+| uvd.ScElemGate | g | an old `elem` file with two in-piece s/c sections loads as TWO pieces behind an automatic seam: pieces 2, `autoFollower(1)`, `scInvariantHolds`, `legacyScSections 2 + scSeamsCut 1`, one sentence; k's fixture appended through the model (122, unchanged) |
+| PlacementGate | c1 | the `porient` line is 6 fields (`… 0` for a free piece) |
+| OrientModeGate | c1 | same |
+
+Whitelisted re-pins: InsertGate d3 (the lock insert of an s/c yields [s0] |
+automatic [sc] | locked [s1 s2], returns {1, 0}) + d7 through a generalized
+`followerClaims(…, fi, insIdx)`; uvd.ConflictGate l14a (both s/c behind
+automatic seams; the pinned one still writes 1 and loads pinned +
+unflagged — the pin wins on the line). The local session must merge the
+six outside-whitelist hunks (each a handful of lines, all in fixture
+builders / expected strings).
